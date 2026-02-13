@@ -1,0 +1,76 @@
+# --- Python Core ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Virtual Environments ---
+# Anchored to root (/) to avoid ignoring 'env' folders inside data if valid
+/venv/
+/env/
+/.env
+/.venv
+/env.bak/
+/venv.bak/
+
+# --- Environment Variables & Secrets ---
+.env
+.env.local
+.env.*
+
+# --- IDEs & Editors ---
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# --- Testing ---
+.pytest_cache/
+.coverage
+htmlcov/
+# Ignore temp artifacts wherever they appear
+**/temp_artifacts/
+test_output.txt
+test_outputs.txt
+
+# --- Project Data & Artifacts ---
+# Anchored to ensure we only target the root data folder
+/data/artifacts/*
+!/data/artifacts/.gitkeep
+
+# --- Machine Learning Models (Root Only) ---
+# IMPORTANT: Leading slash prevents ignoring valid 'models.py' files in your app
+/local_models/
+/models/
+
+# Large File Extensions (Weights & Binaries) - recursive
+*.safetensors
+*.bin
+*.pth
+*.pt
+*.ckpt
+*.h5
+*.nemo
+
+# --- Media Files (Ingest/Output) ---
+*.mp3
+*.mp4
+*.wav
+*.flac
+
+# --- Logs ---
+*.log
+/logs/
+
+# --- OS Specific ---
+.DS_Store
+Thumbs.db
+
+# --- Scripts & Temp Files ---
+*.sh
+!structure_setup.sh
+!combine_files_git.sh
+
+*.txt
+!requirements.txt
+
+*.db
