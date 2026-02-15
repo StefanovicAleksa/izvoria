@@ -68,7 +68,6 @@ Thumbs.db
 # --- Scripts & Temp Files ---
 *.sh
 
-
 *.txt
 !requirements.txt
 
