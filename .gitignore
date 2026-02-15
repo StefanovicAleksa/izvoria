@@ -67,8 +67,6 @@ Thumbs.db
 
 # --- Scripts & Temp Files ---
 *.sh
-!structure_setup.sh
-!combine_files_git.sh
 
 *.txt
 !requirements.txt
