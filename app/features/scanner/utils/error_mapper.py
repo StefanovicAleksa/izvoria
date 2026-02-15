@@ -1,4 +1,3 @@
-from pathlib import Path
 from app.features.scanner import exceptions as exc
 
 def map_scanner_error(e: Exception, context: str = "") -> exc.ScannerError:

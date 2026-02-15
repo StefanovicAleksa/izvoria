@@ -9,7 +9,7 @@ from app.features.scanner.utils.error_mapper import map_scanner_error
 from app.features.scanner import exceptions as exc
 
 class FileScanner(IScaner):
-    def scan(self, root_path: str, file_name: str) -> Generator[ScannedFile, None, None]:
+    def scan(self, root_path: str | Path) -> Generator[ScannedFile, None, None]:
         target_path = Path(root_path).resolve()
 
         if not target_path.exists():
@@ -38,7 +38,7 @@ class FileScanner(IScaner):
 
                         yield ScannedFile(
                             path=file_path,
-                            name=file_path.name,
+                            file_name=file_path.name,
                             extension=file_path.suffix.lower(),
                             size_bytes=stat.st_size
                         )

@@ -3,7 +3,7 @@ from pydantic import BaseModel, ConfigDict
 
 class ScannedFile(BaseModel):
     path: Path
-    name: str
+    file_name: str
     extension: str
     size_bytes: int
 
