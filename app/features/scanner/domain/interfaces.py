@@ -3,7 +3,7 @@ from typing import Generator
 from pathlib import Path
 from app.features.scanner.domain.entities import ScannedFile
 
-class IScaner(ABC):
+class IScanner(ABC):
     @abstractmethod
     def scan(self, root_path: str | Path) -> Generator[ScannedFile, None, None]:
         pass
