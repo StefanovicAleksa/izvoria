@@ -1,9 +1,11 @@
+# File: tests/features/storage/test_repository.py
+
 import pytest
 import uuid
 from datetime import datetime, timezone
 from unittest.mock import Mock, MagicMock
-from sqlalchemy.exc import SQLAlchemyError
 
+from app.core.database import exceptions as db_exc
 from app.features.storage.data.repositories import StorageRepository
 from app.features.storage.domain.entities import Source, SourceType, File
 from app.features.storage.exceptions.base import StorageError
@@ -69,15 +71,16 @@ class TestStorageRepository:
 
     def test_create_db_error(self, repository, mock_db_manager):
         """
-        Should catch SQLAlchemyError and raise StorageError.
+        Should catch db_exc.DatabaseError and raise StorageError.
         """
         session = mock_db_manager.session.return_value.__enter__.return_value
-        # Simulate DB crashing on add()
-        session.add.side_effect = SQLAlchemyError("Connection Dead")
+
+        # We simulate the DatabaseManager context manager raising a mapped Core error
+        session.add.side_effect = db_exc.SystemError("Connection Dead")
 
         source = Source(id=uuid.uuid4(), name="T", source_type=SourceType.TEXT, content_hash="123")
 
-        # FIX: Relaxed match string to catch "An unexpected storage error occurred."
+        # The error mapper converts db_exc.SystemError into StorageError
         with pytest.raises(StorageError, match="storage error"):
             repository.create(source)
 
@@ -87,11 +90,11 @@ class TestStorageRepository:
         """
         session = mock_db_manager.session.return_value.__enter__.return_value
 
-        # FIX: Fully populate the mock so Pydantic validates it successfully
+        # Fully populate the mock so Pydantic validates it successfully
         mock_model = MagicMock()
         mock_model.id = uuid.uuid4()
-        mock_model.name = "Test Video"  # Required by Pydantic
-        mock_model.source_type = "video"  # Matches Enum
+        mock_model.name = "Test Video"
+        mock_model.source_type = "video"
         mock_model.content_hash = "found-hash"
         mock_model.created_at = datetime.now(timezone.utc)
         mock_model.updated_at = datetime.now(timezone.utc)
@@ -126,8 +129,7 @@ class TestStorageRepository:
         """
         session = mock_db_manager.session.return_value.__enter__.return_value
 
-        # FIX: Create a FULLY populated mock file structure
-        # If we don't do this, Pydantic sees 'MagicMock' instead of strings/UUIDs and crashes.
+        # Create a FULLY populated mock file structure
         mock_file = MagicMock()
         mock_file.id = uuid.uuid4()
         mock_file.source_id = uuid.uuid4()
@@ -154,7 +156,7 @@ class TestStorageRepository:
         result = repository.mark_as_processed(uuid.uuid4())
 
         # Assert
-        assert mock_file.is_processed is True  # Flag flipped?
+        assert mock_file.is_processed is True
         assert result.file.is_processed is True
 
     def test_mark_as_processed_not_found(self, repository, mock_db_manager):

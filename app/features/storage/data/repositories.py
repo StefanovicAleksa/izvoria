@@ -1,9 +1,11 @@
+# File: app/features/storage/data/repositories.py
+
 from typing import Optional, List
 import uuid
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.database.domain.interfaces import IDatabaseManager
+from app.core.database import exceptions as db_exc  # <-- NEW: Importing core DB exceptions
 from app.features.storage.domain.interfaces import IStorageRepository
 from app.features.storage.domain.entities import Source
 from app.features.storage.data.models import SourceModel, FileModel
@@ -49,12 +51,9 @@ class StorageRepository(IStorageRepository):
                 session.add(source_model)
                 # Commit is handled by the context manager automatically on exit
 
-                # 4. Refresh to get any DB-generated defaults (if needed)
-                # But since we generate IDs in Python, we rarely need this.
-
                 return source
 
-        except SQLAlchemyError as e:
+        except db_exc.DatabaseError as e:  # <-- CHANGED: Catching the mapped Core error
             raise map_storage_error(e)
 
     def get_by_id(self, source_id: uuid.UUID) -> Optional[Source]:
@@ -70,7 +69,7 @@ class StorageRepository(IStorageRepository):
                     return None
 
                 return Source.model_validate(model)
-        except SQLAlchemyError as e:
+        except db_exc.DatabaseError as e:  # <-- CHANGED
             raise map_storage_error(e)
 
     def get_by_hash(self, content_hash: str) -> Optional[Source]:
@@ -87,7 +86,7 @@ class StorageRepository(IStorageRepository):
                     return None
 
                 return Source.model_validate(model)
-        except SQLAlchemyError as e:
+        except db_exc.DatabaseError as e:  # <-- CHANGED
             raise map_storage_error(e)
 
     def list_all(self) -> List[Source]:
@@ -101,7 +100,7 @@ class StorageRepository(IStorageRepository):
                 models = session.execute(stmt).scalars().all()
 
                 return [Source.model_validate(m) for m in models]
-        except SQLAlchemyError as e:
+        except db_exc.DatabaseError as e:  # <-- CHANGED
             raise map_storage_error(e)
 
     def mark_as_processed(self, source_id: uuid.UUID) -> Source:
@@ -130,5 +129,5 @@ class StorageRepository(IStorageRepository):
 
                 return Source.model_validate(source_model)
 
-        except SQLAlchemyError as e:
+        except db_exc.DatabaseError as e:  # <-- CHANGED
             raise map_storage_error(e)
