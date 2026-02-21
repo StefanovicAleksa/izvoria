@@ -8,9 +8,9 @@ from sqlalchemy.exc import OperationalError
 from app.core.database.service.manager import db_manager as core_db_manager
 from app.core.database.data.engine import Base
 
-# Crucial - Import models so SQLAlchemy "sees" them for create_all()
+# Import models so SQLAlchemy "sees" them for create_all()
 from app.features.storage.data.models import SourceModel, FileModel  # noqa
-from app.core.jobs.data.models import JobModel  # noqa (Include any other models you have!)
+from app.core.jobs.data.models import JobModel  # noqa
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -34,8 +34,7 @@ def setup_test_database():
                 pytest.fail("Could not connect to the Test Database. Is Docker running?")
             time.sleep(1)
 
-    # B. WIPE THE STALE SCHEMA COMPLETELY (The Nuclear Option)
-    # This completely bypasses the Foreign Key deadlock that drop_all() caused.
+    # B. WIPE THE STALE SCHEMA COMPLETELY
     with real_engine.begin() as conn:
         conn.execute(text("DROP SCHEMA public CASCADE;"))
         conn.execute(text("CREATE SCHEMA public;"))
@@ -63,7 +62,16 @@ def db_manager():
 
     @contextmanager
     def test_session_override():
-        yield session
+        # FIX: Use a nested transaction (SAVEPOINT) to mimic real commits!
+        # This forces SQLAlchemy to flush queries sequentially to Postgres
+        # exactly as the app intends, fixing our Foreign Key constraint crashes.
+        nested = session.begin_nested()
+        try:
+            yield session
+            nested.commit()  # Flushes the SQL to the DB without breaking test isolation
+        except Exception:
+            nested.rollback()
+            raise
 
     core_db_manager.session = test_session_override
 
