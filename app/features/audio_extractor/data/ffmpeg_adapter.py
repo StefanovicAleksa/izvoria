@@ -18,23 +18,26 @@ class FFmpegAdapter(IFFmpegAdapter):
         Executes FFmpeg to extract audio, managing the temporary OS file securely.
         """
         src = Path(source_path).resolve()
+
         if not src.exists():
-            raise FileNotFoundError(f"Source file not found at path: {src}")
+            raw_error = FileNotFoundError(f"Source file not found at path: {src}")
+            raise map_ffmpeg_error(raw_error)
 
         # 1. Manage the OS-level temporary file securely
         temp_fd, temp_path_str = tempfile.mkstemp(suffix=".wav", prefix="onyx_audio_")
-        os.close(temp_fd)  # Free the descriptor so FFmpeg can write to it
+        os.close(temp_fd)
         temp_path = Path(temp_path_str)
 
-        command = [
+        # Explicitly typing as list[str] and using os.fspath() for Python < 3.12 Windows compatibility
+        command: list[str] = [
             "ffmpeg",
-            "-i", str(src),
+            "-i", os.fspath(src),
             "-vn",
             "-acodec", "pcm_s16le",
             "-ar", "16000",
             "-ac", "1",
             "-y",
-            str(temp_path)
+            os.fspath(temp_path)
         ]
 
         try:
@@ -47,11 +50,9 @@ class FFmpegAdapter(IFFmpegAdapter):
                 check=True,
                 timeout=self._timeout
             )
-            # 3. Return the successfully generated path to the caller
             return temp_path
 
         except Exception as e:
-            # Cleanup: If FFmpeg crashes (e.g., timeout or bad file), delete the broken temp file
             if temp_path.exists():
                 try:
                     temp_path.unlink()
