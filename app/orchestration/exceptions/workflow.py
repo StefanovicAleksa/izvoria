@@ -1,17 +1,20 @@
-# File: app/orchestration/exceptions/workflow.py
+# filename: orchestration_exceptions_workflow_v1.py
+from app.orchestration.exceptions.base import OrchestrationError
 
-from .base import OrchestrationError
+class WorkflowError(OrchestrationError):
+    """Base exception for errors in the overall pipeline routing and state management."""
+    pass
 
-class WorkflowExecutionError(OrchestrationError):
+class WorkflowStateError(WorkflowError):
     """
-    Raised when a critical, unrecoverable failure occurs during a workflow
-    (e.g., inability to connect to the JobManager or Database).
+    Raised when the pipeline attempts an invalid phase transition.
+    Example: Trying to run Phase 3 (Audio Extraction) before Phase 2 (Ingest) is complete.
     """
     pass
 
-class ScannerInitializationError(OrchestrationError):
+class WorkflowExecutionError(WorkflowError):
     """
-    Raised when the initial directory scan cannot be started
-    (e.g., the user provided a completely invalid path).
+    Raised when the Director itself fails (e.g., inability to connect
+    to the underlying JobManager to lock the pipeline).
     """
     pass

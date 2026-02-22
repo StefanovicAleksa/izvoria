@@ -1,10 +1,15 @@
-# File: app/orchestration/exceptions/__init__.py
-
+# filename: orchestration_exceptions_init_v1.py
 from .base import OrchestrationError
-from .workflow import WorkflowExecutionError, ScannerInitializationError
+from .workflow import WorkflowError, WorkflowStateError, WorkflowExecutionError
+from .phase import PhaseError, PhaseInitializationError, ScannerInitializationError, PhaseExecutionAborted
 
 __all__ = [
     "OrchestrationError",
+    "WorkflowError",
+    "WorkflowStateError",
     "WorkflowExecutionError",
-    "ScannerInitializationError"
+    "PhaseError",
+    "PhaseInitializationError",
+    "ScannerInitializationError",
+    "PhaseExecutionAborted"
 ]

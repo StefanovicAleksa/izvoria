@@ -10,3 +10,4 @@ class JobStatus(str, Enum):
 class JobType(str, Enum):
     DIRECTORY_SCAN = "directory_scan"
     FILE_INGEST = "file_ingest"
+    AUDIO_EXTRACTION = "audio_extraction"
