@@ -6,8 +6,13 @@ psycopg2-binary>=2.9.9
 python-dotenv>=1.0.1
 
 # AI & Hardware Infrastructure
-torch>=2.2.0  # Required for Model Manager VRAM monitoring (CUDA 12.1+)
-numpy>=1.26.0 # Required to silence PyTorch C++ backend warnings
+torch>=2.2.0        # Required for Model Manager VRAM and NeMo (CUDA 12.1+)
+torchaudio>=2.2.0   # Required for audio resampling and NeMo tensor conversions
+numpy>=1.26.0       # Required for in-memory virtual slicing and PyTorch warnings
+
+# Media Processing & AI Models
+soundfile>=0.12.1         # Required for lightning-fast raw audio I/O and validation
+nemo_toolkit[asr]>=1.22.0 # Required for Voice Activity Detection and Speaker Diarization
 
 # Testing Dependencies
 pytest>=8.0.0
