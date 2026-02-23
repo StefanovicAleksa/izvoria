@@ -1,8 +1,13 @@
+# File: requirements.txt
 pydantic>=2.6.0
 pydantic-settings>=2.1.0
 sqlalchemy>=2.0.25
 psycopg2-binary>=2.9.9
 python-dotenv>=1.0.1
+
+# AI & Hardware Infrastructure
+torch>=2.2.0  # Required for Model Manager VRAM monitoring (CUDA 12.1+)
+numpy>=1.26.0 # Required to silence PyTorch C++ backend warnings
 
 # Testing Dependencies
 pytest>=8.0.0
