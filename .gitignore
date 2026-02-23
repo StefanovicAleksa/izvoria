@@ -72,3 +72,6 @@ Thumbs.db
 !requirements.txt
 
 *.db
+
+!integration_tests/resources/
+!integration_tests/resources/*

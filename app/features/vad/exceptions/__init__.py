@@ -5,7 +5,8 @@ from .model import (
     AudioFormatError,
     AudioSampleRateError,
     VadDeviceError,
-    VadModelConfigError
+    VadModelConfigError,
+    VadModelFilePathError
 )
 from .database import VadDatabaseError
 
@@ -16,5 +17,6 @@ __all__ = [
     "AudioSampleRateError",
     "VadDeviceError",
     "VadModelConfigError",
+    "VadModelFilePathError",
     "VadDatabaseError"
 ]
