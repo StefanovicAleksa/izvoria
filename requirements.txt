@@ -14,6 +14,7 @@ numpy>=1.26.0       # Required for in-memory virtual slicing and PyTorch warning
 soundfile>=0.12.1         # Required for lightning-fast raw audio I/O and validation
 nemo_toolkit[asr]>=1.22.0 # Required for Voice Activity Detection and Speaker Diarization
 torchcodec>=0.1.1
+faster-whisper>=1.0.0     # Required for CTranslate2 optimized transcription
 
 # Testing Dependencies
 pytest>=8.0.0

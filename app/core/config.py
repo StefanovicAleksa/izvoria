@@ -19,9 +19,11 @@ class Settings(BaseSettings):
     ENV: str = "development"
 
     # AI Model Config
-    # Path to the local .nemo file (e.g., "models/marblenet.nemo")
     VAD_MODEL_PATH: str = "models/vad_multilingual_marblenet.nemo"
     VAD_VRAM_REQUIREMENT_MB: float = 1200.0
+
+    WHISPER_MODEL_PATH: str = "models/faster-whisper-large-v3"
+    WHISPER_VRAM_REQUIREMENT_MB: float = 3500.0  # ~3.5GB for INT8 Large-v3
 
     @property
     def DATABASE_URL(self) -> str:
