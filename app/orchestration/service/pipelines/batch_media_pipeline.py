@@ -1,4 +1,5 @@
-# filename: orchestration_service_pipelines_batch_media_pipeline_v1.py
+# filename: batch_media_pipeline_v2.py
+# path: app/orchestration/service/pipelines/batch_media_pipeline.py
 import uuid
 from typing import Dict, List
 
@@ -11,6 +12,7 @@ from app.orchestration.exceptions.workflow import WorkflowStateError, WorkflowEx
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
 from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPhase
+from app.orchestration.service.phases.vad_phase import VadPhase
 
 
 class BatchMediaPipeline:
@@ -18,19 +20,16 @@ class BatchMediaPipeline:
             self,
             scan_phase: ScanPhase,
             ingest_phase: IngestPhase,
-            extract_audio_phase: ExtractAudioPhase
+            extract_audio_phase: ExtractAudioPhase,
+            vad_phase: VadPhase
     ):
         self._scan_phase = scan_phase
         self._ingest_phase = ingest_phase
         self._extract_audio = extract_audio_phase
+        self._vad_phase = vad_phase
 
     def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[
         PipelinePhase, PhaseBatchResult]:
-        """
-        Executes the full media pipeline sequentially.
-        Guarantees that batches are processed entirely before transitioning
-        to the next phase, preserving VRAM and system stability.
-        """
         pipeline_results: Dict[PipelinePhase, PhaseBatchResult] = {}
 
         try:
@@ -44,7 +43,6 @@ class BatchMediaPipeline:
                 raise WorkflowStateError(f"Pipeline halted: Scan phase failed. Errors: {scan_result.errors}")
 
             if scan_result.successful_count == 0:
-                # Graceful exit: Nothing to process
                 return pipeline_results
 
             # ==========================================
@@ -61,36 +59,43 @@ class BatchMediaPipeline:
             # ==========================================
             # PHASE TRANSITION: FILTER FOR AUDIO EXTRACTION
             # ==========================================
-            # We only extract audio if the user told us this batch is VIDEO
             if source_type == SourceType.VIDEO:
 
-                # Filter out failures; we only want successfully ingested Source IDs
                 video_source_ids: List[uuid.UUID] = [
-                    item.source_id
-                    for item in ingest_result.items
+                    item.source_id for item in ingest_result.items
                     if isinstance(item, IngestJobResult) and item.success and item.source_id
                 ]
 
                 if not video_source_ids:
-                    # All ingests failed, or none returned IDs. Graceful skip.
                     return pipeline_results
 
+                # -> PRELOAD TRIGGER: Load VAD model onto GPU while FFmpeg runs on CPU
+                self._vad_phase.preload_model()
+
                 # ==========================================
-                # PHASE 3: AUDIO EXTRACTION
+                # PHASE 3: AUDIO EXTRACTION (CPU BOUND)
                 # ==========================================
                 extraction_result = self._extract_audio.execute(video_source_ids)
                 pipeline_results[PipelinePhase.AUDIO_EXTRACTION] = extraction_result
 
                 if extraction_result.status == PhaseStatus.FAILED:
-                    # We don't necessarily halt the app here, but we record the catastrophic failure
-                    # In the future, Phase 4 (Transcribe) would check this before starting
+                    raise WorkflowStateError(
+                        f"Pipeline halted: Audio Extraction failed entirely. Errors: {extraction_result.errors}")
+
+                # ==========================================
+                # PHASE 4: VOICE ACTIVITY DETECTION (GPU BOUND)
+                # ==========================================
+                vad_result = self._vad_phase.execute(extraction_result.items)
+                pipeline_results[PipelinePhase.VAD] = vad_result
+
+                if vad_result.status == PhaseStatus.FAILED:
+                    # We log the failure but allow the pipeline to proceed,
+                    # as Transcription will check for these maps later.
                     pass
 
             return pipeline_results
 
         except WorkflowStateError as e:
-            # Expected state machine violations (e.g., trying to proceed after a phase fails)
             raise e
         except Exception as e:
-            # Unexpected pipeline crashes
             raise WorkflowExecutionError(f"Critical Pipeline Crash: {str(e)}", original_exception=e) from e

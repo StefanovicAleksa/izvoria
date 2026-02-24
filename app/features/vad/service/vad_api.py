@@ -1,4 +1,5 @@
-# File: app/features/vad/service/vad_api.py
+# filename: vad_api_v2.py
+# path: app/features/vad/service/vad_api.py
 import uuid
 
 from app.core.config import settings
@@ -27,10 +28,16 @@ class VadAPI:
         self._orchestrator = orchestrator
         self._adapter = adapter
 
-    def process_audio(self, source_id: uuid.UUID, audio_path: str) -> VadMap:
+    def process_audio(self, source_id: uuid.UUID, audio_path: str, release_after: bool = True) -> VadMap:
         """
         Takes a raw audio file and returns a persisted virtual map of human speech.
         Guarantees VRAM safety and idempotency.
+
+        Args:
+            source_id: The UUID of the original media source.
+            audio_path: Physical OS path to the extracted audio file.
+            release_after: If True, explicitly unloads the model from VRAM immediately
+                           after processing. If False, retains it for batch optimization.
         """
         existing_map = self._repo.get_map_by_source_id(source_id)
         if existing_map:
@@ -61,5 +68,6 @@ class VadAPI:
             raise map_vad_error(e) from e
 
         finally:
-            if loaded_model:
+            # Respect the Orchestrator's Batch Pipeline lifecycle rules
+            if loaded_model and release_after:
                 self._orchestrator.release_model(loaded_model, self._adapter, flush=True)

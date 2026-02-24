@@ -1,4 +1,5 @@
-# filename: orchestration_enums_v1.py
+# filename: orchestration_enums_v2.py
+# path: app/orchestration/domain/enums.py
 from enum import Enum
 
 class PipelinePhase(str, Enum):
@@ -6,6 +7,7 @@ class PipelinePhase(str, Enum):
     SCAN = "scan"
     INGEST = "ingest"
     AUDIO_EXTRACTION = "audio_extraction"
+    VAD = "vad"
     TRANSCRIBE = "transcribe"
     VISION = "vision"
 
@@ -14,5 +16,5 @@ class PhaseStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
-    PARTIAL_SUCCESS = "partial_success"  # E.g., 90/100 files extracted audio successfully
+    PARTIAL_SUCCESS = "partial_success"
     FAILED = "failed"
