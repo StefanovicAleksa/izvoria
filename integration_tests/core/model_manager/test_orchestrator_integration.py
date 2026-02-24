@@ -1,6 +1,8 @@
-# File: integration_tests/core/model_manager/test_orchestrator_integration.py
+# filename: test_orchestrator_integration_v2.py
+# path: integration_tests/core/model_manager/test_orchestrator_integration.py
 import pytest
 import torch
+import concurrent.futures
 
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
@@ -18,24 +20,12 @@ def require_cuda():
 
 
 class DummyModelLoader(IModelLoader):
-    """
-    A fake adapter that allocates raw tensors on the GPU to simulate
-    the VRAM footprint of loading a real AI model.
-    """
-
     def load(self, manifest: ModelManifest) -> LoadedModel:
-        # 1 Float32 = 4 Bytes.
-        # To allocate exactly 100MB: (100 * 1024 * 1024) / 4 = 26,214,400 floats
-        # We allocate a bit more to ensure it registers clearly above background noise.
         num_floats = int((manifest.required_vram_mb * 1024 * 1024) / 4)
-
-        # Move the junk tensor to the GPU immediately
         dummy_tensor = torch.zeros(num_floats, dtype=torch.float32, device="cuda")
-
         return LoadedModel(manifest=manifest, model_instance=dummy_tensor)
 
     def unload(self, model: LoadedModel) -> bool:
-        # Delete the python reference to the tensor so the garbage collector can find it
         del model.model_instance
         return True
 
@@ -45,7 +35,6 @@ class DummyModelLoader(IModelLoader):
 
 @pytest.fixture
 def orchestrator():
-    """Wires up the real Service with the real PyTorch Data adapter."""
     monitor = PyTorchVramMonitor()
     return ModelManagerOrchestrator(vram_monitor=monitor)
 
@@ -57,14 +46,8 @@ def dummy_loader():
 
 @pytest.mark.integration
 def test_real_vram_allocation_and_tracking(orchestrator, dummy_loader):
-    """
-    Verifies that the Orchestrator successfully reads the hardware changes
-    when a model is moved into GPU memory.
-    """
-    # 1. Take a baseline reading
     baseline_status = orchestrator._monitor.get_vram_status()
 
-    # 2. Command the Orchestrator to load a fake 200MB model
     manifest = ModelManifest(
         model_type=ModelType.VAD,
         model_path="dummy_path",
@@ -72,33 +55,21 @@ def test_real_vram_allocation_and_tracking(orchestrator, dummy_loader):
     )
 
     loaded_model = orchestrator.acquire_model(manifest, dummy_loader)
-
-    # 3. Verify VRAM usage increased at the hardware level
     loaded_status = orchestrator._monitor.get_vram_status()
 
-    # It won't be EXACTLY 200MB because PyTorch's caching allocator grabs chunks,
-    # but the free VRAM should definitively be lower than the baseline.
     assert loaded_status.free_vram_mb < baseline_status.free_vram_mb
     assert loaded_model.id in orchestrator._active_models
 
-    # 4. Release the model
     orchestrator.release_model(loaded_model, dummy_loader, flush=True)
-
-    # 5. Verify the hardware was aggressively flushed back to near-baseline levels
     flushed_status = orchestrator._monitor.get_vram_status()
+
     assert flushed_status.free_vram_mb > loaded_status.free_vram_mb
     assert len(orchestrator._active_models) == 0
 
 
 @pytest.mark.integration
 def test_out_of_vram_rejection_real_math(orchestrator, dummy_loader):
-    """
-    Verifies the bouncer correctly calculates available memory from the real GPU
-    and rejects models that would cause a CUDA Out-of-Memory crash.
-    """
     current_status = orchestrator._monitor.get_vram_status()
-
-    # Create a manifest that requests exactly 100MB MORE than the GPU physically has left
     impossible_vram_request = current_status.free_vram_mb + 100.0
 
     manifest = ModelManifest(
@@ -107,10 +78,42 @@ def test_out_of_vram_rejection_real_math(orchestrator, dummy_loader):
         required_vram_mb=impossible_vram_request
     )
 
-    # FIX: Updated the match string to reflect the Orchestrator's preemptive warning
     with pytest.raises(exc.OutOfVramError, match="Cannot load transcription") as error_info:
         orchestrator.acquire_model(manifest, dummy_loader)
 
-    # Ensure the error message contains our safety buffer logic, formatted exactly as the Orchestrator does it.
     expected_vram = impossible_vram_request + orchestrator.VRAM_SAFETY_BUFFER_MB
     assert f"{expected_vram:.2f}" in str(error_info.value)
+
+
+@pytest.mark.integration
+def test_concurrent_vram_race_condition(orchestrator, dummy_loader):
+    """
+    Integration test to prove the Mutex lock prevents VRAM overallocation and
+    corrupt dictionary state during concurrent background loading.
+    """
+    manifest_a = ModelManifest(model_type=ModelType.VAD, model_path="model_a", required_vram_mb=150.0)
+    manifest_b = ModelManifest(model_type=ModelType.VISION, model_path="model_b", required_vram_mb=150.0)
+
+    # Fire two loads in parallel
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        future_a = executor.submit(orchestrator.acquire_model, manifest_a, dummy_loader)
+        future_b = executor.submit(orchestrator.acquire_model, manifest_b, dummy_loader)
+
+        model_a = future_a.result()
+        model_b = future_b.result()
+
+    # Both should load successfully, but strictly sequentially
+    assert len(orchestrator._active_models) == 2
+    assert model_a.id in orchestrator._active_models
+    assert model_b.id in orchestrator._active_models
+
+    # Fire parallel unloads
+    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+        future_ua = executor.submit(orchestrator.release_model, model_a, dummy_loader, flush=True)
+        future_ub = executor.submit(orchestrator.release_model, model_b, dummy_loader, flush=True)
+
+        future_ua.result()
+        future_ub.result()
+
+    # Verify safe cleanup
+    assert len(orchestrator._active_models) == 0

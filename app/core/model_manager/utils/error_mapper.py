@@ -1,4 +1,6 @@
-# File: app/core/model_manager/utils/error_mapper.py
+# filename: error_mapper_v2.py
+# path: app/core/model_manager/utils/error_mapper.py
+
 from app.core.model_manager import exceptions as exc
 
 def map_model_manager_error(e: Exception) -> exc.ModelManagerError:
@@ -6,6 +8,12 @@ def map_model_manager_error(e: Exception) -> exc.ModelManagerError:
     Translates raw system, PyTorch, and CUDA exceptions into
     typed Domain Exceptions for the Model Manager.
     """
+    # --- NEW GUARD CLAUSE ---
+    # If the exception is already a Domain Exception (like OutOfVramError
+    # raised by the Orchestrator), return it as-is to prevent double-wrapping.
+    if isinstance(e, exc.ModelManagerError):
+        return e
+
     error_msg = str(e).lower()
 
     # 1. Hardware / CUDA Out Of Memory (OOM)
