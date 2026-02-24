@@ -1,4 +1,5 @@
-# File: tests/features/vad/test_repository.py
+# filename: test_vad_repository_v2.py
+# path: tests/features/vad/test_repository.py
 import uuid
 import pytest
 from unittest.mock import MagicMock
@@ -10,78 +11,67 @@ from app.features.vad.data.repositories import VadRepository
 from app.features.vad.exceptions.database import VadDatabaseError
 
 
-@pytest.fixture
-def mock_db_manager():
-    manager = MagicMock()
-    # Setup context manager mock for `with self._db.session() as session:`
-    session_mock = MagicMock()
-    manager.session.return_value.__enter__.return_value = session_mock
-    return manager, session_mock
+class TestVadRepository:
+    @pytest.fixture
+    def mock_db_manager(self):
+        manager = MagicMock()
+        session_mock = MagicMock()
+        manager.session.return_value.__enter__.return_value = session_mock
+        return manager, session_mock
 
+    @pytest.fixture
+    def sample_vad_map(self):
+        source_id = uuid.uuid4()
+        segments = [VadSegment(start_sec=1.0, end_sec=2.5, confidence=0.9)]
+        return VadMap(source_id=source_id, segments=segments)
 
-@pytest.fixture
-def sample_vad_map():
-    source_id = uuid.uuid4()
-    segments = [VadSegment(start_sec=1.0, end_sec=2.5, confidence=0.9)]
-    return VadMap(source_id=source_id, segments=segments)
+    def test_save_map_success(self, mock_db_manager, sample_vad_map):
+        manager, session = mock_db_manager
+        repo = VadRepository(manager)
 
+        result = repo.save_map(sample_vad_map)
 
-def test_save_map_success(mock_db_manager, sample_vad_map):
-    manager, session = mock_db_manager
-    repo = VadRepository(manager)
+        assert result == sample_vad_map
+        session.add.assert_called_once()
+        added_model = session.add.call_args[0][0]
+        assert isinstance(added_model, VadMapModel)
+        assert added_model.source_id == sample_vad_map.source_id
+        assert added_model.segments[0]["start_sec"] == 1.0
 
-    # Act
-    result = repo.save_map(sample_vad_map)
+    def test_get_map_by_source_id_found(self, mock_db_manager, sample_vad_map):
+        manager, session = mock_db_manager
 
-    # Assert
-    assert result == sample_vad_map
-    session.add.assert_called_once()
-    added_model = session.add.call_args[0][0]
-    assert isinstance(added_model, VadMapModel)
-    assert added_model.source_id == sample_vad_map.source_id
-    assert added_model.segments[0]["start_sec"] == 1.0
+        # Mock the DB returning a result INSIDE the context manager
+        mock_db_model = VadMapModel(
+            id=sample_vad_map.id,
+            source_id=sample_vad_map.source_id,
+            segments=[seg.model_dump() for seg in sample_vad_map.segments],
+            created_at=sample_vad_map.created_at
+        )
+        session.execute.return_value.scalar_one_or_none.return_value = mock_db_model
 
+        repo = VadRepository(manager)
+        result = repo.get_map_by_source_id(sample_vad_map.source_id)
 
-def test_get_map_by_source_id_found(mock_db_manager, sample_vad_map):
-    manager, session = mock_db_manager
+        assert result is not None
+        assert result.source_id == sample_vad_map.source_id
+        assert len(result.segments) == 1
+        assert result.segments[0].start_sec == 1.0
 
-    # Mock the DB returning a result
-    mock_db_model = VadMapModel(
-        id=sample_vad_map.id,
-        source_id=sample_vad_map.source_id,
-        segments=[seg.model_dump() for seg in sample_vad_map.segments],
-        created_at=sample_vad_map.created_at
-    )
-    session.execute.return_value.scalar_one_or_none.return_value = mock_db_model
+    def test_get_map_by_source_id_not_found(self, mock_db_manager):
+        manager, session = mock_db_manager
+        session.execute.return_value.scalar_one_or_none.return_value = None
 
-    repo = VadRepository(manager)
+        repo = VadRepository(manager)
+        result = repo.get_map_by_source_id(uuid.uuid4())
 
-    # Act
-    result = repo.get_map_by_source_id(sample_vad_map.source_id)
+        assert result is None
 
-    # Assert
-    assert result is not None
-    assert result.source_id == sample_vad_map.source_id
-    assert len(result.segments) == 1
-    assert result.segments[0].start_sec == 1.0
+    def test_repository_maps_db_exceptions(self, mock_db_manager, sample_vad_map):
+        manager, session = mock_db_manager
+        session.add.side_effect = SQLAlchemyError("DB Connection Lost")
 
+        repo = VadRepository(manager)
 
-def test_get_map_by_source_id_not_found(mock_db_manager):
-    manager, session = mock_db_manager
-    session.execute.return_value.scalar_one_or_none.return_value = None
-
-    repo = VadRepository(manager)
-    result = repo.get_map_by_source_id(uuid.uuid4())
-
-    assert result is None
-
-
-def test_repository_maps_db_exceptions(mock_db_manager, sample_vad_map):
-    manager, session = mock_db_manager
-    # FIXED: Simulating a true SQLAlchemy crash instead of a generic Exception
-    session.add.side_effect = SQLAlchemyError("DB Connection Lost")
-
-    repo = VadRepository(manager)
-
-    with pytest.raises(VadDatabaseError):
-        repo.save_map(sample_vad_map)
+        with pytest.raises(VadDatabaseError):
+            repo.save_map(sample_vad_map)
