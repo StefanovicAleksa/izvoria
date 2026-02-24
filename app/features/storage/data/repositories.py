@@ -1,4 +1,5 @@
-# filename: app/features/storage/data/repositories.py
+# filename: storage_repositories_v2.py
+# path: app/features/storage/data/repositories.py
 from typing import Optional, List
 import uuid
 from sqlalchemy import select
@@ -73,6 +74,15 @@ class StorageRepository(IStorageRepository):
                 stmt = select(SourceModel).where(SourceModel.id == source_id)
                 model = session.execute(stmt).scalar_one_or_none()
                 return Source.model_validate(model) if model else None
+        except db_exc.DatabaseError as e:
+            raise map_storage_error(e)
+
+    def get_file_by_id(self, file_id: uuid.UUID) -> Optional[File]:
+        try:
+            with self._db.session() as session:
+                stmt = select(FileModel).where(FileModel.id == file_id)
+                model = session.execute(stmt).scalar_one_or_none()
+                return File.model_validate(model) if model else None
         except db_exc.DatabaseError as e:
             raise map_storage_error(e)
 

@@ -1,5 +1,5 @@
-# filename: tests/features/storage/test_storage_api.py
-
+# filename: test_storage_api_v2.py
+# path: tests/features/storage/test_storage_api.py
 import pytest
 import uuid
 from unittest.mock import Mock, patch, MagicMock
@@ -26,6 +26,19 @@ class TestStorageAPI:
             service = StorageAPI(mock_repo)
             service.file_manager = mock_fm_instance
             yield service
+
+    def test_get_file_happy_path(self, api):
+        """Ensures the Storage API correctly proxies get_file directly to the repo."""
+        repo_mock = cast(Mock, api.repository)
+        mock_file = MagicMock(spec=File)
+        file_id = uuid.uuid4()
+
+        repo_mock.get_file_by_id.return_value = mock_file
+
+        result = api.get_file(file_id)
+
+        assert result == mock_file
+        repo_mock.get_file_by_id.assert_called_once_with(file_id)
 
     @patch("app.features.storage.service.storage_api.mimetypes.guess_type")
     @patch("app.features.storage.service.storage_api.Path")

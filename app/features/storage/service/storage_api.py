@@ -1,4 +1,5 @@
-# filename: app/features/storage/service/storage_api.py
+# filename: storage_api_v2.py
+# path: app/features/storage/service/storage_api.py
 import os
 import uuid
 import mimetypes
@@ -84,6 +85,10 @@ class StorageAPI:
 
     def get_source(self, source_id: uuid.UUID) -> Optional[Source]:
         return self.repository.get_by_id(source_id)
+
+    def get_file(self, file_id: uuid.UUID) -> Optional[File]:
+        """Fetches a standalone raw file directly by its UUID."""
+        return self.repository.get_file_by_id(file_id)
 
     def list_sources(self) -> List[Source]:
         return self.repository.list_all()

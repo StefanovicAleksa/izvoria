@@ -1,5 +1,5 @@
-# filename: tests/features/storage/test_repository.py
-
+# filename: test_repository_v2.py
+# path: tests/features/storage/test_repository.py
 import pytest
 import uuid
 from datetime import datetime, timezone
@@ -46,6 +46,38 @@ class TestStorageRepository:
         assert added_model.file_path == "/tmp/audio.wav"
         assert result == file_entity
 
+    def test_get_file_by_id_found(self, repository, mock_db_manager):
+        """Should fetch a physical file directly by ID."""
+        session = mock_db_manager.session.return_value.__enter__.return_value
+
+        file_id = uuid.uuid4()
+        mock_file_model = MagicMock()
+        mock_file_model.id = file_id
+        mock_file_model.file_path = "/tmp/vaulted_audio.wav"
+        mock_file_model.file_name = "vaulted_audio.wav"
+        mock_file_model.file_size_bytes = 2048
+        mock_file_model.mime_type = "audio/wav"
+        mock_file_model.file_metadata = {}
+        mock_file_model.is_processed = False
+        mock_file_model.created_at = datetime.now(timezone.utc)
+
+        session.execute.return_value.scalar_one_or_none.return_value = mock_file_model
+
+        result = repository.get_file_by_id(file_id)
+
+        assert result is not None
+        assert result.id == file_id
+        assert result.file_path == "/tmp/vaulted_audio.wav"
+
+    def test_get_file_by_id_not_found(self, repository, mock_db_manager):
+        """Should return None if the file ID is not in the DB."""
+        session = mock_db_manager.session.return_value.__enter__.return_value
+        session.execute.return_value.scalar_one_or_none.return_value = None
+
+        result = repository.get_file_by_id(uuid.uuid4())
+
+        assert result is None
+
     def test_create_happy_path(self, repository, mock_db_manager):
         """Should convert Domain Entity -> DB Model and add both File and Source to session."""
         file_id = uuid.uuid4()
@@ -68,10 +100,7 @@ class TestStorageRepository:
 
         session = mock_db_manager.session.return_value.__enter__.return_value
 
-        # Verify session.add() was called twice (once for File, once for Source)
         assert session.add.call_count == 2
-
-        # Verify the Source model contains the mapped file_id
         added_source_model = session.add.call_args_list[1][0][0]
         assert added_source_model.content_hash == "abc-123"
         assert added_source_model.file_id == file_id
