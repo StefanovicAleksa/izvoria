@@ -44,6 +44,14 @@ class VadJobResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+class TranscribeJobResult(BaseModel):
+    """Result of Phase 5: Transcription."""
+    source_id: uuid.UUID
+    success: bool
+    transcript_id: Optional[uuid.UUID] = None
+    error_message: Optional[str] = None
+
+    model_config = ConfigDict(frozen=True)
 
 # --- Aggregate Batch Results ---
 

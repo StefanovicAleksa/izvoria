@@ -1,5 +1,5 @@
-# filename: test_batch_media_pipeline_integration_v2.py
-# path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
+# Canvas: test_batch_media_pipeline_integration_v3
+# Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 import os
 import subprocess
 import pytest
@@ -31,17 +31,21 @@ from app.features.vad.service.vad_api import VadAPI
 from app.features.vad.domain.interfaces import IVadModelAdapter
 from app.features.vad.domain.entities import VadMap
 
+from app.features.transcription.data.repositories import TranscriptRepository
+from app.features.transcription.service.transcription_api import TranscriptionAPI
+from app.features.transcription.domain.interfaces import ITranscriptionAdapter
+from app.features.transcription.domain.entities import Transcript
+
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
 from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPhase
 from app.orchestration.service.phases.vad_phase import VadPhase
+from app.orchestration.service.phases.transcribe_phase import TranscribePhase
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 
 
 class DummyVadAdapter(IVadModelAdapter):
-    """Bypasses NeMo and CUDA to simulate VAD processing for integration tests."""
-
     def load(self, manifest: ModelManifest) -> LoadedModel:
         return LoadedModel(manifest=manifest, model_instance="fake_nemo_model")
 
@@ -50,6 +54,19 @@ class DummyVadAdapter(IVadModelAdapter):
 
     def generate_vad_map(self, model: LoadedModel, audio_path: str, source_id: uuid.UUID) -> VadMap:
         return VadMap(source_id=source_id, segments=[])
+
+
+class DummyTranscriptionAdapter(ITranscriptionAdapter):
+    """Bypasses Faster-Whisper and CUDA to simulate transcription processing for integration tests."""
+
+    def load(self, manifest: ModelManifest) -> LoadedModel:
+        return LoadedModel(manifest=manifest, model_instance="fake_whisper_model")
+
+    def unload(self, model: LoadedModel) -> bool:
+        return True
+
+    def transcribe(self, model: LoadedModel, audio_path: str, vad_map: VadMap, source_id: uuid.UUID) -> Transcript:
+        return Transcript(source_id=source_id, segments=[])
 
 
 class TestBatchMediaPipelineIntegration:
@@ -81,12 +98,10 @@ class TestBatchMediaPipelineIntegration:
             storage_api=storage_api
         )
 
-        # Mock VRAM hardware to bypass CUDA
         mock_vram_monitor = Mock()
         mock_vram_monitor.get_vram_status.return_value = VramStatus(total_vram_mb=12000, used_vram_mb=0,
                                                                     free_vram_mb=12000)
 
-        # Real Model Orchestration Stack
         orchestrator = ModelManagerOrchestrator(mock_vram_monitor)
         bg_worker = BackgroundModelWorker(orchestrator)
         async_service = AsyncModelService(bg_worker)
@@ -95,27 +110,28 @@ class TestBatchMediaPipelineIntegration:
         vad_repo = VadRepository(db_manager)
         dummy_vad_adapter = DummyVadAdapter()
         vad_api = VadAPI(vad_repo, orchestrator, dummy_vad_adapter)
-
         vad_manifest = ModelManifest(model_type=ModelType.VAD, model_path="fake", required_vram_mb=100)
+
+        # Real Transcription Feature (with Dummy AI model)
+        transcript_repo = TranscriptRepository(db_manager)
+        dummy_transcribe_adapter = DummyTranscriptionAdapter()
+        transcription_api = TranscriptionAPI(transcript_repo, vad_repo, orchestrator, dummy_transcribe_adapter)
+        transcribe_manifest = ModelManifest(model_type=ModelType.TRANSCRIPTION, model_path="fake", required_vram_mb=100)
 
         # Phases
         scan_phase = ScanPhase(job_manager, scanner)
         ingest_phase = IngestPhase(job_manager, storage_api)
         extract_audio_phase = ExtractAudioPhase(job_manager, audio_extractor)
-        vad_phase = VadPhase(
-            job_manager=job_manager,
-            vad_api=vad_api,
-            storage_api=storage_api,
-            async_model_service=async_service,
-            vad_manifest=vad_manifest,
-            vad_adapter=dummy_vad_adapter
-        )
+        vad_phase = VadPhase(job_manager, vad_api, storage_api, async_service, vad_manifest, dummy_vad_adapter)
+        transcribe_phase = TranscribePhase(job_manager, transcription_api, storage_api, async_service,
+                                           transcribe_manifest, dummy_transcribe_adapter)
 
         pipeline = BatchMediaPipeline(
             scan_phase=scan_phase,
             ingest_phase=ingest_phase,
             extract_audio_phase=extract_audio_phase,
-            vad_phase=vad_phase
+            vad_phase=vad_phase,
+            transcribe_phase=transcribe_phase
         )
 
         yield pipeline, storage_api
@@ -133,7 +149,7 @@ class TestBatchMediaPipelineIntegration:
         subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
 
     def test_end_to_end_media_pipeline(self, pipeline_setup, tmp_path):
-        """Tests the seamless flow from Directory Scan -> VAD Map DB Generation."""
+        """Tests the seamless flow from Directory Scan -> DB Generating Transcript."""
         pipeline, storage_api = pipeline_setup
 
         source_dir = tmp_path / "usb_drive"
@@ -153,12 +169,14 @@ class TestBatchMediaPipelineIntegration:
         assert PipelinePhase.INGEST in results
         assert PipelinePhase.AUDIO_EXTRACTION in results
         assert PipelinePhase.VAD in results
+        assert PipelinePhase.TRANSCRIBE in results
 
         assert results[PipelinePhase.SCAN].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.INGEST].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.AUDIO_EXTRACTION].status == PhaseStatus.COMPLETED
+        assert results[PipelinePhase.VAD].status == PhaseStatus.COMPLETED
 
-        vad_result = results[PipelinePhase.VAD]
-        assert vad_result.status == PhaseStatus.COMPLETED
-        assert vad_result.successful_count == 1
-        assert vad_result.items[0].vad_map_id is not None
+        transcribe_result = results[PipelinePhase.TRANSCRIBE]
+        assert transcribe_result.status == PhaseStatus.COMPLETED
+        assert transcribe_result.successful_count == 1
+        assert transcribe_result.items[0].transcript_id is not None
