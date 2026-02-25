@@ -47,3 +47,8 @@ class ITranscriptRepository(ABC):
     def get_by_source_id(self, source_id: uuid.UUID) -> Optional[Transcript]:
         """Retrieves a previously computed Transcript for a given Source."""
         pass
+
+    @abstractmethod
+    def update(self, transcript: Transcript) -> Transcript:
+        """Overwrites an existing Transcript in the database."""
+        pass

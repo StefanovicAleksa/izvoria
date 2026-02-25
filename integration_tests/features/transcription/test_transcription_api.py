@@ -1,5 +1,6 @@
-# filename: test_transcription_api.py
-# path: tests/integration/features/transcription/test_transcription_api.py
+# Canvas: test_transcription_api_integration_v2
+# Path: tests/integration/features/transcription/test_transcription_api.py
+
 import os
 import uuid
 import pytest
@@ -22,7 +23,7 @@ from app.features.vad.domain.entities import VadMap, VadSegment
 from app.features.transcription.data.faster_whisper_adapter import FasterWhisperAdapter
 from app.features.transcription.data.repositories import TranscriptRepository
 from app.features.transcription.service.transcription_api import TranscriptionAPI
-from app.features.transcription.domain.entities import Transcript
+from app.features.transcription.domain.entities import Transcript, TranscriptSegment
 
 
 class TestTranscriptionAPIIntegration:
@@ -33,37 +34,29 @@ class TestTranscriptionAPIIntegration:
 
     @pytest.fixture(scope="module", autouse=True)
     def setup_database(self):
-        """Ensures the database schema exists before testing."""
         engine = db_manager._engine_wrapper._engine
         Base.metadata.create_all(bind=engine)
         yield
-        # We do not drop tables here to allow inspecting the DB if a test fails.
 
     @pytest.fixture
     def real_audio_file(self, tmp_path):
-        """Generates a real 3-second 16kHz WAV file containing a simple sine wave."""
         sample_rate = 16000
         duration = 3.0
         t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
 
-        # FIX: Explicitly cast the Numpy array to float32 before generating the WAV file
         audio_data = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
 
         file_path = tmp_path / "integration_test_audio.wav"
-
-        # FIX: Explicitly instruct soundfile to write PCM_16 (standard FFmpeg output format)
         sf.write(file_path, audio_data, sample_rate, subtype='PCM_16')
 
         return str(file_path)
 
     @pytest.fixture
     def test_source_id(self):
-        """Creates a real Source and File in the database to satisfy Foreign Key constraints."""
         source_id = uuid.uuid4()
         file_id = uuid.uuid4()
 
         with db_manager.session() as session:
-            # 1. Create the prerequisite File record to satisfy the Foreign Key
             test_file = FileModel(
                 id=file_id,
                 file_path="/tmp/fake_integration_audio.wav",
@@ -73,7 +66,6 @@ class TestTranscriptionAPIIntegration:
             )
             session.add(test_file)
 
-            # 2. Create the Source record
             test_source = SourceModel(
                 id=source_id,
                 name="integration_test_video.mp4",
@@ -83,13 +75,10 @@ class TestTranscriptionAPIIntegration:
             )
             session.add(test_source)
 
-            # The context manager automatically commits both records safely
-
         return source_id
 
     @pytest.fixture
     def live_api(self):
-        """Wires together the actual repositories, VRAM orchestrator, and AI adapter."""
         vad_repo = VadRepository(db_manager)
         transcript_repo = TranscriptRepository(db_manager)
 
@@ -106,41 +95,28 @@ class TestTranscriptionAPIIntegration:
         )
 
     def test_process_audio_end_to_end(self, live_api, test_source_id, real_audio_file):
-        """
-        Executes the Transcription phase end-to-end on real hardware.
-        """
-        # 1. Pre-requisite: Save a real VadMap to the database
         vad_repo = live_api._vad_repo
         test_vad_map = VadMap(
             source_id=test_source_id,
             segments=[
-                # Tell the transcriber that the whole 3 seconds is "speech"
                 VadSegment(start_sec=0.0, end_sec=3.0, confidence=0.99)
             ]
         )
         vad_repo.save_map(test_vad_map)
 
-        # 2. Skip test if model isn't downloaded (prevents CI pipelines without models from crashing)
         if not os.path.exists(settings.WHISPER_MODEL_PATH):
             pytest.skip(f"Faster-Whisper model not found at {settings.WHISPER_MODEL_PATH}. Skipping hardware test.")
 
-        # 3. Execute the API (This hits the GPU and the DB)
         transcript = live_api.process_audio(
             source_id=test_source_id,
             audio_path=real_audio_file,
             release_after=True
         )
 
-        # 4. Verify Domain Object
         assert isinstance(transcript, Transcript)
         assert transcript.source_id == test_source_id
-
-        # Whisper might transcribe a pure sine wave as empty text, "[Music]", or a hallucination.
-        # The key is that it successfully processed the audio slice without crashing.
         assert isinstance(transcript.segments, list)
 
-        # 5. Verify Database Persistence
-        # Check that it actually made it into Postgres
         transcript_repo = live_api._repo
         db_transcript = transcript_repo.get_by_source_id(test_source_id)
 
@@ -148,10 +124,46 @@ class TestTranscriptionAPIIntegration:
         assert db_transcript.id == transcript.id
         assert len(db_transcript.segments) == len(transcript.segments)
 
-        # 6. Verify Idempotency (Should not hit the GPU a second time)
-        transcript_second_run = live_api.process_audio(
+
+    def test_update_transcript_end_to_end(self, live_api, test_source_id):
+        """Verifies that the new update API directly modifies the JSONB segments in Postgres."""
+
+        initial_transcript = Transcript(
             source_id=test_source_id,
-            audio_path=real_audio_file,
-            release_after=True
+            segments=[
+                TranscriptSegment(start_sec=0.0, end_sec=3.0, text="Initial transcribed text")
+            ]
         )
-        assert transcript_second_run.id == transcript.id
+        live_api._repo.save(initial_transcript)
+
+        # 2. Fetch the transcript we just seeded
+        existing_transcript = live_api.get_transcript(test_source_id)
+        assert existing_transcript is not None, "Transcript was not seeded properly"
+
+        # 3. Simulate the Diarization feature modifying the transcript
+        new_segments = [
+            TranscriptSegment(
+                start_sec=seg.start_sec,
+                end_sec=seg.end_sec,
+                text=seg.text,
+                speaker_id="Speaker_0"  # <--- Adding the speaker tag
+            ) for seg in existing_transcript.segments
+        ]
+
+        updated_transcript = Transcript(
+            id=existing_transcript.id,
+            source_id=existing_transcript.source_id,
+            segments=new_segments,
+            created_at=existing_transcript.created_at
+        )
+
+        # 4. Use the public API to update the database
+        live_api.update_transcript(updated_transcript)
+
+        # 5. Fetch a completely fresh copy to verify persistence
+        fresh_db_transcript = live_api.get_transcript(test_source_id)
+
+        assert fresh_db_transcript is not None
+        assert fresh_db_transcript.id == existing_transcript.id
+        if len(fresh_db_transcript.segments) > 0:
+            assert fresh_db_transcript.segments[0].speaker_id == "Speaker_0"

@@ -60,3 +60,29 @@ class TranscriptRepository(ITranscriptRepository):
 
         except Exception as e:
             raise map_transcription_error(e) from e
+
+    def update(self, transcript: Transcript) -> Transcript:
+        """
+        Updates an existing Transcript. Used primarily when the Diarization
+        feature injects speaker IDs into the text segments.
+        """
+        try:
+            serialized_segments = [segment.model_dump() for segment in transcript.segments]
+
+            with self._db.session() as session:
+                # Fetch the existing record
+                stmt = select(TranscriptModel).where(TranscriptModel.id == transcript.id)
+                db_model = session.execute(stmt).scalar_one_or_none()
+
+                if not db_model:
+                    raise Exception(f"Transcript with ID {transcript.id} not found for update.")
+
+                # Overwrite the JSONB column
+                db_model.segments = serialized_segments
+
+                # The session context manager will automatically commit this change on exit
+
+            return transcript
+
+        except Exception as e:
+            raise map_transcription_error(e) from e
