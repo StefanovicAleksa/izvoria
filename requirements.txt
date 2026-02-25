@@ -16,6 +16,12 @@ nemo_toolkit[asr]>=1.22.0 # Required for Voice Activity Detection and Speaker Di
 torchcodec>=0.1.1
 faster-whisper>=1.0.0     # Required for CTranslate2 optimized transcription
 
+# Configuration parsing for NeMo Diarization Graphs
+omegaconf>=2.3.0
+
+# Required for catching Spectral Clustering math exceptions
+scipy>=1.10.0
+
 # Testing Dependencies
 pytest>=8.0.0
 pytest-mock>=3.12.0
