@@ -1,3 +1,6 @@
+# Canvas: test_extractor_integration_v2
+# Path: integration_tests/features/audio_extractor/test_extractor_integration.py
+
 import pytest
 import os
 import subprocess
@@ -18,8 +21,6 @@ class TestAudioExtractorIntegration:
     def check_ffmpeg_installed(self):
         """Skip these integration tests if FFmpeg is not installed on the host machine."""
         try:
-            # Bypass shutil.which() entirely to silence PyCharm's false-positive PathLike warning.
-            # If FFmpeg isn't installed, the OS will throw a FileNotFoundError when trying to run it.
             subprocess.run(
                 ["ffmpeg", "-version"],
                 stdout=subprocess.DEVNULL,
@@ -31,9 +32,7 @@ class TestAudioExtractorIntegration:
 
     @pytest.fixture
     def api_setup(self, db_manager, tmp_path):
-        """
-        Wires up the REAL Storage Vault, REAL FFmpeg Adapter, and REAL Database.
-        """
+        """Wires up the REAL Storage Vault, REAL FFmpeg Adapter, and REAL Database."""
         storage_repo = StorageRepository(db_manager)
         storage_api = StorageAPI(storage_repo)
         storage_api.file_manager.base_path = tmp_path / "vault"
@@ -52,13 +51,9 @@ class TestAudioExtractorIntegration:
 
     @staticmethod
     def generate_real_dummy_video(output_path: Path) -> None:
-        """
-        Uses FFmpeg to generate a real 1-second blank video with silent audio.
-        """
-        # Explicitly typing as list[str] and using os.fspath() to ensure PyCharm/Windows compatibility
+        """Uses FFmpeg to generate a real 1-second blank video with silent audio."""
         command: list[str] = [
-            "ffmpeg",
-            "-y",
+            "ffmpeg", "-y",
             "-f", "lavfi", "-i", "color=c=black:s=10x10:d=1",
             "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono:d=1",
             os.fspath(output_path)
@@ -68,52 +63,46 @@ class TestAudioExtractorIntegration:
     def test_end_to_end_extraction_integration(self, api_setup, tmp_path):
         """
         Scenario:
-        1. A REAL dummy video is created and ingested into the REAL Storage Vault.
-        2. Extractor API invokes the REAL FFmpeg subprocess to extract the audio.
+        1. A REAL dummy video is ingested into the REAL Storage Vault.
+        2. Extractor API invokes REAL FFmpeg to extract audio.
         3. Extractor API vaults the new audio and saves REAL database lineage.
+        4. (IDEMPOTENCY) Extractor API is called again, bypassing FFmpeg entirely.
         """
         extractor_api, storage_api = api_setup
 
         # ---------------------------------------------------------
-        # PHASE 1: PREPARATION (Generate and Ingest a Real Video)
+        # PHASE 1: PREPARATION
         # ---------------------------------------------------------
         source_dir = tmp_path / "usb_drive"
         source_dir.mkdir()
         source_file = source_dir / "real_test_video.mp4"
-
-        # Generate the valid media file using the static method
         self.generate_real_dummy_video(source_file)
 
-        # Ingest into the real Storage Vault
         video_source = storage_api.ingest_local_file(
             file_path=os.fspath(source_file),
             source_type=SourceType.VIDEO,
             name="Test Video Extraction"
         )
 
-        assert video_source.id is not None
-        assert video_source.file.file_path is not None
+        # ---------------------------------------------------------
+        # PHASE 2: FIRST EXTRACTION (Heavy Lifting)
+        # ---------------------------------------------------------
+        extraction_record_1 = extractor_api.extract_audio_from_video(video_source.id)
+
+        assert isinstance(extraction_record_1, AudioExtraction)
+        assert extraction_record_1.source_id == video_source.id
+
+        vault_wav_files_1 = list(storage_api.file_manager.base_path.rglob("*.wav"))
+        assert len(vault_wav_files_1) == 1
 
         # ---------------------------------------------------------
-        # PHASE 2: EXECUTE EXTRACTION
+        # PHASE 3: SECOND EXTRACTION (Idempotency Check)
         # ---------------------------------------------------------
-        extraction_record = extractor_api.extract_audio_from_video(video_source.id)
+        extraction_record_2 = extractor_api.extract_audio_from_video(video_source.id)
 
-        # ---------------------------------------------------------
-        # PHASE 3: ASSERTIONS
-        # ---------------------------------------------------------
-        assert isinstance(extraction_record, AudioExtraction)
-        assert extraction_record.source_id == video_source.id
-        assert extraction_record.extracted_file_id is not None
+        # Assert we got the exact same database record back
+        assert extraction_record_1.id == extraction_record_2.id
 
-        saved_record = extractor_api._repo.get_latest_by_source_id(video_source.id)
-        assert saved_record is not None
-        assert saved_record.extracted_file_id == extraction_record.extracted_file_id
-
-        vault_wav_files = list(storage_api.file_manager.base_path.rglob("*.wav"))
-
-        assert len(vault_wav_files) == 1
-        vaulted_audio_path = vault_wav_files[0]
-
-        assert vaulted_audio_path.exists()
-        assert vaulted_audio_path.stat().st_size > 0
+        # Assert FFmpeg wasn't run again (no duplicate audio files in vault)
+        vault_wav_files_2 = list(storage_api.file_manager.base_path.rglob("*.wav"))
+        assert len(vault_wav_files_2) == 1

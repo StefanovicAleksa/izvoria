@@ -1,9 +1,10 @@
-# filename: tests/features/audio_extractor/test_extractor_api.py
+# Canvas: test_extractor_api_v3
+# Path: tests/features/audio_extractor/test_extractor_api.py
 
 import pytest
 import uuid
 from pathlib import Path
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, MagicMock
 
 from app.features.audio_extractor.service.extractor_api import AudioExtractorAPI
 from app.features.audio_extractor.domain.entities import AudioExtraction
@@ -28,9 +29,28 @@ class TestAudioExtractorAPI:
     def api(self, mock_ffmpeg, mock_repo, mock_storage):
         return AudioExtractorAPI(mock_ffmpeg, mock_repo, mock_storage)
 
-    def test_extract_audio_happy_path(self, api, mock_ffmpeg, mock_repo, mock_storage):
-        """Verifies the complete pipeline runs successfully."""
+    def test_extract_audio_idempotency_skip(self, api, mock_ffmpeg, mock_repo, mock_storage):
+        """Verifies that if an extraction already exists, it is returned immediately without processing."""
         video_source_id = uuid.uuid4()
+        existing_record = MagicMock(spec=AudioExtraction)
+
+        # Simulate that the DB already has an extraction record
+        mock_repo.get_latest_by_source_id.return_value = existing_record
+
+        result = api.extract_audio_from_video(video_source_id)
+
+        # Assert we returned the cached record and completely bypassed FFmpeg & Storage
+        assert result == existing_record
+        mock_repo.get_latest_by_source_id.assert_called_once_with(video_source_id)
+        mock_storage.get_source.assert_not_called()
+        mock_ffmpeg.extract_audio.assert_not_called()
+
+    def test_extract_audio_happy_path(self, api, mock_ffmpeg, mock_repo, mock_storage):
+        """Verifies the complete pipeline runs successfully on a fresh video."""
+        video_source_id = uuid.uuid4()
+
+        # 0. Mock Idempotency (no previous extraction)
+        mock_repo.get_latest_by_source_id.return_value = None
 
         # 1. Mock Storage get_source (returns a valid VIDEO source)
         mock_source = MagicMock()
@@ -67,8 +87,9 @@ class TestAudioExtractorAPI:
         )
         mock_repo.create.assert_called_once()
 
-    def test_extract_audio_invalid_source_type(self, api, mock_storage):
+    def test_extract_audio_invalid_source_type(self, api, mock_repo, mock_storage):
         """Verifies it fails fast if we pass an AUDIO or TEXT source ID."""
+        mock_repo.get_latest_by_source_id.return_value = None
         mock_source = MagicMock()
         mock_source.source_type = SourceType.TEXT
         mock_storage.get_source.return_value = mock_source
@@ -76,20 +97,21 @@ class TestAudioExtractorAPI:
         with pytest.raises(AudioExtractorError, match="is not a VIDEO"):
             api.extract_audio_from_video(uuid.uuid4())
 
-    @patch("app.features.audio_extractor.service.extractor_api.Path.exists")
-    @patch("app.features.audio_extractor.service.extractor_api.Path.unlink")
     def test_extract_audio_cleans_up_on_storage_failure(
-            self, mock_unlink, mock_exists, api, mock_ffmpeg, mock_storage
+            self, api, mock_ffmpeg, mock_repo, mock_storage
     ):
         """Verifies temp files are deleted if Storage API crashes."""
+        mock_repo.get_latest_by_source_id.return_value = None
+
         # Mock source validation
         mock_source = MagicMock()
         mock_source.source_type = SourceType.VIDEO
         mock_storage.get_source.return_value = mock_source
 
-        # FFmpeg succeeds
-        mock_ffmpeg.extract_audio.return_value = Path("/tmp/onyx_audio_123.wav")
-        mock_exists.return_value = True  # Pretend the file exists for cleanup logic
+        # FFmpeg succeeds and returns a mock path object instead of a real Path
+        mock_temp_path = MagicMock()
+        mock_temp_path.exists.return_value = True
+        mock_ffmpeg.extract_audio.return_value = mock_temp_path
 
         # Storage fails to ingest the raw file
         mock_storage.ingest_raw_file.side_effect = Exception("Storage Drive Full")
@@ -97,5 +119,5 @@ class TestAudioExtractorAPI:
         with pytest.raises(Exception, match="Storage Drive Full"):
             api.extract_audio_from_video(uuid.uuid4())
 
-        # CRITICAL VERIFICATION: Ensure the fallback cleanup mechanism ran!
-        mock_unlink.assert_called_once()
+        # CRITICAL VERIFICATION: Ensure the fallback cleanup mechanism ran directly on our mock!
+        mock_temp_path.unlink.assert_called_once()
