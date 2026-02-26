@@ -9,6 +9,7 @@ class PipelinePhase(str, Enum):
     AUDIO_EXTRACTION = "audio_extraction"
     VAD = "vad"
     TRANSCRIBE = "transcribe"
+    DIARIZE = "diarize"
     VISION = "vision"
 
 class PhaseStatus(str, Enum):

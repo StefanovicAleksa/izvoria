@@ -1,5 +1,6 @@
-# Canvas: main_v4
+# Canvas: main_v5
 # Path: main.py
+
 import argparse
 import sys
 from pathlib import Path
@@ -33,12 +34,17 @@ from app.features.transcription.data.repositories import TranscriptRepository
 from app.features.transcription.data.faster_whisper_adapter import FasterWhisperAdapter
 from app.features.transcription.service.transcription_api import TranscriptionAPI
 
+from app.features.diarization.data.repositories import DiarizationRepository
+from app.features.diarization.data.nemo_adapter import NeMoDiarizationAdapter
+from app.features.diarization.service.diarization_api import DiarizationAPI
+
 from app.orchestration.domain.enums import PipelinePhase
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
 from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPhase
 from app.orchestration.service.phases.vad_phase import VadPhase
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
+from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 
 
@@ -94,6 +100,23 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         required_vram_mb=settings.WHISPER_VRAM_REQUIREMENT_MB
     )
 
+    diarize_repo = DiarizationRepository(db_manager)
+    diarize_adapter = NeMoDiarizationAdapter()
+    diarization_api = DiarizationAPI(
+        repository=diarize_repo,
+        vad_repository=vad_repo,
+        transcription_api=transcription_api,
+        storage_api=storage_api,
+        orchestrator=model_orchestrator,
+        adapter=diarize_adapter
+    )
+
+    diarize_manifest = ModelManifest(
+        model_type=ModelType.DIARIZATION,
+        model_path=getattr(settings, "DIARIZATION_MODEL_PATH", "models/titanet_large.nemo"),
+        required_vram_mb=getattr(settings, "DIARIZATION_VRAM_REQUIREMENT_MB", 500.0)
+    )
+
     # Pipeline Phases
     scan_phase = ScanPhase(job_manager, scanner)
     ingest_phase = IngestPhase(job_manager, storage_api)
@@ -117,12 +140,22 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         transcribe_adapter=whisper_adapter
     )
 
+    diarize_phase = DiarizePhase(
+        job_manager=job_manager,
+        diarization_api=diarization_api,
+        storage_api=storage_api,
+        async_model_service=async_model_service,
+        diarize_manifest=diarize_manifest,
+        diarize_adapter=diarize_adapter
+    )
+
     return BatchMediaPipeline(
         scan_phase=scan_phase,
         ingest_phase=ingest_phase,
         extract_audio_phase=extract_audio_phase,
         vad_phase=vad_phase,
-        transcribe_phase=transcribe_phase
+        transcribe_phase=transcribe_phase,
+        diarize_phase=diarize_phase
     )
 
 
@@ -161,30 +194,36 @@ def main():
                 for err in batch_result.errors:
                     print(f"    - {err}")
 
-        # --- NEW: Output Transcripts to .txt files ---
-        if PipelinePhase.TRANSCRIBE in results:
+        # --- Output Transcripts to .txt files (now with Speaker Tags!) ---
+        if PipelinePhase.DIARIZE in results or PipelinePhase.TRANSCRIBE in results:
             print("\n==================================================")
             print("  WRITING TRANSCRIPTS TO DISK")
             print("==================================================")
 
-            # Instantiate repositories to fetch data securely from DB
             storage_repo = StorageRepository(db_manager)
             transcript_repo = TranscriptRepository(db_manager)
 
-            transcribe_batch = results[PipelinePhase.TRANSCRIBE]
-            for item in transcribe_batch.items:
+            # Pull the items from whichever phase was the final successfully run text step
+            target_batch = results.get(PipelinePhase.DIARIZE) or results.get(PipelinePhase.TRANSCRIBE)
+
+            for item in target_batch.items:
                 if item.success and item.source_id:
                     source = storage_repo.get_by_id(item.source_id)
                     transcript = transcript_repo.get_by_source_id(item.source_id)
 
                     if source and transcript:
-                        # Strip extension from original video and append .txt
                         safe_name = Path(source.name).stem
                         out_file = target_path / f"{safe_name}_transcript.txt"
 
                         try:
+                            # Build the formatted text output leveraging our new diarization data
+                            formatted_text = ""
+                            for seg in transcript.segments:
+                                speaker = seg.speaker_id or "Unknown Speaker"
+                                formatted_text += f"[{speaker}] {seg.start_sec:.2f}s - {seg.end_sec:.2f}s: {seg.text}\n"
+
                             with open(out_file, "w", encoding="utf-8") as f:
-                                f.write(transcript.full_text)
+                                f.write(formatted_text)
                             print(f"  [SUCCESS] Saved: {out_file.name}")
                         except IOError as e:
                             print(f"  [ERROR] Failed to write {out_file.name}: {e}")

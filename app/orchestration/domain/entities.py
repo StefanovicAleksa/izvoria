@@ -1,5 +1,6 @@
-# filename: orchestration_entities_v2.py
-# path: app/orchestration/domain/entities.py
+# Canvas: orchestration_entities_v3
+# Path: app/orchestration/domain/entities.py
+
 import uuid
 from typing import List, Optional, Any
 from pydantic import BaseModel, Field, ConfigDict
@@ -49,6 +50,15 @@ class TranscribeJobResult(BaseModel):
     source_id: uuid.UUID
     success: bool
     transcript_id: Optional[uuid.UUID] = None
+    error_message: Optional[str] = None
+
+    model_config = ConfigDict(frozen=True)
+
+class DiarizeJobResult(BaseModel):
+    """Result of Phase 6: Speaker Diarization."""
+    source_id: uuid.UUID
+    success: bool
+    diarization_map_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
 
     model_config = ConfigDict(frozen=True)

@@ -1,12 +1,13 @@
-# Canvas: batch_media_pipeline_v4
+# Canvas: batch_media_pipeline_v5
 # Path: app/orchestration/service/pipelines/batch_media_pipeline.py
+
 import uuid
 from typing import Dict, List
 
 from app.features.storage.domain.entities import SourceType
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
-from app.orchestration.domain.entities import PhaseBatchResult, IngestJobResult, VadJobResult
+from app.orchestration.domain.entities import PhaseBatchResult, IngestJobResult, VadJobResult, TranscribeJobResult
 from app.orchestration.exceptions.workflow import WorkflowStateError, WorkflowExecutionError
 
 from app.orchestration.service.phases.scan_phase import ScanPhase
@@ -14,6 +15,7 @@ from app.orchestration.service.phases.ingest_phase import IngestPhase
 from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPhase
 from app.orchestration.service.phases.vad_phase import VadPhase
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
+from app.orchestration.service.phases.diarize_phase import DiarizePhase
 
 
 class BatchMediaPipeline:
@@ -23,13 +25,15 @@ class BatchMediaPipeline:
             ingest_phase: IngestPhase,
             extract_audio_phase: ExtractAudioPhase,
             vad_phase: VadPhase,
-            transcribe_phase: TranscribePhase
+            transcribe_phase: TranscribePhase,
+            diarize_phase: DiarizePhase
     ):
         self._scan_phase = scan_phase
         self._ingest_phase = ingest_phase
         self._extract_audio = extract_audio_phase
         self._vad_phase = vad_phase
         self._transcribe_phase = transcribe_phase
+        self._diarize_phase = diarize_phase
 
     def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[
         PipelinePhase, PhaseBatchResult]:
@@ -91,6 +95,23 @@ class BatchMediaPipeline:
                 # PHASE 5: TRANSCRIPTION (GPU BOUND)
                 transcribe_result = self._transcribe_phase.execute(successful_vad_items)
                 pipeline_results[PipelinePhase.TRANSCRIBE] = transcribe_result
+                if transcribe_result.status == PhaseStatus.FAILED:
+                    pass
+
+                # PHASE TRANSITION: FILTER FOR DIARIZATION
+                successful_transcribe_items = [
+                    item for item in transcribe_result.items
+                    if isinstance(item, TranscribeJobResult) and item.success
+                ]
+                if not successful_transcribe_items:
+                    return pipeline_results
+
+                # PRELOAD TRIGGER: Load TitaNet model into GPU
+                self._diarize_phase.preload_model()
+
+                # PHASE 6: DIARIZATION (GPU BOUND)
+                diarize_result = self._diarize_phase.execute(successful_transcribe_items)
+                pipeline_results[PipelinePhase.DIARIZE] = diarize_result
 
             return pipeline_results
 

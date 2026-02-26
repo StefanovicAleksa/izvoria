@@ -1,5 +1,6 @@
-# Canvas: jobs_enums_v2
+# Canvas: jobs_enums_v3
 # Path: app/core/jobs/domain/enums.py
+
 from enum import Enum
 
 class JobStatus(str, Enum):
@@ -15,3 +16,4 @@ class JobType(str, Enum):
     AUDIO_EXTRACTION = "audio_extraction"
     VAD = "vad" # voice activity detection
     TRANSCRIBE = "transcribe"
+    DIARIZE = "diarize" # speaker diarization
