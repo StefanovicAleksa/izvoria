@@ -75,3 +75,5 @@ Thumbs.db
 
 !integration_tests/resources/
 !integration_tests/resources/*
+
+combine_files_git.sh
