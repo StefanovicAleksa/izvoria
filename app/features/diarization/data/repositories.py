@@ -1,4 +1,3 @@
-# Canvas: diarization_repositories_v1
 # Path: app/features/diarization/data/repositories.py
 
 import uuid
@@ -23,7 +22,6 @@ class DiarizationRepository(IDiarizationRepository):
 
     def save_map(self, diarization_map: DiarizationMap) -> DiarizationMap:
         try:
-            # Serialize the Pydantic Domain models into JSON-serializable dictionaries
             serialized_segments = [segment.model_dump() for segment in diarization_map.segments]
 
             db_model = DiarizationMapModel(
@@ -35,11 +33,11 @@ class DiarizationRepository(IDiarizationRepository):
 
             with self._db.session() as session:
                 session.add(db_model)
+                session.commit()  # <--- FIXED: Explicitly commit the transaction to Postgres
 
             return diarization_map
 
         except Exception as e:
-            # Delegate to our custom diarization error mapper
             raise map_diarization_error(e) from e
 
     def get_map_by_source_id(self, source_id: uuid.UUID) -> Optional[DiarizationMap]:
@@ -51,8 +49,6 @@ class DiarizationRepository(IDiarizationRepository):
                 if not db_model:
                     return None
 
-                # CRITICAL: Deserialize the JSONB back into Pydantic Domain models
-                # while the SQLAlchemy session is STILL OPEN.
                 domain_segments = [DiarizationSegment(**seg) for seg in db_model.segments]
 
                 return DiarizationMap(

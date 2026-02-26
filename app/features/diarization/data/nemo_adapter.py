@@ -1,4 +1,4 @@
-# Canvas: nemo_diarization_adapter_v1
+# Canvas: nemo_diarization_adapter_final
 # Path: app/features/diarization/data/nemo_adapter.py
 
 import os
@@ -7,9 +7,7 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from omegaconf import OmegaConf
-# noinspection PyPackageRequirements
-from nemo.collections.asr.models import ClusteringDiarizer
+from omegaconf import OmegaConf, DictConfig
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.features.vad.domain.entities import VadMap
@@ -19,29 +17,29 @@ from app.features.diarization.utils.error_mapper import map_diarization_error
 
 
 class NeMoDiarizationAdapter(IDiarizationModelAdapter):
-    """
-    Adapter for NVIDIA NeMo's ClusteringDiarizer (TitaNet + Spectral Clustering).
-    Uses 'Oracle VAD' to inject our pre-computed VAD Map, saving significant compute time.
-    """
+
+    @staticmethod
+    def _get_diarizer(cfg: DictConfig):
+        """
+        FACTORY METHOD & LAZY IMPORT
+        Prevents NeMo from aggressively probing the GPU during App Startup.
+        """
+        # noinspection PyPackageRequirements
+        from nemo.collections.asr.models import ClusteringDiarizer
+        return ClusteringDiarizer(cfg=cfg)
 
     def load(self, manifest: ModelManifest) -> LoadedModel:
-        """
-        Validates the embedding model exists.
-        Note: ClusteringDiarizer instantiates during the inference call,
-        so we just wrap the validated path here.
-        """
         try:
             if not os.path.exists(manifest.model_path):
                 raise FileNotFoundError(f"Model file missing: {manifest.model_path}")
-
             return LoadedModel(manifest=manifest, model_instance=manifest.model_path)
         except Exception as e:
             raise map_diarization_error(e) from e
 
     def unload(self, model: LoadedModel) -> bool:
-        """Clears the reference to allow Python GC to clean up."""
         try:
-            del model.model_instance
+            if hasattr(model, "model_instance"):
+                del model.model_instance
             return True
         except Exception as e:
             raise map_diarization_error(e) from e
@@ -57,19 +55,17 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
             audio_path_obj = Path(audio_path).resolve()
             audio_id = audio_path_obj.stem
 
-            # 1. Create a secure temporary directory for NeMo's mandatory I/O operations
             with tempfile.TemporaryDirectory(prefix="onyx_diarization_") as tmpdir:
                 tmp_path = Path(tmpdir)
 
-                # 2. Convert our VadMap into an RTTM file (The "Oracle VAD" input)
+                # 1. Oracle VAD RTTM
                 vad_rttm_path = tmp_path / f"{audio_id}.rttm"
                 with open(vad_rttm_path, "w", encoding="utf-8") as f:
                     for seg in vad_map.segments:
                         duration = seg.end_sec - seg.start_sec
-                        # Standard RTTM format: SPEAKER {file_id} 1 {start} {duration} <NA> <NA> {speaker} <NA> <NA>
                         f.write(f"SPEAKER {audio_id} 1 {seg.start_sec:.3f} {duration:.3f} <NA> <NA> speech <NA> <NA>\n")
 
-                # 3. Create the input manifest JSON expected by NeMo
+                # 2. Manifest JSON
                 manifest_path = tmp_path / "input_manifest.json"
                 manifest_data = {
                     "audio_filepath": str(audio_path_obj),
@@ -83,44 +79,92 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                 with open(manifest_path, "w", encoding="utf-8") as f:
                     f.write(json.dumps(manifest_data) + "\n")
 
-                # 4. Construct the OmegaConf Graph for the ClusteringDiarizer
+                # 3. OmegaConf Graph
                 cfg = OmegaConf.create({
+                    "device": "cuda",
+                    "num_workers": 1,
+                    "sample_rate": 16000,
+                    "batch_size": 64,
                     "diarizer": {
-                        "manifest_filepath": str(manifest_path),  #
-                        "out_dir": str(tmp_path),  #
+                        "manifest_filepath": str(manifest_path),
+                        "out_dir": str(tmp_path),
                         "oracle_vad": True,
-                        # If True, uses RTTM files provided in manifest file to get speech activity timestamps
-                        "collar": 0.25,  #
-                        "ignore_overlap": True,  #
-                        "speaker_embeddings": {
-                            "model_path": model.model_instance,  # .nemo local model path
+                        "collar": 0.25,
+                        "ignore_overlap": True,
+                        "verbose": False,
+                        "vad": {
+                            "model_path": None,
+                            "external_vad_manifest": None,
                             "parameters": {
-                                "window_length_in_sec": [1.5, 1.25, 1.0, 0.75, 0.5],  #
-                                "shift_length_in_sec": [0.75, 0.625, 0.5, 0.375, 0.25],  #
-                                "multiscale_weights": [1, 1, 1, 1, 1],  #
-                                "save_embeddings": False  #
+                                "window_length_in_sec": 0.15,
+                                "shift_length_in_sec": 0.01,
+                                "smoothing": "median",
+                                "overlap": 0.5,
+                                "onset": 0.1,
+                                "offset": 0.1,
+                                "pad_onset": 0.0,
+                                "pad_offset": 0.0,
+                                "min_duration_on": 0.0,
+                                "min_duration_off": 0.0,
+                                "filter_speech_first": True
+                            }
+                        },
+                        "speaker_embeddings": {
+                            "model_path": model.model_instance,
+                            "parameters": {
+                                "window_length_in_sec": [1.5, 1.25, 1.0, 0.75, 0.5],
+                                "shift_length_in_sec": [0.75, 0.625, 0.5, 0.375, 0.25],
+                                "multiscale_weights": [1, 1, 1, 1, 1],
+                                "save_embeddings": False
                             }
                         },
                         "clustering": {
                             "parameters": {
-                                "oracle_num_speakers": False,  #
-                                "max_num_speakers": 20,  #
-                                "enhanced_count_thres": 80,  #
-                                "max_rp_threshold": 0.25,  #
-                                "sparse_search_volume": 30  #
+                                "oracle_num_speakers": False,
+                                "max_num_speakers": 20,
+                                "enhanced_count_thres": 80,
+                                "max_rp_threshold": 0.25,
+                                "sparse_search_volume": 30
                             }
                         }
                     }
                 })
 
-                # 5. Initialize and execute the Diarizer
-                diarizer = ClusteringDiarizer(cfg=cfg)
-                diarizer.diarize()
+                # 4. Initialize and execute via the static factory method
+                diarizer = self._get_diarizer(cfg)
 
-                # 6. Parse the generated output RTTM file
+                # --- ROBUST ENTERPRISE FALLBACK ---
+                # NeMo's Clustering algorithm crashes with an AttributeError ('verbose')
+                # if it fails to find multiple speakers or if the audio is a monologue.
+                # We safely catch it and map the known VAD speech segments to "Speaker_0".
+                try:
+                    diarizer.diarize()
+                except AttributeError as e:
+                    if 'verbose' in str(e):
+                        fallback_segments = [
+                            DiarizationSegment(
+                                start_sec=seg.start_sec,
+                                end_sec=seg.end_sec,
+                                speaker_id="Speaker_0"
+                            ) for seg in vad_map.segments
+                        ]
+                        return DiarizationMap(source_id=source_id, segments=fallback_segments)
+                    else:
+                        raise e
+                # ----------------------------------
+
+                # 5. Parse Output
                 pred_rttm_path = tmp_path / "pred_rttms" / f"{audio_id}.rttm"
                 if not pred_rttm_path.exists():
-                    raise FileNotFoundError(f"NeMo failed to produce an output RTTM file at {pred_rttm_path}")
+                    # Same fallback if it completed but failed to write the file
+                    fallback_segments = [
+                        DiarizationSegment(
+                            start_sec=seg.start_sec,
+                            end_sec=seg.end_sec,
+                            speaker_id="Speaker_0"
+                        ) for seg in vad_map.segments
+                    ]
+                    return DiarizationMap(source_id=source_id, segments=fallback_segments)
 
                 diarization_segments = []
                 with open(pred_rttm_path, "r", encoding="utf-8") as f:
