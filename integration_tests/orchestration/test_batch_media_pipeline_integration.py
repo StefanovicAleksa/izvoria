@@ -1,20 +1,21 @@
-# Canvas: test_batch_media_pipeline_integration_v3
+# Canvas: test_batch_media_pipeline_integration_v6
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
-import os
+
 import subprocess
 import pytest
-import uuid
+import shutil
 from pathlib import Path
-from unittest.mock import Mock
 
+from app.core.config import settings
 from app.core.jobs.service.manager import JobManager
 from app.core.jobs.data.repositories import JobRepository
 
-from app.core.model_manager.domain.entities import ModelManifest, LoadedModel, VramStatus
+from app.core.model_manager.domain.entities import ModelManifest
 from app.core.model_manager.domain.enums import ModelType
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.utils.background_worker import BackgroundModelWorker
 from app.core.model_manager.service.async_model_service import AsyncModelService
+from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
 
 from app.features.storage.service.storage_api import StorageAPI
 from app.features.storage.data.repositories import StorageRepository
@@ -28,45 +29,24 @@ from app.features.audio_extractor.data.ffmpeg_adapter import FFmpegAdapter
 
 from app.features.vad.data.repositories import VadRepository
 from app.features.vad.service.vad_api import VadAPI
-from app.features.vad.domain.interfaces import IVadModelAdapter
-from app.features.vad.domain.entities import VadMap
+from app.features.vad.data.nemo_adapter import NeMoVadAdapter
 
 from app.features.transcription.data.repositories import TranscriptRepository
 from app.features.transcription.service.transcription_api import TranscriptionAPI
-from app.features.transcription.domain.interfaces import ITranscriptionAdapter
-from app.features.transcription.domain.entities import Transcript
+from app.features.transcription.data.faster_whisper_adapter import FasterWhisperAdapter
+
+from app.features.diarization.data.repositories import DiarizationRepository
+from app.features.diarization.service.diarization_api import DiarizationAPI
+from app.features.diarization.data.nemo_adapter import NeMoDiarizationAdapter
 
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
 from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPhase
 from app.orchestration.service.phases.vad_phase import VadPhase
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
+from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
-
-
-class DummyVadAdapter(IVadModelAdapter):
-    def load(self, manifest: ModelManifest) -> LoadedModel:
-        return LoadedModel(manifest=manifest, model_instance="fake_nemo_model")
-
-    def unload(self, model: LoadedModel) -> bool:
-        return True
-
-    def generate_vad_map(self, model: LoadedModel, audio_path: str, source_id: uuid.UUID) -> VadMap:
-        return VadMap(source_id=source_id, segments=[])
-
-
-class DummyTranscriptionAdapter(ITranscriptionAdapter):
-    """Bypasses Faster-Whisper and CUDA to simulate transcription processing for integration tests."""
-
-    def load(self, manifest: ModelManifest) -> LoadedModel:
-        return LoadedModel(manifest=manifest, model_instance="fake_whisper_model")
-
-    def unload(self, model: LoadedModel) -> bool:
-        return True
-
-    def transcribe(self, model: LoadedModel, audio_path: str, vad_map: VadMap, source_id: uuid.UUID) -> Transcript:
-        return Transcript(source_id=source_id, segments=[])
 
 
 class TestBatchMediaPipelineIntegration:
@@ -79,7 +59,7 @@ class TestBatchMediaPipelineIntegration:
 
     @pytest.fixture
     def pipeline_setup(self, db_manager, tmp_path):
-        """Wires up ALL real dependencies with the real integration test database, simulating hardware layers."""
+        """Wires up ALL real dependencies with the real integration test database, requiring real GPU VRAM."""
         job_repo = JobRepository(db_manager)
         job_manager = JobManager(job_repo)
 
@@ -91,92 +71,109 @@ class TestBatchMediaPipelineIntegration:
         scanner = FileScanner()
 
         audio_repo = AudioExtractionRepository(db_manager)
-        ffmpeg_adapter = FFmpegAdapter(timeout_seconds=30)
+        ffmpeg_adapter = FFmpegAdapter(timeout_seconds=300)
         audio_extractor = AudioExtractorAPI(
             ffmpeg_adapter=ffmpeg_adapter,
             repository=audio_repo,
             storage_api=storage_api
         )
 
-        mock_vram_monitor = Mock()
-        mock_vram_monitor.get_vram_status.return_value = VramStatus(total_vram_mb=12000, used_vram_mb=0,
-                                                                    free_vram_mb=12000)
-
-        orchestrator = ModelManagerOrchestrator(mock_vram_monitor)
+        vram_monitor = PyTorchVramMonitor()
+        orchestrator = ModelManagerOrchestrator(vram_monitor)
         bg_worker = BackgroundModelWorker(orchestrator)
         async_service = AsyncModelService(bg_worker)
 
-        # Real VAD Feature (with Dummy AI model)
+        # Real VAD Feature
         vad_repo = VadRepository(db_manager)
-        dummy_vad_adapter = DummyVadAdapter()
-        vad_api = VadAPI(vad_repo, orchestrator, dummy_vad_adapter)
-        vad_manifest = ModelManifest(model_type=ModelType.VAD, model_path="fake", required_vram_mb=100)
+        real_vad_adapter = NeMoVadAdapter()
+        vad_api = VadAPI(vad_repo, orchestrator, real_vad_adapter)
+        vad_manifest = ModelManifest(
+            model_type=ModelType.VAD,
+            model_path=settings.VAD_MODEL_PATH,
+            required_vram_mb=settings.VAD_VRAM_REQUIREMENT_MB
+        )
 
-        # Real Transcription Feature (with Dummy AI model)
+        # Real Transcription Feature
         transcript_repo = TranscriptRepository(db_manager)
-        dummy_transcribe_adapter = DummyTranscriptionAdapter()
-        transcription_api = TranscriptionAPI(transcript_repo, vad_repo, orchestrator, dummy_transcribe_adapter)
-        transcribe_manifest = ModelManifest(model_type=ModelType.TRANSCRIPTION, model_path="fake", required_vram_mb=100)
+        real_transcribe_adapter = FasterWhisperAdapter()
+        transcription_api = TranscriptionAPI(transcript_repo, vad_repo, orchestrator, real_transcribe_adapter)
+        transcribe_manifest = ModelManifest(
+            model_type=ModelType.TRANSCRIPTION,
+            model_path=settings.WHISPER_MODEL_PATH,
+            required_vram_mb=settings.WHISPER_VRAM_REQUIREMENT_MB
+        )
+
+        # Real Diarization Feature
+        diarize_repo = DiarizationRepository(db_manager)
+        real_diarize_adapter = NeMoDiarizationAdapter()
+        diarization_api = DiarizationAPI(diarize_repo, vad_repo, transcription_api, storage_api, orchestrator,
+                                         real_diarize_adapter)
+        diarize_manifest = ModelManifest(
+            model_type=ModelType.DIARIZATION,
+            model_path=getattr(settings, "DIARIZATION_MODEL_PATH", "models/titanet_large.nemo"),
+            required_vram_mb=getattr(settings, "DIARIZATION_VRAM_REQUIREMENT_MB", 500.0)
+        )
 
         # Phases
         scan_phase = ScanPhase(job_manager, scanner)
         ingest_phase = IngestPhase(job_manager, storage_api)
         extract_audio_phase = ExtractAudioPhase(job_manager, audio_extractor)
-        vad_phase = VadPhase(job_manager, vad_api, storage_api, async_service, vad_manifest, dummy_vad_adapter)
+        vad_phase = VadPhase(job_manager, vad_api, storage_api, async_service, vad_manifest, real_vad_adapter)
         transcribe_phase = TranscribePhase(job_manager, transcription_api, storage_api, async_service,
-                                           transcribe_manifest, dummy_transcribe_adapter)
+                                           transcribe_manifest, real_transcribe_adapter)
+        diarize_phase = DiarizePhase(job_manager, diarization_api, storage_api, async_service, diarize_manifest,
+                                     real_diarize_adapter)
 
         pipeline = BatchMediaPipeline(
             scan_phase=scan_phase,
             ingest_phase=ingest_phase,
             extract_audio_phase=extract_audio_phase,
             vad_phase=vad_phase,
-            transcribe_phase=transcribe_phase
+            transcribe_phase=transcribe_phase,
+            diarize_phase=diarize_phase
         )
 
         yield pipeline, storage_api
 
         async_service.shutdown()
 
-    @staticmethod
-    def generate_real_dummy_video(output_path: Path) -> None:
-        command: list[str] = [
-            "ffmpeg", "-y",
-            "-f", "lavfi", "-i", "color=c=black:s=10x10:d=1",
-            "-f", "lavfi", "-i", "anullsrc=r=16000:cl=mono:d=1",
-            os.fspath(output_path)
-        ]
-        subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-
     def test_end_to_end_media_pipeline(self, pipeline_setup, tmp_path):
-        """Tests the seamless flow from Directory Scan -> DB Generating Transcript."""
+        """Tests the seamless flow from Directory Scan -> DB Generating Transcript -> Diarization Map without mocks."""
         pipeline, storage_api = pipeline_setup
 
         source_dir = tmp_path / "usb_drive"
         source_dir.mkdir()
-        valid_video = source_dir / "real_test_video.mp4"
-        self.generate_real_dummy_video(valid_video)
 
-        # ---------------------------------------------------------
+        original_wav = Path("integration_tests/resources/test_speech.wav").resolve()
+        if not original_wav.exists():
+            pytest.skip(f"Required test file not found at: {original_wav}")
+
+        test_file = source_dir / "test_speech.wav"
+        shutil.copy2(original_wav, test_file)
+
         # EXECUTE THE PIPELINE
-        # ---------------------------------------------------------
         results = pipeline.process_directory(str(source_dir), SourceType.VIDEO)
 
-        # ---------------------------------------------------------
-        # VERIFY STATE MACHINE RESULTS
-        # ---------------------------------------------------------
+        # VERIFY STATE MACHINE RESULTS (With detailed error printing if they fail)
         assert PipelinePhase.SCAN in results
         assert PipelinePhase.INGEST in results
         assert PipelinePhase.AUDIO_EXTRACTION in results
         assert PipelinePhase.VAD in results
         assert PipelinePhase.TRANSCRIBE in results
+        assert PipelinePhase.DIARIZE in results
 
-        assert results[PipelinePhase.SCAN].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.INGEST].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.AUDIO_EXTRACTION].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.VAD].status == PhaseStatus.COMPLETED
+        assert results[
+                   PipelinePhase.SCAN].status == PhaseStatus.COMPLETED, f"Scan failed: {results[PipelinePhase.SCAN].errors}"
+        assert results[
+                   PipelinePhase.INGEST].status == PhaseStatus.COMPLETED, f"Ingest failed: {results[PipelinePhase.INGEST].errors}"
+        assert results[
+                   PipelinePhase.AUDIO_EXTRACTION].status == PhaseStatus.COMPLETED, f"Audio Extraction failed: {results[PipelinePhase.AUDIO_EXTRACTION].errors}"
+        assert results[
+                   PipelinePhase.VAD].status == PhaseStatus.COMPLETED, f"VAD failed: {results[PipelinePhase.VAD].errors}"
+        assert results[
+                   PipelinePhase.TRANSCRIBE].status == PhaseStatus.COMPLETED, f"Transcribe failed: {results[PipelinePhase.TRANSCRIBE].errors}"
 
-        transcribe_result = results[PipelinePhase.TRANSCRIBE]
-        assert transcribe_result.status == PhaseStatus.COMPLETED
-        assert transcribe_result.successful_count == 1
-        assert transcribe_result.items[0].transcript_id is not None
+        diarize_result = results[PipelinePhase.DIARIZE]
+        assert diarize_result.status == PhaseStatus.COMPLETED, f"Diarize failed: {diarize_result.errors}"
+        assert diarize_result.successful_count == 1
+        assert diarize_result.items[0].diarization_map_id is not None
