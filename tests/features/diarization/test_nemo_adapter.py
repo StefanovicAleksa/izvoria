@@ -1,4 +1,4 @@
-# Canvas: test_diarization_adapter_v4
+# Canvas: test_diarization_adapter_v6
 # Path: tests/features/diarization/test_nemo_adapter.py
 
 import uuid
@@ -62,8 +62,8 @@ class TestNeMoDiarizationAdapter:
         mock_temp_dir.return_value = mock_temp
         mock_path_exists.return_value = True
 
-        # 2. File Handles (Fixing the exhaustion bug)
-        fake_rttm_content = "SPEAKER fake_audio 1 1.5 2.5 <NA> <NA> Speaker_0 <NA> <NA>\n"
+        # 2. File Handles
+        fake_rttm_content = "SPEAKER fake_audio 1 1.5 2.5 <NA> <NA> Speaker_1 <NA> <NA>\n"
         handle_write_rttm = mock_open().return_value
         handle_write_manifest = mock_open().return_value
         handle_read_result = mock_open(read_data=fake_rttm_content).return_value
@@ -85,7 +85,7 @@ class TestNeMoDiarizationAdapter:
         # Assertions
         assert result.source_id == source_id
         assert len(result.segments) == 1
-        assert result.segments[0].speaker_id == "Speaker_0"
+        assert result.segments[0].speaker_id == "Speaker_1"
         assert result.segments[0].start_sec == 1.5
         assert result.segments[0].end_sec == 4.0
 
@@ -93,3 +93,77 @@ class TestNeMoDiarizationAdapter:
         mock_get_diarizer.assert_called_once()
         mock_diarizer_instance.diarize.assert_called_once()
         assert mock_file_open.call_count == 3
+
+    @patch.object(NeMoDiarizationAdapter, '_get_diarizer')
+    @patch("builtins.open")
+    @patch("tempfile.TemporaryDirectory")
+    def test_generate_diarization_map_fallback_on_diarize_exception(
+            self, mock_temp_dir, mock_file_open, mock_get_diarizer, adapter, manifest
+    ):
+        """
+        Verifies that if NeMo's Clustering algorithm crashes (e.g., due to a monologue
+        or LinAlgError), we safely fall back to marking all VAD speech as 'Speaker_0'.
+        """
+        source_id = uuid.uuid4()
+        loaded_model = LoadedModel(manifest=manifest, model_instance="/fake/path/titanet.nemo")
+        vad_map = VadMap(source_id=source_id, segments=[VadSegment(start_sec=1.0, end_sec=5.0, confidence=0.99)])
+
+        mock_temp = MagicMock()
+        mock_temp.__enter__.return_value = "/tmp/fake_onyx_dir"
+        mock_temp_dir.return_value = mock_temp
+
+        mock_diarizer_instance = MagicMock()
+        # Simulate the math crash
+        mock_diarizer_instance.diarize.side_effect = ValueError("Singular matrix during Spectral Clustering")
+        mock_get_diarizer.return_value = mock_diarizer_instance
+
+        # Execute
+        result = adapter.generate_diarization_map(loaded_model, "/fake/audio.wav", vad_map, source_id)
+
+        # Assertions (Verifies the VAD map was copied perfectly and labeled Speaker_0)
+        assert result.source_id == source_id
+        assert len(result.segments) == 1
+        assert result.segments[0].speaker_id == "Speaker_0"
+        assert result.segments[0].start_sec == 1.0
+        assert result.segments[0].end_sec == 5.0
+
+        # Verify that the two setup files (rttm + manifest) were successfully written before the crash
+        assert mock_file_open.call_count == 2
+
+    @patch.object(NeMoDiarizationAdapter, '_get_diarizer')
+    @patch("app.features.diarization.data.nemo_adapter.Path.exists")
+    @patch("builtins.open")
+    @patch("tempfile.TemporaryDirectory")
+    def test_generate_diarization_map_fallback_on_missing_rttm(
+            self, mock_temp_dir, mock_file_open, mock_path_exists, mock_get_diarizer, adapter, manifest
+    ):
+        """
+        Verifies that if NeMo successfully completes but fails to output the resulting .rttm file,
+        we also fall back gracefully.
+        """
+        source_id = uuid.uuid4()
+        loaded_model = LoadedModel(manifest=manifest, model_instance="/fake/path/titanet.nemo")
+        vad_map = VadMap(source_id=source_id, segments=[VadSegment(start_sec=2.0, end_sec=4.0, confidence=0.95)])
+
+        mock_temp = MagicMock()
+        mock_temp.__enter__.return_value = "/tmp/fake_onyx_dir"
+        mock_temp_dir.return_value = mock_temp
+
+        # Simulate missing RTTM output file
+        mock_path_exists.return_value = False
+
+        mock_diarizer_instance = MagicMock()
+        mock_get_diarizer.return_value = mock_diarizer_instance
+
+        # Execute
+        result = adapter.generate_diarization_map(loaded_model, "/fake/audio.wav", vad_map, source_id)
+
+        # Assertions
+        assert result.source_id == source_id
+        assert len(result.segments) == 1
+        assert result.segments[0].speaker_id == "Speaker_0"
+        assert result.segments[0].start_sec == 2.0
+        assert result.segments[0].end_sec == 4.0
+
+        # Verify that the two setup files (rttm + manifest) were successfully written before exiting early
+        assert mock_file_open.call_count == 2

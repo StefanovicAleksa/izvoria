@@ -33,7 +33,6 @@ class DiarizationRepository(IDiarizationRepository):
 
             with self._db.session() as session:
                 session.add(db_model)
-                session.commit()  # <--- FIXED: Explicitly commit the transaction to Postgres
 
             return diarization_map
 

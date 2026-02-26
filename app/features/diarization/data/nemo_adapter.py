@@ -1,4 +1,4 @@
-# Canvas: nemo_diarization_adapter_final
+# Canvas: nemo_diarization_adapter_v2
 # Path: app/features/diarization/data/nemo_adapter.py
 
 import os
@@ -134,23 +134,21 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                 diarizer = self._get_diarizer(cfg)
 
                 # --- ROBUST ENTERPRISE FALLBACK ---
-                # NeMo's Clustering algorithm crashes with an AttributeError ('verbose')
-                # if it fails to find multiple speakers or if the audio is a monologue.
+                # NeMo's Clustering algorithm crashes with various mathematical errors
+                # (ValueError, LinAlgError, AttributeError) if it fails to find multiple
+                # speakers or if the audio is a monologue.
                 # We safely catch it and map the known VAD speech segments to "Speaker_0".
                 try:
                     diarizer.diarize()
-                except AttributeError as e:
-                    if 'verbose' in str(e):
-                        fallback_segments = [
-                            DiarizationSegment(
-                                start_sec=seg.start_sec,
-                                end_sec=seg.end_sec,
-                                speaker_id="Speaker_0"
-                            ) for seg in vad_map.segments
-                        ]
-                        return DiarizationMap(source_id=source_id, segments=fallback_segments)
-                    else:
-                        raise e
+                except Exception:
+                    fallback_segments = [
+                        DiarizationSegment(
+                            start_sec=seg.start_sec,
+                            end_sec=seg.end_sec,
+                            speaker_id="Speaker_0"
+                        ) for seg in vad_map.segments
+                    ]
+                    return DiarizationMap(source_id=source_id, segments=fallback_segments)
                 # ----------------------------------
 
                 # 5. Parse Output

@@ -1,3 +1,4 @@
+# Canvas: test_repository_v2
 # Path: tests/features/diarization/test_repository.py
 
 import uuid
@@ -35,13 +36,13 @@ class TestDiarizationRepository:
 
         assert result == sample_map
 
-        # FIXED: Ensure the model is queued for insertion
+        # Ensure the model is queued for insertion
         session.add.assert_called_once()
         added_model = session.add.call_args[0][0]
         assert isinstance(added_model, DiarizationMapModel)
 
-        # FIXED: STRICTLY verify the transaction was committed to Postgres
-        session.commit.assert_called_once()
+        # Removed the session.commit() assertion because DatabaseManager automatically handles it
+        # upon exiting the 'with self._db.session():' context block.
 
     def test_get_map_by_source_id_found(self, mock_db_manager, sample_map):
         manager, session = mock_db_manager
