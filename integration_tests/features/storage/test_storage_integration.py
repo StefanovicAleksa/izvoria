@@ -91,6 +91,7 @@ class TestStorageIntegration:
         vault_files = list(api.file_manager.base_path.rglob("*.*"))
         assert len(vault_files) == 1
 
+
     def test_ingest_move_mode(self, api, tmp_path):
         """Scenario: Test 'Move' mode where original file is deleted."""
         source_file = tmp_path / "tobe_moved.txt"
@@ -105,7 +106,12 @@ class TestStorageIntegration:
         assert not source_file.exists()
 
         sources = api.list_sources()
-        assert len(sources) == 1
-        saved_path = Path(sources[0].file.file_path)
+
+        # FIXED: Look specifically for the file we just ingested
+        # instead of assuming the database is completely empty.
+        saved_sources = [s for s in sources if s.name == "tobe_moved.txt"]
+        assert len(saved_sources) == 1
+
+        saved_path = Path(saved_sources[0].file.file_path)
         assert saved_path.exists()
         assert saved_path.read_text() == "Secret Data"

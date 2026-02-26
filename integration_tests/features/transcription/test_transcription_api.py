@@ -1,11 +1,9 @@
-# Canvas: test_transcription_api_integration_v2
-# Path: tests/integration/features/transcription/test_transcription_api.py
+# Path: integration_tests/features/transcription/test_transcription_api.py
 
 import os
 import uuid
 import pytest
-import numpy as np
-import soundfile as sf
+from pathlib import Path
 
 from app.core.config import settings
 from app.core.database.data.engine import Base
@@ -39,17 +37,16 @@ class TestTranscriptionAPIIntegration:
         yield
 
     @pytest.fixture
-    def real_audio_file(self, tmp_path):
-        sample_rate = 16000
-        duration = 3.0
-        t = np.linspace(0, duration, int(sample_rate * duration), endpoint=False)
+    def real_audio_file(self):
+        """Points to the real human speech test file."""
+        # Resolves path to: <project_root>/integration_tests/resources/test_speech.wav
+        integration_tests_dir = Path(__file__).resolve().parent.parent.parent
+        audio_path = integration_tests_dir / "resources" / "test_speech.wav"
 
-        audio_data = (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
+        if not audio_path.exists():
+            pytest.skip(f"Test audio file not found at {audio_path}. Please ensure it exists.")
 
-        file_path = tmp_path / "integration_test_audio.wav"
-        sf.write(file_path, audio_data, sample_rate, subtype='PCM_16')
-
-        return str(file_path)
+        return str(audio_path)
 
     @pytest.fixture
     def test_source_id(self):
@@ -124,10 +121,8 @@ class TestTranscriptionAPIIntegration:
         assert db_transcript.id == transcript.id
         assert len(db_transcript.segments) == len(transcript.segments)
 
-
     def test_update_transcript_end_to_end(self, live_api, test_source_id):
         """Verifies that the new update API directly modifies the JSONB segments in Postgres."""
-
         initial_transcript = Transcript(
             source_id=test_source_id,
             segments=[
@@ -136,17 +131,15 @@ class TestTranscriptionAPIIntegration:
         )
         live_api._repo.save(initial_transcript)
 
-        # 2. Fetch the transcript we just seeded
         existing_transcript = live_api.get_transcript(test_source_id)
         assert existing_transcript is not None, "Transcript was not seeded properly"
 
-        # 3. Simulate the Diarization feature modifying the transcript
         new_segments = [
             TranscriptSegment(
                 start_sec=seg.start_sec,
                 end_sec=seg.end_sec,
                 text=seg.text,
-                speaker_id="Speaker_0"  # <--- Adding the speaker tag
+                speaker_id="Speaker_0"
             ) for seg in existing_transcript.segments
         ]
 
@@ -157,10 +150,8 @@ class TestTranscriptionAPIIntegration:
             created_at=existing_transcript.created_at
         )
 
-        # 4. Use the public API to update the database
         live_api.update_transcript(updated_transcript)
 
-        # 5. Fetch a completely fresh copy to verify persistence
         fresh_db_transcript = live_api.get_transcript(test_source_id)
 
         assert fresh_db_transcript is not None
