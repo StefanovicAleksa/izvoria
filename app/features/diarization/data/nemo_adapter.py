@@ -1,4 +1,4 @@
-# Canvas: nemo_diarization_adapter_v2
+# Canvas: nemo_diarization_adapter_v5
 # Path: app/features/diarization/data/nemo_adapter.py
 
 import os
@@ -7,6 +7,8 @@ import tempfile
 import uuid
 from pathlib import Path
 
+import torch
+import torchaudio
 from omegaconf import OmegaConf, DictConfig
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
@@ -58,6 +60,31 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
             with tempfile.TemporaryDirectory(prefix="onyx_diarization_") as tmpdir:
                 tmp_path = Path(tmpdir)
 
+                # --- NEW: ENFORCE 16KHz MONO ---
+                # Ensure the audio file is strictly Mono and 16kHz to prevent NeMo Shape Mismatches.
+                waveform, sample_rate = torchaudio.load(audio_path_obj)
+                needs_rewrite = False
+
+                if sample_rate != 16000:
+                    resampler = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=16000)
+                    waveform = resampler(waveform)
+                    needs_rewrite = True
+
+                if waveform.shape[0] > 1:
+                    waveform = torch.mean(waveform, dim=0, keepdim=True)
+                    needs_rewrite = True
+
+                if needs_rewrite:
+                    processed_audio_path = tmp_path / f"{audio_id}_mono.wav"
+                    torchaudio.save(processed_audio_path, waveform, 16000)
+                    audio_path_obj = processed_audio_path
+
+                    # --- FILENAME SYNC FIX ---
+                    # Update the audio_id so the RTTM file lookup matches what NeMo generates
+                    audio_id = audio_path_obj.stem
+                    # -------------------------
+                # -------------------------------
+
                 # 1. Oracle VAD RTTM
                 vad_rttm_path = tmp_path / f"{audio_id}.rttm"
                 with open(vad_rttm_path, "w", encoding="utf-8") as f:
@@ -85,13 +112,13 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                     "num_workers": 1,
                     "sample_rate": 16000,
                     "batch_size": 64,
+                    "verbose": False,
                     "diarizer": {
                         "manifest_filepath": str(manifest_path),
                         "out_dir": str(tmp_path),
                         "oracle_vad": True,
                         "collar": 0.25,
                         "ignore_overlap": True,
-                        "verbose": False,
                         "vad": {
                             "model_path": None,
                             "external_vad_manifest": None,
@@ -134,27 +161,36 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                 diarizer = self._get_diarizer(cfg)
 
                 # --- ROBUST ENTERPRISE FALLBACK ---
-                # NeMo's Clustering algorithm crashes with various mathematical errors
-                # (ValueError, LinAlgError, AttributeError) if it fails to find multiple
-                # speakers or if the audio is a monologue.
-                # We safely catch it and map the known VAD speech segments to "Speaker_0".
                 try:
                     diarizer.diarize()
-                except Exception:
-                    fallback_segments = [
-                        DiarizationSegment(
-                            start_sec=seg.start_sec,
-                            end_sec=seg.end_sec,
-                            speaker_id="Speaker_0"
-                        ) for seg in vad_map.segments
-                    ]
-                    return DiarizationMap(source_id=source_id, segments=fallback_segments)
+                except Exception as fallback_err:
+                    err_str = str(fallback_err).lower()
+
+                    # 1. Math/Clustering anomalies indicative of a monologue
+                    is_math_error = isinstance(fallback_err, (ValueError, IndexError, ArithmeticError))
+                    is_clustering_fault = "linalg" in err_str or "singular matrix" in err_str or "converge" in err_str
+
+                    if is_math_error or is_clustering_fault:
+                        print(
+                            f"[DIARIZATION FALLBACK] Spectral Clustering failed (likely a monologue). Applying fallback. Details: {fallback_err}")
+                        fallback_segments = [
+                            DiarizationSegment(
+                                start_sec=seg.start_sec,
+                                end_sec=seg.end_sec,
+                                speaker_id="Speaker_0"
+                            ) for seg in vad_map.segments
+                        ]
+                        return DiarizationMap(source_id=source_id, segments=fallback_segments)
+
+                    # 2. Re-raise true system/configuration crashes (AttributeError, RuntimeError, etc.)
+                    raise fallback_err
                 # ----------------------------------
 
                 # 5. Parse Output
                 pred_rttm_path = tmp_path / "pred_rttms" / f"{audio_id}.rttm"
                 if not pred_rttm_path.exists():
-                    # Same fallback if it completed but failed to write the file
+                    # Fallback if it completed but failed to write the file (or file mismatch)
+                    print(f"[DIARIZATION FALLBACK] RTTM output missing at {pred_rttm_path}. Applying fallback.")
                     fallback_segments = [
                         DiarizationSegment(
                             start_sec=seg.start_sec,

@@ -1,3 +1,4 @@
+# Canvas: test_diarization_api_integration_v5
 # Path: integration_tests/features/diarization/test_diarization_api.py
 
 import os
@@ -10,6 +11,8 @@ from app.core.config import settings
 from app.core.database.data.engine import Base
 from app.core.database.service.manager import db_manager
 
+from app.core.model_manager.domain.entities import ModelManifest
+from app.core.model_manager.domain.enums import ModelType
 from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 
@@ -17,8 +20,8 @@ from app.features.storage.data.models import SourceModel, FileModel
 from app.features.storage.domain.entities import SourceType
 from app.features.storage.service.storage_api import StorageAPI
 
+from app.features.vad.data.nemo_adapter import NeMoVadAdapter
 from app.features.vad.data.repositories import VadRepository
-from app.features.vad.domain.entities import VadMap, VadSegment
 
 from app.features.transcription.data.faster_whisper_adapter import FasterWhisperAdapter
 from app.features.transcription.data.repositories import TranscriptRepository
@@ -34,7 +37,7 @@ from app.features.diarization.domain.entities import DiarizationMap
 class TestDiarizationAPIIntegration:
     """
     STRICT NO-MOCKS INTEGRATION TEST.
-    Requires: Live PostgreSQL, NVIDIA GPU, and the TitaNet-Large model downloaded locally.
+    Requires: Live PostgreSQL, NVIDIA GPU, MarbleNet (VAD), and TitaNet (Diarization).
     """
 
     @pytest.fixture(scope="module", autouse=True)
@@ -44,7 +47,7 @@ class TestDiarizationAPIIntegration:
         yield
 
     @pytest.fixture
-    def real_audio_file(self):
+    def real_audio_file(self) -> str:
         """Points to the real human speech test file."""
         integration_tests_dir = Path(__file__).resolve().parent.parent.parent
         audio_path = integration_tests_dir / "resources" / "test_speech.wav"
@@ -55,10 +58,10 @@ class TestDiarizationAPIIntegration:
         return str(audio_path)
 
     @pytest.fixture
-    def isolated_setup(self):
+    def isolated_setup(self, real_audio_file) -> uuid.UUID:
         """
-        Creates a completely isolated state for this test, seeding the DB
-        with a File, Source, VadMap, and Transcript prerequisite.
+        Creates an isolated state, seeding the DB by running the ACTUAL VAD model
+        so Diarization has accurate silences to use for clustering boundaries.
         """
         source_id = uuid.uuid4()
         file_id = uuid.uuid4()
@@ -82,31 +85,43 @@ class TestDiarizationAPIIntegration:
                 file_id=file_id
             )
             session.add(test_source)
-
-            # --- CRITICAL DATABASE FIX ---
-            # Commit the transaction so we release table locks!
-            # If we don't do this, Pytest will freeze the Storage tests that run after this.
             session.commit()
-            # -----------------------------
 
-        # 2. Seed VAD Map (Assuming speech is present from 0 to 3 seconds)
+        # --- RUN REAL VAD TO GET ACCURATE SILENCES ---
+        vad_adapter = NeMoVadAdapter()
+        vad_manifest = ModelManifest(
+            model_type=ModelType.VAD,
+            model_path=settings.VAD_MODEL_PATH,
+            required_vram_mb=settings.VAD_VRAM_REQUIREMENT_MB
+        )
+
+        if not os.path.exists(vad_manifest.model_path):
+            pytest.skip("VAD model missing. Cannot run accurate diarization test.")
+
+        vad_model = vad_adapter.load(vad_manifest)
+        try:
+            real_vad_map = vad_adapter.generate_vad_map(vad_model, real_audio_file, source_id)
+        finally:
+            vad_adapter.unload(vad_model)
+
+        # 2. Seed the DB with the REAL VAD Map
         vad_repo = VadRepository(db_manager)
-        vad_repo.save_map(VadMap(
-            source_id=source_id,
-            segments=[VadSegment(start_sec=0.0, end_sec=3.0, confidence=0.99)]
-        ))
+        vad_repo.save_map(real_vad_map)
 
-        # 3. Seed Transcript
+        # 3. Seed Transcript (Just needs to exist to test the aligner cross-update)
+        # We'll just grab the very last end_sec from the VAD map for the fake transcript bounds
+        duration_sec = real_vad_map.segments[-1].end_sec if real_vad_map.segments else 10.0
         transcript_repo = TranscriptRepository(db_manager)
         transcript_repo.save(Transcript(
             source_id=source_id,
-            segments=[TranscriptSegment(start_sec=0.5, end_sec=2.5, text="Hello world, this is a real test.")]
+            segments=[
+                TranscriptSegment(start_sec=0.5, end_sec=duration_sec, text="Integration test placeholder transcript.")]
         ))
 
         return source_id
 
     @pytest.fixture
-    def live_api(self):
+    def live_api(self) -> DiarizationAPI:
         """Constructs the full, live API dependency tree."""
         vad_repo = VadRepository(db_manager)
         transcript_repo = TranscriptRepository(db_manager)
@@ -123,8 +138,6 @@ class TestDiarizationAPIIntegration:
         )
 
         adapter = NeMoDiarizationAdapter()
-
-        # Create a Dummy StorageAPI to satisfy the strict Type Checker
         dummy_storage_api = MagicMock(spec=StorageAPI)
 
         return DiarizationAPI(
@@ -136,7 +149,11 @@ class TestDiarizationAPIIntegration:
             adapter=adapter
         )
 
-    def test_process_audio_end_to_end(self, live_api, isolated_setup, real_audio_file):
+    def test_process_audio_end_to_end_detects_multiple_speakers(self, live_api, isolated_setup, real_audio_file):
+        """
+        Executes the DiarizationAPI boundary and verifies it correctly
+        identified >1 speakers without improperly falling back to a monologue.
+        """
         source_id = isolated_setup
 
         model_path = getattr(settings, "DIARIZATION_MODEL_PATH", "models/titanet_large.nemo")
@@ -155,6 +172,16 @@ class TestDiarizationAPIIntegration:
         assert diarization_map.source_id == source_id
         assert isinstance(diarization_map.segments, list)
 
+        # --- CORE ASSERTION ---
+        unique_speakers = diarization_map.unique_speakers
+        print(f"\n[TEST INFO] Detected Speakers: {unique_speakers}")
+
+        assert len(unique_speakers) > 1, (
+            f"Diarization failed to detect multiple speakers! "
+            f"Expected > 1, but got {len(unique_speakers)}: {unique_speakers}. "
+            f"The clustering fallback may have triggered due to swallowed system errors."
+        )
+
         # --- 2. Verify Database Persistence (Diarization Map) ---
         db_map = live_api._repo.get_map_by_source_id(source_id)
         assert db_map is not None
@@ -164,8 +191,6 @@ class TestDiarizationAPIIntegration:
         updated_transcript = live_api._transcription_api.get_transcript(source_id)
         assert updated_transcript is not None
         if len(diarization_map.segments) > 0 and len(updated_transcript.segments) > 0:
-            # If NeMo successfully grouped the real speech into a speaker,
-            # our aligner should have assigned it to the text segment.
             assert updated_transcript.segments[0].speaker_id != "Unknown"
 
         # --- 4. Verify Idempotency ---
