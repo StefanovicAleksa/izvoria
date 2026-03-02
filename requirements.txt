@@ -22,6 +22,10 @@ omegaconf>=2.3.0
 # Required for catching Spectral Clustering math exceptions
 scipy>=1.10.0
 
+# --- NEW: Scene Detection & Vision Prep ---
+Pillow>=10.2.0      # Required for safe, CPU-bound image loading and manipulation
+ImageHash>=4.3.1    # Required for mathematical Perceptual Hashing (pHash) to deduplicate frames
+
 # Testing Dependencies
 pytest>=8.0.0
 pytest-mock>=3.12.0
