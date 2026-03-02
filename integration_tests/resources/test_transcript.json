@@ -1,0 +1,53 @@
+{
+  "source_id": "00000000-0000-0000-0000-000000000000",
+  "segments": [
+    {
+      "start_sec": 0.0,
+      "end_sec": 5.0,
+      "text": "Good morning everyone. Let's look at the big picture for Q3.",
+      "speaker_id": "Speaker_1"
+    },
+    {
+      "start_sec": 5.0,
+      "end_sec": 10.0,
+      "text": "Sales are up, but we have some challenges ahead.",
+      "speaker_id": "Speaker_1"
+    },
+    {
+      "start_sec": 10.0,
+      "end_sec": 15.0,
+      "text": "If you direct your attention to the screen right now...",
+      "speaker_id": "Speaker_1"
+    },
+    {
+      "start_sec": 15.0,
+      "end_sec": 20.0,
+      "text": "...you will clearly see the revenue chart for October.",
+      "speaker_id": "Speaker_1"
+    },
+    {
+      "start_sec": 20.0,
+      "end_sec": 25.0,
+      "text": "Notice this sharp dip right here around the 15th.",
+      "speaker_id": "Speaker_1"
+    },
+    {
+      "start_sec": 25.0,
+      "end_sec": 30.0,
+      "text": "We recovered quickly, as I see it.",
+      "speaker_id": "Speaker_1"
+    },
+    {
+      "start_sec": 30.0,
+      "end_sec": 35.0,
+      "text": "Now let's turn to page four of the printed report.",
+      "speaker_id": "Speaker_2"
+    },
+    {
+      "start_sec": 35.0,
+      "end_sec": 40.0,
+      "text": "This graph outlines our user growth.",
+      "speaker_id": "Speaker_2"
+    }
+  ]
+}
