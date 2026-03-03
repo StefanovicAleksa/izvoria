@@ -1,16 +1,14 @@
-# Canvas: scene_detector_error_mapper_v1
+# Canvas: scene_detector_error_mapper_v2
 # Path: app/features/scene_detector/utils/error_mapper.py
 
 import subprocess
-from sqlalchemy.exc import SQLAlchemyError
 
-from app.core.database import exceptions as core_db_exc
 from app.features.scene_detector import exceptions as exc
 
 
 def map_scene_detector_error(e: Exception, context: str = "") -> exc.SceneDetectorError:
     """
-    Translates raw system, subprocess, and database exceptions into
+    Translates raw system and subprocess exceptions into
     highly specific typed Domain Exceptions for the Scene Detector feature.
 
     Args:
@@ -19,35 +17,28 @@ def map_scene_detector_error(e: Exception, context: str = "") -> exc.SceneDetect
     """
     error_msg = str(e).lower()
 
-    # 1. Database Errors
-    if isinstance(e, (SQLAlchemyError, core_db_exc.DatabaseError)):
-        return exc.SceneDetectorDatabaseError(
-            f"Failed to persist or retrieve SceneMap in the database: {str(e)}",
-            original_exception=e
-        )
-
-    # 2. FFmpeg Binary Missing
+    # 1. FFmpeg Binary Missing
     if isinstance(e, FileNotFoundError) and "ffmpeg" in error_msg:
         return exc.FFmpegNotFoundError(
             "FFmpeg binary not found on the system path. Please ensure it is installed.",
             original_exception=e
         )
 
-    # 3. Target Video Missing
+    # 2. Target Video Missing
     if isinstance(e, FileNotFoundError):
         return exc.FFmpegInvalidVideoError(
             f"The target video file could not be found or read: {context}",
             original_exception=e
         )
 
-    # 4. FFmpeg Timeout
+    # 3. FFmpeg Timeout
     if isinstance(e, subprocess.TimeoutExpired):
         return exc.FFmpegTimeoutError(
             f"FFmpeg scene extraction timed out after {e.timeout} seconds for {context}.",
             original_exception=e
         )
 
-    # 5. FFmpeg Crashes (Exit Code > 0)
+    # 4. FFmpeg Crashes (Exit Code > 0)
     if isinstance(e, subprocess.CalledProcessError):
         # Subprocess errors hide the actual FFmpeg crash log in stderr
         error_details = e.stderr if e.stderr else str(e)
@@ -56,21 +47,21 @@ def map_scene_detector_error(e: Exception, context: str = "") -> exc.SceneDetect
             original_exception=e
         )
 
-    # 6. Time Window / Math Errors (Domain Logic)
+    # 5. Time Window / Math Errors (Domain Logic)
     if isinstance(e, ValueError) and ("window" in error_msg or "time" in error_msg or "bound" in error_msg):
         return exc.SceneDetectionWindowError(
             f"Invalid time window provided for scene detection: {str(e)}",
             original_exception=e
         )
 
-    # 7. OS I/O Errors (Disk full, Permissions, Deduplication file issues)
+    # 6. OS I/O Errors (Disk full, Permissions, Deduplication file issues)
     if isinstance(e, OSError):
         return exc.SceneDeduplicationError(
             f"System I/O error during scene extraction or hashing: {str(e)}",
             original_exception=e
         )
 
-    # 8. Fallback Catch-all
+    # 7. Fallback Catch-all
     return exc.SceneDetectorError(
         f"An unexpected error occurred in the Scene Detector: {str(e)}",
         original_exception=e

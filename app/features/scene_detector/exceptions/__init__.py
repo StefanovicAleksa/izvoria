@@ -9,7 +9,6 @@ from .ffmpeg import (
     FFmpegInvalidVideoError
 )
 from .processing import SceneDetectionWindowError, SceneDeduplicationError
-from .database import SceneDetectorDatabaseError
 
 __all__ = [
     "SceneDetectorError",
@@ -19,5 +18,4 @@ __all__ = [
     "FFmpegInvalidVideoError",
     "SceneDetectionWindowError",
     "SceneDeduplicationError",
-    "SceneDetectorDatabaseError"
 ]

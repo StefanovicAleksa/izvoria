@@ -1,12 +1,11 @@
-# Canvas: scene_detector_interfaces_v1
+# Canvas: scene_detector_interfaces_v2
 # Path: app/features/scene_detector/domain/interfaces.py
 
-import uuid
 from abc import ABC, abstractmethod
 from typing import List, Optional, Tuple
 from pathlib import Path
 
-from app.features.scene_detector.domain.entities import SceneMap, TimeWindow
+from app.features.scene_detector.domain.entities import TimeWindow
 
 
 class IFFmpegSceneAdapter(ABC):
@@ -35,21 +34,4 @@ class IFFmpegSceneAdapter(ABC):
         Returns:
             A list of tuples containing the exact timestamp and the physical Path to the extracted JPEG.
         """
-        pass
-
-
-class ISceneRepository(ABC):
-    """
-    Contract for storing the final, deduplicated SceneMap.
-    Like the VadMap, this will be stored as JSONB for high-performance crash recovery.
-    """
-
-    @abstractmethod
-    def save_map(self, scene_map: SceneMap) -> SceneMap:
-        """Saves a new Scene Map to the database."""
-        pass
-
-    @abstractmethod
-    def get_map_by_source_id(self, source_id: uuid.UUID) -> Optional[SceneMap]:
-        """Retrieves a previously computed Scene Map for a given Source."""
         pass

@@ -1,4 +1,4 @@
-# Canvas: test_scene_detector_integration_v2
+# Canvas: test_scene_detector_integration_v3
 # Path: integration_tests/features/scene_detector/test_scene_detector_integration.py
 
 import os
@@ -14,7 +14,6 @@ from app.features.storage.data.repositories import StorageRepository
 from app.features.storage.domain.entities import SourceType
 
 from app.features.scene_detector.data.ffmpeg_scene_adapter import FFmpegSceneAdapter
-from app.features.scene_detector.data.repositories import SceneRepository
 from app.features.scene_detector.service.scene_api import SceneDetectorAPI
 from app.features.scene_detector.utils.phash_deduplicator import PhashDeduplicator
 from app.features.scene_detector.domain.entities import SceneMap, TimeWindow
@@ -54,13 +53,11 @@ class TestSceneDetectorIntegration:
         storage_api.file_manager.base_path = tmp_path / "vault"
         storage_api.file_manager.base_path.mkdir()
 
-        # 2. Setup Scene Detector
-        scene_repo = SceneRepository(db_manager)
+        # 2. Setup Scene Detector (Now strictly stateless and functional)
         ffmpeg_adapter = FFmpegSceneAdapter(timeout_seconds=60)
         deduplicator = PhashDeduplicator(hamming_distance_threshold=5)
 
         scene_api = SceneDetectorAPI(
-            repository=scene_repo,
             ffmpeg_adapter=ffmpeg_adapter,
             storage_api=storage_api,
             deduplicator=deduplicator
@@ -171,30 +168,3 @@ class TestSceneDetectorIntegration:
         # Verify NO JPEGs were vaulted
         vault_jpgs = list(storage_api.file_manager.base_path.rglob("*.jpg"))
         assert len(vault_jpgs) == 0
-
-    def test_idempotency(self, api_setup, tmp_path):
-        """Verifies that running the same Source ID twice returns the DB record instantly."""
-        scene_api, storage_api = api_setup
-
-        source_dir = tmp_path / "test_media_3"
-        source_dir.mkdir()
-        video_file = source_dir / "idempotency_test.mp4"
-        self.generate_hard_cut_video(video_file)
-
-        video_source = storage_api.ingest_local_file(
-            file_path=os.fspath(video_file),
-            source_type=SourceType.VIDEO
-        )
-
-        # First run (does the heavy lifting)
-        map_run_1 = scene_api.process_video(video_source.id, video_source.file.file_path, 0.8)
-        assert len(map_run_1.scenes) == 1
-
-        # Second run (should hit the DB immediately)
-        map_run_2 = scene_api.process_video(video_source.id, video_source.file.file_path, 0.8)
-
-        assert map_run_1.id == map_run_2.id
-
-        # Vault check: if FFmpeg ran twice, we'd have 2 JPEGs. We should only have 1.
-        vault_jpgs = list(storage_api.file_manager.base_path.rglob("*.jpg"))
-        assert len(vault_jpgs) == 1

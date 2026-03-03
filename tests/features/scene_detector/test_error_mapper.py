@@ -1,9 +1,8 @@
-# Canvas: test_error_mapper_v1.py
+# Canvas: test_error_mapper_v2
 # Path: tests/features/scene_detector/test_error_mapper.py
 
 import pytest
 import subprocess
-from sqlalchemy.exc import SQLAlchemyError
 
 from app.features.scene_detector.utils.error_mapper import map_scene_detector_error
 from app.features.scene_detector import exceptions as exc
@@ -14,7 +13,6 @@ from app.features.scene_detector import exceptions as exc
     [
         (FileNotFoundError("ffmpeg not found"), "", exc.FFmpegNotFoundError),
         (FileNotFoundError("video.mp4 not found"), "video.mp4", exc.FFmpegInvalidVideoError),
-        (SQLAlchemyError("Connection failed"), "", exc.SceneDetectorDatabaseError),
         (subprocess.TimeoutExpired(cmd="ffmpeg", timeout=60), "video.mp4", exc.FFmpegTimeoutError),
         (subprocess.CalledProcessError(returncode=1, cmd="ffmpeg", stderr="Crash"), "", exc.FFmpegExecutionError),
         (ValueError("invalid time window"), "", exc.SceneDetectionWindowError),
