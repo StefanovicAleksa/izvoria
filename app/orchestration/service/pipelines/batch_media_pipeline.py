@@ -1,4 +1,4 @@
-# Canvas: batch_media_pipeline_v5
+# Canvas: batch_media_pipeline_v6
 # Path: app/orchestration/service/pipelines/batch_media_pipeline.py
 
 import uuid
@@ -7,7 +7,8 @@ from typing import Dict, List
 from app.features.storage.domain.entities import SourceType
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
-from app.orchestration.domain.entities import PhaseBatchResult, IngestJobResult, VadJobResult, TranscribeJobResult
+from app.orchestration.domain.entities import PhaseBatchResult, IngestJobResult, VadJobResult, TranscribeJobResult, \
+    DiarizeJobResult
 from app.orchestration.exceptions.workflow import WorkflowStateError, WorkflowExecutionError
 
 from app.orchestration.service.phases.scan_phase import ScanPhase
@@ -16,6 +17,7 @@ from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPha
 from app.orchestration.service.phases.vad_phase import VadPhase
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
 from app.orchestration.service.phases.diarize_phase import DiarizePhase
+from app.orchestration.service.phases.intelligence_bridge_phase import IntelligenceBridgePhase
 
 
 class BatchMediaPipeline:
@@ -26,7 +28,8 @@ class BatchMediaPipeline:
             extract_audio_phase: ExtractAudioPhase,
             vad_phase: VadPhase,
             transcribe_phase: TranscribePhase,
-            diarize_phase: DiarizePhase
+            diarize_phase: DiarizePhase,
+            intelligence_bridge_phase: IntelligenceBridgePhase
     ):
         self._scan_phase = scan_phase
         self._ingest_phase = ingest_phase
@@ -34,6 +37,7 @@ class BatchMediaPipeline:
         self._vad_phase = vad_phase
         self._transcribe_phase = transcribe_phase
         self._diarize_phase = diarize_phase
+        self._intelligence_bridge_phase = intelligence_bridge_phase
 
     def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[
         PipelinePhase, PhaseBatchResult]:
@@ -112,6 +116,21 @@ class BatchMediaPipeline:
                 # PHASE 6: DIARIZATION (GPU BOUND)
                 diarize_result = self._diarize_phase.execute(successful_transcribe_items)
                 pipeline_results[PipelinePhase.DIARIZE] = diarize_result
+
+                # PHASE TRANSITION: FILTER FOR INTELLIGENCE BRIDGE
+                successful_diarize_items = [
+                    item for item in diarize_result.items
+                    if isinstance(item, DiarizeJobResult) and item.success
+                ]
+                if not successful_diarize_items:
+                    return pipeline_results
+
+                # PRELOAD TRIGGER: Load Phi-3.5 (NLP Router) into GPU
+                self._intelligence_bridge_phase.preload_model()
+
+                # PHASE 7: INTELLIGENCE BRIDGE (MULTIMODAL NLP + VISION CPU BOUND)
+                bridge_result = self._intelligence_bridge_phase.execute(successful_diarize_items)
+                pipeline_results[PipelinePhase.INTELLIGENCE_BRIDGE] = bridge_result
 
             return pipeline_results
 

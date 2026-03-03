@@ -1,4 +1,4 @@
-# Canvas: orchestration_entities_v3
+# Canvas: orchestration_entities_v4
 # Path: app/orchestration/domain/entities.py
 
 import uuid
@@ -59,6 +59,15 @@ class DiarizeJobResult(BaseModel):
     source_id: uuid.UUID
     success: bool
     diarization_map_id: Optional[uuid.UUID] = None
+    error_message: Optional[str] = None
+
+    model_config = ConfigDict(frozen=True)
+
+class IntelligenceBridgeJobResult(BaseModel):
+    """Result of Phase 7: Intelligence Bridge (Multimodal Scene Mapping)."""
+    source_id: uuid.UUID
+    success: bool
+    scene_map_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
 
     model_config = ConfigDict(frozen=True)
