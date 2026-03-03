@@ -69,7 +69,7 @@ class Phi3RouterAdapter(ILLMRouterAdapter):
                 messages=messages,
                 response_format=response_format,
                 temperature=0.1,  # Ultra-low temperature for strict, deterministic logic
-                max_tokens=512  # We only need a short reasoning string and a few timestamps
+                max_tokens=2048  # We only need a short reasoning string and a few timestamps
             )
 
             # Extract the string payload from the ChatML response format

@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_integration_v6
+# Canvas: test_batch_media_pipeline_integration_v7
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
 import subprocess
@@ -39,12 +39,23 @@ from app.features.diarization.data.repositories import DiarizationRepository
 from app.features.diarization.service.diarization_api import DiarizationAPI
 from app.features.diarization.data.nemo_adapter import NeMoDiarizationAdapter
 
+from app.features.scene_detector.data.ffmpeg_scene_adapter import FFmpegSceneAdapter
+from app.features.scene_detector.utils.phash_deduplicator import PhashDeduplicator
+from app.features.scene_detector.service.scene_api import SceneDetectorAPI
+
+from app.features.nlp_router.data.phi3_adapter import Phi3RouterAdapter
+from app.features.nlp_router.service.router_api import NLPRouterAPI
+
+from app.features.intelligence_bridge.data.repository import IntelligentSceneRepository
+from app.features.intelligence_bridge.service.bridge_api import IntelligenceBridgeAPI
+
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
 from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPhase
 from app.orchestration.service.phases.vad_phase import VadPhase
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
 from app.orchestration.service.phases.diarize_phase import DiarizePhase
+from app.orchestration.service.phases.intelligence_bridge_phase import IntelligenceBridgePhase
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 
@@ -71,9 +82,9 @@ class TestBatchMediaPipelineIntegration:
         scanner = FileScanner()
 
         audio_repo = AudioExtractionRepository(db_manager)
-        ffmpeg_adapter = FFmpegAdapter(timeout_seconds=300)
+        ffmpeg_audio_adapter = FFmpegAdapter(timeout_seconds=300)
         audio_extractor = AudioExtractorAPI(
-            ffmpeg_adapter=ffmpeg_adapter,
+            ffmpeg_adapter=ffmpeg_audio_adapter,
             repository=audio_repo,
             storage_api=storage_api
         )
@@ -114,6 +125,22 @@ class TestBatchMediaPipelineIntegration:
             required_vram_mb=getattr(settings, "DIARIZATION_VRAM_REQUIREMENT_MB", 500.0)
         )
 
+        # Real Intelligence Bridge Feature
+        scene_adapter = FFmpegSceneAdapter(timeout_seconds=300)
+        phash_dedup = PhashDeduplicator(hamming_distance_threshold=5)
+        scene_api = SceneDetectorAPI(scene_adapter, storage_api, phash_dedup)
+
+        nlp_manifest = ModelManifest(
+            model_type=ModelType.LLM,
+            model_path=getattr(settings, "PHI_MODEL_PATH", "models/Phi-3.5-mini-instruct-Q4_K_M.gguf"),
+            required_vram_mb=getattr(settings, "NLP_VRAM_REQUIREMENT_MB", 3500.0)
+        )
+        real_nlp_adapter = Phi3RouterAdapter()
+        nlp_router_api = NLPRouterAPI(orchestrator, real_nlp_adapter, nlp_manifest)
+
+        bridge_repo = IntelligentSceneRepository(db_manager)
+        bridge_api = IntelligenceBridgeAPI(bridge_repo, scene_api, transcription_api, nlp_router_api)
+
         # Phases
         scan_phase = ScanPhase(job_manager, scanner)
         ingest_phase = IngestPhase(job_manager, storage_api)
@@ -123,6 +150,8 @@ class TestBatchMediaPipelineIntegration:
                                            transcribe_manifest, real_transcribe_adapter)
         diarize_phase = DiarizePhase(job_manager, diarization_api, storage_api, async_service, diarize_manifest,
                                      real_diarize_adapter)
+        bridge_phase = IntelligenceBridgePhase(job_manager, bridge_api, storage_api, async_service, nlp_manifest,
+                                               real_nlp_adapter)
 
         pipeline = BatchMediaPipeline(
             scan_phase=scan_phase,
@@ -130,7 +159,8 @@ class TestBatchMediaPipelineIntegration:
             extract_audio_phase=extract_audio_phase,
             vad_phase=vad_phase,
             transcribe_phase=transcribe_phase,
-            diarize_phase=diarize_phase
+            diarize_phase=diarize_phase,
+            intelligence_bridge_phase=bridge_phase
         )
 
         yield pipeline, storage_api
@@ -138,18 +168,18 @@ class TestBatchMediaPipelineIntegration:
         async_service.shutdown()
 
     def test_end_to_end_media_pipeline(self, pipeline_setup, tmp_path):
-        """Tests the seamless flow from Directory Scan -> DB Generating Transcript -> Diarization Map without mocks."""
+        """Tests the seamless flow from Directory Scan -> DB Generating Transcript -> Intelligence Bridge Map without mocks."""
         pipeline, storage_api = pipeline_setup
 
         source_dir = tmp_path / "usb_drive"
         source_dir.mkdir()
 
-        original_wav = Path("integration_tests/resources/test_speech.wav").resolve()
-        if not original_wav.exists():
-            pytest.skip(f"Required test file not found at: {original_wav}")
+        original_vid = Path("integration_tests/resources/test_video.mp4").resolve()
+        if not original_vid.exists():
+            pytest.skip(f"Required test file not found at: {original_vid}")
 
-        test_file = source_dir / "test_speech.wav"
-        shutil.copy2(original_wav, test_file)
+        test_file = source_dir / "test_video.mp4"
+        shutil.copy2(original_vid, test_file)
 
         # EXECUTE THE PIPELINE
         results = pipeline.process_directory(str(source_dir), SourceType.VIDEO)
@@ -161,6 +191,7 @@ class TestBatchMediaPipelineIntegration:
         assert PipelinePhase.VAD in results
         assert PipelinePhase.TRANSCRIBE in results
         assert PipelinePhase.DIARIZE in results
+        assert PipelinePhase.INTELLIGENCE_BRIDGE in results
 
         assert results[
                    PipelinePhase.SCAN].status == PhaseStatus.COMPLETED, f"Scan failed: {results[PipelinePhase.SCAN].errors}"
@@ -172,8 +203,10 @@ class TestBatchMediaPipelineIntegration:
                    PipelinePhase.VAD].status == PhaseStatus.COMPLETED, f"VAD failed: {results[PipelinePhase.VAD].errors}"
         assert results[
                    PipelinePhase.TRANSCRIBE].status == PhaseStatus.COMPLETED, f"Transcribe failed: {results[PipelinePhase.TRANSCRIBE].errors}"
+        assert results[
+                   PipelinePhase.DIARIZE].status == PhaseStatus.COMPLETED, f"Diarize failed: {results[PipelinePhase.DIARIZE].errors}"
 
-        diarize_result = results[PipelinePhase.DIARIZE]
-        assert diarize_result.status == PhaseStatus.COMPLETED, f"Diarize failed: {diarize_result.errors}"
-        assert diarize_result.successful_count == 1
-        assert diarize_result.items[0].diarization_map_id is not None
+        bridge_result = results[PipelinePhase.INTELLIGENCE_BRIDGE]
+        assert bridge_result.status == PhaseStatus.COMPLETED, f"Intelligence Bridge failed: {bridge_result.errors}"
+        assert bridge_result.successful_count == 1
+        assert bridge_result.items[0].scene_map_id is not None

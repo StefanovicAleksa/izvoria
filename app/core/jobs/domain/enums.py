@@ -17,3 +17,4 @@ class JobType(str, Enum):
     VAD = "vad" # voice activity detection
     TRANSCRIBE = "transcribe"
     DIARIZE = "diarize" # speaker diarization
+    INTELLIGENCE_BRIDGE = "intelligence_bridge"

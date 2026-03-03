@@ -1,4 +1,6 @@
-# File: app/core/config.py
+# Canvas: core_config_v2
+# Path: app/core/config.py
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -18,12 +20,23 @@ class Settings(BaseSettings):
     APP_NAME: str = "Onyx"
     ENV: str = "development"
 
-    # AI Model Config
+    # --- AI Model Config ---
+
+    # 1. Voice Activity Detection (MarbleNet)
     VAD_MODEL_PATH: str = "models/vad_multilingual_marblenet.nemo"
     VAD_VRAM_REQUIREMENT_MB: float = 1200.0
 
+    # 2. Transcription (Faster-Whisper)
     WHISPER_MODEL_PATH: str = "models/faster-whisper-large-v3"
     WHISPER_VRAM_REQUIREMENT_MB: float = 3500.0  # ~3.5GB for INT8 Large-v3
+
+    # 3. Speaker Diarization (TitaNet)
+    DIARIZATION_MODEL_PATH: str = "models/titanet_large.nemo"
+    DIARIZATION_VRAM_REQUIREMENT_MB: float = 500.0
+
+    # 4. Semantic NLP Router (HuggingFace Transformers FP16)
+    NLP_MODEL_PATH: str = "microsoft/Phi-3.5-mini-instruct"
+    NLP_VRAM_REQUIREMENT_MB: float = 8500.0  # ~8.5GB VRAM requirement for unquantized Phi-3.5
 
     @property
     def DATABASE_URL(self) -> str:
