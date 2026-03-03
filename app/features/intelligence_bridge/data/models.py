@@ -1,3 +1,6 @@
+# Canvas: intelligence_bridge_models_v3
+# Path: app/features/intelligence_bridge/data/models.py
+
 import uuid
 from datetime import datetime, timezone
 
@@ -6,10 +9,11 @@ from sqlalchemy.dialects.postgresql import UUID, JSONB
 
 from app.core.database.data.engine import Base
 
+
 class SceneMapModel(Base):
     """
     SQLAlchemy model for storing the final deduplicated Intelligent Scene Map.
-    Reuses the 'scene_maps' table name for seamless transition.
+    This feature is the sole owner of the 'scene_maps' table.
     """
     __tablename__ = "scene_maps"
 
