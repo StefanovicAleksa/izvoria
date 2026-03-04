@@ -1,4 +1,4 @@
-# Canvas: main_v6
+# Canvas: main_v7
 # Path: main.py
 
 import argparse
@@ -39,7 +39,6 @@ from app.features.diarization.data.repositories import DiarizationRepository
 from app.features.diarization.data.nemo_adapter import NeMoDiarizationAdapter
 from app.features.diarization.service.diarization_api import DiarizationAPI
 
-# --- NEW IMPORTS FOR INTELLIGENCE BRIDGE ---
 from app.features.scene_detector.data.ffmpeg_scene_adapter import FFmpegSceneAdapter
 from app.features.scene_detector.utils.phash_deduplicator import PhashDeduplicator
 from app.features.scene_detector.service.scene_api import SceneDetectorAPI
@@ -50,7 +49,6 @@ from app.features.nlp_router.service.router_api import NLPRouterAPI
 from app.features.intelligence_bridge.data.repository import IntelligentSceneRepository
 from app.features.intelligence_bridge.service.bridge_api import IntelligenceBridgeAPI
 from app.orchestration.service.phases.intelligence_bridge_phase import IntelligenceBridgePhase
-# -------------------------------------------
 
 from app.orchestration.domain.enums import PipelinePhase
 from app.orchestration.service.phases.scan_phase import ScanPhase
@@ -125,30 +123,29 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         adapter=diarize_adapter
     )
 
+    # Strictly use the main config
     diarize_manifest = ModelManifest(
         model_type=ModelType.DIARIZATION,
-        model_path=getattr(settings, "DIARIZATION_MODEL_PATH", "models/titanet_large.nemo"),
-        required_vram_mb=getattr(settings, "DIARIZATION_VRAM_REQUIREMENT_MB", 500.0)
+        model_path=settings.DIARIZATION_MODEL_PATH,
+        required_vram_mb=settings.DIARIZATION_VRAM_REQUIREMENT_MB
     )
 
-    # --- NEW: Intelligence Bridge Setup ---
     scene_adapter = FFmpegSceneAdapter(timeout_seconds=300)
     phash_dedup = PhashDeduplicator(hamming_distance_threshold=5)
     scene_api = SceneDetectorAPI(scene_adapter, storage_api, phash_dedup)
 
+    # Strictly use the main config
     nlp_manifest = ModelManifest(
         model_type=ModelType.LLM,
-        model_path=getattr(settings, "PHI_MODEL_PATH", "models/Phi-3.5-mini-instruct-Q4_K_M.gguf"),
-        required_vram_mb=getattr(settings, "NLP_VRAM_REQUIREMENT_MB", 3500.0)
+        model_path=settings.NLP_MODEL_PATH,
+        required_vram_mb=settings.NLP_VRAM_REQUIREMENT_MB
     )
     nlp_adapter = Phi3RouterAdapter()
     nlp_router_api = NLPRouterAPI(model_orchestrator, nlp_adapter, nlp_manifest)
 
     bridge_repo = IntelligentSceneRepository(db_manager)
     bridge_api = IntelligenceBridgeAPI(bridge_repo, scene_api, transcription_api, nlp_router_api)
-    # --------------------------------------
 
-    # Pipeline Phases
     scan_phase = ScanPhase(job_manager, scanner)
     ingest_phase = IngestPhase(job_manager, storage_api)
     extract_audio_phase = ExtractAudioPhase(job_manager, audio_extractor)
@@ -237,7 +234,6 @@ def main():
 
         storage_repo = StorageRepository(db_manager)
 
-        # --- Output Transcripts to .txt files ---
         if PipelinePhase.DIARIZE in results or PipelinePhase.TRANSCRIBE in results:
             print("\n==================================================")
             print("  WRITING TRANSCRIPTS TO DISK")
@@ -267,7 +263,6 @@ def main():
                         except IOError as e:
                             print(f"  [ERROR] Failed to write {out_file.name}: {e}")
 
-        # --- Output Scene Maps to .json files ---
         if PipelinePhase.INTELLIGENCE_BRIDGE in results:
             print("\n==================================================")
             print("  WRITING INTELLIGENCE SCENE MAPS TO DISK")
@@ -286,7 +281,6 @@ def main():
                         out_file = target_path / f"{safe_name}_scenes.json"
 
                         try:
-                            # Dump the Pydantic models to formatted JSON
                             map_dict = scene_map.model_dump(mode='json')
                             with open(out_file, "w", encoding="utf-8") as f:
                                 json.dump(map_dict, f, indent=4)
@@ -297,7 +291,6 @@ def main():
     except Exception as e:
         print(f"\n[FATAL PIPELINE CRASH] {str(e)}")
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()

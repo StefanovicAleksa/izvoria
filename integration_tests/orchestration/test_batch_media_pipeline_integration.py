@@ -1,6 +1,7 @@
-# Canvas: test_batch_media_pipeline_integration_v7
+# Canvas: test_batch_media_pipeline_integration_v8
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
+import os
 import subprocess
 import pytest
 import shutil
@@ -117,12 +118,11 @@ class TestBatchMediaPipelineIntegration:
         # Real Diarization Feature
         diarize_repo = DiarizationRepository(db_manager)
         real_diarize_adapter = NeMoDiarizationAdapter()
-        diarization_api = DiarizationAPI(diarize_repo, vad_repo, transcription_api, storage_api, orchestrator,
-                                         real_diarize_adapter)
+        diarization_api = DiarizationAPI(diarize_repo, vad_repo, transcription_api, storage_api, orchestrator, real_diarize_adapter)
         diarize_manifest = ModelManifest(
             model_type=ModelType.DIARIZATION,
-            model_path=getattr(settings, "DIARIZATION_MODEL_PATH", "models/titanet_large.nemo"),
-            required_vram_mb=getattr(settings, "DIARIZATION_VRAM_REQUIREMENT_MB", 500.0)
+            model_path=settings.DIARIZATION_MODEL_PATH,
+            required_vram_mb=settings.DIARIZATION_VRAM_REQUIREMENT_MB
         )
 
         # Real Intelligence Bridge Feature
@@ -130,10 +130,11 @@ class TestBatchMediaPipelineIntegration:
         phash_dedup = PhashDeduplicator(hamming_distance_threshold=5)
         scene_api = SceneDetectorAPI(scene_adapter, storage_api, phash_dedup)
 
+        # FIX: Ensure it dynamically inherits from settings to pass the missing HF models guard check
         nlp_manifest = ModelManifest(
             model_type=ModelType.LLM,
-            model_path=getattr(settings, "PHI_MODEL_PATH", "models/Phi-3.5-mini-instruct-Q4_K_M.gguf"),
-            required_vram_mb=getattr(settings, "NLP_VRAM_REQUIREMENT_MB", 3500.0)
+            model_path=settings.NLP_MODEL_PATH,
+            required_vram_mb=settings.NLP_VRAM_REQUIREMENT_MB
         )
         real_nlp_adapter = Phi3RouterAdapter()
         nlp_router_api = NLPRouterAPI(orchestrator, real_nlp_adapter, nlp_manifest)
@@ -146,12 +147,9 @@ class TestBatchMediaPipelineIntegration:
         ingest_phase = IngestPhase(job_manager, storage_api)
         extract_audio_phase = ExtractAudioPhase(job_manager, audio_extractor)
         vad_phase = VadPhase(job_manager, vad_api, storage_api, async_service, vad_manifest, real_vad_adapter)
-        transcribe_phase = TranscribePhase(job_manager, transcription_api, storage_api, async_service,
-                                           transcribe_manifest, real_transcribe_adapter)
-        diarize_phase = DiarizePhase(job_manager, diarization_api, storage_api, async_service, diarize_manifest,
-                                     real_diarize_adapter)
-        bridge_phase = IntelligenceBridgePhase(job_manager, bridge_api, storage_api, async_service, nlp_manifest,
-                                               real_nlp_adapter)
+        transcribe_phase = TranscribePhase(job_manager, transcription_api, storage_api, async_service, transcribe_manifest, real_transcribe_adapter)
+        diarize_phase = DiarizePhase(job_manager, diarization_api, storage_api, async_service, diarize_manifest, real_diarize_adapter)
+        bridge_phase = IntelligenceBridgePhase(job_manager, bridge_api, storage_api, async_service, nlp_manifest, real_nlp_adapter)
 
         pipeline = BatchMediaPipeline(
             scan_phase=scan_phase,
@@ -171,6 +169,11 @@ class TestBatchMediaPipelineIntegration:
         """Tests the seamless flow from Directory Scan -> DB Generating Transcript -> Intelligence Bridge Map without mocks."""
         pipeline, storage_api = pipeline_setup
 
+        # FIX: Dynamic Guard Clause verifying the Hugging Face structure exists before attempting hardware load
+        model_path = settings.NLP_MODEL_PATH
+        if not os.path.exists(model_path) or not os.path.exists(os.path.join(model_path, "config.json")):
+            pytest.skip(f"No HF model found at {model_path}. Skipping hardware integration test.")
+
         source_dir = tmp_path / "usb_drive"
         source_dir.mkdir()
 
@@ -184,7 +187,7 @@ class TestBatchMediaPipelineIntegration:
         # EXECUTE THE PIPELINE
         results = pipeline.process_directory(str(source_dir), SourceType.VIDEO)
 
-        # VERIFY STATE MACHINE RESULTS (With detailed error printing if they fail)
+        # VERIFY STATE MACHINE RESULTS
         assert PipelinePhase.SCAN in results
         assert PipelinePhase.INGEST in results
         assert PipelinePhase.AUDIO_EXTRACTION in results
@@ -193,18 +196,12 @@ class TestBatchMediaPipelineIntegration:
         assert PipelinePhase.DIARIZE in results
         assert PipelinePhase.INTELLIGENCE_BRIDGE in results
 
-        assert results[
-                   PipelinePhase.SCAN].status == PhaseStatus.COMPLETED, f"Scan failed: {results[PipelinePhase.SCAN].errors}"
-        assert results[
-                   PipelinePhase.INGEST].status == PhaseStatus.COMPLETED, f"Ingest failed: {results[PipelinePhase.INGEST].errors}"
-        assert results[
-                   PipelinePhase.AUDIO_EXTRACTION].status == PhaseStatus.COMPLETED, f"Audio Extraction failed: {results[PipelinePhase.AUDIO_EXTRACTION].errors}"
-        assert results[
-                   PipelinePhase.VAD].status == PhaseStatus.COMPLETED, f"VAD failed: {results[PipelinePhase.VAD].errors}"
-        assert results[
-                   PipelinePhase.TRANSCRIBE].status == PhaseStatus.COMPLETED, f"Transcribe failed: {results[PipelinePhase.TRANSCRIBE].errors}"
-        assert results[
-                   PipelinePhase.DIARIZE].status == PhaseStatus.COMPLETED, f"Diarize failed: {results[PipelinePhase.DIARIZE].errors}"
+        assert results[PipelinePhase.SCAN].status == PhaseStatus.COMPLETED, f"Scan failed: {results[PipelinePhase.SCAN].errors}"
+        assert results[PipelinePhase.INGEST].status == PhaseStatus.COMPLETED, f"Ingest failed: {results[PipelinePhase.INGEST].errors}"
+        assert results[PipelinePhase.AUDIO_EXTRACTION].status == PhaseStatus.COMPLETED, f"Audio Extraction failed: {results[PipelinePhase.AUDIO_EXTRACTION].errors}"
+        assert results[PipelinePhase.VAD].status == PhaseStatus.COMPLETED, f"VAD failed: {results[PipelinePhase.VAD].errors}"
+        assert results[PipelinePhase.TRANSCRIBE].status == PhaseStatus.COMPLETED, f"Transcribe failed: {results[PipelinePhase.TRANSCRIBE].errors}"
+        assert results[PipelinePhase.DIARIZE].status == PhaseStatus.COMPLETED, f"Diarize failed: {results[PipelinePhase.DIARIZE].errors}"
 
         bridge_result = results[PipelinePhase.INTELLIGENCE_BRIDGE]
         assert bridge_result.status == PhaseStatus.COMPLETED, f"Intelligence Bridge failed: {bridge_result.errors}"

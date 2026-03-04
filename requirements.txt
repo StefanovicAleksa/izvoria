@@ -26,8 +26,9 @@ scipy>=1.10.0
 Pillow>=10.2.0      # Required for safe, CPU-bound image loading and manipulation
 ImageHash>=4.3.1    # Required for mathematical Perceptual Hashing (pHash) to deduplicate frames
 
-# GGUF Inference Engine for Phi-3.5
-llama-cpp-python>=0.2.90
+# Native Hugging Face Inference Engine for Phi-3.5
+transformers>=4.40.0
+accelerate>=0.28.0
 
 # Testing Dependencies
 pytest>=8.0.0

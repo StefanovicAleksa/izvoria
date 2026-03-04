@@ -1,14 +1,10 @@
-# Canvas: nlp_router_phi3_adapter_v2
+# Canvas: phi3_adapter_v5
 # Path: app/features/nlp_router/data/phi3_adapter.py
 
 import os
 import json
-from llama_cpp import (
-    Llama,
-    ChatCompletionRequestSystemMessage,
-    ChatCompletionRequestUserMessage,
-    ChatCompletionRequestResponseFormat
-)
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.features.nlp_router.domain.interfaces import ILLMRouterAdapter
@@ -19,8 +15,8 @@ from app.features.nlp_router.utils.error_mapper import map_nlp_router_error
 
 class Phi3RouterAdapter(ILLMRouterAdapter):
     """
-    Executes local, strictly-typed LLM inference using llama.cpp.
-    Optimized for the Phi-3.5-mini-instruct GGUF model.
+    Executes local LLM inference using native Hugging Face Transformers.
+    Optimized for the unquantized Phi-3.5-mini-instruct model in PyTorch/Safetensors format.
     """
 
     def load(self, manifest: ModelManifest) -> LoadedModel:
@@ -28,60 +24,80 @@ class Phi3RouterAdapter(ILLMRouterAdapter):
             raise map_nlp_router_error(FileNotFoundError(manifest.model_path))
 
         try:
-            # n_gpu_layers=-1 offloads all 32 layers of Phi-3.5 to the RTX 3060 VRAM.
-            # n_ctx=4096 is optimal: large enough for a 5-min transcript, small enough to save memory.
-            llm = Llama(
-                model_path=manifest.model_path,
-                n_gpu_layers=-1,
-                n_ctx=4096,
-                verbose=False  # Suppress excessive C++ stdout spam
+            tokenizer = AutoTokenizer.from_pretrained(
+                manifest.model_path,
+                local_files_only=True
             )
-            return LoadedModel(manifest=manifest, model_instance=llm)
+            hf_model = AutoModelForCausalLM.from_pretrained(
+                manifest.model_path,
+                device_map="cuda",
+                torch_dtype=torch.bfloat16,  # Use bfloat16 to fit in 12GB VRAM efficiently
+                local_files_only=True
+            )
+
+            payload = {
+                "model": hf_model,
+                "tokenizer": tokenizer
+            }
+            return LoadedModel(manifest=manifest, model_instance=payload)
+
         except Exception as e:
             raise map_nlp_router_error(e, context="Model Load Initialization")
 
     def unload(self, model: LoadedModel) -> bool:
         if hasattr(model, "model_instance"):
-            # Deleting the object triggers the C++ destructor, instantly freeing the VRAM
+            del model.model_instance["model"]
+            del model.model_instance["tokenizer"]
             del model.model_instance
+
+        # Explicitly clear the PyTorch CUDA allocator cache to free the VRAM for other models
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
         return True
 
     def extract_visual_cues(self, model: LoadedModel, chunk: TranscriptChunk) -> RouterReasoning:
-        llm: Llama = model.model_instance
+        payload = model.model_instance
+        hf_model = payload["model"]
+        tokenizer = payload["tokenizer"]
 
-        # 1. Construct Strictly Typed Messages
-        system_msg = ChatCompletionRequestSystemMessage(
-            role="system",
-            content=ROUTER_SYSTEM_PROMPT
-        )
-        user_msg = ChatCompletionRequestUserMessage(
-            role="user",
-            content=build_user_prompt(chunk.text_block)
-        )
-        messages = [system_msg, user_msg]
-
-        # 2. Construct Strictly Typed Response Format
-        response_format = ChatCompletionRequestResponseFormat(type="json_object")
+        messages = [
+            {"role": "system", "content": ROUTER_SYSTEM_PROMPT},
+            {"role": "user", "content": build_user_prompt(chunk.text_block)}
+        ]
 
         try:
-            # 3. Execute inference with JSON constraints
-            response = llm.create_chat_completion(
-                messages=messages,
-                response_format=response_format,
-                temperature=0.1,  # Ultra-low temperature for strict, deterministic logic
-                max_tokens=2048  # We only need a short reasoning string and a few timestamps
+            inputs = tokenizer.apply_chat_template(
+                messages,
+                tokenize=True,
+                add_generation_prompt=True,
+                return_tensors="pt"
+            ).to(hf_model.device)
+
+            outputs = hf_model.generate(
+                inputs,
+                max_new_tokens=2048,
+                temperature=0.1,  # Ultra-low for deterministic logic
+                do_sample=True,
+                pad_token_id=tokenizer.eos_token_id
             )
 
-            # Extract the string payload from the ChatML response format
-            raw_json_str = str(response["choices"][0]["message"]["content"])
+            # Extract only the newly generated tokens
+            generated_tokens = outputs[0][inputs.shape[1]:]
+            raw_output_str = tokenizer.decode(generated_tokens, skip_special_tokens=True)
 
-            # Parse the string into a raw Python dictionary
+            # Strip Markdown JSON wrappers if the LLM hallucinated them
+            start_idx = raw_output_str.find('{')
+            end_idx = raw_output_str.rfind('}')
+
+            if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+                raw_json_str = raw_output_str[start_idx:end_idx + 1]
+            else:
+                raw_json_str = raw_output_str  # Fallback to raw string
+
             parsed_data = json.loads(raw_json_str)
-
-            # Strictly validate the dictionary against our Domain Entity rules
             return RouterReasoning.model_validate(parsed_data)
 
         except Exception as e:
-            # The Error Mapper will catch JSONDecodeErrors or ValidationErrors if the LLM hallucinated
             context_msg = f"Chunk: {chunk.start_sec}s - {chunk.end_sec}s"
             raise map_nlp_router_error(e, context=context_msg)

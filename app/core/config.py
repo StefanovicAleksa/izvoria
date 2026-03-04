@@ -1,8 +1,7 @@
-# Canvas: core_config_v2
+# Canvas: core_config_v3
 # Path: app/core/config.py
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
 
 class Settings(BaseSettings):
     # Database Config
@@ -28,15 +27,15 @@ class Settings(BaseSettings):
 
     # 2. Transcription (Faster-Whisper)
     WHISPER_MODEL_PATH: str = "models/faster-whisper-large-v3"
-    WHISPER_VRAM_REQUIREMENT_MB: float = 3500.0  # ~3.5GB for INT8 Large-v3
+    WHISPER_VRAM_REQUIREMENT_MB: float = 3500.0
 
     # 3. Speaker Diarization (TitaNet)
     DIARIZATION_MODEL_PATH: str = "models/titanet_large.nemo"
     DIARIZATION_VRAM_REQUIREMENT_MB: float = 500.0
 
-    # 4. Semantic NLP Router (HuggingFace Transformers FP16)
-    NLP_MODEL_PATH: str = "microsoft/Phi-3.5-mini-instruct"
-    NLP_VRAM_REQUIREMENT_MB: float = 8500.0  # ~8.5GB VRAM requirement for unquantized Phi-3.5
+    # 4. Semantic NLP Router (llama.cpp GGUF)
+    NLP_MODEL_PATH: str = "models/Phi-3.5-mini-instruct"
+    NLP_VRAM_REQUIREMENT_MB: float = 8000.0  # Increased for unquantized FP16/BF16 weights
 
     @property
     def DATABASE_URL(self) -> str:
@@ -47,6 +46,5 @@ class Settings(BaseSettings):
         env_ignore_empty=True,
         extra="ignore"
     )
-
 
 settings = Settings()

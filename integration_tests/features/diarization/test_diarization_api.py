@@ -1,4 +1,4 @@
-# Canvas: test_diarization_api_integration_v5
+# Canvas: test_diarization_api_integration_v6
 # Path: integration_tests/features/diarization/test_diarization_api.py
 
 import os
@@ -156,7 +156,9 @@ class TestDiarizationAPIIntegration:
         """
         source_id = isolated_setup
 
-        model_path = getattr(settings, "DIARIZATION_MODEL_PATH", "models/titanet_large.nemo")
+        # STRICT CONFIG INHERITANCE
+        model_path = settings.DIARIZATION_MODEL_PATH
+
         if not os.path.exists(model_path):
             pytest.skip(f"TitaNet model not found at {model_path}. Skipping hardware test.")
 
@@ -178,7 +180,7 @@ class TestDiarizationAPIIntegration:
 
         assert len(unique_speakers) > 1, (
             f"Diarization failed to detect multiple speakers! "
-            f"Expected > 1, but got {len(unique_speakers)}: {unique_speakers}. "
+            f"Expected > 1, but got {len(unique_speakers)}: {unique_speakers}.\n"
             f"The clustering fallback may have triggered due to swallowed system errors."
         )
 

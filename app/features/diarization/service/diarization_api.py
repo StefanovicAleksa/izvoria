@@ -1,4 +1,4 @@
-# Canvas: diarization_api_v2
+# Canvas: diarization_api_v3
 # Path: app/features/diarization/service/diarization_api.py
 
 import uuid
@@ -20,12 +20,6 @@ from app.features.diarization.exceptions.model import DiarizationManifestError
 
 
 class DiarizationAPI:
-    """
-    The central brain of the Speaker Diarization Feature.
-    Orchestrates the retrieval of prerequisites, VRAM hardware management,
-    the NeMo inference execution, and the final transcript alignment.
-    """
-
     def __init__(
             self,
             repository: IDiarizationRepository,
@@ -43,31 +37,25 @@ class DiarizationAPI:
         self._adapter = adapter
 
     def process_audio(self, source_id: uuid.UUID, audio_path: str, release_after: bool = True) -> DiarizationMap:
-        """
-        Takes a raw audio file, runs NeMo Diarization, and automatically aligns the
-        resulting speakers with the existing Whisper transcript.
-        Guarantees VRAM safety and idempotency.
-        """
         # 1. Idempotency Check
         existing_map = self._repo.get_map_by_source_id(source_id)
         if existing_map:
             return existing_map
 
-        # 2. Fetch Prerequisites (VAD Map and Transcript MUST exist first)
+        # 2. Fetch Prerequisites
         vad_map = self._vad_repo.get_map_by_source_id(source_id)
         if not vad_map:
             raise DiarizationManifestError(f"Cannot diarize Source {source_id}: VAD Map not found.")
 
-        # STRICT BOUNDARY: Fetch transcript via the API layer, not the repo layer.
         transcript = self._transcription_api.get_transcript(source_id)
         if not transcript:
             raise DiarizationManifestError(f"Cannot diarize Source {source_id}: Whisper Transcript not found.")
 
-        # 3. Define VRAM Requirements for TitaNet
+        # 3. Define VRAM Requirements (Strict Config Inheritance)
         manifest = ModelManifest(
             model_type=ModelType.DIARIZATION,
-            model_path=getattr(settings, "DIARIZATION_MODEL_PATH", "models/titanet_large.nemo"),
-            required_vram_mb=getattr(settings, "DIARIZATION_VRAM_REQUIREMENT_MB", 500.0)
+            model_path=settings.DIARIZATION_MODEL_PATH,
+            required_vram_mb=settings.DIARIZATION_VRAM_REQUIREMENT_MB
         )
 
         loaded_model = None
@@ -86,10 +74,10 @@ class DiarizationAPI:
             # 6. Save the Diarization Map to Postgres
             saved_diarization_map = self._repo.save_map(diarization_map)
 
-            # 7. Execute the Aligner Math (Merge "Who" with "What")
+            # 7. Execute the Aligner Math
             aligned_transcript = align_transcript_with_diarization(transcript, saved_diarization_map)
 
-            # 8. Update the Transcription Record securely via the API boundary
+            # 8. Update the Transcription Record
             self._transcription_api.update_transcript(aligned_transcript)
 
             return saved_diarization_map
@@ -98,6 +86,5 @@ class DiarizationAPI:
             raise map_diarization_error(e) from e
 
         finally:
-            # 9. Respect the pipeline's lifecycle rules
             if loaded_model and release_after:
                 self._orchestrator.release_model(loaded_model, self._adapter, flush=True)
