@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_integration_v8
+# Canvas: test_batch_media_pipeline_integration_v9
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
 import os
@@ -40,15 +40,9 @@ from app.features.diarization.data.repositories import DiarizationRepository
 from app.features.diarization.service.diarization_api import DiarizationAPI
 from app.features.diarization.data.nemo_adapter import NeMoDiarizationAdapter
 
-from app.features.scene_detector.data.ffmpeg_scene_adapter import FFmpegSceneAdapter
-from app.features.scene_detector.utils.phash_deduplicator import PhashDeduplicator
-from app.features.scene_detector.service.scene_api import SceneDetectorAPI
-
-from app.features.nlp_router.data.phi3_adapter import Phi3RouterAdapter
-from app.features.nlp_router.service.router_api import NLPRouterAPI
-
-from app.features.intelligence_bridge.data.repository import IntelligentSceneRepository
-from app.features.intelligence_bridge.service.bridge_api import IntelligenceBridgeAPI
+from app.features.sentence_reconstruction.data.repositories import PostgresSentenceRepository
+from app.features.sentence_reconstruction.service.reconstruction_api import SentenceReconstructionAPI
+from app.features.sentence_reconstruction.data.wtp_adapter import SaTAdapter
 
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
@@ -56,7 +50,7 @@ from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPha
 from app.orchestration.service.phases.vad_phase import VadPhase
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
 from app.orchestration.service.phases.diarize_phase import DiarizePhase
-from app.orchestration.service.phases.intelligence_bridge_phase import IntelligenceBridgePhase
+from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 
@@ -125,22 +119,15 @@ class TestBatchMediaPipelineIntegration:
             required_vram_mb=settings.DIARIZATION_VRAM_REQUIREMENT_MB
         )
 
-        # Real Intelligence Bridge Feature
-        scene_adapter = FFmpegSceneAdapter(timeout_seconds=300)
-        phash_dedup = PhashDeduplicator(hamming_distance_threshold=5)
-        scene_api = SceneDetectorAPI(scene_adapter, storage_api, phash_dedup)
-
-        # FIX: Ensure it dynamically inherits from settings to pass the missing HF models guard check
-        nlp_manifest = ModelManifest(
-            model_type=ModelType.LLM,
-            model_path=settings.NLP_MODEL_PATH,
-            required_vram_mb=settings.NLP_VRAM_REQUIREMENT_MB
+        # Real Sentence Reconstruction Feature
+        sentence_repo = PostgresSentenceRepository(db_manager)
+        real_sat_adapter = SaTAdapter()
+        reconstruction_api = SentenceReconstructionAPI(sentence_repo, orchestrator, real_sat_adapter)
+        sat_manifest = ModelManifest(
+            model_type=ModelType.SENTENCE_RECONSTRUCTION,
+            model_path=settings.SAT_MODEL_NAME,
+            required_vram_mb=settings.SAT_VRAM_REQUIREMENT_MB
         )
-        real_nlp_adapter = Phi3RouterAdapter()
-        nlp_router_api = NLPRouterAPI(orchestrator, real_nlp_adapter, nlp_manifest)
-
-        bridge_repo = IntelligentSceneRepository(db_manager)
-        bridge_api = IntelligenceBridgeAPI(bridge_repo, scene_api, transcription_api, nlp_router_api)
 
         # Phases
         scan_phase = ScanPhase(job_manager, scanner)
@@ -149,7 +136,7 @@ class TestBatchMediaPipelineIntegration:
         vad_phase = VadPhase(job_manager, vad_api, storage_api, async_service, vad_manifest, real_vad_adapter)
         transcribe_phase = TranscribePhase(job_manager, transcription_api, storage_api, async_service, transcribe_manifest, real_transcribe_adapter)
         diarize_phase = DiarizePhase(job_manager, diarization_api, storage_api, async_service, diarize_manifest, real_diarize_adapter)
-        bridge_phase = IntelligenceBridgePhase(job_manager, bridge_api, storage_api, async_service, nlp_manifest, real_nlp_adapter)
+        sentence_phase = SentenceReconstructionPhase(job_manager, reconstruction_api, transcription_api, async_service, sat_manifest, real_sat_adapter)
 
         pipeline = BatchMediaPipeline(
             scan_phase=scan_phase,
@@ -158,7 +145,7 @@ class TestBatchMediaPipelineIntegration:
             vad_phase=vad_phase,
             transcribe_phase=transcribe_phase,
             diarize_phase=diarize_phase,
-            intelligence_bridge_phase=bridge_phase
+            sentence_reconstruction_phase=sentence_phase
         )
 
         yield pipeline, storage_api
@@ -166,13 +153,14 @@ class TestBatchMediaPipelineIntegration:
         async_service.shutdown()
 
     def test_end_to_end_media_pipeline(self, pipeline_setup, tmp_path):
-        """Tests the seamless flow from Directory Scan -> DB Generating Transcript -> Intelligence Bridge Map without mocks."""
+        """Tests the seamless flow from Directory Scan -> DB Generating Transcript -> Reconstructed Sentences without mocks."""
         pipeline, storage_api = pipeline_setup
 
-        # FIX: Dynamic Guard Clause verifying the Hugging Face structure exists before attempting hardware load
-        model_path = settings.NLP_MODEL_PATH
-        if not os.path.exists(model_path) or not os.path.exists(os.path.join(model_path, "config.json")):
-            pytest.skip(f"No HF model found at {model_path}. Skipping hardware integration test.")
+        # Dynamic Guard Clause verifying the SaT model exists before attempting hardware load
+        model_path = settings.SAT_MODEL_NAME
+        # Often loaded via cache or local folder depending on implementation, skip if not found
+        if not os.path.exists(model_path) and not os.getenv("ALLOW_DOWNLOADS"):
+             pytest.skip(f"SaT Model not found locally at {model_path} and downloads disabled. Skipping hardware integration test.")
 
         source_dir = tmp_path / "usb_drive"
         source_dir.mkdir()
@@ -194,7 +182,7 @@ class TestBatchMediaPipelineIntegration:
         assert PipelinePhase.VAD in results
         assert PipelinePhase.TRANSCRIBE in results
         assert PipelinePhase.DIARIZE in results
-        assert PipelinePhase.INTELLIGENCE_BRIDGE in results
+        assert PipelinePhase.SENTENCE_RECONSTRUCTION in results
 
         assert results[PipelinePhase.SCAN].status == PhaseStatus.COMPLETED, f"Scan failed: {results[PipelinePhase.SCAN].errors}"
         assert results[PipelinePhase.INGEST].status == PhaseStatus.COMPLETED, f"Ingest failed: {results[PipelinePhase.INGEST].errors}"
@@ -203,7 +191,7 @@ class TestBatchMediaPipelineIntegration:
         assert results[PipelinePhase.TRANSCRIBE].status == PhaseStatus.COMPLETED, f"Transcribe failed: {results[PipelinePhase.TRANSCRIBE].errors}"
         assert results[PipelinePhase.DIARIZE].status == PhaseStatus.COMPLETED, f"Diarize failed: {results[PipelinePhase.DIARIZE].errors}"
 
-        bridge_result = results[PipelinePhase.INTELLIGENCE_BRIDGE]
-        assert bridge_result.status == PhaseStatus.COMPLETED, f"Intelligence Bridge failed: {bridge_result.errors}"
-        assert bridge_result.successful_count == 1
-        assert bridge_result.items[0].scene_map_id is not None
+        sentence_result = results[PipelinePhase.SENTENCE_RECONSTRUCTION]
+        assert sentence_result.status == PhaseStatus.COMPLETED, f"Sentence Reconstruction failed: {sentence_result.errors}"
+        assert sentence_result.successful_count == 1
+        assert sentence_result.items[0].reconstructed_transcript_id is not None
