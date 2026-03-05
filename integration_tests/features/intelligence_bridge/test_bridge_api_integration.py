@@ -1,11 +1,13 @@
-# Canvas: test_bridge_api_integration_v7
+# Canvas: test_bridge_api_integration_v8
 # Path: integration_tests/features/intelligence_bridge/test_bridge_api_integration.py
 
 import os
 import pytest
 import subprocess
+import torch
 from pathlib import Path
 from unittest.mock import MagicMock
+from transformers import set_seed
 
 from app.core.config import settings
 from app.core.database.data.engine import Base
@@ -48,7 +50,11 @@ class TestIntelligenceBridgeAPIIntegration:
         yield
 
     @pytest.fixture(autouse=True)
-    def check_ffmpeg_installed(self):
+    def enforce_determinism_and_ffmpeg(self):
+        set_seed(42)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(42)
+
         try:
             subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
         except FileNotFoundError:
@@ -56,7 +62,6 @@ class TestIntelligenceBridgeAPIIntegration:
 
     @pytest.fixture
     def api_setup(self, db_manager, tmp_path):
-        """Wires up all REAL dependencies for the Intelligence Bridge (Transcription is mocked)."""
         storage_repo = StorageRepository(db_manager)
         storage_api = StorageAPI(storage_repo)
         storage_api.file_manager.base_path = tmp_path / "vault"
@@ -95,7 +100,6 @@ class TestIntelligenceBridgeAPIIntegration:
 
     @staticmethod
     def generate_hard_cut_video(output_path: Path) -> None:
-        """4-sec video: 2s black, 2s white to guarantee a visual cut."""
         command: list[str] = [
             "ffmpeg", "-y",
             "-f", "lavfi", "-i", "color=c=black:s=320x240:d=2",
@@ -109,7 +113,6 @@ class TestIntelligenceBridgeAPIIntegration:
     def test_end_to_end_multimodal_timeline(self, api_setup, tmp_path):
         bridge_api, storage_api, mock_transcription_api = api_setup
 
-        # FIX: Check for standard Hugging Face model structure (config.json)
         model_path = bridge_api._nlp_router_api._manifest.model_path
         if not os.path.exists(model_path) or not os.path.exists(os.path.join(model_path, "config.json")):
             pytest.skip(f"No HF model found at {model_path}. Skipping hardware integration test.")
@@ -148,4 +151,4 @@ class TestIntelligenceBridgeAPIIntegration:
         assert len(db_fetch.scenes) == len(result_map.scenes)
 
         semantic_scenes = [s for s in result_map.scenes if s.extraction_method == "semantic_pass"]
-        assert len(semantic_scenes) >= 1, "Expected the real LLM to extract a semantic scene."
+        assert len(semantic_scenes) >= 1

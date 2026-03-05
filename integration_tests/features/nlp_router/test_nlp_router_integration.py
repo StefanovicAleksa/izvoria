@@ -1,11 +1,13 @@
-# Canvas: test_nlp_router_integration_v4
+# Canvas: test_nlp_router_integration_v5
 # Path: integration_tests/features/nlp_router/test_nlp_router_integration.py
 
 import os
 import json
 import uuid
 import pytest
+import torch
 from pathlib import Path
+from transformers import set_seed
 
 from app.core.config import settings
 from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
@@ -24,6 +26,13 @@ class TestNLPRouterIntegration:
     STRICT NO-MOCKS INTEGRATION TEST.
     Requires: NVIDIA GPU, CUDA Toolkit, and local Hugging Face LLM.
     """
+
+    @pytest.fixture(autouse=True)
+    def enforce_determinism(self):
+        """Forces the Hugging Face generation to be 100% deterministic for tests."""
+        set_seed(42)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(42)
 
     @pytest.fixture
     def real_transcript(self):
@@ -62,13 +71,6 @@ class TestNLPRouterIntegration:
         )
 
     def test_end_to_end_vision_routing(self, live_api, real_transcript):
-        """
-        Scenario:
-        1. Loads the 8-segment transcript.
-        2. LLM evaluates metaphors vs. literal visual cues.
-        3. Asserts the 5-second buffer and consolidation logic worked perfectly.
-        """
-        # FIX: Check for standard Hugging Face model structure (config.json)
         model_path = live_api._manifest.model_path
         if not os.path.exists(model_path) or not os.path.exists(os.path.join(model_path, "config.json")):
             pytest.skip(f"No HF model found at {model_path}. Skipping hardware test.")
@@ -81,18 +83,12 @@ class TestNLPRouterIntegration:
         for w in windows:
             assert isinstance(w, TimeWindow)
 
-        assert len(windows) > 0, "The LLM failed to extract any visual windows from the transcript."
+        assert len(windows) > 0, "The LLM failed to extract any visual windows and degraded gracefully."
 
         first_window = windows[0]
-        assert first_window.start_sec >= 9.0, (
-            f"Failed: The LLM hallucinated and extracted the metaphorical 'big picture' phrase.\n"
-            f"It started extraction at {first_window.start_sec}s"
-        )
+        assert first_window.start_sec >= 9.0
 
         last_window = windows[-1]
-        assert last_window.end_sec >= 40.0, (
-            f"Failed: The LLM missed the 'graph' reference at the end of the transcript. "
-            f"It stopped extraction at {last_window.end_sec}s"
-        )
+        assert last_window.end_sec >= 40.0
 
         print(f"\n[SUCCESS] Extracted Visual Windows: {windows}")
