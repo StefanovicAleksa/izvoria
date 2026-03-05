@@ -1,9 +1,8 @@
-# Canvas: main_v7
+# Canvas: main_v8
 # Path: main.py
 
 import argparse
 import sys
-import json
 from pathlib import Path
 
 from app.core.config import settings
@@ -39,16 +38,9 @@ from app.features.diarization.data.repositories import DiarizationRepository
 from app.features.diarization.data.nemo_adapter import NeMoDiarizationAdapter
 from app.features.diarization.service.diarization_api import DiarizationAPI
 
-from app.features.scene_detector.data.ffmpeg_scene_adapter import FFmpegSceneAdapter
-from app.features.scene_detector.utils.phash_deduplicator import PhashDeduplicator
-from app.features.scene_detector.service.scene_api import SceneDetectorAPI
-
-from app.features.nlp_router.data.phi3_adapter import Phi3RouterAdapter
-from app.features.nlp_router.service.router_api import NLPRouterAPI
-
-from app.features.intelligence_bridge.data.repository import IntelligentSceneRepository
-from app.features.intelligence_bridge.service.bridge_api import IntelligenceBridgeAPI
-from app.orchestration.service.phases.intelligence_bridge_phase import IntelligenceBridgePhase
+from app.features.sentence_reconstruction.data.repositories import PostgresSentenceRepository
+from app.features.sentence_reconstruction.data.wtp_adapter import SaTAdapter
+from app.features.sentence_reconstruction.service.reconstruction_api import SentenceReconstructionAPI
 
 from app.orchestration.domain.enums import PipelinePhase
 from app.orchestration.service.phases.scan_phase import ScanPhase
@@ -57,6 +49,7 @@ from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPha
 from app.orchestration.service.phases.vad_phase import VadPhase
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
 from app.orchestration.service.phases.diarize_phase import DiarizePhase
+from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 
 
@@ -123,28 +116,25 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         adapter=diarize_adapter
     )
 
-    # Strictly use the main config
     diarize_manifest = ModelManifest(
         model_type=ModelType.DIARIZATION,
         model_path=settings.DIARIZATION_MODEL_PATH,
         required_vram_mb=settings.DIARIZATION_VRAM_REQUIREMENT_MB
     )
 
-    scene_adapter = FFmpegSceneAdapter(timeout_seconds=300)
-    phash_dedup = PhashDeduplicator(hamming_distance_threshold=5)
-    scene_api = SceneDetectorAPI(scene_adapter, storage_api, phash_dedup)
-
-    # Strictly use the main config
-    nlp_manifest = ModelManifest(
-        model_type=ModelType.LLM,
-        model_path=settings.NLP_MODEL_PATH,
-        required_vram_mb=settings.NLP_VRAM_REQUIREMENT_MB
+    sentence_repo = PostgresSentenceRepository(db_manager)
+    sat_adapter = SaTAdapter()
+    reconstruction_api = SentenceReconstructionAPI(
+        repository=sentence_repo,
+        orchestrator=model_orchestrator,
+        adapter=sat_adapter
     )
-    nlp_adapter = Phi3RouterAdapter()
-    nlp_router_api = NLPRouterAPI(model_orchestrator, nlp_adapter, nlp_manifest)
 
-    bridge_repo = IntelligentSceneRepository(db_manager)
-    bridge_api = IntelligenceBridgeAPI(bridge_repo, scene_api, transcription_api, nlp_router_api)
+    sat_manifest = ModelManifest(
+        model_type=ModelType.SENTENCE_RECONSTRUCTION,
+        model_path=settings.SAT_MODEL_NAME,
+        required_vram_mb=settings.SAT_VRAM_REQUIREMENT_MB
+    )
 
     scan_phase = ScanPhase(job_manager, scanner)
     ingest_phase = IngestPhase(job_manager, storage_api)
@@ -177,13 +167,13 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         diarize_adapter=diarize_adapter
     )
 
-    bridge_phase = IntelligenceBridgePhase(
+    sentence_reconstruction_phase = SentenceReconstructionPhase(
         job_manager=job_manager,
-        bridge_api=bridge_api,
-        storage_api=storage_api,
+        reconstruction_api=reconstruction_api,
+        transcription_api=transcription_api,
         async_model_service=async_model_service,
-        nlp_manifest=nlp_manifest,
-        nlp_adapter=nlp_adapter
+        sat_manifest=sat_manifest,
+        sat_adapter=sat_adapter
     )
 
     return BatchMediaPipeline(
@@ -193,7 +183,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         vad_phase=vad_phase,
         transcribe_phase=transcribe_phase,
         diarize_phase=diarize_phase,
-        intelligence_bridge_phase=bridge_phase
+        sentence_reconstruction_phase=sentence_reconstruction_phase
     )
 
 
@@ -234,56 +224,32 @@ def main():
 
         storage_repo = StorageRepository(db_manager)
 
-        if PipelinePhase.DIARIZE in results or PipelinePhase.TRANSCRIBE in results:
+        # Output the clean, reconstructed text
+        if PipelinePhase.SENTENCE_RECONSTRUCTION in results:
             print("\n==================================================")
-            print("  WRITING TRANSCRIPTS TO DISK")
+            print("  WRITING RECONSTRUCTED TRANSCRIPTS TO DISK")
             print("==================================================")
 
-            transcript_repo = TranscriptRepository(db_manager)
-            target_batch = results.get(PipelinePhase.DIARIZE) or results.get(PipelinePhase.TRANSCRIBE)
+            sentence_repo = PostgresSentenceRepository(db_manager)
+            target_batch = results[PipelinePhase.SENTENCE_RECONSTRUCTION]
 
             for item in target_batch.items:
                 if item.success and item.source_id:
                     source = storage_repo.get_by_id(item.source_id)
-                    transcript = transcript_repo.get_by_source_id(item.source_id)
+                    reconstructed_transcript = sentence_repo.get_by_source_id(item.source_id)
 
-                    if source and transcript:
+                    if source and reconstructed_transcript:
                         safe_name = Path(source.name).stem
                         out_file = target_path / f"{safe_name}_transcript.txt"
 
                         try:
                             formatted_text = ""
-                            for seg in transcript.segments:
-                                speaker = seg.speaker_id or "Unknown Speaker"
-                                formatted_text += f"[{speaker}] {seg.start_sec:.2f}s - {seg.end_sec:.2f}s: {seg.text}\n"
+                            for sentence in reconstructed_transcript.sentences:
+                                speaker = sentence.speaker_id or "Unknown Speaker"
+                                formatted_text += f"[{speaker}] {sentence.start_sec:.2f}s - {sentence.end_sec:.2f}s: {sentence.text}\n"
 
                             with open(out_file, "w", encoding="utf-8") as f:
                                 f.write(formatted_text)
-                            print(f"  [SUCCESS] Saved: {out_file.name}")
-                        except IOError as e:
-                            print(f"  [ERROR] Failed to write {out_file.name}: {e}")
-
-        if PipelinePhase.INTELLIGENCE_BRIDGE in results:
-            print("\n==================================================")
-            print("  WRITING INTELLIGENCE SCENE MAPS TO DISK")
-            print("==================================================")
-
-            bridge_repo = IntelligentSceneRepository(db_manager)
-            target_batch = results[PipelinePhase.INTELLIGENCE_BRIDGE]
-
-            for item in target_batch.items:
-                if item.success and item.source_id:
-                    source = storage_repo.get_by_id(item.source_id)
-                    scene_map = bridge_repo.get_map_by_source_id(item.source_id)
-
-                    if source and scene_map:
-                        safe_name = Path(source.name).stem
-                        out_file = target_path / f"{safe_name}_scenes.json"
-
-                        try:
-                            map_dict = scene_map.model_dump(mode='json')
-                            with open(out_file, "w", encoding="utf-8") as f:
-                                json.dump(map_dict, f, indent=4)
                             print(f"  [SUCCESS] Saved: {out_file.name}")
                         except IOError as e:
                             print(f"  [ERROR] Failed to write {out_file.name}: {e}")

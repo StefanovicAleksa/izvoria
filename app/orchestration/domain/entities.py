@@ -1,4 +1,4 @@
-# Canvas: orchestration_entities_v4
+# Canvas: orchestration_entities_v6
 # Path: app/orchestration/domain/entities.py
 
 import uuid
@@ -45,6 +45,7 @@ class VadJobResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+
 class TranscribeJobResult(BaseModel):
     """Result of Phase 5: Transcription."""
     source_id: uuid.UUID
@@ -53,6 +54,7 @@ class TranscribeJobResult(BaseModel):
     error_message: Optional[str] = None
 
     model_config = ConfigDict(frozen=True)
+
 
 class DiarizeJobResult(BaseModel):
     """Result of Phase 6: Speaker Diarization."""
@@ -63,14 +65,26 @@ class DiarizeJobResult(BaseModel):
 
     model_config = ConfigDict(frozen=True)
 
+
 class IntelligenceBridgeJobResult(BaseModel):
-    """Result of Phase 7: Intelligence Bridge (Multimodal Scene Mapping)."""
+    """Result of Phase: Intelligence Bridge (Multimodal Scene Mapping)."""
     source_id: uuid.UUID
     success: bool
     scene_map_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
 
     model_config = ConfigDict(frozen=True)
+
+
+class SentenceReconstructionJobResult(BaseModel):
+    """Result of Phase 7: Sentence Reconstruction."""
+    source_id: uuid.UUID
+    success: bool
+    reconstructed_transcript_id: Optional[uuid.UUID] = None
+    error_message: Optional[str] = None
+
+    model_config = ConfigDict(frozen=True)
+
 
 # --- Aggregate Batch Results ---
 
