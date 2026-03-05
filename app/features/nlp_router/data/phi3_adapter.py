@@ -1,4 +1,4 @@
-# Canvas: phi3_adapter_v5
+# Canvas: phi3_adapter_v6
 # Path: app/features/nlp_router/data/phi3_adapter.py
 
 import os
@@ -16,7 +16,7 @@ from app.features.nlp_router.utils.error_mapper import map_nlp_router_error
 class Phi3RouterAdapter(ILLMRouterAdapter):
     """
     Executes local LLM inference using native Hugging Face Transformers.
-    Optimized for the unquantized Phi-3.5-mini-instruct model in PyTorch/Safetensors format.
+    Includes built-in retry logic to handle non-deterministic LLM output.
     """
 
     def load(self, manifest: ModelManifest) -> LoadedModel:
@@ -31,7 +31,7 @@ class Phi3RouterAdapter(ILLMRouterAdapter):
             hf_model = AutoModelForCausalLM.from_pretrained(
                 manifest.model_path,
                 device_map="cuda",
-                torch_dtype=torch.bfloat16,  # Use bfloat16 to fit in 12GB VRAM efficiently
+                torch_dtype=torch.bfloat16,
                 local_files_only=True
             )
 
@@ -50,7 +50,6 @@ class Phi3RouterAdapter(ILLMRouterAdapter):
             del model.model_instance["tokenizer"]
             del model.model_instance
 
-        # Explicitly clear the PyTorch CUDA allocator cache to free the VRAM for other models
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
@@ -73,31 +72,46 @@ class Phi3RouterAdapter(ILLMRouterAdapter):
                 add_generation_prompt=True,
                 return_tensors="pt"
             ).to(hf_model.device)
-
-            outputs = hf_model.generate(
-                inputs,
-                max_new_tokens=2048,
-                temperature=0.1,  # Ultra-low for deterministic logic
-                do_sample=True,
-                pad_token_id=tokenizer.eos_token_id
-            )
-
-            # Extract only the newly generated tokens
-            generated_tokens = outputs[0][inputs.shape[1]:]
-            raw_output_str = tokenizer.decode(generated_tokens, skip_special_tokens=True)
-
-            # Strip Markdown JSON wrappers if the LLM hallucinated them
-            start_idx = raw_output_str.find('{')
-            end_idx = raw_output_str.rfind('}')
-
-            if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
-                raw_json_str = raw_output_str[start_idx:end_idx + 1]
-            else:
-                raw_json_str = raw_output_str  # Fallback to raw string
-
-            parsed_data = json.loads(raw_json_str)
-            return RouterReasoning.model_validate(parsed_data)
-
         except Exception as e:
-            context_msg = f"Chunk: {chunk.start_sec}s - {chunk.end_sec}s"
-            raise map_nlp_router_error(e, context=context_msg)
+            raise map_nlp_router_error(e, context="Tokenization Error")
+
+        last_error = None
+        max_retries = 3
+
+        for attempt in range(max_retries):
+            try:
+                # Dynamically increase temperature on retries to break out of hallucination loops
+                temp = 0.1 if attempt == 0 else 0.3 + (attempt * 0.2)
+
+                outputs = hf_model.generate(
+                    inputs,
+                    max_new_tokens=2048,
+                    temperature=temp,
+                    do_sample=True,
+                    pad_token_id=tokenizer.eos_token_id
+                )
+
+                generated_tokens = outputs[0][inputs.shape[1]:]
+                raw_output_str = tokenizer.decode(generated_tokens, skip_special_tokens=True)
+
+                start_idx = raw_output_str.find('{')
+                end_idx = raw_output_str.rfind('}')
+
+                if start_idx != -1 and end_idx != -1 and end_idx >= start_idx:
+                    raw_json_str = raw_output_str[start_idx:end_idx + 1]
+                else:
+                    raw_json_str = raw_output_str
+
+                parsed_data = json.loads(raw_json_str)
+                return RouterReasoning.model_validate(parsed_data)
+
+            except Exception as e:
+                last_error = e
+                # Explicitly clear VRAM of the failed generation tensors before retrying
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                continue
+
+        # If we exhausted all retries, bubble it up to the API layer for graceful degradation
+        context_msg = f"Chunk: {chunk.start_sec}s - {chunk.end_sec}s | Failed after {max_retries} retries."
+        raise map_nlp_router_error(last_error, context=context_msg)

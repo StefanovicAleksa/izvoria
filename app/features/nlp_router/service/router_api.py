@@ -1,6 +1,7 @@
-# Canvas: router_api_v2
+# Canvas: router_api_v3
 # Path: app/features/nlp_router/service/router_api.py
 
+import logging
 from typing import List
 
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
@@ -9,6 +10,9 @@ from app.features.transcription.domain.entities import Transcript
 from app.features.scene_detector.domain.entities import TimeWindow
 from app.features.nlp_router.domain.interfaces import ILLMRouterAdapter
 from app.features.nlp_router.utils.chunker import chunk_transcript
+from app.features.nlp_router.exceptions.base import NLPRouterError
+
+logger = logging.getLogger(__name__)
 
 
 class NLPRouterAPI:
@@ -35,26 +39,31 @@ class NLPRouterAPI:
         loaded_model = None
 
         try:
-            # 1. Acquire Model into VRAM
             loaded_model = self._orchestrator.acquire_model(self._manifest, self._adapter)
 
-            # 2. Process chunks and apply mathematical buffers programmatically
             for chunk in chunks:
-                reasoning_result = self._adapter.extract_visual_cues(loaded_model, chunk)
+                try:
+                    reasoning_result = self._adapter.extract_visual_cues(loaded_model, chunk)
 
-                for w in reasoning_result.windows:
-                    # Apply a strict 5-second post-buffer to account for camera delays
-                    buffered_window = TimeWindow(
-                        start_sec=w.start_sec,
-                        end_sec=w.end_sec + 5.0
+                    for w in reasoning_result.windows:
+                        buffered_window = TimeWindow(
+                            start_sec=w.start_sec,
+                            end_sec=w.end_sec + 5.0
+                        )
+                        merged_windows.append(buffered_window)
+
+                except NLPRouterError as e:
+                    # [FAULT TOLERANCE] Catch the hallucination and skip the chunk.
+                    # This prevents Traceback memory leaks and keeps the pipeline moving.
+                    logger.warning(
+                        f"LLM Hallucinated on chunk {chunk.start_sec}s - {chunk.end_sec}s. "
+                        f"Skipping this 3-minute window and proceeding. Error: {e}"
                     )
-                    merged_windows.append(buffered_window)
+                    continue
 
-            # 3. Consolidate overlapping windows for optimal FFmpeg extraction
             return self._consolidate_windows(merged_windows)
 
         finally:
-            # 4. Release VRAM strictly
             if loaded_model:
                 self._orchestrator.release_model(loaded_model, self._adapter, flush=True)
 

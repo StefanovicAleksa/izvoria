@@ -1,4 +1,6 @@
-# File: app/core/model_manager/domain/enums.py
+# Canvas: model_manager_enums_v2
+# Path: app/core/model_manager/domain/enums.py
+
 from enum import Enum
 
 class ModelType(str, Enum):
@@ -12,3 +14,4 @@ class ModelType(str, Enum):
     DIARIZATION = "diarization"
     LLM = "llm"
     VISION = "vision"
+    SENTENCE_RECONSTRUCTION = "sentence_reconstruction" # FIXED: Officially adding the new model type

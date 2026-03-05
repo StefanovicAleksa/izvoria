@@ -1,4 +1,6 @@
-# File: requirements.txt
+# Canvas: requirements_v3
+# Path: requirements.txt
+
 pydantic>=2.6.0
 pydantic-settings>=2.1.0
 sqlalchemy>=2.0.25
@@ -18,17 +20,22 @@ faster-whisper>=1.0.0     # Required for CTranslate2 optimized transcription
 
 # Configuration parsing for NeMo Diarization Graphs
 omegaconf>=2.3.0
-
-# Required for catching Spectral Clustering math exceptions
 scipy>=1.10.0
 
-# --- NEW: Scene Detection & Vision Prep ---
-Pillow>=10.2.0      # Required for safe, CPU-bound image loading and manipulation
-ImageHash>=4.3.1    # Required for mathematical Perceptual Hashing (pHash) to deduplicate frames
+# --- Scene Detection & Vision Prep ---
+Pillow>=10.2.0
+ImageHash>=4.3.1
 
-# Native Hugging Face Inference Engine for Phi-3.5
+# Native Hugging Face Inference Engine
 transformers>=4.40.0
 accelerate>=0.28.0
+
+# --- NEW: Sentence Reconstruction (Phase 7) ---
+wtpsplit>=1.2.0       # Neural punctuation restoration and sentence boundary detection
+
+# --- Contextual Retrieval (Phase 8) ---
+huggingface_hub[hf_transfer]>=0.23.0
+llama-cpp-python>=0.2.75
 
 # Testing Dependencies
 pytest>=8.0.0

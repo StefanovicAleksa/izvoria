@@ -1,4 +1,4 @@
-# Canvas: jobs_enums_v3
+# Canvas: jobs_enums_v4
 # Path: app/core/jobs/domain/enums.py
 
 from enum import Enum
@@ -18,3 +18,4 @@ class JobType(str, Enum):
     TRANSCRIBE = "transcribe"
     DIARIZE = "diarize" # speaker diarization
     INTELLIGENCE_BRIDGE = "intelligence_bridge"
+    SENTENCE_RECONSTRUCTION = "sentence_reconstruction"

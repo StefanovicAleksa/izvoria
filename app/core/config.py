@@ -1,4 +1,4 @@
-# Canvas: core_config_v3
+# Canvas: core_config_v4
 # Path: app/core/config.py
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -35,7 +35,11 @@ class Settings(BaseSettings):
 
     # 4. Semantic NLP Router (llama.cpp GGUF)
     NLP_MODEL_PATH: str = "models/Phi-3.5-mini-instruct"
-    NLP_VRAM_REQUIREMENT_MB: float = 8000.0  # Increased for unquantized FP16/BF16 weights
+    NLP_VRAM_REQUIREMENT_MB: float = 8000.0
+
+    # 5. Sentence Reconstruction (wtpsplit / SaT)
+    SAT_MODEL_NAME: str = "sat-3l-sm"
+    SAT_VRAM_REQUIREMENT_MB: float = 750.0
 
     @property
     def DATABASE_URL(self) -> str:
