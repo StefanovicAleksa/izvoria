@@ -1,7 +1,5 @@
-# Canvas: model_manager_enums_v2
-# Path: app/core/model_manager/domain/enums.py
-
 from enum import Enum
+
 
 class ModelType(str, Enum):
     """
@@ -14,4 +12,8 @@ class ModelType(str, Enum):
     DIARIZATION = "diarization"
     LLM = "llm"
     VISION = "vision"
-    SENTENCE_RECONSTRUCTION = "sentence_reconstruction" # FIXED: Officially adding the new model type
+    SENTENCE_RECONSTRUCTION = "sentence_reconstruction"
+
+    ASR_CORRECTION_PHASE_1 = "asr_correction_phase_1"  # Extractor (Llama 3.2)
+    ASR_CORRECTION_PHASE_2 = "asr_correction_phase_2"  # Detector (T5-ASR-EC)
+    ASR_CORRECTION_PHASE_3 = "asr_correction_phase_3"  # Corrector (Qwen 2.5)

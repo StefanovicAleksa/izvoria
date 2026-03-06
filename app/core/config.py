@@ -41,6 +41,20 @@ class Settings(BaseSettings):
     SAT_MODEL_NAME: str = "sat-3l-sm"
     SAT_VRAM_REQUIREMENT_MB: float = 750.0
 
+    # --- ASR Error Correction Models ---
+
+    # Phase 1: Overarching Glossary Extraction (Llama 3.2 3B Q8_0 GGUF)
+    ASR_PHASE_1_MODEL_PATH: str = "models/llama-3.2-3b-instruct-q8_0.gguf"
+    ASR_PHASE_1_VRAM_REQUIREMENT_MB: float = 3500.0
+
+    # Phase 2: Anomaly Detection (T5-ASR-EC Base)
+    ASR_PHASE_2_MODEL_PATH: str = "models/flanec-base-cd"
+    ASR_PHASE_2_VRAM_REQUIREMENT_MB: float = 2000.0
+
+    # Phase 3: Grounded Correction (Qwen 2.5 7B Q4_K_M GGUF)
+    ASR_PHASE_3_MODEL_PATH: str = "models/qwen2.5-7b-instruct-q4_k_m.gguf"
+    ASR_PHASE_3_VRAM_REQUIREMENT_MB: float = 5000.0
+
     @property
     def DATABASE_URL(self) -> str:
         return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
