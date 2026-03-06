@@ -1,4 +1,5 @@
-import os
+# Canvas: correction_api_v2
+# Path: app/features/asr_error_correction/service/correction_api.py
 
 from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest
@@ -61,12 +62,19 @@ class AsrCorrectionAPI:
             model_path=settings.ASR_PHASE_1_MODEL_PATH,
             required_vram_mb=settings.ASR_PHASE_1_VRAM_REQUIREMENT_MB
         )
-        tokenizer_path = os.path.dirname(manifest.model_path)
 
         model = None
         try:
             model = self._llama_adapter.load(manifest)
-            chunks = chunk_sentences_by_exact_tokens(transcript.sentences, tokenizer_path)
+
+            # FIX: Use llama.cpp's native C++ tokenizer instead of HuggingFace
+            tokenize_func = lambda text: model.model_instance.tokenize(text.encode("utf-8"), add_bos=False)
+
+            chunks = chunk_sentences_by_exact_tokens(
+                sentences=transcript.sentences,
+                tokenize_func=tokenize_func,
+                max_tokens_per_chunk=6000
+            )
 
             all_items = []
             final_domain = "General"

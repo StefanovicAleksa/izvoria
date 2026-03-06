@@ -1,4 +1,4 @@
-# Canvas: core_config_v4
+# Canvas: core_config_v5
 # Path: app/core/config.py
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     ASR_PHASE_2_VRAM_REQUIREMENT_MB: float = 2000.0
 
     # Phase 3: Grounded Correction (Qwen 2.5 7B Q4_K_M GGUF)
-    ASR_PHASE_3_MODEL_PATH: str = "models/qwen2.5-7b-instruct-q4_k_m.gguf"
+    ASR_PHASE_3_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
     ASR_PHASE_3_VRAM_REQUIREMENT_MB: float = 5000.0
 
     @property
