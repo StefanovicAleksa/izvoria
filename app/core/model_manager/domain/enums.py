@@ -1,5 +1,7 @@
-from enum import Enum
+# Canvas: model_enums_v2
+# Path: app/core/model_manager/domain/enums.py
 
+from enum import Enum
 
 class ModelType(str, Enum):
     """
@@ -7,6 +9,8 @@ class ModelType(str, Enum):
     The Domain layer does not care about the specific architecture (e.g., NeMo vs Silero),
     only what the model is supposed to do.
     """
+    DOMAIN_SCOUT = "domain_scout"             # CPU text extraction
+    DOMAIN_CLASSIFIER = "domain_classifier"   # CPU zero-shot classification
     VAD = "vad"
     TRANSCRIPTION = "transcription"
     DIARIZATION = "diarization"

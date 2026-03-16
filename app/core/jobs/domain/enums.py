@@ -1,4 +1,4 @@
-# Canvas: jobs_enums_v4
+# Canvas: jobs_enums_v5
 # Path: app/core/jobs/domain/enums.py
 
 from enum import Enum
@@ -15,6 +15,7 @@ class JobType(str, Enum):
     FILE_INGEST = "file_ingest"
     AUDIO_EXTRACTION = "audio_extraction"
     VAD = "vad" # voice activity detection
+    DOMAIN_ADAPTATION = "domain_adaptation" # CPU-bound scouting and classification
     TRANSCRIBE = "transcribe"
     DIARIZE = "diarize" # speaker diarization
     INTELLIGENCE_BRIDGE = "intelligence_bridge"

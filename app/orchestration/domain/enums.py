@@ -1,4 +1,4 @@
-# Canvas: orchestration_enums_v5
+# Canvas: orchestration_enums_v6
 # Path: app/orchestration/domain/enums.py
 
 from enum import Enum
@@ -9,6 +9,7 @@ class PipelinePhase(str, Enum):
     INGEST = "ingest"
     AUDIO_EXTRACTION = "audio_extraction"
     VAD = "vad"
+    DOMAIN_ADAPTATION = "domain_adaptation"
     TRANSCRIBE = "transcribe"
     DIARIZE = "diarize"
     SENTENCE_RECONSTRUCTION = "sentence_reconstruction"
