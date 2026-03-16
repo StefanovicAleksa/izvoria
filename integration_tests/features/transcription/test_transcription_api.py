@@ -1,3 +1,4 @@
+# Canvas: it_test_transcription_api_v2
 # Path: integration_tests/features/transcription/test_transcription_api.py
 
 import os
@@ -23,7 +24,6 @@ from app.features.transcription.data.repositories import TranscriptRepository
 from app.features.transcription.service.transcription_api import TranscriptionAPI
 from app.features.transcription.domain.entities import Transcript, TranscriptSegment
 
-
 class TestTranscriptionAPIIntegration:
     """
     STRICT NO-MOCKS INTEGRATION TEST.
@@ -38,8 +38,6 @@ class TestTranscriptionAPIIntegration:
 
     @pytest.fixture
     def real_audio_file(self):
-        """Points to the real human speech test file."""
-        # Resolves path to: <project_root>/integration_tests/resources/test_speech.wav
         integration_tests_dir = Path(__file__).resolve().parent.parent.parent
         audio_path = integration_tests_dir / "resources" / "test_speech.wav"
 
@@ -91,7 +89,8 @@ class TestTranscriptionAPIIntegration:
             adapter=adapter
         )
 
-    def test_process_audio_end_to_end(self, live_api, test_source_id, real_audio_file):
+    def test_process_audio_end_to_end_with_hints(self, live_api, test_source_id, real_audio_file):
+        """Verifies full GPU execution while applying domain-specific hotwords."""
         vad_repo = live_api._vad_repo
         test_vad_map = VadMap(
             source_id=test_source_id,
@@ -104,9 +103,12 @@ class TestTranscriptionAPIIntegration:
         if not os.path.exists(settings.WHISPER_MODEL_PATH):
             pytest.skip(f"Faster-Whisper model not found at {settings.WHISPER_MODEL_PATH}. Skipping hardware test.")
 
+        # ACT: Execute transcription providing heavy hints for specific jargon
         transcript = live_api.process_audio(
             source_id=test_source_id,
             audio_path=real_audio_file,
+            language="en",
+            hotwords="integration:15.0, test:15.0",  # Inject our glossary strings
             release_after=True
         )
 
@@ -114,6 +116,7 @@ class TestTranscriptionAPIIntegration:
         assert transcript.source_id == test_source_id
         assert isinstance(transcript.segments, list)
 
+        # Verify Database Persistence
         transcript_repo = live_api._repo
         db_transcript = transcript_repo.get_by_source_id(test_source_id)
 

@@ -1,4 +1,4 @@
-# Canvas: transcription_api_v3
+# Canvas: transcription_api_v5
 # Path: app/features/transcription/service/transcription_api.py
 
 import uuid
@@ -9,14 +9,18 @@ from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.domain.entities import ModelManifest
 from app.core.model_manager.domain.enums import ModelType
 
+from app.features.transcription.domain.interfaces import ITranscriptionAdapter, ITranscriptRepository
 from app.features.vad.domain.interfaces import IVadRepository
 from app.features.transcription.domain.entities import Transcript
-from app.features.transcription.domain.interfaces import ITranscriptRepository, ITranscriptionAdapter
 from app.features.transcription.utils.error_mapper import map_transcription_error
-from app.features.transcription.exceptions.model import TranscriptionAudioError
 
 
 class TranscriptionAPI:
+    """
+    Orchestrates the conversion of audio files into raw text transcripts
+    using Voice Activity Detection maps to bypass silent sections.
+    """
+
     def __init__(
             self,
             repository: ITranscriptRepository,
@@ -29,58 +33,60 @@ class TranscriptionAPI:
         self._orchestrator = orchestrator
         self._adapter = adapter
 
-    def get_transcript(self, source_id: uuid.UUID) -> Optional[Transcript]:
-        """Public API method for other features to retrieve an existing Transcript."""
-        try:
-            return self._repo.get_by_source_id(source_id)
-        except Exception as e:
-            raise map_transcription_error(e) from e
+    def process_audio(
+            self,
+            source_id: uuid.UUID,
+            audio_path: str,
+            language: Optional[str] = None,
+            hotwords: Optional[str] = None,
+            release_after: bool = False
+    ) -> Transcript:
 
-    def update_transcript(self, transcript: Transcript) -> Transcript:
-        """
-        Public API method for other features (like Diarization) to update
-        an existing transcript with new enriched data (e.g., Speaker IDs).
-        """
-        try:
-            return self._repo.update(transcript)
-        except Exception as e:
-            raise map_transcription_error(e) from e
-
-    def process_audio(self, source_id: uuid.UUID, audio_path: str, release_after: bool = True) -> Transcript:
+        # 1. Idempotency Check
         existing_transcript = self._repo.get_by_source_id(source_id)
         if existing_transcript:
             return existing_transcript
 
+        # 2. Fetch VAD Map
         vad_map = self._vad_repo.get_map_by_source_id(source_id)
-        if not vad_map:
-            raise TranscriptionAudioError(
-                f"Cannot transcribe Source {source_id}: VAD Map not found. "
-                "The VAD phase must successfully complete before transcription."
-            )
+        if not vad_map or not vad_map.segments:
+            # If no human speech was detected, create an empty transcript.
+            return self._repo.save(Transcript(source_id=source_id, segments=[]))
 
+        # 3. Determine Language
+        target_language = language or settings.APPLIANCE_LANGUAGE
+
+        # 4. Load Model
         manifest = ModelManifest(
             model_type=ModelType.TRANSCRIPTION,
             model_path=settings.WHISPER_MODEL_PATH,
             required_vram_mb=settings.WHISPER_VRAM_REQUIREMENT_MB
         )
+        loaded_model = self._orchestrator.acquire_model(manifest, self._adapter)
 
-        loaded_model = None
         try:
-            loaded_model = self._orchestrator.acquire_model(manifest, self._adapter)
-
-            transcript = self._adapter.transcribe(
+            # 5. Transcribe with Domain Hints and Language Constraints
+            segments = self._adapter.transcribe(
                 model=loaded_model,
                 audio_path=audio_path,
                 vad_map=vad_map,
-                source_id=source_id
+                language=target_language,
+                hotwords=hotwords
             )
 
-            saved_transcript = self._repo.save(transcript)
-            return saved_transcript
+            transcript = Transcript(source_id=source_id, segments=segments)
+            return self._repo.save(transcript)
 
         except Exception as e:
             raise map_transcription_error(e) from e
-
         finally:
-            if loaded_model and release_after:
+            if release_after:
                 self._orchestrator.release_model(loaded_model, self._adapter, flush=True)
+
+    def get_transcript(self, source_id: uuid.UUID) -> Optional[Transcript]:
+        """Retrieves a transcript by its source UUID."""
+        return self._repo.get_by_source_id(source_id)
+
+    def update_transcript(self, transcript: Transcript) -> Transcript:
+        """Saves modifications made to the transcript (e.g., by the Diarization phase)."""
+        return self._repo.update(transcript)

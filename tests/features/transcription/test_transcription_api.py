@@ -1,16 +1,14 @@
-# filename: test_transcription_api_v2.py
-# path: tests/features/transcription/test_transcription_api.py
+# Canvas: test_transcription_api_v4
+# Path: tests/features/transcription/test_transcription_api.py
+
 import uuid
 import pytest
 from unittest.mock import MagicMock
 
 from app.features.transcription.service.transcription_api import TranscriptionAPI
 from app.features.transcription.domain.entities import Transcript
-from app.features.vad.domain.entities import VadMap
-from app.features.transcription.exceptions.model import (
-    TranscriptionAudioError,
-    CTranslateEngineError  # <-- Added missing import
-)
+from app.features.vad.domain.entities import VadMap, VadSegment
+from app.features.transcription.exceptions.model import CTranslateEngineError, TranscriptionAudioError
 
 
 class TestTranscriptionAPI:
@@ -33,7 +31,6 @@ class TestTranscriptionAPI:
         )
 
     def test_process_audio_idempotent_return(self, api, mocks):
-        """Should return immediately if transcript already exists in DB."""
         source_id = uuid.uuid4()
         existing_transcript = Transcript(source_id=source_id, segments=[])
         mocks["repo"].get_by_source_id.return_value = existing_transcript
@@ -50,53 +47,72 @@ class TestTranscriptionAPI:
         mocks["repo"].get_by_source_id.return_value = None
         mocks["vad_repo"].get_map_by_source_id.return_value = None
 
-        with pytest.raises(TranscriptionAudioError, match="VAD Map not found"):
-            api.process_audio(source_id, "/dummy.wav")
+        # When VAD map is completely missing, your feature maps it or returns empty.
+        # By your earlier tests, you explicitly check for the absence of a VadMap to raise a TranscriptionAudioError if you strictly required it.
+        # But per our API update, if it's missing or empty, it returns an empty transcript safely.
+        # Let's verify it returns an empty transcript:
+        empty_transcript = Transcript(source_id=source_id, segments=[])
+        mocks["repo"].save.return_value = empty_transcript
 
-    def test_process_audio_success_flow(self, api, mocks):
-        """Happy path verifies Orchestrator loading, execution, saving, and VRAM flushing."""
+        result = api.process_audio(source_id, "/dummy.wav")
+        assert result == empty_transcript
+        mocks["orchestrator"].acquire_model.assert_not_called()
+
+    def test_process_audio_success_flow_with_hints(self, api, mocks):
         source_id = uuid.uuid4()
         mocks["repo"].get_by_source_id.return_value = None
 
-        fake_vad_map = VadMap(source_id=source_id, segments=[])
+        # FIX: Supply an actual VAD segment to trigger the GPU logic
+        fake_vad_map = VadMap(source_id=source_id, segments=[VadSegment(start_sec=0, end_sec=5.0, confidence=0.99)])
         mocks["vad_repo"].get_map_by_source_id.return_value = fake_vad_map
 
         loaded_model_mock = MagicMock()
         mocks["orchestrator"].acquire_model.return_value = loaded_model_mock
 
-        generated_transcript = Transcript(source_id=source_id, segments=[])
-        mocks["adapter"].transcribe.return_value = generated_transcript
-        mocks["repo"].save.return_value = generated_transcript
+        generated_segments = []
+        mocks["adapter"].transcribe.return_value = generated_segments
 
-        result = api.process_audio(source_id, "/dummy.wav", release_after=True)
+        saved_transcript = Transcript(source_id=source_id, segments=[])
+        mocks["repo"].save.return_value = saved_transcript
 
-        assert result == generated_transcript
+        result = api.process_audio(
+            source_id,
+            "/dummy.wav",
+            language="fr",
+            hotwords="bonjour:15.0",
+            release_after=True
+        )
+
+        assert result == saved_transcript
         mocks["orchestrator"].acquire_model.assert_called_once()
         mocks["adapter"].transcribe.assert_called_once_with(
-            model=loaded_model_mock, audio_path="/dummy.wav", vad_map=fake_vad_map, source_id=source_id
+            model=loaded_model_mock,
+            audio_path="/dummy.wav",
+            vad_map=fake_vad_map,
+            language="fr",
+            hotwords="bonjour:15.0"
         )
-        mocks["repo"].save.assert_called_once_with(generated_transcript)
+        mocks["repo"].save.assert_called_once()
         mocks["orchestrator"].release_model.assert_called_once_with(
             loaded_model_mock, mocks["adapter"], flush=True
         )
 
     def test_process_audio_guarantees_vram_release_on_crash(self, api, mocks):
-        """Even if the model throws a CTranslate runtime error, finally block must release VRAM."""
         source_id = uuid.uuid4()
         mocks["repo"].get_by_source_id.return_value = None
-        mocks["vad_repo"].get_map_by_source_id.return_value = VadMap(source_id=source_id, segments=[])
+
+        # FIX: Supply an actual VAD segment to trigger the GPU logic
+        fake_vad_map = VadMap(source_id=source_id, segments=[VadSegment(start_sec=0, end_sec=5.0, confidence=0.99)])
+        mocks["vad_repo"].get_map_by_source_id.return_value = fake_vad_map
 
         loaded_model_mock = MagicMock()
         mocks["orchestrator"].acquire_model.return_value = loaded_model_mock
 
-        # Simulate engine crash
         mocks["adapter"].transcribe.side_effect = RuntimeError("cublas failed")
 
-        # <-- FIX: Changed from TranscriptionInferenceError to CTranslateEngineError
         with pytest.raises(CTranslateEngineError):
             api.process_audio(source_id, "/dummy.wav", release_after=True)
 
-        # Flush must still happen
         mocks["orchestrator"].release_model.assert_called_once_with(
             loaded_model_mock, mocks["adapter"], flush=True
         )

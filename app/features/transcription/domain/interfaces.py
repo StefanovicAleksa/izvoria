@@ -1,54 +1,41 @@
-# filename: transcription_interfaces_v1.py
-# path: app/features/transcription/domain/interfaces.py
+# Canvas: transcription_interfaces_v5
+# Path: app/features/transcription/domain/interfaces.py
+
 import uuid
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import List, Optional
 
-from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.domain.entities import LoadedModel
+from app.core.model_manager.domain.interfaces import IModelLoader
 from app.features.vad.domain.entities import VadMap
-from app.features.transcription.domain.entities import Transcript
-
+from app.features.transcription.domain.entities import Transcript, TranscriptSegment
 
 class ITranscriptionAdapter(IModelLoader, ABC):
-    """
-    Contract for the AI transcription model (e.g., Faster-Whisper).
-    Inherits from IModelLoader to support strict VRAM management via the Orchestrator.
-    """
+    """Contract for the heavy GPU-bound transcription model."""
 
     @abstractmethod
     def transcribe(
-        self,
-        model: LoadedModel,
-        audio_path: str,
-        vad_map: VadMap,
-        source_id: uuid.UUID
-    ) -> Transcript:
-        """
-        Takes the loaded model, the raw audio file, and the pre-computed VAD Map.
-        Should slice the audio according to the VAD Map to skip silence and transcribe
-        only the human speech segments.
-        """
+            self,
+            model: LoadedModel,
+            audio_path: str,
+            vad_map: VadMap,
+            language: str,
+            hotwords: Optional[str] = None
+    ) -> List[TranscriptSegment]:
         pass
 
-
 class ITranscriptRepository(ABC):
-    """
-    Contract for saving the completed Transcript to the database.
-    Like the VadMap, this will likely be stored as JSONB for high-performance retrieval.
-    """
+    """Contract for persisting the Transcript to PostgreSQL."""
 
     @abstractmethod
     def save(self, transcript: Transcript) -> Transcript:
-        """Saves a new Transcript to the database."""
         pass
 
     @abstractmethod
     def get_by_source_id(self, source_id: uuid.UUID) -> Optional[Transcript]:
-        """Retrieves a previously computed Transcript for a given Source."""
         pass
 
     @abstractmethod
     def update(self, transcript: Transcript) -> Transcript:
-        """Overwrites an existing Transcript in the database."""
+        """Updates an existing Transcript in the database."""
         pass

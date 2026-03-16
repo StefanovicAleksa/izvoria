@@ -1,121 +1,83 @@
-# Canvas: test_transcription_api_unit_v3
-# Path: tests/features/transcription/test_transcription_api_unit.py
+# Canvas: test_transcription_repo_v2
+# Path: tests/features/transcription/test_repository.py
 
 import uuid
 import pytest
 from unittest.mock import MagicMock
+from sqlalchemy.exc import SQLAlchemyError
 
-from app.features.transcription.service.transcription_api import TranscriptionAPI
-from app.features.transcription.domain.entities import Transcript
-from app.features.vad.domain.entities import VadMap
-from app.features.transcription.exceptions.model import (
-    TranscriptionAudioError,
-    CTranslateEngineError
-)
+from app.features.transcription.domain.entities import Transcript, TranscriptSegment
+from app.features.transcription.data.models import TranscriptModel
+from app.features.transcription.data.repositories import TranscriptRepository
+from app.features.transcription.exceptions.database import TranscriptionDatabaseError
 
 
-class TestTranscriptionAPI:
+class TestTranscriptRepository:
     @pytest.fixture
-    def mocks(self):
-        return {
-            "repo": MagicMock(),
-            "vad_repo": MagicMock(),
-            "orchestrator": MagicMock(),
-            "adapter": MagicMock()
-        }
+    def mock_db_manager(self):
+        manager = MagicMock()
+        session_mock = MagicMock()
+        manager.session.return_value.__enter__.return_value = session_mock
+        return manager, session_mock
 
     @pytest.fixture
-    def api(self, mocks):
-        return TranscriptionAPI(
-            repository=mocks["repo"],
-            vad_repository=mocks["vad_repo"],
-            orchestrator=mocks["orchestrator"],
-            adapter=mocks["adapter"]
+    def sample_transcript(self):
+        return Transcript(
+            source_id=uuid.uuid4(),
+            segments=[TranscriptSegment(start_sec=1.0, end_sec=2.0, text="Test Segment")]
         )
 
-    def test_get_transcript(self, api, mocks):
-        source_id = uuid.uuid4()
-        fake_transcript = Transcript(source_id=source_id, segments=[])
-        mocks["repo"].get_by_source_id.return_value = fake_transcript
+    def test_save_success(self, mock_db_manager, sample_transcript):
+        manager, session = mock_db_manager
+        repo = TranscriptRepository(manager)
 
-        result = api.get_transcript(source_id)
+        result = repo.save(sample_transcript)
 
-        assert result == fake_transcript
-        mocks["repo"].get_by_source_id.assert_called_once_with(source_id)
+        assert result == sample_transcript
+        session.add.assert_called_once()
 
-    def test_update_transcript(self, api, mocks):
-        source_id = uuid.uuid4()
-        fake_transcript = Transcript(source_id=source_id, segments=[])
-        mocks["repo"].update.return_value = fake_transcript
+        added_model = session.add.call_args[0][0]
+        assert isinstance(added_model, TranscriptModel)
+        assert added_model.source_id == sample_transcript.source_id
 
-        result = api.update_transcript(fake_transcript)
+    def test_get_by_source_id_found(self, mock_db_manager, sample_transcript):
+        manager, session = mock_db_manager
 
-        assert result == fake_transcript
-        mocks["repo"].update.assert_called_once_with(fake_transcript)
-
-    def test_process_audio_idempotent_return(self, api, mocks):
-        """Should return immediately if transcript already exists in DB."""
-        source_id = uuid.uuid4()
-        existing_transcript = Transcript(source_id=source_id, segments=[])
-        mocks["repo"].get_by_source_id.return_value = existing_transcript
-
-        result = api.process_audio(source_id, "/dummy.wav")
-
-        assert result == existing_transcript
-        mocks["vad_repo"].get_map_by_source_id.assert_not_called()
-        mocks["orchestrator"].acquire_model.assert_not_called()
-
-    def test_process_audio_fails_without_vad_map(self, api, mocks):
-        """Cannot transcribe without the VAD map prerequisites."""
-        source_id = uuid.uuid4()
-        mocks["repo"].get_by_source_id.return_value = None
-        mocks["vad_repo"].get_map_by_source_id.return_value = None
-
-        with pytest.raises(TranscriptionAudioError, match="VAD Map not found"):
-            api.process_audio(source_id, "/dummy.wav")
-
-    def test_process_audio_success_flow(self, api, mocks):
-        """Happy path verifies Orchestrator loading, execution, saving, and VRAM flushing."""
-        source_id = uuid.uuid4()
-        mocks["repo"].get_by_source_id.return_value = None
-
-        fake_vad_map = VadMap(source_id=source_id, segments=[])
-        mocks["vad_repo"].get_map_by_source_id.return_value = fake_vad_map
-
-        loaded_model_mock = MagicMock()
-        mocks["orchestrator"].acquire_model.return_value = loaded_model_mock
-
-        generated_transcript = Transcript(source_id=source_id, segments=[])
-        mocks["adapter"].transcribe.return_value = generated_transcript
-        mocks["repo"].save.return_value = generated_transcript
-
-        result = api.process_audio(source_id, "/dummy.wav", release_after=True)
-
-        assert result == generated_transcript
-        mocks["orchestrator"].acquire_model.assert_called_once()
-        mocks["adapter"].transcribe.assert_called_once_with(
-            model=loaded_model_mock, audio_path="/dummy.wav", vad_map=fake_vad_map, source_id=source_id
+        mock_db_model = TranscriptModel(
+            id=sample_transcript.id,
+            source_id=sample_transcript.source_id,
+            segments=[seg.model_dump() for seg in sample_transcript.segments],
+            created_at=sample_transcript.created_at
         )
-        mocks["repo"].save.assert_called_once_with(generated_transcript)
-        mocks["orchestrator"].release_model.assert_called_once_with(
-            loaded_model_mock, mocks["adapter"], flush=True
-        )
+        session.execute.return_value.scalar_one_or_none.return_value = mock_db_model
 
-    def test_process_audio_guarantees_vram_release_on_crash(self, api, mocks):
-        """Even if the model throws a CTranslate runtime error, finally block must release VRAM."""
-        source_id = uuid.uuid4()
-        mocks["repo"].get_by_source_id.return_value = None
-        mocks["vad_repo"].get_map_by_source_id.return_value = VadMap(source_id=source_id, segments=[])
+        repo = TranscriptRepository(manager)
+        result = repo.get_by_source_id(sample_transcript.source_id)
 
-        loaded_model_mock = MagicMock()
-        mocks["orchestrator"].acquire_model.return_value = loaded_model_mock
+        assert result is not None
+        assert result.source_id == sample_transcript.source_id
+        assert len(result.segments) == 1
+        assert result.segments[0].text == "Test Segment"
 
-        mocks["adapter"].transcribe.side_effect = RuntimeError("cublas failed")
+    def test_update_success(self, mock_db_manager, sample_transcript):
+        manager, session = mock_db_manager
 
-        with pytest.raises(CTranslateEngineError):
-            api.process_audio(source_id, "/dummy.wav", release_after=True)
+        # Mock finding the existing record
+        mock_db_model = MagicMock()
+        session.execute.return_value.scalar_one_or_none.return_value = mock_db_model
 
-        mocks["orchestrator"].release_model.assert_called_once_with(
-            loaded_model_mock, mocks["adapter"], flush=True
-        )
-        mocks["repo"].save.assert_not_called()
+        repo = TranscriptRepository(manager)
+        result = repo.update(sample_transcript)
+
+        assert result == sample_transcript
+        # Verify it mutated the existing SQLAlchemy object's JSONB segments in-place
+        assert mock_db_model.segments == [seg.model_dump() for seg in sample_transcript.segments]
+
+    def test_repository_maps_db_exceptions(self, mock_db_manager, sample_transcript):
+        manager, session = mock_db_manager
+        session.add.side_effect = SQLAlchemyError("DB Connection Lost")
+
+        repo = TranscriptRepository(manager)
+
+        with pytest.raises(TranscriptionDatabaseError):
+            repo.save(sample_transcript)

@@ -1,9 +1,9 @@
-# filename: test_faster_whisper_adapter_v1.py
-# path: tests/features/transcription/test_faster_whisper_adapter.py
+# Canvas: test_faster_whisper_adapter_v4
+# Path: tests/features/transcription/test_faster_whisper_adapter.py
+
 import uuid
 import pytest
 from unittest.mock import patch, MagicMock
-import torch
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.enums import ModelType
@@ -33,11 +33,10 @@ class TestFasterWhisperAdapter:
 
         assert loaded_model.manifest == manifest
         assert loaded_model.model_instance == mock_instance
-        # Verify INT8 and offline flags were strictly passed
         mock_whisper_cls.assert_called_once_with(
             model_size_or_path=manifest.model_path,
             device="cuda",
-            compute_type="int8",
+            compute_type="float16",
             local_files_only=True
         )
 
@@ -49,15 +48,9 @@ class TestFasterWhisperAdapter:
         with pytest.raises(TranscriptionModelFilePathError):
             adapter.load(manifest)
 
-    @patch("app.features.transcription.data.faster_whisper_adapter.torchaudio")
-    def test_transcribe_with_vad_merging(self, mock_torchaudio, manifest):
-        """Verifies the adapter correctly slices audio and offsets timestamps."""
-        # 1. Setup Audio Mock (10 seconds of 16kHz audio)
-        sample_rate = 16000
-        dummy_waveform = torch.zeros(1, sample_rate * 10)
-        mock_torchaudio.load.return_value = (dummy_waveform, sample_rate)
-
-        # 2. Setup VAD Map (Two segments close enough to trigger the merge logic)
+    def test_transcribe_with_vad_merging_and_hotwords(self, manifest):
+        """Verifies the adapter correctly slices audio and passes domain hints to Whisper."""
+        # 1. Setup VAD Map
         vad_map = VadMap(
             source_id=uuid.uuid4(),
             segments=[
@@ -66,35 +59,42 @@ class TestFasterWhisperAdapter:
             ]
         )
 
-        # 3. Setup Mock Whisper Model
+        # 2. Setup Mock Whisper Model
         mock_whisper_instance = MagicMock()
-
-        # Whisper yields segments as a generator
         mock_whisper_segment = MagicMock()
-        mock_whisper_segment.start = 0.5  # Relative to the merged audio chunk
+        mock_whisper_segment.start = 0.5
         mock_whisper_segment.end = 1.5
         mock_whisper_segment.text = "Hello world"
 
         def dummy_transcribe_generator(*args, **kwargs):
             yield mock_whisper_segment
 
-        mock_whisper_instance.transcribe.return_value = (dummy_transcribe_generator(), MagicMock())
+        # FIX: Use a lambda with side_effect to spawn a fresh generator for every VAD segment loop
+        mock_whisper_instance.transcribe.side_effect = lambda *args, **kwargs: (dummy_transcribe_generator(),
+                                                                                MagicMock())
+
         loaded_model = LoadedModel(manifest=manifest, model_instance=mock_whisper_instance)
 
         adapter = FasterWhisperAdapter()
 
-        # 4. Execute
-        transcript = adapter.transcribe(
+        # 3. Execute
+        segments_out = adapter.transcribe(
             model=loaded_model,
             audio_path="/mock/audio.wav",
             vad_map=vad_map,
-            source_id=vad_map.source_id
+            language="en",
+            hotwords="EBITDA:15.0"
         )
 
-        # 5. Assertions
-        assert transcript.source_id == vad_map.source_id
-        assert len(transcript.segments) == 1
-        assert transcript.segments[0].text == "Hello world"
+        # 4. Assertions
+        assert isinstance(segments_out, list)
+        assert len(segments_out) == 2  # The second generator execution will now succeed!
+        assert segments_out[0].text == "Hello world"
 
-        # Verify WhisperModel.transcribe was only called ONCE due to the < 2.0s gap merge logic
-        mock_whisper_instance.transcribe.assert_called_once()
+        mock_whisper_instance.transcribe.assert_called_with(
+            audio="/mock/audio.wav",
+            language="en",
+            vad_filter=False,
+            hotwords="EBITDA:15.0",
+            clip_timestamps=[2.5, 4.0]
+        )
