@@ -1,0 +1,22 @@
+{
+  "base_terms": [
+    "EBITDA", 
+    "Revenue", 
+    "Cash Flow", 
+    "Balance Sheet"
+  ],
+  "sub_domains": {
+    "OPTIONS_TRADING": {
+      "anchor_words": ["strike", "theta", "call", "put", "expiration"],
+      "terms": ["Gamma", "Vega", "Delta", "Implied Volatility", "Iron Condor"]
+    },
+    "UK_MARKETS": {
+      "anchor_words": ["london", "gilt", "ftse", "boe"],
+      "terms": ["Bank of England", "Gilts", "FTSE 100"]
+    },
+    "MACROECONOMICS": {
+      "anchor_words": ["inflation", "gdp", "interest rates", "fed"],
+      "terms": ["Quantitative Easing", "CPI", "Hawkish", "Dovish"]
+    }
+  }
+}
