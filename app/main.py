@@ -1,4 +1,4 @@
-# Canvas: main_v8
+# Canvas: main_v9
 # Path: main.py
 
 import argparse
@@ -30,6 +30,14 @@ from app.features.vad.data.nemo_adapter import NeMoVadAdapter
 from app.features.vad.data.repositories import VadRepository
 from app.features.vad.service.vad_api import VadAPI
 
+# --- NEW: Domain Adaptation Imports ---
+from app.features.domain_adaptation.data.repositories import DomainAdaptationRepository
+from app.features.domain_adaptation.data.scout_whisper_adapter import ScoutWhisperAdapter
+from app.features.domain_adaptation.data.deberta_adapter import DebertaClassifierAdapter
+from app.features.domain_adaptation.utils.audio_sampler import AudioSampler
+from app.features.domain_adaptation.service.adaptation_api import DomainAdaptationAPI
+# --------------------------------------
+
 from app.features.transcription.data.repositories import TranscriptRepository
 from app.features.transcription.data.faster_whisper_adapter import FasterWhisperAdapter
 from app.features.transcription.service.transcription_api import TranscriptionAPI
@@ -47,6 +55,7 @@ from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
 from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPhase
 from app.orchestration.service.phases.vad_phase import VadPhase
+from app.orchestration.service.phases.domain_adaptation_phase import DomainAdaptationPhase  # <-- NEW
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
 from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
@@ -63,6 +72,7 @@ def bootstrap_database():
 
 
 def get_orchestration_pipeline() -> BatchMediaPipeline:
+    # 1. Core Services
     job_repo = JobRepository(db_manager)
     job_manager = JobManager(job_repo)
     vram_monitor = PyTorchVramMonitor()
@@ -71,6 +81,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
     bg_worker = BackgroundModelWorker(model_orchestrator)
     async_model_service = AsyncModelService(bg_worker)
 
+    # 2. Storage & Extraction
     storage_repo = StorageRepository(db_manager)
     storage_api = StorageAPI(storage_repo)
     storage_api.file_manager.base_path.mkdir(parents=True, exist_ok=True)
@@ -80,6 +91,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
     ffmpeg_adapter = FFmpegAdapter()
     audio_extractor = AudioExtractorAPI(ffmpeg_adapter, audio_repo, storage_api)
 
+    # 3. Voice Activity Detection
     vad_repo = VadRepository(db_manager)
     nemo_adapter = NeMoVadAdapter()
     vad_api = VadAPI(vad_repo, model_orchestrator, nemo_adapter)
@@ -90,6 +102,21 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         required_vram_mb=settings.VAD_VRAM_REQUIREMENT_MB
     )
 
+    # 4. NEW: Domain Adaptation
+    domain_repo = DomainAdaptationRepository(db_manager)
+    scout_adapter = ScoutWhisperAdapter()
+    classifier_adapter = DebertaClassifierAdapter()
+    audio_sampler = AudioSampler(slice_duration_sec=20.0)
+
+    domain_adaptation_api = DomainAdaptationAPI(
+        repository=domain_repo,
+        orchestrator=model_orchestrator,
+        scout_adapter=scout_adapter,
+        classifier_adapter=classifier_adapter,
+        audio_sampler=audio_sampler
+    )
+
+    # 5. Transcription
     transcript_repo = TranscriptRepository(db_manager)
     whisper_adapter = FasterWhisperAdapter()
     transcription_api = TranscriptionAPI(
@@ -105,6 +132,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         required_vram_mb=settings.WHISPER_VRAM_REQUIREMENT_MB
     )
 
+    # 6. Diarization
     diarize_repo = DiarizationRepository(db_manager)
     diarize_adapter = NeMoDiarizationAdapter()
     diarization_api = DiarizationAPI(
@@ -122,6 +150,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         required_vram_mb=settings.DIARIZATION_VRAM_REQUIREMENT_MB
     )
 
+    # 7. Sentence Reconstruction
     sentence_repo = PostgresSentenceRepository(db_manager)
     sat_adapter = SaTAdapter()
     reconstruction_api = SentenceReconstructionAPI(
@@ -136,6 +165,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         required_vram_mb=settings.SAT_VRAM_REQUIREMENT_MB
     )
 
+    # --- Orchestration Phases ---
     scan_phase = ScanPhase(job_manager, scanner)
     ingest_phase = IngestPhase(job_manager, storage_api)
     extract_audio_phase = ExtractAudioPhase(job_manager, audio_extractor)
@@ -149,10 +179,20 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         vad_adapter=nemo_adapter
     )
 
+    # NEW: Domain Adaptation Phase Wiring
+    domain_adaptation_phase = DomainAdaptationPhase(
+        job_manager=job_manager,
+        adaptation_api=domain_adaptation_api,
+        storage_api=storage_api,
+        vad_repo=vad_repo
+    )
+
+    # UPDATED: Transcribe Phase Wiring (Injected domain_repo)
     transcribe_phase = TranscribePhase(
         job_manager=job_manager,
         transcription_api=transcription_api,
         storage_api=storage_api,
+        domain_repo=domain_repo,  # <-- NEW DEPENDENCY
         async_model_service=async_model_service,
         transcribe_manifest=transcribe_manifest,
         transcribe_adapter=whisper_adapter
@@ -176,11 +216,13 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         sat_adapter=sat_adapter
     )
 
+    # Pipeline Assembly
     return BatchMediaPipeline(
         scan_phase=scan_phase,
         ingest_phase=ingest_phase,
         extract_audio_phase=extract_audio_phase,
         vad_phase=vad_phase,
+        domain_adaptation_phase=domain_adaptation_phase,  # <-- NEW PHASE
         transcribe_phase=transcribe_phase,
         diarize_phase=diarize_phase,
         sentence_reconstruction_phase=sentence_reconstruction_phase
@@ -257,6 +299,7 @@ def main():
     except Exception as e:
         print(f"\n[FATAL PIPELINE CRASH] {str(e)}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()

@@ -1,8 +1,10 @@
-# Canvas: transcribe_phase_v2
+# Canvas: transcribe_phase_v3
 # Path: app/orchestration/service/phases/transcribe_phase.py
+
 import concurrent.futures
 from typing import List, Optional
 
+from app.core.config import settings
 from app.core.jobs.service.manager import JobManager
 from app.core.jobs.domain.entities import JobRequest
 from app.core.jobs.domain.enums import JobType
@@ -14,6 +16,7 @@ from app.core.model_manager.exceptions.base import ModelManagerError
 
 from app.features.transcription.service.transcription_api import TranscriptionAPI
 from app.features.storage.service.storage_api import StorageAPI
+from app.features.domain_adaptation.domain.interfaces import IDomainAdaptationRepository
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import PhaseBatchResult, VadJobResult, TranscribeJobResult
@@ -25,6 +28,7 @@ class TranscribePhase:
             job_manager: JobManager,
             transcription_api: TranscriptionAPI,
             storage_api: StorageAPI,
+            domain_repo: IDomainAdaptationRepository,
             async_model_service: AsyncModelService,
             transcribe_manifest: ModelManifest,
             transcribe_adapter: IModelLoader
@@ -32,6 +36,7 @@ class TranscribePhase:
         self._job_manager = job_manager
         self._transcription_api = transcription_api
         self._storage = storage_api
+        self._domain_repo = domain_repo
         self._async_service = async_model_service
         self._manifest = transcribe_manifest
         self._adapter = transcribe_adapter
@@ -44,7 +49,7 @@ class TranscribePhase:
 
     def execute(self, vad_results: List[VadJobResult]) -> PhaseBatchResult:
         """
-        Phase 5: Waits for the Whisper model to load, then transcribes sequentially.
+        Phase 5: Waits for the Whisper model to load, then transcribes sequentially with Domain Hints.
         """
         results: List[TranscribeJobResult] = []
         errors: List[str] = []
@@ -70,7 +75,6 @@ class TranscribePhase:
 
                 source_id = item.source_id
 
-                # Fetch the original Source to find its linked audio file
                 source = self._storage.get_source(source_id)
                 if not source or not source.file:
                     err_msg = f"Cannot transcribe: Audio file for Source {source_id} missing."
@@ -79,7 +83,11 @@ class TranscribePhase:
                     failed_count += 1
                     continue
 
-                # Use the proper TRANSCRIBE job type now that the enum is updated
+                # 2. Fetch Domain Adaptation Hints (if they exist)
+                glossary = self._domain_repo.get_glossary_by_source_id(source_id)
+                hotwords = glossary.hotword_string if glossary else None
+                language = settings.APPLIANCE_LANGUAGE
+
                 request = JobRequest(
                     job_type=JobType.TRANSCRIBE,
                     source_id=source_id,
@@ -92,7 +100,9 @@ class TranscribePhase:
                         request,
                         self._transcription_api.process_audio,
                         source_id=source_id,
-                        audio_path=source.file.file_path,  # Passed directly to the API
+                        audio_path=source.file.file_path,
+                        language=language,
+                        hotwords=hotwords,
                         release_after=False
                     )
 
@@ -106,7 +116,7 @@ class TranscribePhase:
                     failed_count += 1
 
         finally:
-            # 2. Safely unload the Whisper model in the background once the entire batch is done
+            # 3. Safely unload the Whisper model in the background once the entire batch is done
             if loaded_model:
                 self._async_service.trigger_unload(loaded_model, self._adapter, flush=True)
 

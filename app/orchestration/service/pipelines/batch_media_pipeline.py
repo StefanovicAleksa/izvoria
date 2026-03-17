@@ -1,4 +1,4 @@
-# Canvas: batch_media_pipeline_v7
+# Canvas: batch_media_pipeline_v8
 # Path: app/orchestration/service/pipelines/batch_media_pipeline.py
 
 import uuid
@@ -17,6 +17,7 @@ from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
 from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPhase
 from app.orchestration.service.phases.vad_phase import VadPhase
+from app.orchestration.service.phases.domain_adaptation_phase import DomainAdaptationPhase
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
 from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
@@ -29,6 +30,7 @@ class BatchMediaPipeline:
             ingest_phase: IngestPhase,
             extract_audio_phase: ExtractAudioPhase,
             vad_phase: VadPhase,
+            domain_adaptation_phase: DomainAdaptationPhase,
             transcribe_phase: TranscribePhase,
             diarize_phase: DiarizePhase,
             sentence_reconstruction_phase: SentenceReconstructionPhase
@@ -37,6 +39,7 @@ class BatchMediaPipeline:
         self._ingest_phase = ingest_phase
         self._extract_audio = extract_audio_phase
         self._vad_phase = vad_phase
+        self._domain_adaptation_phase = domain_adaptation_phase
         self._transcribe_phase = transcribe_phase
         self._diarize_phase = diarize_phase
         self._sentence_reconstruction_phase = sentence_reconstruction_phase
@@ -86,7 +89,7 @@ class BatchMediaPipeline:
                 if vad_result.status == PhaseStatus.FAILED:
                     pass  # Log failure, but continue
 
-                # PHASE TRANSITION: FILTER FOR TRANSCRIPTION
+                # PHASE TRANSITION: FILTER FOR DOWNSTREAM
                 successful_vad_items = [
                     item for item in vad_result.items
                     if isinstance(item, VadJobResult) and item.success
@@ -94,10 +97,19 @@ class BatchMediaPipeline:
                 if not successful_vad_items:
                     return pipeline_results
 
-                # PRELOAD TRIGGER: Load Whisper model into GPU while VAD wrap-ups finish
+                # --- NEW INTEGRATION ---
+                # PHASE 4.5: DOMAIN ADAPTATION (GPU BOUND)
+                # Note: Because this uses the GPU, we CANNOT preload the Whisper model yet.
+                domain_result = self._domain_adaptation_phase.execute(successful_vad_items)
+                pipeline_results[PipelinePhase.DOMAIN_ADAPTATION] = domain_result
+                if domain_result.status == PhaseStatus.FAILED:
+                    pass # Log failure, but continue (Transcription will just fall back to no hints)
+
+                # PRELOAD TRIGGER: Load Whisper model into GPU now that Domain Adaptation is done
                 self._transcribe_phase.preload_model()
 
                 # PHASE 5: TRANSCRIPTION (GPU BOUND)
+                # Transcribe still loops over successful VAD items, but now it has access to the Domain DB
                 transcribe_result = self._transcribe_phase.execute(successful_vad_items)
                 pipeline_results[PipelinePhase.TRANSCRIBE] = transcribe_result
                 if transcribe_result.status == PhaseStatus.FAILED:

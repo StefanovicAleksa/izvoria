@@ -1,4 +1,4 @@
-# Canvas: orchestration_entities_v6
+# Canvas: orchestration_entities_v7
 # Path: app/orchestration/domain/entities.py
 
 import uuid
@@ -14,27 +14,21 @@ class ScanJobResult(BaseModel):
     target_directory: str
     total_found: int
     file_paths: List[str]
-
     model_config = ConfigDict(frozen=True)
-
 
 class IngestJobResult(BaseModel):
     file_path: str
     success: bool
     source_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
-
     model_config = ConfigDict(frozen=True)
-
 
 class AudioExtractionJobResult(BaseModel):
     source_id: uuid.UUID
     success: bool
     extracted_file_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
-
     model_config = ConfigDict(frozen=True)
-
 
 class VadJobResult(BaseModel):
     """Result of Phase 4: Voice Activity Detection."""
@@ -42,9 +36,15 @@ class VadJobResult(BaseModel):
     success: bool
     vad_map_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
-
     model_config = ConfigDict(frozen=True)
 
+class DomainAdaptationJobResult(BaseModel):
+    """Result of Phase 4.5: Domain Adaptation."""
+    source_id: uuid.UUID
+    success: bool
+    glossary_id: Optional[uuid.UUID] = None
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
 
 class TranscribeJobResult(BaseModel):
     """Result of Phase 5: Transcription."""
@@ -52,9 +52,7 @@ class TranscribeJobResult(BaseModel):
     success: bool
     transcript_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
-
     model_config = ConfigDict(frozen=True)
-
 
 class DiarizeJobResult(BaseModel):
     """Result of Phase 6: Speaker Diarization."""
@@ -62,9 +60,7 @@ class DiarizeJobResult(BaseModel):
     success: bool
     diarization_map_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
-
     model_config = ConfigDict(frozen=True)
-
 
 class IntelligenceBridgeJobResult(BaseModel):
     """Result of Phase: Intelligence Bridge (Multimodal Scene Mapping)."""
@@ -72,9 +68,7 @@ class IntelligenceBridgeJobResult(BaseModel):
     success: bool
     scene_map_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
-
     model_config = ConfigDict(frozen=True)
-
 
 class SentenceReconstructionJobResult(BaseModel):
     """Result of Phase 7: Sentence Reconstruction."""
@@ -82,7 +76,6 @@ class SentenceReconstructionJobResult(BaseModel):
     success: bool
     reconstructed_transcript_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
-
     model_config = ConfigDict(frozen=True)
 
 
