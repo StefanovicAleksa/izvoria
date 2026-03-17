@@ -1,7 +1,6 @@
-# Canvas: test_batch_media_pipeline_integration_v10
+# Canvas: test_batch_media_pipeline_integration_v11
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
-import os
 import subprocess
 import pytest
 import shutil
@@ -51,7 +50,7 @@ from app.features.diarization.data.nemo_adapter import NeMoDiarizationAdapter
 
 from app.features.sentence_reconstruction.data.repositories import PostgresSentenceRepository
 from app.features.sentence_reconstruction.service.reconstruction_api import SentenceReconstructionAPI
-from app.features.sentence_reconstruction.data.wtp_adapter import SaTAdapter
+from app.features.sentence_reconstruction.data.sat_adapter import SaTAdapter
 
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
@@ -145,10 +144,13 @@ class TestBatchMediaPipelineIntegration:
         sentence_repo = PostgresSentenceRepository(db_manager)
         real_sat_adapter = SaTAdapter()
         reconstruction_api = SentenceReconstructionAPI(sentence_repo, orchestrator, real_sat_adapter)
+
+        # FIXED: Ensure we are using the updated SAT_MODEL_PATH setting.
+        sat_path = getattr(settings, "SAT_MODEL_PATH", "models/sat-3l-sm")
         sat_manifest = ModelManifest(
             model_type=ModelType.SENTENCE_RECONSTRUCTION,
-            model_path=settings.SAT_MODEL_NAME,
-            required_vram_mb=settings.SAT_VRAM_REQUIREMENT_MB
+            model_path=sat_path,
+            required_vram_mb=getattr(settings, "SAT_VRAM_REQUIREMENT_MB", 750.0)
         )
 
         # Phases
@@ -179,12 +181,6 @@ class TestBatchMediaPipelineIntegration:
     def test_end_to_end_media_pipeline(self, pipeline_setup, tmp_path):
         """Tests the seamless flow from Directory Scan -> Domain Adapt -> DB Generating Transcript -> Reconstructed Sentences without mocks."""
         pipeline, storage_api = pipeline_setup
-
-        # Dynamic Guard Clause verifying the SaT model exists before attempting hardware load
-        model_path = settings.SAT_MODEL_NAME
-        # Often loaded via cache or local folder depending on implementation, skip if not found
-        if not os.path.exists(model_path) and not os.getenv("ALLOW_DOWNLOADS"):
-             pytest.skip(f"SaT Model not found locally at {model_path} and downloads disabled. Skipping hardware integration test.")
 
         source_dir = tmp_path / "usb_drive"
         source_dir.mkdir()

@@ -1,6 +1,7 @@
-# Canvas: wtp_adapter_v5
-# Path: app/features/sentence_reconstruction/data/wtp_adapter.py
+# Canvas: sat_adapter_v7
+# Path: app/features/sentence_reconstruction/data/sat_adapter.py
 
+import os
 import logging
 from typing import List
 import torch
@@ -22,14 +23,16 @@ logger = logging.getLogger(__name__)
 class SaTAdapter(ISentenceAdapter):
     """
     Adapter for the Segment Any Text (SaT) engine.
-    Updated to conform strictly to the Orchestrator's IModelLoader interface.
+    Conforms strictly to the Orchestrator's IModelLoader interface.
     """
 
     def load(self, manifest: ModelManifest) -> LoadedModel:
-        logger.info(f"Initializing SaT model from manifest path: {manifest.model_path}")
+        logger.info(f"Initializing SaT model from local manifest path: {manifest.model_path}")
 
         try:
-            # manifest.model_path holds the local path or specific name for the SaT model
+            # Enforce offline mode via environment variable since SaT() doesn't accept hub_kwargs
+            os.environ["HF_HUB_OFFLINE"] = "1"
+
             model_instance = SaT(manifest.model_path)
 
             if torch.cuda.is_available():
@@ -41,7 +44,7 @@ class SaTAdapter(ISentenceAdapter):
             )
         except OSError as e:
             logger.error(f"Failed to find SaT model {manifest.model_path} on disk: {str(e)}")
-            raise SaTModelLoadError(f"Model files missing or unreachable: {str(e)}") from e
+            raise SaTModelLoadError(f"Model files missing or unreachable locally: {str(e)}") from e
         except torch.cuda.OutOfMemoryError as e:
             logger.critical("CUDA OOM during SaT load.")
             raise SaTOOMError("Insufficient VRAM to load SaT.") from e

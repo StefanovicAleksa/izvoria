@@ -47,7 +47,7 @@ from app.features.diarization.data.nemo_adapter import NeMoDiarizationAdapter
 from app.features.diarization.service.diarization_api import DiarizationAPI
 
 from app.features.sentence_reconstruction.data.repositories import PostgresSentenceRepository
-from app.features.sentence_reconstruction.data.wtp_adapter import SaTAdapter
+from app.features.sentence_reconstruction.data.sat_adapter import SaTAdapter
 from app.features.sentence_reconstruction.service.reconstruction_api import SentenceReconstructionAPI
 
 from app.orchestration.domain.enums import PipelinePhase

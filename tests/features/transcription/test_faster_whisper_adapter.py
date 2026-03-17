@@ -1,9 +1,10 @@
-# Canvas: test_faster_whisper_adapter_v4
+# Canvas: test_faster_whisper_adapter_v6
 # Path: tests/features/transcription/test_faster_whisper_adapter.py
 
 import uuid
 import pytest
 from unittest.mock import patch, MagicMock
+import torch
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.enums import ModelType
@@ -48,9 +49,15 @@ class TestFasterWhisperAdapter:
         with pytest.raises(TranscriptionModelFilePathError):
             adapter.load(manifest)
 
-    def test_transcribe_with_vad_merging_and_hotwords(self, manifest):
-        """Verifies the adapter correctly slices audio and passes domain hints to Whisper."""
-        # 1. Setup VAD Map
+    @patch("app.features.transcription.data.faster_whisper_adapter.torchaudio")
+    def test_transcribe_with_vad_merging_and_hotwords(self, mock_torchaudio, manifest):
+        """Verifies the adapter correctly slices audio, merges VAD, and offsets timestamps."""
+        # 1. Setup Audio Mock (10 seconds of 16kHz audio)
+        sample_rate = 16000
+        dummy_waveform = torch.zeros(1, sample_rate * 10)
+        mock_torchaudio.load.return_value = (dummy_waveform, sample_rate)
+
+        # 2. Setup VAD Map (Two segments close enough to trigger the merge logic)
         vad_map = VadMap(
             source_id=uuid.uuid4(),
             segments=[
@@ -59,25 +66,24 @@ class TestFasterWhisperAdapter:
             ]
         )
 
-        # 2. Setup Mock Whisper Model
+        # 3. Setup Mock Whisper Model
         mock_whisper_instance = MagicMock()
+
         mock_whisper_segment = MagicMock()
-        mock_whisper_segment.start = 0.5
+        mock_whisper_segment.start = 0.5  # Relative to the chunk
         mock_whisper_segment.end = 1.5
         mock_whisper_segment.text = "Hello world"
 
         def dummy_transcribe_generator(*args, **kwargs):
             yield mock_whisper_segment
 
-        # FIX: Use a lambda with side_effect to spawn a fresh generator for every VAD segment loop
-        mock_whisper_instance.transcribe.side_effect = lambda *args, **kwargs: (dummy_transcribe_generator(),
-                                                                                MagicMock())
-
+        # Because the segments merge (gap is 0.5s <= 2.0s threshold), transcribe is only called ONCE!
+        mock_whisper_instance.transcribe.return_value = (dummy_transcribe_generator(), MagicMock())
         loaded_model = LoadedModel(manifest=manifest, model_instance=mock_whisper_instance)
 
         adapter = FasterWhisperAdapter()
 
-        # 3. Execute
+        # 4. Execute
         segments_out = adapter.transcribe(
             model=loaded_model,
             audio_path="/mock/audio.wav",
@@ -86,15 +92,17 @@ class TestFasterWhisperAdapter:
             hotwords="EBITDA:15.0"
         )
 
-        # 4. Assertions
+        # 5. Assertions
         assert isinstance(segments_out, list)
-        assert len(segments_out) == 2  # The second generator execution will now succeed!
+        assert len(segments_out) == 1
         assert segments_out[0].text == "Hello world"
 
-        mock_whisper_instance.transcribe.assert_called_with(
-            audio="/mock/audio.wav",
-            language="en",
-            vad_filter=False,
-            hotwords="EBITDA:15.0",
-            clip_timestamps=[2.5, 4.0]
-        )
+        # Start sec should be chunk_start (1.0) + segment_start (0.5) = 1.5
+        assert segments_out[0].start_sec == 1.5
+
+        # Verify CTranslate2 received our exact language, domain hints, and the raw audio array
+        mock_whisper_instance.transcribe.assert_called_once()
+        call_kwargs = mock_whisper_instance.transcribe.call_args[1]
+        assert call_kwargs["language"] == "en"
+        assert call_kwargs["hotwords"] == "EBITDA:15.0"
+        assert "audio" in call_kwargs

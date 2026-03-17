@@ -15,7 +15,7 @@ from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 
 from app.features.transcription.domain.entities import Transcript, TranscriptSegment
 
-from app.features.sentence_reconstruction.data.wtp_adapter import SaTAdapter
+from app.features.sentence_reconstruction.data.sat_adapter import SaTAdapter
 from app.features.sentence_reconstruction.data.repositories import PostgresSentenceRepository
 from app.features.sentence_reconstruction.service.reconstruction_api import SentenceReconstructionAPI
 from app.features.sentence_reconstruction.domain.entities import ReconstructedTranscript
