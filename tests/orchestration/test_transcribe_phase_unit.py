@@ -1,14 +1,17 @@
-# Canvas: test_transcribe_phase_unit_v1
+# Canvas: test_transcribe_phase_unit_v2
 # Path: tests/orchestration/service/phases/test_transcribe_phase_unit.py
+
 import pytest
 import uuid
 import concurrent.futures
 from unittest.mock import Mock
 
+from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.enums import ModelType
 from app.features.transcription.domain.entities import Transcript
 from app.features.storage.domain.entities import Source, File, SourceType
+from app.features.domain_adaptation.domain.entities import DomainGlossary
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import VadJobResult
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
@@ -25,6 +28,9 @@ class TestTranscribePhaseUnit:
     def mock_storage(self): return Mock()
 
     @pytest.fixture
+    def mock_domain_repo(self): return Mock()
+
+    @pytest.fixture
     def mock_async_service(self): return Mock()
 
     @pytest.fixture
@@ -35,11 +41,12 @@ class TestTranscribePhaseUnit:
         return ModelManifest(model_type=ModelType.TRANSCRIPTION, model_path="fake_whisper", required_vram_mb=100)
 
     @pytest.fixture
-    def phase(self, mock_job_manager, mock_transcription_api, mock_storage, mock_async_service, sample_manifest, mock_adapter):
+    def phase(self, mock_job_manager, mock_transcription_api, mock_storage, mock_domain_repo, mock_async_service, sample_manifest, mock_adapter):
         return TranscribePhase(
             job_manager=mock_job_manager,
             transcription_api=mock_transcription_api,
             storage_api=mock_storage,
+            domain_repo=mock_domain_repo,
             async_model_service=mock_async_service,
             transcribe_manifest=sample_manifest,
             transcribe_adapter=mock_adapter
@@ -55,8 +62,8 @@ class TestTranscribePhaseUnit:
         assert phase._preload_future == mock_future
         mock_async_service.trigger_preload.assert_called_once_with(sample_manifest, mock_adapter)
 
-    def test_execute_success(self, phase, mock_job_manager, mock_storage, mock_async_service, mock_adapter):
-        """Scenario: Batch processes perfectly, model unloads at the end."""
+    def test_execute_success_with_domain_hints(self, phase, mock_job_manager, mock_storage, mock_domain_repo, mock_async_service, mock_adapter, mock_transcription_api):
+        """Scenario: Batch processes perfectly, fetches domain hints, unloads at the end."""
         source_id = uuid.uuid4()
         file_id = uuid.uuid4()
 
@@ -77,7 +84,11 @@ class TestTranscribePhaseUnit:
         mock_source = Source(id=source_id, name="a", source_type=SourceType.VIDEO, content_hash="123", file_id=file_id, file=mock_file)
         mock_storage.get_source.return_value = mock_source
 
-        # 4. Setup JobManager to return a fake Transcript
+        # 4. Setup Domain Repo to return hints
+        mock_glossary = DomainGlossary(id=uuid.uuid4(), source_id=source_id, industry="FINANCE", sub_domain="GENERAL", hotword_string="EBITDA:15.0")
+        mock_domain_repo.get_glossary_by_source_id.return_value = mock_glossary
+
+        # 5. Setup JobManager to return a fake Transcript
         fake_transcript = Transcript(id=uuid.uuid4(), source_id=source_id, segments=[])
         mock_job_manager.run_job.return_value = fake_transcript
 
@@ -90,8 +101,16 @@ class TestTranscribePhaseUnit:
         assert result.successful_count == 1
         assert result.failed_count == 0
 
-        # Verify Job tracking triggered
-        mock_job_manager.run_job.assert_called_once()
+        # Verify Job tracking triggered and passed the domain hints exactly as expected
+        mock_job_manager.run_job.assert_called_once_with(
+            mock_job_manager.run_job.call_args[0][0], # request
+            mock_transcription_api.process_audio,
+            source_id=source_id,
+            audio_path="/vault/audio.wav",
+            language=settings.APPLIANCE_LANGUAGE,
+            hotwords="EBITDA:15.0",
+            release_after=False
+        )
 
         # Verify model was released after batch loop finished
         mock_async_service.trigger_unload.assert_called_once_with(fake_loaded_model, mock_adapter, flush=True)

@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_integration_v9
+# Canvas: test_batch_media_pipeline_integration_v10
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
 import os
@@ -31,6 +31,15 @@ from app.features.audio_extractor.data.ffmpeg_adapter import FFmpegAdapter
 from app.features.vad.data.repositories import VadRepository
 from app.features.vad.service.vad_api import VadAPI
 from app.features.vad.data.nemo_adapter import NeMoVadAdapter
+
+# --- NEW DOMAIN ADAPTATION IMPORTS ---
+from app.features.domain_adaptation.data.repositories import DomainAdaptationRepository
+from app.features.domain_adaptation.data.scout_whisper_adapter import ScoutWhisperAdapter
+from app.features.domain_adaptation.data.deberta_adapter import DebertaClassifierAdapter
+from app.features.domain_adaptation.utils.audio_sampler import AudioSampler
+from app.features.domain_adaptation.service.adaptation_api import DomainAdaptationAPI
+from app.orchestration.service.phases.domain_adaptation_phase import DomainAdaptationPhase
+# -------------------------------------
 
 from app.features.transcription.data.repositories import TranscriptRepository
 from app.features.transcription.service.transcription_api import TranscriptionAPI
@@ -99,6 +108,19 @@ class TestBatchMediaPipelineIntegration:
             required_vram_mb=settings.VAD_VRAM_REQUIREMENT_MB
         )
 
+        # Real Domain Adaptation Feature
+        domain_repo = DomainAdaptationRepository(db_manager)
+        real_scout_adapter = ScoutWhisperAdapter()
+        real_classifier_adapter = DebertaClassifierAdapter()
+        sampler = AudioSampler(slice_duration_sec=20.0)
+        domain_adaptation_api = DomainAdaptationAPI(
+            repository=domain_repo,
+            orchestrator=orchestrator,
+            scout_adapter=real_scout_adapter,
+            classifier_adapter=real_classifier_adapter,
+            audio_sampler=sampler
+        )
+
         # Real Transcription Feature
         transcript_repo = TranscriptRepository(db_manager)
         real_transcribe_adapter = FasterWhisperAdapter()
@@ -134,7 +156,8 @@ class TestBatchMediaPipelineIntegration:
         ingest_phase = IngestPhase(job_manager, storage_api)
         extract_audio_phase = ExtractAudioPhase(job_manager, audio_extractor)
         vad_phase = VadPhase(job_manager, vad_api, storage_api, async_service, vad_manifest, real_vad_adapter)
-        transcribe_phase = TranscribePhase(job_manager, transcription_api, storage_api, async_service, transcribe_manifest, real_transcribe_adapter)
+        domain_adaptation_phase = DomainAdaptationPhase(job_manager, domain_adaptation_api, storage_api, vad_repo) # <-- NEW
+        transcribe_phase = TranscribePhase(job_manager, transcription_api, storage_api, domain_repo, async_service, transcribe_manifest, real_transcribe_adapter) # <-- UPDATED
         diarize_phase = DiarizePhase(job_manager, diarization_api, storage_api, async_service, diarize_manifest, real_diarize_adapter)
         sentence_phase = SentenceReconstructionPhase(job_manager, reconstruction_api, transcription_api, async_service, sat_manifest, real_sat_adapter)
 
@@ -143,6 +166,7 @@ class TestBatchMediaPipelineIntegration:
             ingest_phase=ingest_phase,
             extract_audio_phase=extract_audio_phase,
             vad_phase=vad_phase,
+            domain_adaptation_phase=domain_adaptation_phase,
             transcribe_phase=transcribe_phase,
             diarize_phase=diarize_phase,
             sentence_reconstruction_phase=sentence_phase
@@ -153,7 +177,7 @@ class TestBatchMediaPipelineIntegration:
         async_service.shutdown()
 
     def test_end_to_end_media_pipeline(self, pipeline_setup, tmp_path):
-        """Tests the seamless flow from Directory Scan -> DB Generating Transcript -> Reconstructed Sentences without mocks."""
+        """Tests the seamless flow from Directory Scan -> Domain Adapt -> DB Generating Transcript -> Reconstructed Sentences without mocks."""
         pipeline, storage_api = pipeline_setup
 
         # Dynamic Guard Clause verifying the SaT model exists before attempting hardware load
@@ -180,6 +204,7 @@ class TestBatchMediaPipelineIntegration:
         assert PipelinePhase.INGEST in results
         assert PipelinePhase.AUDIO_EXTRACTION in results
         assert PipelinePhase.VAD in results
+        assert PipelinePhase.DOMAIN_ADAPTATION in results  # <-- Assert new phase ran
         assert PipelinePhase.TRANSCRIBE in results
         assert PipelinePhase.DIARIZE in results
         assert PipelinePhase.SENTENCE_RECONSTRUCTION in results
@@ -188,6 +213,7 @@ class TestBatchMediaPipelineIntegration:
         assert results[PipelinePhase.INGEST].status == PhaseStatus.COMPLETED, f"Ingest failed: {results[PipelinePhase.INGEST].errors}"
         assert results[PipelinePhase.AUDIO_EXTRACTION].status == PhaseStatus.COMPLETED, f"Audio Extraction failed: {results[PipelinePhase.AUDIO_EXTRACTION].errors}"
         assert results[PipelinePhase.VAD].status == PhaseStatus.COMPLETED, f"VAD failed: {results[PipelinePhase.VAD].errors}"
+        assert results[PipelinePhase.DOMAIN_ADAPTATION].status == PhaseStatus.COMPLETED, f"Domain Adaptation failed: {results[PipelinePhase.DOMAIN_ADAPTATION].errors}" # <-- Assert success
         assert results[PipelinePhase.TRANSCRIBE].status == PhaseStatus.COMPLETED, f"Transcribe failed: {results[PipelinePhase.TRANSCRIBE].errors}"
         assert results[PipelinePhase.DIARIZE].status == PhaseStatus.COMPLETED, f"Diarize failed: {results[PipelinePhase.DIARIZE].errors}"
 
