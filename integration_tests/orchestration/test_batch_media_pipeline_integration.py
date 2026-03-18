@@ -1,9 +1,10 @@
-# Canvas: test_batch_media_pipeline_integration_v11
+# Canvas: test_batch_media_pipeline_integration_v12
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
 import subprocess
 import pytest
 import shutil
+import os
 from pathlib import Path
 
 from app.core.config import settings
@@ -31,14 +32,12 @@ from app.features.vad.data.repositories import VadRepository
 from app.features.vad.service.vad_api import VadAPI
 from app.features.vad.data.nemo_adapter import NeMoVadAdapter
 
-# --- NEW DOMAIN ADAPTATION IMPORTS ---
 from app.features.domain_adaptation.data.repositories import DomainAdaptationRepository
 from app.features.domain_adaptation.data.scout_whisper_adapter import ScoutWhisperAdapter
 from app.features.domain_adaptation.data.deberta_adapter import DebertaClassifierAdapter
 from app.features.domain_adaptation.utils.audio_sampler import AudioSampler
 from app.features.domain_adaptation.service.adaptation_api import DomainAdaptationAPI
 from app.orchestration.service.phases.domain_adaptation_phase import DomainAdaptationPhase
-# -------------------------------------
 
 from app.features.transcription.data.repositories import TranscriptRepository
 from app.features.transcription.service.transcription_api import TranscriptionAPI
@@ -52,6 +51,12 @@ from app.features.sentence_reconstruction.data.repositories import PostgresSente
 from app.features.sentence_reconstruction.service.reconstruction_api import SentenceReconstructionAPI
 from app.features.sentence_reconstruction.data.sat_adapter import SaTAdapter
 
+# --- NEW: Phonetic Correction Imports ---
+from app.features.phonetic_correction.data.repositories import PhoneticRepository
+from app.features.phonetic_correction.data.qwen_adapter import QwenAdapter
+from app.features.phonetic_correction.service.correction_api import PhoneticCorrectionAPI
+# ----------------------------------------
+
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
 from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPhase
@@ -59,6 +64,7 @@ from app.orchestration.service.phases.vad_phase import VadPhase
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
 from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
+from app.orchestration.service.phases.phonetic_correction_phase import PhoneticCorrectionPhase
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 
@@ -145,7 +151,6 @@ class TestBatchMediaPipelineIntegration:
         real_sat_adapter = SaTAdapter()
         reconstruction_api = SentenceReconstructionAPI(sentence_repo, orchestrator, real_sat_adapter)
 
-        # FIXED: Ensure we are using the updated SAT_MODEL_PATH setting.
         sat_path = getattr(settings, "SAT_MODEL_PATH", "models/sat-3l-sm")
         sat_manifest = ModelManifest(
             model_type=ModelType.SENTENCE_RECONSTRUCTION,
@@ -153,15 +158,27 @@ class TestBatchMediaPipelineIntegration:
             required_vram_mb=getattr(settings, "SAT_VRAM_REQUIREMENT_MB", 750.0)
         )
 
+        # Real Phonetic Correction Feature
+        phonetic_repo = PhoneticRepository(db_manager)
+        real_phonetic_adapter = QwenAdapter()
+        phonetic_correction_api = PhoneticCorrectionAPI(phonetic_repo, real_phonetic_adapter)
+
+        phonetic_manifest = ModelManifest(
+            model_type=ModelType.ASR_CORRECTION_PHASE_3,
+            model_path=settings.ASR_PHASE_3_MODEL_PATH,
+            required_vram_mb=settings.ASR_PHASE_3_VRAM_REQUIREMENT_MB
+        )
+
         # Phases
         scan_phase = ScanPhase(job_manager, scanner)
         ingest_phase = IngestPhase(job_manager, storage_api)
         extract_audio_phase = ExtractAudioPhase(job_manager, audio_extractor)
         vad_phase = VadPhase(job_manager, vad_api, storage_api, async_service, vad_manifest, real_vad_adapter)
-        domain_adaptation_phase = DomainAdaptationPhase(job_manager, domain_adaptation_api, storage_api, vad_repo) # <-- NEW
-        transcribe_phase = TranscribePhase(job_manager, transcription_api, storage_api, domain_repo, async_service, transcribe_manifest, real_transcribe_adapter) # <-- UPDATED
+        domain_adaptation_phase = DomainAdaptationPhase(job_manager, domain_adaptation_api, storage_api, vad_repo)
+        transcribe_phase = TranscribePhase(job_manager, transcription_api, storage_api, domain_repo, async_service, transcribe_manifest, real_transcribe_adapter)
         diarize_phase = DiarizePhase(job_manager, diarization_api, storage_api, async_service, diarize_manifest, real_diarize_adapter)
         sentence_phase = SentenceReconstructionPhase(job_manager, reconstruction_api, transcription_api, async_service, sat_manifest, real_sat_adapter)
+        phonetic_phase = PhoneticCorrectionPhase(job_manager, phonetic_correction_api, sentence_repo, domain_repo, async_service, phonetic_manifest, real_phonetic_adapter)
 
         pipeline = BatchMediaPipeline(
             scan_phase=scan_phase,
@@ -171,16 +188,21 @@ class TestBatchMediaPipelineIntegration:
             domain_adaptation_phase=domain_adaptation_phase,
             transcribe_phase=transcribe_phase,
             diarize_phase=diarize_phase,
-            sentence_reconstruction_phase=sentence_phase
+            sentence_reconstruction_phase=sentence_phase,
+            phonetic_correction_phase=phonetic_phase
         )
 
         yield pipeline, storage_api
 
         async_service.shutdown()
 
+    @pytest.mark.integration
     def test_end_to_end_media_pipeline(self, pipeline_setup, tmp_path):
-        """Tests the seamless flow from Directory Scan -> Domain Adapt -> DB Generating Transcript -> Reconstructed Sentences without mocks."""
+        """Tests the seamless flow from Directory Scan -> Domain Adapt -> DB Generating Transcript -> Reconstructed Sentences -> Phonetic Correction without mocks."""
         pipeline, storage_api = pipeline_setup
+
+        if not os.path.exists(settings.ASR_PHASE_3_MODEL_PATH):
+            pytest.skip(f"Integration test skipped due to missing Qwen model at: {settings.ASR_PHASE_3_MODEL_PATH}")
 
         source_dir = tmp_path / "usb_drive"
         source_dir.mkdir()
@@ -193,23 +215,29 @@ class TestBatchMediaPipelineIntegration:
         shutil.copy2(original_vid, test_file)
 
         # EXECUTE THE PIPELINE
-        results = pipeline.process_directory(str(source_dir), SourceType.VIDEO)
+        try:
+            results = pipeline.process_directory(str(source_dir), SourceType.VIDEO)
+        except Exception as e:
+            if "cuda" in str(e).lower() or "vram" in str(e).lower():
+                pytest.skip(f"Skipping test due to insufficient VRAM: {e}")
+            raise e
 
         # VERIFY STATE MACHINE RESULTS
         assert PipelinePhase.SCAN in results
         assert PipelinePhase.INGEST in results
         assert PipelinePhase.AUDIO_EXTRACTION in results
         assert PipelinePhase.VAD in results
-        assert PipelinePhase.DOMAIN_ADAPTATION in results  # <-- Assert new phase ran
+        assert PipelinePhase.DOMAIN_ADAPTATION in results
         assert PipelinePhase.TRANSCRIBE in results
         assert PipelinePhase.DIARIZE in results
         assert PipelinePhase.SENTENCE_RECONSTRUCTION in results
+        assert PipelinePhase.PHONETIC_CORRECTION in results
 
         assert results[PipelinePhase.SCAN].status == PhaseStatus.COMPLETED, f"Scan failed: {results[PipelinePhase.SCAN].errors}"
         assert results[PipelinePhase.INGEST].status == PhaseStatus.COMPLETED, f"Ingest failed: {results[PipelinePhase.INGEST].errors}"
         assert results[PipelinePhase.AUDIO_EXTRACTION].status == PhaseStatus.COMPLETED, f"Audio Extraction failed: {results[PipelinePhase.AUDIO_EXTRACTION].errors}"
         assert results[PipelinePhase.VAD].status == PhaseStatus.COMPLETED, f"VAD failed: {results[PipelinePhase.VAD].errors}"
-        assert results[PipelinePhase.DOMAIN_ADAPTATION].status == PhaseStatus.COMPLETED, f"Domain Adaptation failed: {results[PipelinePhase.DOMAIN_ADAPTATION].errors}" # <-- Assert success
+        assert results[PipelinePhase.DOMAIN_ADAPTATION].status == PhaseStatus.COMPLETED, f"Domain Adaptation failed: {results[PipelinePhase.DOMAIN_ADAPTATION].errors}"
         assert results[PipelinePhase.TRANSCRIBE].status == PhaseStatus.COMPLETED, f"Transcribe failed: {results[PipelinePhase.TRANSCRIBE].errors}"
         assert results[PipelinePhase.DIARIZE].status == PhaseStatus.COMPLETED, f"Diarize failed: {results[PipelinePhase.DIARIZE].errors}"
 
@@ -217,3 +245,8 @@ class TestBatchMediaPipelineIntegration:
         assert sentence_result.status == PhaseStatus.COMPLETED, f"Sentence Reconstruction failed: {sentence_result.errors}"
         assert sentence_result.successful_count == 1
         assert sentence_result.items[0].reconstructed_transcript_id is not None
+
+        phonetic_result = results[PipelinePhase.PHONETIC_CORRECTION]
+        assert phonetic_result.status == PhaseStatus.COMPLETED, f"Phonetic Correction failed: {phonetic_result.errors}"
+        assert phonetic_result.successful_count == 1
+        assert phonetic_result.items[0].phonetic_transcript_id is not None

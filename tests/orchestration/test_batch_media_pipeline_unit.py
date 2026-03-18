@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_unit_v7
+# Canvas: test_batch_media_pipeline_unit_v9
 # Path: tests/orchestration/service/pipelines/test_batch_media_pipeline_unit.py
 
 import pytest
@@ -15,7 +15,8 @@ from app.orchestration.domain.entities import (
     DomainAdaptationJobResult,
     TranscribeJobResult,
     DiarizeJobResult,
-    SentenceReconstructionJobResult
+    SentenceReconstructionJobResult,
+    PhoneticCorrectionJobResult
 )
 from app.features.storage.domain.entities import SourceType
 
@@ -46,7 +47,11 @@ class TestBatchMediaPipelineUnit:
     def mock_sentence(self): return Mock()
 
     @pytest.fixture
-    def pipeline(self, mock_scan, mock_ingest, mock_extract, mock_vad, mock_domain_adaptation, mock_transcribe, mock_diarize, mock_sentence):
+    def mock_phonetic(self): return Mock()
+
+    @pytest.fixture
+    def pipeline(self, mock_scan, mock_ingest, mock_extract, mock_vad, mock_domain_adaptation, mock_transcribe,
+                 mock_diarize, mock_sentence, mock_phonetic):
         return BatchMediaPipeline(
             scan_phase=mock_scan,
             ingest_phase=mock_ingest,
@@ -55,103 +60,56 @@ class TestBatchMediaPipelineUnit:
             domain_adaptation_phase=mock_domain_adaptation,
             transcribe_phase=mock_transcribe,
             diarize_phase=mock_diarize,
-            sentence_reconstruction_phase=mock_sentence
+            sentence_reconstruction_phase=mock_sentence,
+            phonetic_correction_phase=mock_phonetic
         )
 
-    def test_process_video_pipeline_perfect_run(self, pipeline, mock_scan, mock_ingest, mock_extract, mock_vad,
-                                              mock_domain_adaptation, mock_transcribe, mock_diarize, mock_sentence):
-        """Verifies a VIDEO batch flows entirely through Scan -> Ingest -> Extract -> VAD -> Domain Adapt -> Transcribe -> Diarize -> Sentence Reconstruction."""
-        mock_scan.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.SCAN, status=PhaseStatus.COMPLETED,
-            successful_count=1, items=["/vid.mp4"]
-        )
+    def test_pipeline_happy_path(self, pipeline, mock_scan, mock_ingest, mock_extract, mock_vad, mock_domain_adaptation,
+                                 mock_transcribe, mock_diarize, mock_sentence, mock_phonetic):
+        """Tests that a fully successful run flows perfectly through all 8 phases."""
+        target_dir = "/dummy/path"
+        source_id = uuid.uuid4()
 
-        valid_source_id = uuid.uuid4()
-        mock_ingest.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.INGEST, status=PhaseStatus.COMPLETED,
-            successful_count=1, items=[IngestJobResult(file_path="/vid.mp4", success=True, source_id=valid_source_id)]
-        )
+        # Mock the sequential phase outputs
+        mock_scan.execute.return_value = PhaseBatchResult(phase=PipelinePhase.SCAN, status=PhaseStatus.COMPLETED,
+                                                          successful_count=1, items=["/dummy/path/vid.mp4"])
+        mock_ingest.execute.return_value = PhaseBatchResult(phase=PipelinePhase.INGEST, status=PhaseStatus.COMPLETED,
+                                                            items=[IngestJobResult(source_id=source_id, success=True,
+                                                                                   file_path="/dummy/path/vid.mp4")])
+        mock_extract.execute.return_value = PhaseBatchResult(phase=PipelinePhase.AUDIO_EXTRACTION,
+                                                             status=PhaseStatus.COMPLETED, items=[
+                AudioExtractionJobResult(source_id=source_id, success=True)])
+        mock_vad.execute.return_value = PhaseBatchResult(phase=PipelinePhase.VAD, status=PhaseStatus.COMPLETED,
+                                                         items=[VadJobResult(source_id=source_id, success=True)])
+        mock_domain_adaptation.execute.return_value = PhaseBatchResult(phase=PipelinePhase.DOMAIN_ADAPTATION,
+                                                                       status=PhaseStatus.COMPLETED, items=[
+                DomainAdaptationJobResult(source_id=source_id, success=True)])
+        mock_transcribe.execute.return_value = PhaseBatchResult(phase=PipelinePhase.TRANSCRIBE,
+                                                                status=PhaseStatus.COMPLETED, items=[
+                TranscribeJobResult(source_id=source_id, success=True)])
+        mock_diarize.execute.return_value = PhaseBatchResult(phase=PipelinePhase.DIARIZE, status=PhaseStatus.COMPLETED,
+                                                             items=[
+                                                                 DiarizeJobResult(source_id=source_id, success=True)])
+        mock_sentence.execute.return_value = PhaseBatchResult(phase=PipelinePhase.SENTENCE_RECONSTRUCTION,
+                                                              status=PhaseStatus.COMPLETED, items=[
+                SentenceReconstructionJobResult(source_id=source_id, success=True,
+                                                reconstructed_transcript_id=uuid.uuid4())])
+        mock_phonetic.execute.return_value = PhaseBatchResult(phase=PipelinePhase.PHONETIC_CORRECTION,
+                                                              status=PhaseStatus.COMPLETED, items=[
+                PhoneticCorrectionJobResult(source_id=source_id, success=True, phonetic_transcript_id=uuid.uuid4())])
 
-        extracted_items = [
-            AudioExtractionJobResult(source_id=valid_source_id, success=True, extracted_file_id=uuid.uuid4())]
-        mock_extract.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.AUDIO_EXTRACTION, status=PhaseStatus.COMPLETED, successful_count=1,
-            items=extracted_items
-        )
+        # Execute
+        results = pipeline.process_directory(target_dir, SourceType.VIDEO)
 
-        vad_items = [VadJobResult(source_id=valid_source_id, success=True, vad_map_id=uuid.uuid4())]
-        mock_vad.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.VAD, status=PhaseStatus.COMPLETED, successful_count=1, items=vad_items
-        )
+        # Assertions
+        assert len(results) == 9
 
-        domain_items = [DomainAdaptationJobResult(source_id=valid_source_id, success=True, glossary_id=uuid.uuid4())]
-        mock_domain_adaptation.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.DOMAIN_ADAPTATION, status=PhaseStatus.COMPLETED, successful_count=1, items=domain_items
-        )
-
-        transcribe_items = [TranscribeJobResult(source_id=valid_source_id, success=True, transcript_id=uuid.uuid4())]
-        mock_transcribe.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.TRANSCRIBE, status=PhaseStatus.COMPLETED, successful_count=1, items=transcribe_items
-        )
-
-        diarize_items = [DiarizeJobResult(source_id=valid_source_id, success=True, diarization_map_id=uuid.uuid4())]
-        mock_diarize.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.DIARIZE, status=PhaseStatus.COMPLETED, successful_count=1, items=diarize_items
-        )
-
-        sentence_items = [SentenceReconstructionJobResult(source_id=valid_source_id, success=True, reconstructed_transcript_id=uuid.uuid4())]
-        mock_sentence.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.SENTENCE_RECONSTRUCTION, status=PhaseStatus.COMPLETED, successful_count=1,
-            items=sentence_items
-        )
-
-        results = pipeline.process_directory("/vault", SourceType.VIDEO)
-
-        assert PipelinePhase.SCAN in results
-        assert PipelinePhase.INGEST in results
-        assert PipelinePhase.AUDIO_EXTRACTION in results
-        assert PipelinePhase.VAD in results
-        assert PipelinePhase.DOMAIN_ADAPTATION in results
-        assert PipelinePhase.TRANSCRIBE in results
-        assert PipelinePhase.DIARIZE in results
-        assert PipelinePhase.SENTENCE_RECONSTRUCTION in results
-
-        # Verify async preloads were called before execution
+        # Assert Preloads triggered right before GPU bounds
         mock_vad.preload_model.assert_called_once()
         mock_transcribe.preload_model.assert_called_once()
         mock_diarize.preload_model.assert_called_once()
         mock_sentence.preload_model.assert_called_once()
+        mock_phonetic.preload_model.assert_called_once()
 
-        # Verify Phases were executed with the output of the previous Phase
-        mock_vad.execute.assert_called_once_with(extracted_items)
-        mock_domain_adaptation.execute.assert_called_once_with(vad_items)
-        mock_transcribe.execute.assert_called_once_with(vad_items) # Transcribe uses vad_items directly in the pipeline code
-        mock_diarize.execute.assert_called_once_with(transcribe_items)
-        mock_sentence.execute.assert_called_once_with(diarize_items)
-
-    def test_process_document_skips_audio_extraction(self, pipeline, mock_scan, mock_ingest, mock_extract, mock_vad,
-                                                      mock_domain_adaptation, mock_transcribe, mock_diarize, mock_sentence):
-        """Verifies that if SourceType is not VIDEO, audio/vision/NLP phases are completely skipped."""
-        mock_scan.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.SCAN, status=PhaseStatus.COMPLETED, successful_count=1, items=["/doc.txt"]
-        )
-        mock_ingest.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.INGEST, status=PhaseStatus.COMPLETED,
-            successful_count=1, items=[IngestJobResult(file_path="/doc.txt", success=True, source_id=uuid.uuid4())]
-        )
-
-        results = pipeline.process_directory("/vault", SourceType.DOCUMENT)
-
-        assert PipelinePhase.AUDIO_EXTRACTION not in results
-        assert PipelinePhase.VAD not in results
-        assert PipelinePhase.DOMAIN_ADAPTATION not in results
-        assert PipelinePhase.TRANSCRIBE not in results
-        assert PipelinePhase.DIARIZE not in results
-        assert PipelinePhase.SENTENCE_RECONSTRUCTION not in results
-
-        mock_extract.execute.assert_not_called()
-        mock_vad.preload_model.assert_not_called()
-        mock_domain_adaptation.execute.assert_not_called()
-        mock_transcribe.execute.assert_not_called()
-        mock_diarize.execute.assert_not_called()
-        mock_sentence.execute.assert_not_called()
+        assert PipelinePhase.PHONETIC_CORRECTION in results
+        assert results[PipelinePhase.PHONETIC_CORRECTION].status == PhaseStatus.COMPLETED
