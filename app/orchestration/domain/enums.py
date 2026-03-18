@@ -14,6 +14,7 @@ class PipelinePhase(str, Enum):
     DIARIZE = "diarize"
     SENTENCE_RECONSTRUCTION = "sentence_reconstruction"
     INTELLIGENCE_BRIDGE = "intelligence_bridge" # Kept in domain, benched from active pipeline
+    PHONETIC_CORRECTION = "phonetic_correction"
 
 class PhaseStatus(str, Enum):
     """The execution status of an entire batch phase."""

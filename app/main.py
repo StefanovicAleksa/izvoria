@@ -1,4 +1,4 @@
-# Canvas: main_v9
+# Canvas: main_v12
 # Path: main.py
 
 import argparse
@@ -30,13 +30,11 @@ from app.features.vad.data.nemo_adapter import NeMoVadAdapter
 from app.features.vad.data.repositories import VadRepository
 from app.features.vad.service.vad_api import VadAPI
 
-# --- NEW: Domain Adaptation Imports ---
 from app.features.domain_adaptation.data.repositories import DomainAdaptationRepository
 from app.features.domain_adaptation.data.scout_whisper_adapter import ScoutWhisperAdapter
 from app.features.domain_adaptation.data.deberta_adapter import DebertaClassifierAdapter
 from app.features.domain_adaptation.utils.audio_sampler import AudioSampler
 from app.features.domain_adaptation.service.adaptation_api import DomainAdaptationAPI
-# --------------------------------------
 
 from app.features.transcription.data.repositories import TranscriptRepository
 from app.features.transcription.data.faster_whisper_adapter import FasterWhisperAdapter
@@ -50,22 +48,31 @@ from app.features.sentence_reconstruction.data.repositories import PostgresSente
 from app.features.sentence_reconstruction.data.sat_adapter import SaTAdapter
 from app.features.sentence_reconstruction.service.reconstruction_api import SentenceReconstructionAPI
 
+# --- CORRECTED: Phonetic Correction Imports ---
+from app.features.phonetic_correction.data.repositories import PhoneticRepository
+from app.features.phonetic_correction.data.qwen_adapter import QwenAdapter
+from app.features.phonetic_correction.service.correction_api import PhoneticCorrectionAPI
+# ----------------------------------------------
+
 from app.orchestration.domain.enums import PipelinePhase
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
 from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPhase
 from app.orchestration.service.phases.vad_phase import VadPhase
-from app.orchestration.service.phases.domain_adaptation_phase import DomainAdaptationPhase  # <-- NEW
+from app.orchestration.service.phases.domain_adaptation_phase import DomainAdaptationPhase
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
 from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
+from app.orchestration.service.phases.phonetic_correction_phase import PhoneticCorrectionPhase
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 
 
-def bootstrap_database():
+def bootstrap_database() -> None:
     try:
-        engine = db_manager._engine_wrapper._engine
-        Base.metadata.create_all(bind=engine)
+        # CLEAN ARCHITECTURE: Use public SQLAlchemy API to extract the engine safely
+        with db_manager.session() as session:
+            engine = session.get_bind()
+            Base.metadata.create_all(bind=engine)
     except Exception as e:
         print(f"[FATAL] Could not connect to the database. Ensure Postgres is running.\nError: {e}")
         sys.exit(1)
@@ -102,7 +109,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         required_vram_mb=settings.VAD_VRAM_REQUIREMENT_MB
     )
 
-    # 4. NEW: Domain Adaptation
+    # 4. Domain Adaptation
     domain_repo = DomainAdaptationRepository(db_manager)
     scout_adapter = ScoutWhisperAdapter()
     classifier_adapter = DebertaClassifierAdapter()
@@ -165,6 +172,20 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         required_vram_mb=settings.SAT_VRAM_REQUIREMENT_MB
     )
 
+    # 8. CORRECTED: Phonetic Correction
+    phonetic_repo = PhoneticRepository(db_manager)
+    phonetic_adapter = QwenAdapter()
+    phonetic_correction_api = PhoneticCorrectionAPI(
+        repository=phonetic_repo,
+        patch_adapter=phonetic_adapter
+    )
+
+    phonetic_manifest = ModelManifest(
+        model_type=ModelType.ASR_CORRECTION_PHASE_3,
+        model_path=settings.ASR_PHASE_3_MODEL_PATH,
+        required_vram_mb=settings.ASR_PHASE_3_VRAM_REQUIREMENT_MB
+    )
+
     # --- Orchestration Phases ---
     scan_phase = ScanPhase(job_manager, scanner)
     ingest_phase = IngestPhase(job_manager, storage_api)
@@ -179,7 +200,6 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         vad_adapter=nemo_adapter
     )
 
-    # NEW: Domain Adaptation Phase Wiring
     domain_adaptation_phase = DomainAdaptationPhase(
         job_manager=job_manager,
         adaptation_api=domain_adaptation_api,
@@ -187,12 +207,11 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         vad_repo=vad_repo
     )
 
-    # UPDATED: Transcribe Phase Wiring (Injected domain_repo)
     transcribe_phase = TranscribePhase(
         job_manager=job_manager,
         transcription_api=transcription_api,
         storage_api=storage_api,
-        domain_repo=domain_repo,  # <-- NEW DEPENDENCY
+        domain_repo=domain_repo,
         async_model_service=async_model_service,
         transcribe_manifest=transcribe_manifest,
         transcribe_adapter=whisper_adapter
@@ -216,20 +235,31 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         sat_adapter=sat_adapter
     )
 
+    phonetic_correction_phase = PhoneticCorrectionPhase(
+        job_manager=job_manager,
+        correction_api=phonetic_correction_api,
+        sentence_repo=sentence_repo,
+        domain_repo=domain_repo,
+        async_model_service=async_model_service,
+        manifest=phonetic_manifest,
+        adapter=phonetic_adapter
+    )
+
     # Pipeline Assembly
     return BatchMediaPipeline(
         scan_phase=scan_phase,
         ingest_phase=ingest_phase,
         extract_audio_phase=extract_audio_phase,
         vad_phase=vad_phase,
-        domain_adaptation_phase=domain_adaptation_phase,  # <-- NEW PHASE
+        domain_adaptation_phase=domain_adaptation_phase,
         transcribe_phase=transcribe_phase,
         diarize_phase=diarize_phase,
-        sentence_reconstruction_phase=sentence_reconstruction_phase
+        sentence_reconstruction_phase=sentence_reconstruction_phase,
+        phonetic_correction_phase=phonetic_correction_phase
     )
 
 
-def main():
+def main() -> None:
     parser = argparse.ArgumentParser(description="Onyx AI Appliance - Batch Media Pipeline")
     parser.add_argument("target_dir", type=str, help="Absolute or relative path to media files.")
     args = parser.parse_args()
@@ -266,33 +296,35 @@ def main():
 
         storage_repo = StorageRepository(db_manager)
 
-        # Output the clean, reconstructed text
-        if PipelinePhase.SENTENCE_RECONSTRUCTION in results:
+        if PipelinePhase.PHONETIC_CORRECTION in results:
             print("\n==================================================")
-            print("  WRITING RECONSTRUCTED TRANSCRIPTS TO DISK")
+            print("  WRITING CORRECTED TRANSCRIPTS TO DISK")
             print("==================================================")
 
-            sentence_repo = PostgresSentenceRepository(db_manager)
-            target_batch = results[PipelinePhase.SENTENCE_RECONSTRUCTION]
+            phonetic_repo = PhoneticRepository(db_manager)
+            target_batch = results[PipelinePhase.PHONETIC_CORRECTION]
+
+            output_dir = target_path / "output_transcripts"
+            output_dir.mkdir(parents=True, exist_ok=True)
 
             for item in target_batch.items:
                 if item.success and item.source_id:
                     source = storage_repo.get_by_id(item.source_id)
-                    reconstructed_transcript = sentence_repo.get_by_source_id(item.source_id)
+                    corrected_transcript = phonetic_repo.get_by_source_id(item.source_id)
 
-                    if source and reconstructed_transcript:
+                    if source and corrected_transcript:
                         safe_name = Path(source.name).stem
-                        out_file = target_path / f"{safe_name}_transcript.txt"
+                        out_file = output_dir / f"{safe_name}_transcript.txt"
 
                         try:
                             formatted_text = ""
-                            for sentence in reconstructed_transcript.sentences:
+                            for sentence in corrected_transcript.sentences:
                                 speaker = sentence.speaker_id or "Unknown Speaker"
                                 formatted_text += f"[{speaker}] {sentence.start_sec:.2f}s - {sentence.end_sec:.2f}s: {sentence.text}\n"
 
                             with open(out_file, "w", encoding="utf-8") as f:
                                 f.write(formatted_text)
-                            print(f"  [SUCCESS] Saved: {out_file.name}")
+                            print(f"  [SUCCESS] Saved: {out_file}")
                         except IOError as e:
                             print(f"  [ERROR] Failed to write {out_file.name}: {e}")
 
