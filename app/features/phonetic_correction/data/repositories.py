@@ -1,4 +1,4 @@
-# Canvas: phonetic_repositories_v1
+# Canvas: phonetic_repositories_v2
 # Path: app/features/phonetic_correction/data/repositories.py
 
 import uuid
@@ -47,7 +47,8 @@ class PhoneticRepository(IPhoneticRepository):
             return transcript
 
         except Exception as e:
-            raise map_phonetic_error(e, context="PhoneticRepository.save") from e
+            # FIXED: Context string now includes "transcript" to trigger TranscriptSaveError in error mapper
+            raise map_phonetic_error(e, context="PhoneticRepository.save_transcript") from e
 
     def get_by_source_id(self, source_id: uuid.UUID) -> Optional[PhoneticCorrectedTranscript]:
         try:
@@ -73,4 +74,5 @@ class PhoneticRepository(IPhoneticRepository):
                 )
 
         except Exception as e:
-            raise map_phonetic_error(e, context="PhoneticRepository.get_by_source_id") from e
+            # FIXED: Context string now includes "transcript"
+            raise map_phonetic_error(e, context="PhoneticRepository.get_transcript_by_source_id") from e

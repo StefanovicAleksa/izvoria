@@ -1,4 +1,4 @@
-# Canvas: phonetic_api_v4
+# Canvas: phonetic_api_v5
 # Path: app/features/phonetic_correction/service/correction_api.py
 
 import logging
@@ -7,7 +7,7 @@ from typing import List
 from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest
 from app.core.model_manager.domain.enums import ModelType
-from app.features.sentence_reconstruction.domain.entities import ReconstructedTranscript
+from app.features.sentence_reconstruction.domain.entities import ReconstructedTranscript, ReconstructedSentence
 
 from app.features.phonetic_correction.domain.interfaces import IPhoneticPatchAdapter, IPhoneticRepository
 from app.features.phonetic_correction.domain.entities import (
@@ -66,6 +66,7 @@ class PhoneticCorrectionAPI:
 
             loaded_model = None
             audit_records: List[AppliedCorrectionRecord] = []
+            all_patched_sentences: List[ReconstructedSentence] = []
 
             try:
                 loaded_model = self._patch_adapter.load(manifest)
@@ -87,15 +88,16 @@ class PhoneticCorrectionAPI:
                         domain_dictionary=domain_dictionary_str
                     )
 
-                    if patches:
-                        self._apply_patches_to_chunk(chunk, patches, audit_records)
+                    # FIXED: Apply patches immutably and accumulate the new objects
+                    patched_chunk = self._apply_patches_to_chunk(chunk, patches, audit_records)
+                    all_patched_sentences.extend(patched_chunk)
 
             finally:
                 if loaded_model:
                     self._patch_adapter.unload(loaded_model)
 
             # Filter out any sentences that were completely scrubbed empty by the hallucination remover
-            cleaned_sentences = [s for s in transcript.sentences if s.text.strip()]
+            cleaned_sentences = [s for s in all_patched_sentences if s.text.strip()]
 
             final_transcript = PhoneticCorrectedTranscript(
                 source_id=transcript.source_id,
@@ -110,35 +112,46 @@ class PhoneticCorrectionAPI:
 
     @staticmethod
     def _apply_patches_to_chunk(
-            chunk_sentences: list,
+            chunk_sentences: List[ReconstructedSentence],
             patches: List[PhoneticPatch],
             audit_records: List[AppliedCorrectionRecord]
-    ):
-        """Safely applies patches using string replacement and logs the audit trail."""
-        for patch in patches:
-            if not patch.original:
-                continue
+    ) -> List[ReconstructedSentence]:
+        """Safely applies patches using immutable Pydantic copies and logs the audit trail."""
+        patched_sentences = []
 
-            for sentence in chunk_sentences:
-                if patch.original in sentence.text:
-                    old_text = sentence.text
-                    new_text = old_text.replace(patch.original, patch.correction).strip()
+        for sentence in chunk_sentences:
+            new_text = sentence.text
+            applied_to_this_sentence = []
 
-                    sentence.text = new_text
+            if patches:
+                for patch in patches:
+                    if not patch.original:
+                        continue
 
-                    if patch.correction == "":
-                        logger.info(f"Hallucination Scrubbed: Removed '{patch.original}'")
-                    else:
-                        logger.info(f"Phonetic Patch Applied: '{patch.original}' -> '{patch.correction}'")
+                    if patch.original in new_text:
+                        new_text = new_text.replace(patch.original, patch.correction).strip()
+                        applied_to_this_sentence.append(patch)
 
-                    audit_records.append(
-                        AppliedCorrectionRecord(
-                            sentence_id=sentence.sentence_id,
-                            original_text=old_text,
-                            corrected_text=new_text,
-                            applied_patches=[patch]
-                        )
+                        if patch.correction == "":
+                            logger.info(f"Hallucination Scrubbed: Removed '{patch.original}'")
+                        else:
+                            logger.info(f"Phonetic Patch Applied: '{patch.original}' -> '{patch.correction}'")
+
+            if applied_to_this_sentence:
+                audit_records.append(
+                    AppliedCorrectionRecord(
+                        sentence_id=sentence.sentence_id,
+                        original_text=sentence.text,
+                        corrected_text=new_text,
+                        applied_patches=applied_to_this_sentence
                     )
+                )
+                # FIXED: Immutably create a new sentence object instead of mutating the frozen one
+                patched_sentences.append(sentence.model_copy(update={"text": new_text}))
+            else:
+                patched_sentences.append(sentence)
+
+        return patched_sentences
 
     @staticmethod
     def _create_passthrough(transcript: ReconstructedTranscript) -> PhoneticCorrectedTranscript:
