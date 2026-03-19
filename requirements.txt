@@ -41,3 +41,6 @@ llama-cpp-python>=0.2.75
 pytest>=8.0.0
 pytest-mock>=3.12.0
 pytest-cov>=4.1.0
+
+# --- Glossary Miner (Dev Tool) ---
+SPARQLWrapper>=2.0.0      # Required for querying the Wikidata Knowledge Graph
