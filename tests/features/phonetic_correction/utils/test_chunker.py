@@ -1,6 +1,3 @@
-# Canvas: test_chunker_v2
-# Path: tests/features/phonetic_correction/utils/test_chunker.py
-
 import uuid
 from app.features.sentence_reconstruction.domain.entities import ReconstructedSentence
 from app.features.phonetic_correction.utils.chunker import chunk_sentences_by_exact_tokens
@@ -12,14 +9,14 @@ def dummy_tokenizer(text: str) -> list:
 
 
 def test_chunk_sentences_respects_token_limits():
-    # FIXED: Added required 'segments=[]' to satisfy Pydantic validation
+    # FIXED: Replaced segments=[] with words=[]
     sentences = [
         ReconstructedSentence(sentence_id=uuid.uuid4(), start_sec=0, end_sec=1, text="One two three four five",
-                              speaker_id="S0", segments=[]),
+                              speaker_id="S0", words=[]),
         ReconstructedSentence(sentence_id=uuid.uuid4(), start_sec=1, end_sec=2, text="Six seven", speaker_id="S0",
-                              segments=[]),
+                              words=[]),
         ReconstructedSentence(sentence_id=uuid.uuid4(), start_sec=2, end_sec=3, text="Eight nine ten", speaker_id="S0",
-                              segments=[])
+                              words=[])
     ]
 
     # Max 6 tokens per chunk.

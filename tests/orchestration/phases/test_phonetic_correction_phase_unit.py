@@ -1,4 +1,4 @@
-# Canvas: test_phonetic_correction_phase_unit_v2
+# Canvas: test_phonetic_correction_phase_unit_v3
 # Path: tests/orchestration/service/phases/test_phonetic_correction_phase_unit.py
 
 import pytest
@@ -12,7 +12,10 @@ from app.orchestration.domain.entities import SentenceReconstructionJobResult, P
 from app.core.model_manager.domain.entities import LoadedModel, ModelManifest
 from app.core.model_manager.domain.enums import ModelType
 from app.core.model_manager.exceptions.base import ModelManagerError
+
+# CRITICAL FIX: Removed the _old suffix to point to our new deterministic architecture
 from app.features.sentence_reconstruction.domain.entities import ReconstructedTranscript
+
 from app.features.phonetic_correction.domain.entities import PhoneticCorrectedTranscript
 
 

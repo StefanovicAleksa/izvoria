@@ -1,4 +1,4 @@
-# Canvas: sentence_reconstruction_phase_v1
+# Canvas: sentence_reconstruction_phase_v2
 # Path: app/orchestration/service/phases/sentence_reconstruction_phase.py
 
 import concurrent.futures
@@ -13,6 +13,7 @@ from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.exceptions.base import ModelManagerError
 
+# CRITICAL FIX: Pointing to the new feature directory (removed _old)
 from app.features.sentence_reconstruction.service.reconstruction_api import SentenceReconstructionAPI
 from app.features.transcription.service.transcription_api import TranscriptionAPI
 
@@ -27,25 +28,25 @@ class SentenceReconstructionPhase:
             reconstruction_api: SentenceReconstructionAPI,
             transcription_api: TranscriptionAPI,
             async_model_service: AsyncModelService,
-            sat_manifest: ModelManifest,
-            sat_adapter: IModelLoader
+            punctuation_manifest: ModelManifest,  # Renamed from sat_manifest
+            punctuation_adapter: IModelLoader     # Renamed from sat_adapter
     ):
         self._job_manager = job_manager
         self._reconstruction_api = reconstruction_api
         self._transcription_api = transcription_api
         self._async_service = async_model_service
-        self._manifest = sat_manifest
-        self._adapter = sat_adapter
+        self._manifest = punctuation_manifest
+        self._adapter = punctuation_adapter
 
         self._preload_future: Optional[concurrent.futures.Future] = None
 
     def preload_model(self) -> None:
-        """Triggers the background loading of the SaT model."""
+        """Triggers the background loading of the Token Classification (Punctuation) model."""
         self._preload_future = self._async_service.trigger_preload(self._manifest, self._adapter)
 
     def execute(self, diarize_results: List[DiarizeJobResult]) -> PhaseBatchResult:
         """
-        Phase 7: Waits for the SaT neural splitting model to load, then reconstructs sentences sequentially.
+        Phase 7: Waits for the punctuation model to load, then deterministically reconstructs sentences sequentially.
         """
         results: List[SentenceReconstructionJobResult] = []
         errors: List[str] = []
@@ -61,7 +62,7 @@ class SentenceReconstructionPhase:
                 return PhaseBatchResult(
                     phase=PipelinePhase.SENTENCE_RECONSTRUCTION,
                     status=PhaseStatus.FAILED,
-                    errors=[f"Critical failure preloading SaT model: {str(e)}"]
+                    errors=[f"Critical failure preloading Punctuation model: {str(e)}"]
                 )
 
         try:
@@ -88,7 +89,7 @@ class SentenceReconstructionPhase:
 
                 try:
                     # Execute API.
-                    # `release_after=False` retains the SaT model in VRAM for the whole batch
+                    # `release_after=False` retains the Punctuation model in VRAM for the whole batch
                     reconstructed_transcript = self._job_manager.run_job(
                         request,
                         self._reconstruction_api.reconstruct_transcript,
@@ -110,7 +111,7 @@ class SentenceReconstructionPhase:
                     failed_count += 1
 
         finally:
-            # 2. Safely unload the SaT model in the background once the entire batch is done
+            # 2. Safely unload the Punctuation model in the background once the entire batch is done
             if loaded_model:
                 self._async_service.trigger_unload(loaded_model, self._adapter, flush=True)
 

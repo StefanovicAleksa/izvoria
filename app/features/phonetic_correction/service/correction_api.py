@@ -1,4 +1,4 @@
-# Canvas: phonetic_api_v5
+# Canvas: phonetic_api_v6
 # Path: app/features/phonetic_correction/service/correction_api.py
 
 import logging
@@ -7,6 +7,8 @@ from typing import List
 from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest
 from app.core.model_manager.domain.enums import ModelType
+
+# CRITICAL FIX: Removed _old
 from app.features.sentence_reconstruction.domain.entities import ReconstructedTranscript, ReconstructedSentence
 
 from app.features.phonetic_correction.domain.interfaces import IPhoneticPatchAdapter, IPhoneticRepository
@@ -88,7 +90,7 @@ class PhoneticCorrectionAPI:
                         domain_dictionary=domain_dictionary_str
                     )
 
-                    # FIXED: Apply patches immutably and accumulate the new objects
+                    # Apply patches immutably and accumulate the new objects
                     patched_chunk = self._apply_patches_to_chunk(chunk, patches, audit_records)
                     all_patched_sentences.extend(patched_chunk)
 
@@ -146,7 +148,7 @@ class PhoneticCorrectionAPI:
                         applied_patches=applied_to_this_sentence
                     )
                 )
-                # FIXED: Immutably create a new sentence object instead of mutating the frozen one
+                # Immutably create a new sentence object instead of mutating the frozen one
                 patched_sentences.append(sentence.model_copy(update={"text": new_text}))
             else:
                 patched_sentences.append(sentence)

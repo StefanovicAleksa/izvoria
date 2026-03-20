@@ -1,4 +1,4 @@
-# Canvas: sentence_interfaces_v3
+# Canvas: sentence_interfaces_v4
 # Path: app/features/sentence_reconstruction/domain/interfaces.py
 
 import uuid
@@ -7,14 +7,24 @@ from typing import List, Optional
 
 from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.domain.entities import LoadedModel
-from app.features.sentence_reconstruction.domain.entities import ReconstructedTranscript
+
+from app.features.transcription.domain.entities import TranscriptWord
+from app.features.sentence_reconstruction.domain.entities import PunctuatedWord, ReconstructedTranscript
 
 
-class ISentenceAdapter(IModelLoader, ABC):
-    """Contract for the SaT neural segmentation engine."""
+class IPunctuationAdapter(IModelLoader, ABC):
+    """
+    Contract for the Token Classification engine (e.g., oliverguhr/fullstop).
+    Replaces the old ISentenceAdapter (SaT model).
+    """
 
     @abstractmethod
-    def segment_text(self, model: LoadedModel, text: str) -> List[str]:
+    def predict_punctuation(self, model: LoadedModel, words: List[TranscriptWord]) -> List[PunctuatedWord]:
+        """
+        Takes a continuous stream of acoustic words and tags each one with a punctuation marker.
+        Does NOT alter the text, drop characters, or hallucinate.
+        Returns an exact 1:1 mapped list.
+        """
         pass
 
 
@@ -22,7 +32,7 @@ class ISentenceRepository(ABC):
     """Contract for persisting the reconstructed transcript to PostgreSQL."""
 
     @abstractmethod
-    def save(self, transcript: ReconstructedTranscript) -> ReconstructedTranscript: # FIXED: Naming convention
+    def save(self, transcript: ReconstructedTranscript) -> ReconstructedTranscript:
         pass
 
     @abstractmethod

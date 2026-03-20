@@ -1,4 +1,4 @@
-# Canvas: sentence_repository_v3
+# Canvas: sentence_repository_v4
 # Path: app/features/sentence_reconstruction/data/repositories.py
 
 import uuid
@@ -16,6 +16,7 @@ from app.features.sentence_reconstruction.utils.error_mapper import map_sentence
 class PostgresSentenceRepository(ISentenceRepository):
     """
     PostgreSQL implementation of the Sentence Repository using SQLAlchemy and JSONB.
+    Translates the strict Pydantic Domain Entities into database records.
     """
 
     def __init__(self, db_manager: DatabaseManager):
@@ -23,7 +24,6 @@ class PostgresSentenceRepository(ISentenceRepository):
 
     def save(self, transcript: ReconstructedTranscript) -> ReconstructedTranscript:
         try:
-            # Safely convert Pydantic models to JSON-compatible dictionaries
             serialized_sentences = [sentence.model_dump(mode='json') for sentence in transcript.sentences]
 
             db_model = ReconstructedTranscriptModel(
@@ -33,7 +33,6 @@ class PostgresSentenceRepository(ISentenceRepository):
                 created_at=transcript.created_at
             )
 
-            # FIXED: Using the DatabaseManager context manager
             with self._db.session() as session:
                 session.add(db_model)
 
@@ -51,7 +50,6 @@ class PostgresSentenceRepository(ISentenceRepository):
                 if not db_model:
                     return None
 
-                # CRITICAL: Deserialize the JSONB while the session is STILL OPEN
                 domain_sentences = [ReconstructedSentence(**s) for s in db_model.sentences]
 
                 return ReconstructedTranscript(

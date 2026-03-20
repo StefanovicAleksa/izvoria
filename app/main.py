@@ -1,4 +1,4 @@
-# Canvas: main_v12
+# Canvas: main_v13
 # Path: main.py
 
 import argparse
@@ -44,15 +44,14 @@ from app.features.diarization.data.repositories import DiarizationRepository
 from app.features.diarization.data.nemo_adapter import NeMoDiarizationAdapter
 from app.features.diarization.service.diarization_api import DiarizationAPI
 
+# --- CORRECTED: Sentence Reconstruction Imports ---
 from app.features.sentence_reconstruction.data.repositories import PostgresSentenceRepository
-from app.features.sentence_reconstruction.data.sat_adapter import SaTAdapter
+from app.features.sentence_reconstruction.data.punctuation_adapter import PunctuationAdapter
 from app.features.sentence_reconstruction.service.reconstruction_api import SentenceReconstructionAPI
 
-# --- CORRECTED: Phonetic Correction Imports ---
 from app.features.phonetic_correction.data.repositories import PhoneticRepository
 from app.features.phonetic_correction.data.qwen_adapter import QwenAdapter
 from app.features.phonetic_correction.service.correction_api import PhoneticCorrectionAPI
-# ----------------------------------------------
 
 from app.orchestration.domain.enums import PipelinePhase
 from app.orchestration.service.phases.scan_phase import ScanPhase
@@ -157,22 +156,22 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         required_vram_mb=settings.DIARIZATION_VRAM_REQUIREMENT_MB
     )
 
-    # 7. Sentence Reconstruction
+    # 7. CORRECTED: Sentence Reconstruction (Phase 7)
     sentence_repo = PostgresSentenceRepository(db_manager)
-    sat_adapter = SaTAdapter()
+    punctuation_adapter = PunctuationAdapter()
     reconstruction_api = SentenceReconstructionAPI(
         repository=sentence_repo,
         orchestrator=model_orchestrator,
-        adapter=sat_adapter
+        adapter=punctuation_adapter
     )
 
-    sat_manifest = ModelManifest(
+    punctuation_manifest = ModelManifest(
         model_type=ModelType.SENTENCE_RECONSTRUCTION,
-        model_path=settings.SAT_MODEL_NAME,
-        required_vram_mb=settings.SAT_VRAM_REQUIREMENT_MB
+        model_path=settings.PUNCTUATION_MODEL_PATH,
+        required_vram_mb=settings.PUNCTUATION_VRAM_REQUIREMENT_MB
     )
 
-    # 8. CORRECTED: Phonetic Correction
+    # 8. Phonetic Correction (Phase 8)
     phonetic_repo = PhoneticRepository(db_manager)
     phonetic_adapter = QwenAdapter()
     phonetic_correction_api = PhoneticCorrectionAPI(
@@ -231,8 +230,8 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         reconstruction_api=reconstruction_api,
         transcription_api=transcription_api,
         async_model_service=async_model_service,
-        sat_manifest=sat_manifest,
-        sat_adapter=sat_adapter
+        punctuation_manifest=punctuation_manifest,
+        punctuation_adapter=punctuation_adapter
     )
 
     phonetic_correction_phase = PhoneticCorrectionPhase(

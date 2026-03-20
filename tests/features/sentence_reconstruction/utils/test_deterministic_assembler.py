@@ -1,0 +1,69 @@
+# Canvas: test_deterministic_assembler_v1
+# Path: tests/features/sentence_reconstruction/utils/test_deterministic_assembler.py
+
+from app.features.transcription.domain.entities import TranscriptWord
+from app.features.sentence_reconstruction.domain.entities import PunctuatedWord
+from app.features.sentence_reconstruction.utils.deterministic_assembler import assemble_sentences
+
+
+def test_assemble_sentences_clean_split():
+    """Proves it cleanly splits two sentences when a terminal tag is hit."""
+
+    # 1. Input: 4 words, middle one has a period, last one has a period.
+    tagged_words = [
+        PunctuatedWord(acoustic_word=TranscriptWord(start_sec=0.0, end_sec=0.5, word="this"), punctuation_tag="NONE"),
+        PunctuatedWord(acoustic_word=TranscriptWord(start_sec=0.5, end_sec=1.0, word="one"), punctuation_tag="."),
+        PunctuatedWord(acoustic_word=TranscriptWord(start_sec=1.0, end_sec=1.5, word="is"), punctuation_tag="NONE"),
+        PunctuatedWord(acoustic_word=TranscriptWord(start_sec=1.5, end_sec=2.0, word="two"), punctuation_tag=".")
+    ]
+
+    # 2. Execute
+    sentences = assemble_sentences("Speaker_1", tagged_words)
+
+    # 3. Assertions
+    assert len(sentences) == 2
+
+    # Verify Sentence 1
+    assert sentences[0].text == "This one."
+    assert sentences[0].speaker_id == "Speaker_1"
+    assert sentences[0].start_sec == 0.0
+    assert sentences[0].end_sec == 1.0
+    assert len(sentences[0].words) == 2
+
+    # Verify Sentence 2
+    assert sentences[1].text == "Is two."
+    assert sentences[1].start_sec == 1.0
+    assert sentences[1].end_sec == 2.0
+    assert len(sentences[1].words) == 2
+
+
+def test_assemble_sentences_handles_orphaned_fragments():
+    """Proves it safely wraps up trailing words if the audio cuts off before a period."""
+
+    tagged_words = [
+        PunctuatedWord(acoustic_word=TranscriptWord(start_sec=0.0, end_sec=0.5, word="unfinished"),
+                       punctuation_tag="NONE"),
+        PunctuatedWord(acoustic_word=TranscriptWord(start_sec=0.5, end_sec=1.0, word="thought"), punctuation_tag="NONE")
+    ]
+
+    sentences = assemble_sentences("Speaker_0", tagged_words)
+
+    assert len(sentences) == 1
+    # It must inject a period to enforce grammatical correctness for downstream RAG
+    assert sentences[0].text == "Unfinished thought."
+    assert sentences[0].start_sec == 0.0
+    assert sentences[0].end_sec == 1.0
+
+
+def test_assemble_sentences_handles_attached_punctuation():
+    """Proves that commas and hyphens attach to the preceding word without spaces."""
+
+    tagged_words = [
+        PunctuatedWord(acoustic_word=TranscriptWord(start_sec=0.0, end_sec=0.5, word="wait"), punctuation_tag=","),
+        PunctuatedWord(acoustic_word=TranscriptWord(start_sec=0.5, end_sec=1.0, word="what"), punctuation_tag="?")
+    ]
+
+    sentences = assemble_sentences("Speaker_0", tagged_words)
+
+    assert len(sentences) == 1
+    assert sentences[0].text == "Wait, what?"

@@ -1,4 +1,4 @@
-# Canvas: speaker_grouper_v1
+# Canvas: speaker_grouper_v2
 # Path: app/features/sentence_reconstruction/utils/speaker_grouper.py
 
 from typing import List
@@ -7,7 +7,7 @@ from app.features.transcription.domain.entities import TranscriptSegment
 def group_by_speaker(segments: List[TranscriptSegment]) -> List[List[TranscriptSegment]]:
     """
     Creates a 'Speaker Wall' by grouping consecutive transcript segments
-    belonging to the same speaker. This guarantees the neural sentence
+    belonging to the same speaker. This guarantees the deterministic sentence
     reconstruction never crosses speaker boundaries.
     """
     if not segments:

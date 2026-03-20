@@ -1,4 +1,4 @@
-# Canvas: sentence_database_exceptions_v3
+# Canvas: sentence_exceptions_database_v4
 # Path: app/features/sentence_reconstruction/exceptions/database.py
 
 from .base import SentenceReconstructionError

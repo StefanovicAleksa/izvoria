@@ -1,8 +1,11 @@
-# Canvas: chunker_v3
+# Canvas: chunker_v4
 # Path: app/features/phonetic_correction/utils/chunker.py
 
 from typing import List, Callable, Any
+
+# CRITICAL FIX: Removed _old
 from app.features.sentence_reconstruction.domain.entities import ReconstructedSentence
+
 from app.features.phonetic_correction.exceptions.pipeline import PhoneticPipelineError
 
 

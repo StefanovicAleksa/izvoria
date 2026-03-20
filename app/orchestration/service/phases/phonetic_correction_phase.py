@@ -1,4 +1,4 @@
-# Canvas: phonetic_correction_phase_v1
+# Canvas: phonetic_correction_phase_v2
 # Path: app/orchestration/service/phases/phonetic_correction_phase.py
 
 import concurrent.futures
@@ -13,7 +13,10 @@ from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.exceptions.base import ModelManagerError
 
 from app.features.phonetic_correction.service.correction_api import PhoneticCorrectionAPI
+
+# CRITICAL FIX: Pointing to the new feature directory (removed _old)
 from app.features.sentence_reconstruction.domain.interfaces import ISentenceRepository
+
 from app.features.domain_adaptation.domain.interfaces import IDomainAdaptationRepository
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus

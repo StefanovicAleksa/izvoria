@@ -1,6 +1,3 @@
-# Canvas: test_correction_api_v3
-# Path: tests/features/asr_error_correction/test_correction_api.py
-
 import uuid
 import pytest
 from unittest.mock import MagicMock, patch
@@ -35,8 +32,9 @@ class TestAsrCorrectionAPI:
         return ReconstructedTranscript(
             source_id=source_id,
             sentences=[
+                # FIXED: Replaced segments=[] with words=[]
                 ReconstructedSentence(sentence_id=uuid.uuid4(), text="I like m r i.", speaker_id="S1", start_sec=0.0,
-                                      end_sec=1.0, segments=[])
+                                      end_sec=1.0, words=[])
             ]
         )
 

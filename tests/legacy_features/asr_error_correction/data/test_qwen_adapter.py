@@ -1,6 +1,3 @@
-# Canvas: test_qwen_adapter_v1
-# Path: tests/features/asr_error_correction/test_qwen_adapter.py
-
 import pytest
 import uuid
 from unittest.mock import MagicMock
@@ -31,8 +28,9 @@ def test_apply_corrections_success(manifest):
     transcript = ReconstructedTranscript(
         source_id=uuid.uuid4(),
         sentences=[
+            # FIXED: Replaced segments=[] with words=[]
             ReconstructedSentence(sentence_id=sentence_id, text="I like an m r i scan.", speaker_id="S1", start_sec=0.0,
-                                  end_sec=1.0, segments=[])
+                                  end_sec=1.0, words=[])
         ]
     )
 

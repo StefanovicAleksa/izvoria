@@ -1,6 +1,3 @@
-# Canvas: test_correction_api_v2
-# Path: tests/features/phonetic_correction/service/test_correction_api.py
-
 import uuid
 import pytest
 from unittest.mock import MagicMock, patch
@@ -35,9 +32,9 @@ class TestPhoneticCorrectionAPI:
         mocks["repo"].get_by_source_id.return_value = None
         mock_loader.build_prompt_dictionary.return_value = "- acute angina"
 
-        # FIXED: Added required 'segments=[]' to satisfy Pydantic validation
+        # FIXED: Replaced segments=[] with words=[]
         sentence = ReconstructedSentence(sentence_id=uuid.uuid4(), start_sec=0, end_sec=1, text="He has a cute angina.",
-                                         speaker_id="S0", segments=[])
+                                         speaker_id="S0", words=[])
         transcript = ReconstructedTranscript(source_id=source_id, sentences=[sentence])
 
         # Mock Model & Tokenizer
@@ -57,7 +54,8 @@ class TestPhoneticCorrectionAPI:
 
         # Verify logic
         assert len(result.sentences) == 1
-        assert result.sentences[0].text == "He has acute angina."  # Assert patch applied
+        assert result.sentences[0].text == "He has acute angina."
+        # Assert patch applied
         assert len(result.audit_trail) == 1
 
         # Verify strict VRAM control

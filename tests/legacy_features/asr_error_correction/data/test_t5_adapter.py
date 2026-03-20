@@ -1,6 +1,3 @@
-# Canvas: test_t5_adapter_v1
-# Path: tests/features/asr_error_correction/test_t5_adapter.py
-
 import pytest
 import uuid
 from unittest.mock import MagicMock
@@ -32,8 +29,9 @@ def test_detect_anomalies_success(manifest):
     transcript = ReconstructedTranscript(
         source_id=uuid.uuid4(),
         sentences=[
+            # FIXED: Replaced segments=[] with words=[]
             ReconstructedSentence(sentence_id=sentence_id, text="I need an m r i.", speaker_id="S1", start_sec=0.0,
-                                  end_sec=1.0, segments=[])
+                                  end_sec=1.0, words=[])
         ]
     )
 

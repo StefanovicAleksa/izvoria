@@ -1,6 +1,3 @@
-# Canvas: test_correction_api_integration_v4
-# Path: integration_tests/features/asr_error_correction/test_correction_api_integration.py
-
 import os
 import json
 import uuid
@@ -61,6 +58,13 @@ class TestAsrCorrectionAPIIntegration:
 
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
+
+        # FIXED: Ensure compatibility with old JSON files lacking the 'words' array
+        for seg in data["sentences"]:
+            if "segments" in seg:
+                del seg["segments"]
+            if "words" not in seg:
+                seg["words"] = []
 
         sentences = [ReconstructedSentence(**seg) for seg in data["sentences"]]
 

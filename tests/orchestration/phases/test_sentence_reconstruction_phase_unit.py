@@ -1,4 +1,4 @@
-# Canvas: test_sentence_reconstruction_phase_unit_v1
+# Canvas: test_sentence_reconstruction_phase_unit_v2
 # Path: tests/orchestration/service/phases/test_sentence_reconstruction_phase_unit.py
 
 import pytest
@@ -8,8 +8,11 @@ from unittest.mock import Mock
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.enums import ModelType
+
+# CRITICAL FIX: Pointing to the new feature directory
 from app.features.sentence_reconstruction.domain.entities import ReconstructedTranscript
 from app.features.transcription.domain.entities import Transcript
+
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import DiarizeJobResult
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
@@ -35,8 +38,8 @@ class TestSentenceReconstructionPhaseUnit:
     def sample_manifest(self):
         return ModelManifest(
             model_type=ModelType.SENTENCE_RECONSTRUCTION,
-            model_path="fake_sat",
-            required_vram_mb=750
+            model_path="fake_punctuation",  # Changed from fake_sat
+            required_vram_mb=500.0          # Changed from 750
         )
 
     @pytest.fixture
@@ -46,12 +49,12 @@ class TestSentenceReconstructionPhaseUnit:
             reconstruction_api=mock_reconstruction_api,
             transcription_api=mock_transcription_api,
             async_model_service=mock_async_service,
-            sat_manifest=sample_manifest,
-            sat_adapter=mock_adapter
+            punctuation_manifest=sample_manifest,  # Renamed
+            punctuation_adapter=mock_adapter       # Renamed
         )
 
     def test_preload_model(self, phase, mock_async_service, sample_manifest, mock_adapter):
-        """Should trigger background load of the SaT model and store the future."""
+        """Should trigger background load of the Punctuation model and store the future."""
         mock_future = concurrent.futures.Future()
         mock_async_service.trigger_preload.return_value = mock_future
 
@@ -61,7 +64,7 @@ class TestSentenceReconstructionPhaseUnit:
         mock_async_service.trigger_preload.assert_called_once_with(sample_manifest, mock_adapter)
 
     def test_execute_success(self, phase, mock_job_manager, mock_transcription_api, mock_async_service, mock_adapter):
-        """Scenario: Batch processes perfectly, SaT model unloads at the end."""
+        """Scenario: Batch processes perfectly, Punctuation model unloads at the end."""
         source_id = uuid.uuid4()
 
         # 1. Setup Input (Requires Diarization phase output)
@@ -71,7 +74,7 @@ class TestSentenceReconstructionPhaseUnit:
 
         # 2. Setup Async Model Future
         mock_future = concurrent.futures.Future()
-        fake_loaded_model = LoadedModel(manifest=phase._manifest, model_instance="fake_sat")
+        fake_loaded_model = LoadedModel(manifest=phase._manifest, model_instance="fake_punctuation")
         mock_future.set_result(fake_loaded_model)
         phase._preload_future = mock_future
         mock_async_service.resolve_preload.return_value = fake_loaded_model

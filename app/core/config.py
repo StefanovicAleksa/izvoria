@@ -1,4 +1,4 @@
-# Canvas: core_config_v9
+# Canvas: core_config_v10
 # Path: app/core/config.py
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -52,8 +52,8 @@ class Settings(BaseSettings):
     NLP_MODEL_PATH: str = "models/Phi-3.5-mini-instruct"
     NLP_VRAM_REQUIREMENT_MB: float = 8000.0
 
-    SAT_MODEL_NAME: str = "sat-3l-sm"
-    SAT_VRAM_REQUIREMENT_MB: float = 750.0
+    PUNCTUATION_MODEL_PATH: str = "models/fullstop-punctuation-multilingual-base"
+    PUNCTUATION_VRAM_REQUIREMENT_MB: float = 500.0
 
     ASR_PHASE_1_MODEL_PATH: str = "models/llama-3.2-3b-instruct-q8_0.gguf"
     ASR_PHASE_1_VRAM_REQUIREMENT_MB: float = 3500.0

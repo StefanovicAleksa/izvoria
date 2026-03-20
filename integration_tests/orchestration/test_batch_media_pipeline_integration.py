@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_integration_v12
+# Canvas: test_batch_media_pipeline_integration_v13
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
 import subprocess
@@ -47,15 +47,14 @@ from app.features.diarization.data.repositories import DiarizationRepository
 from app.features.diarization.service.diarization_api import DiarizationAPI
 from app.features.diarization.data.nemo_adapter import NeMoDiarizationAdapter
 
+# CRITICAL FIX: Update imports to the new architecture
 from app.features.sentence_reconstruction.data.repositories import PostgresSentenceRepository
 from app.features.sentence_reconstruction.service.reconstruction_api import SentenceReconstructionAPI
-from app.features.sentence_reconstruction.data.sat_adapter import SaTAdapter
+from app.features.sentence_reconstruction.data.punctuation_adapter import PunctuationAdapter
 
-# --- NEW: Phonetic Correction Imports ---
 from app.features.phonetic_correction.data.repositories import PhoneticRepository
 from app.features.phonetic_correction.data.qwen_adapter import QwenAdapter
 from app.features.phonetic_correction.service.correction_api import PhoneticCorrectionAPI
-# ----------------------------------------
 
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
@@ -139,7 +138,8 @@ class TestBatchMediaPipelineIntegration:
         # Real Diarization Feature
         diarize_repo = DiarizationRepository(db_manager)
         real_diarize_adapter = NeMoDiarizationAdapter()
-        diarization_api = DiarizationAPI(diarize_repo, vad_repo, transcription_api, storage_api, orchestrator, real_diarize_adapter)
+        diarization_api = DiarizationAPI(diarize_repo, vad_repo, transcription_api, storage_api, orchestrator,
+                                         real_diarize_adapter)
         diarize_manifest = ModelManifest(
             model_type=ModelType.DIARIZATION,
             model_path=settings.DIARIZATION_MODEL_PATH,
@@ -148,14 +148,14 @@ class TestBatchMediaPipelineIntegration:
 
         # Real Sentence Reconstruction Feature
         sentence_repo = PostgresSentenceRepository(db_manager)
-        real_sat_adapter = SaTAdapter()
-        reconstruction_api = SentenceReconstructionAPI(sentence_repo, orchestrator, real_sat_adapter)
+        real_punctuation_adapter = PunctuationAdapter()
+        reconstruction_api = SentenceReconstructionAPI(sentence_repo, orchestrator, real_punctuation_adapter)
 
-        sat_path = getattr(settings, "SAT_MODEL_PATH", "models/sat-3l-sm")
-        sat_manifest = ModelManifest(
+        punctuation_path = getattr(settings, "PUNCTUATION_MODEL_PATH", "models/fullstop-punctuation-multilingual-base")
+        punctuation_manifest = ModelManifest(
             model_type=ModelType.SENTENCE_RECONSTRUCTION,
-            model_path=sat_path,
-            required_vram_mb=getattr(settings, "SAT_VRAM_REQUIREMENT_MB", 750.0)
+            model_path=punctuation_path,
+            required_vram_mb=getattr(settings, "PUNCTUATION_VRAM_REQUIREMENT_MB", 500.0)
         )
 
         # Real Phonetic Correction Feature
@@ -175,10 +175,20 @@ class TestBatchMediaPipelineIntegration:
         extract_audio_phase = ExtractAudioPhase(job_manager, audio_extractor)
         vad_phase = VadPhase(job_manager, vad_api, storage_api, async_service, vad_manifest, real_vad_adapter)
         domain_adaptation_phase = DomainAdaptationPhase(job_manager, domain_adaptation_api, storage_api, vad_repo)
-        transcribe_phase = TranscribePhase(job_manager, transcription_api, storage_api, domain_repo, async_service, transcribe_manifest, real_transcribe_adapter)
-        diarize_phase = DiarizePhase(job_manager, diarization_api, storage_api, async_service, diarize_manifest, real_diarize_adapter)
-        sentence_phase = SentenceReconstructionPhase(job_manager, reconstruction_api, transcription_api, async_service, sat_manifest, real_sat_adapter)
-        phonetic_phase = PhoneticCorrectionPhase(job_manager, phonetic_correction_api, sentence_repo, domain_repo, async_service, phonetic_manifest, real_phonetic_adapter)
+        transcribe_phase = TranscribePhase(job_manager, transcription_api, storage_api, domain_repo, async_service,
+                                           transcribe_manifest, real_transcribe_adapter)
+        diarize_phase = DiarizePhase(job_manager, diarization_api, storage_api, async_service, diarize_manifest,
+                                     real_diarize_adapter)
+
+        sentence_phase = SentenceReconstructionPhase(
+            job_manager, reconstruction_api, transcription_api, async_service, punctuation_manifest,
+            real_punctuation_adapter
+        )
+
+        phonetic_phase = PhoneticCorrectionPhase(
+            job_manager, phonetic_correction_api, sentence_repo, domain_repo, async_service, phonetic_manifest,
+            real_phonetic_adapter
+        )
 
         pipeline = BatchMediaPipeline(
             scan_phase=scan_phase,
@@ -233,13 +243,20 @@ class TestBatchMediaPipelineIntegration:
         assert PipelinePhase.SENTENCE_RECONSTRUCTION in results
         assert PipelinePhase.PHONETIC_CORRECTION in results
 
-        assert results[PipelinePhase.SCAN].status == PhaseStatus.COMPLETED, f"Scan failed: {results[PipelinePhase.SCAN].errors}"
-        assert results[PipelinePhase.INGEST].status == PhaseStatus.COMPLETED, f"Ingest failed: {results[PipelinePhase.INGEST].errors}"
-        assert results[PipelinePhase.AUDIO_EXTRACTION].status == PhaseStatus.COMPLETED, f"Audio Extraction failed: {results[PipelinePhase.AUDIO_EXTRACTION].errors}"
-        assert results[PipelinePhase.VAD].status == PhaseStatus.COMPLETED, f"VAD failed: {results[PipelinePhase.VAD].errors}"
-        assert results[PipelinePhase.DOMAIN_ADAPTATION].status == PhaseStatus.COMPLETED, f"Domain Adaptation failed: {results[PipelinePhase.DOMAIN_ADAPTATION].errors}"
-        assert results[PipelinePhase.TRANSCRIBE].status == PhaseStatus.COMPLETED, f"Transcribe failed: {results[PipelinePhase.TRANSCRIBE].errors}"
-        assert results[PipelinePhase.DIARIZE].status == PhaseStatus.COMPLETED, f"Diarize failed: {results[PipelinePhase.DIARIZE].errors}"
+        assert results[
+                   PipelinePhase.SCAN].status == PhaseStatus.COMPLETED, f"Scan failed: {results[PipelinePhase.SCAN].errors}"
+        assert results[
+                   PipelinePhase.INGEST].status == PhaseStatus.COMPLETED, f"Ingest failed: {results[PipelinePhase.INGEST].errors}"
+        assert results[
+                   PipelinePhase.AUDIO_EXTRACTION].status == PhaseStatus.COMPLETED, f"Audio Extraction failed: {results[PipelinePhase.AUDIO_EXTRACTION].errors}"
+        assert results[
+                   PipelinePhase.VAD].status == PhaseStatus.COMPLETED, f"VAD failed: {results[PipelinePhase.VAD].errors}"
+        assert results[
+                   PipelinePhase.DOMAIN_ADAPTATION].status == PhaseStatus.COMPLETED, f"Domain Adaptation failed: {results[PipelinePhase.DOMAIN_ADAPTATION].errors}"
+        assert results[
+                   PipelinePhase.TRANSCRIBE].status == PhaseStatus.COMPLETED, f"Transcribe failed: {results[PipelinePhase.TRANSCRIBE].errors}"
+        assert results[
+                   PipelinePhase.DIARIZE].status == PhaseStatus.COMPLETED, f"Diarize failed: {results[PipelinePhase.DIARIZE].errors}"
 
         sentence_result = results[PipelinePhase.SENTENCE_RECONSTRUCTION]
         assert sentence_result.status == PhaseStatus.COMPLETED, f"Sentence Reconstruction failed: {sentence_result.errors}"

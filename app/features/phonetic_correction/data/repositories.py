@@ -1,4 +1,4 @@
-# Canvas: phonetic_repositories_v2
+# Canvas: phonetic_repositories_v3
 # Path: app/features/phonetic_correction/data/repositories.py
 
 import uuid
@@ -7,6 +7,7 @@ from typing import Optional
 from sqlalchemy import select
 
 from app.core.database.service.manager import DatabaseManager
+# CRITICAL FIX: Removed _old
 from app.features.sentence_reconstruction.domain.entities import ReconstructedSentence
 
 from app.features.phonetic_correction.domain.interfaces import IPhoneticRepository
@@ -47,7 +48,7 @@ class PhoneticRepository(IPhoneticRepository):
             return transcript
 
         except Exception as e:
-            # FIXED: Context string now includes "transcript" to trigger TranscriptSaveError in error mapper
+            # Context string now includes "transcript" to trigger TranscriptSaveError in error mapper
             raise map_phonetic_error(e, context="PhoneticRepository.save_transcript") from e
 
     def get_by_source_id(self, source_id: uuid.UUID) -> Optional[PhoneticCorrectedTranscript]:
@@ -74,5 +75,5 @@ class PhoneticRepository(IPhoneticRepository):
                 )
 
         except Exception as e:
-            # FIXED: Context string now includes "transcript"
+            # Context string now includes "transcript"
             raise map_phonetic_error(e, context="PhoneticRepository.get_transcript_by_source_id") from e

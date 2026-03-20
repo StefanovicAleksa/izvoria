@@ -1,16 +1,16 @@
-# Canvas: sentence_exceptions_barrel_v2
+# Canvas: sentence_exceptions_init_v3
 # Path: app/features/sentence_reconstruction/exceptions/__init__.py
 
 from .base import SentenceReconstructionError
 from .model import (
-    SaTModelLoadError,
-    SaTOOMError,
-    SaTExecutionError
+    PunctuationModelLoadError,
+    PunctuationOOMError,
+    PunctuationExecutionError
 )
-from .alignment import (
-    SegmentAlignmentError,
-    ZeroDurationSegmentError,
-    SentenceLengthMismatchError
+from .assembly import (
+    DeterministicAssemblyError,
+    MissingDiarizationError,
+    TokenMismatchError
 )
 from .database import (
     SentenceDatabaseError,
@@ -21,12 +21,12 @@ from .database import (
 
 __all__ = [
     "SentenceReconstructionError",
-    "SaTModelLoadError",
-    "SaTOOMError",
-    "SaTExecutionError",
-    "SegmentAlignmentError",
-    "ZeroDurationSegmentError",
-    "SentenceLengthMismatchError",
+    "PunctuationModelLoadError",
+    "PunctuationOOMError",
+    "PunctuationExecutionError",
+    "DeterministicAssemblyError",
+    "MissingDiarizationError",
+    "TokenMismatchError",
     "SentenceDatabaseError",
     "SentencePersistenceError",
     "SentenceSerializationError",

@@ -1,6 +1,3 @@
-# Canvas: test_chunker_v2
-# Path: tests/features/asr_error_correction/test_chunker.py
-
 import pytest
 import uuid
 from app.features.sentence_reconstruction.domain.entities import ReconstructedSentence
@@ -10,13 +7,14 @@ from app.legacy_features.asr_error_correction.exceptions.pipeline import AsrCorr
 
 @pytest.fixture
 def sample_sentences():
+    # FIXED: Replaced segments=[] with words=[]
     return [
         ReconstructedSentence(sentence_id=uuid.uuid4(), text="Sentence one.", speaker_id="S1", start_sec=0.0,
-                              end_sec=1.0, segments=[]),
+                              end_sec=1.0, words=[]),
         ReconstructedSentence(sentence_id=uuid.uuid4(), text="Sentence two.", speaker_id="S1", start_sec=1.0,
-                              end_sec=2.0, segments=[]),
+                              end_sec=2.0, words=[]),
         ReconstructedSentence(sentence_id=uuid.uuid4(), text="Sentence three.", speaker_id="S1", start_sec=2.0,
-                              end_sec=3.0, segments=[])
+                              end_sec=3.0, words=[])
     ]
 
 
