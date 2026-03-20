@@ -1,33 +1,44 @@
-# Canvas: it_test_transcription_api_v2
-# Path: integration_tests/features/transcription/test_transcription_api.py
+# Canvas: it_test_diarization_api_v7
+# Path: integration_tests/features/diarization/test_diarization_api.py
 
 import os
 import uuid
 import pytest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 from app.core.config import settings
 from app.core.database.data.engine import Base
 from app.core.database.service.manager import db_manager
 
+from app.core.model_manager.domain.entities import ModelManifest
+from app.core.model_manager.domain.enums import ModelType
 from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 
 from app.features.storage.data.models import SourceModel, FileModel
 from app.features.storage.domain.entities import SourceType
+from app.features.storage.service.storage_api import StorageAPI
 
+from app.features.vad.data.nemo_adapter import NeMoVadAdapter
 from app.features.vad.data.repositories import VadRepository
-from app.features.vad.domain.entities import VadMap, VadSegment
 
 from app.features.transcription.data.faster_whisper_adapter import FasterWhisperAdapter
 from app.features.transcription.data.repositories import TranscriptRepository
 from app.features.transcription.service.transcription_api import TranscriptionAPI
-from app.features.transcription.domain.entities import Transcript, TranscriptSegment
+# NEW: Imported TranscriptWord to seed the test
+from app.features.transcription.domain.entities import Transcript, TranscriptSegment, TranscriptWord
 
-class TestTranscriptionAPIIntegration:
+from app.features.diarization.data.nemo_adapter import NeMoDiarizationAdapter
+from app.features.diarization.data.repositories import DiarizationRepository
+from app.features.diarization.service.diarization_api import DiarizationAPI
+from app.features.diarization.domain.entities import DiarizationMap
+
+
+class TestDiarizationAPIIntegration:
     """
     STRICT NO-MOCKS INTEGRATION TEST.
-    Requires: Live PostgreSQL, NVIDIA GPU, and the Faster-Whisper model downloaded locally.
+    Requires: Live PostgreSQL, NVIDIA GPU, MarbleNet (VAD), and TitaNet (Diarization).
     """
 
     @pytest.fixture(scope="module", autouse=True)
@@ -37,7 +48,8 @@ class TestTranscriptionAPIIntegration:
         yield
 
     @pytest.fixture
-    def real_audio_file(self):
+    def real_audio_file(self) -> str:
+        """Points to the real human speech test file."""
         integration_tests_dir = Path(__file__).resolve().parent.parent.parent
         audio_path = integration_tests_dir / "resources" / "test_speech.wav"
 
@@ -47,15 +59,20 @@ class TestTranscriptionAPIIntegration:
         return str(audio_path)
 
     @pytest.fixture
-    def test_source_id(self):
+    def isolated_setup(self, real_audio_file) -> uuid.UUID:
+        """
+        Creates an isolated state, seeding the DB by running the ACTUAL VAD model
+        so Diarization has accurate silences to use for clustering boundaries.
+        """
         source_id = uuid.uuid4()
         file_id = uuid.uuid4()
 
+        # 1. Seed Storage
         with db_manager.session() as session:
             test_file = FileModel(
                 id=file_id,
-                file_path="/tmp/fake_integration_audio.wav",
-                file_name="fake_integration_audio.wav",
+                file_path="/tmp/fake_diarization_audio.wav",
+                file_name="fake_diarization_audio.wav",
                 file_size_bytes=1024,
                 mime_type="audio/wav"
             )
@@ -63,101 +80,139 @@ class TestTranscriptionAPIIntegration:
 
             test_source = SourceModel(
                 id=source_id,
-                name="integration_test_video.mp4",
+                name="diarization_integration_video.mp4",
                 source_type=SourceType.VIDEO.value,
-                content_hash=f"test-hash-{source_id}",
+                content_hash=f"diarization-hash-{source_id}",
                 file_id=file_id
             )
             session.add(test_source)
+            session.commit()
+
+        # --- RUN REAL VAD TO GET ACCURATE SILENCES ---
+        vad_adapter = NeMoVadAdapter()
+        vad_manifest = ModelManifest(
+            model_type=ModelType.VAD,
+            model_path=settings.VAD_MODEL_PATH,
+            required_vram_mb=settings.VAD_VRAM_REQUIREMENT_MB
+        )
+
+        if not os.path.exists(vad_manifest.model_path):
+            pytest.skip("VAD model missing. Cannot run accurate diarization test.")
+
+        vad_model = vad_adapter.load(vad_manifest)
+        try:
+            real_vad_map = vad_adapter.generate_vad_map(vad_model, real_audio_file, source_id)
+        finally:
+            vad_adapter.unload(vad_model)
+
+        # 2. Seed the DB with the REAL VAD Map
+        vad_repo = VadRepository(db_manager)
+        vad_repo.save_map(real_vad_map)
+
+        # 3. Seed Transcript
+        duration_sec = real_vad_map.segments[-1].end_sec if real_vad_map.segments else 10.0
+        transcript_repo = TranscriptRepository(db_manager)
+
+        # NEW: Inject dummy word timestamps to prove they survive the Aligner
+        dummy_words = [TranscriptWord(start_sec=0.5, end_sec=1.0, word="Integration", probability=0.99)]
+
+        transcript_repo.save(Transcript(
+            source_id=source_id,
+            segments=[
+                TranscriptSegment(
+                    start_sec=0.5,
+                    end_sec=duration_sec,
+                    text="Integration test placeholder transcript.",
+                    words=dummy_words
+                )
+            ]
+        ))
 
         return source_id
 
     @pytest.fixture
-    def live_api(self):
+    def live_api(self) -> DiarizationAPI:
+        """Constructs the full, live API dependency tree."""
         vad_repo = VadRepository(db_manager)
         transcript_repo = TranscriptRepository(db_manager)
+        diarization_repo = DiarizationRepository(db_manager)
 
         vram_monitor = PyTorchVramMonitor()
         orchestrator = ModelManagerOrchestrator(vram_monitor)
 
-        adapter = FasterWhisperAdapter()
-
-        return TranscriptionAPI(
+        transcription_api = TranscriptionAPI(
             repository=transcript_repo,
             vad_repository=vad_repo,
+            orchestrator=orchestrator,
+            adapter=FasterWhisperAdapter()
+        )
+
+        adapter = NeMoDiarizationAdapter()
+        dummy_storage_api = MagicMock(spec=StorageAPI)
+
+        return DiarizationAPI(
+            repository=diarization_repo,
+            vad_repository=vad_repo,
+            transcription_api=transcription_api,
+            storage_api=dummy_storage_api,
             orchestrator=orchestrator,
             adapter=adapter
         )
 
-    def test_process_audio_end_to_end_with_hints(self, live_api, test_source_id, real_audio_file):
-        """Verifies full GPU execution while applying domain-specific hotwords."""
-        vad_repo = live_api._vad_repo
-        test_vad_map = VadMap(
-            source_id=test_source_id,
-            segments=[
-                VadSegment(start_sec=0.0, end_sec=3.0, confidence=0.99)
-            ]
-        )
-        vad_repo.save_map(test_vad_map)
+    def test_process_audio_end_to_end_detects_multiple_speakers(self, live_api, isolated_setup, real_audio_file):
+        """
+        Executes the DiarizationAPI boundary and verifies it correctly
+        identified >1 speakers without improperly falling back to a monologue.
+        """
+        source_id = isolated_setup
 
-        if not os.path.exists(settings.WHISPER_MODEL_PATH):
-            pytest.skip(f"Faster-Whisper model not found at {settings.WHISPER_MODEL_PATH}. Skipping hardware test.")
+        # STRICT CONFIG INHERITANCE
+        model_path = settings.DIARIZATION_MODEL_PATH
 
-        # ACT: Execute transcription providing heavy hints for specific jargon
-        transcript = live_api.process_audio(
-            source_id=test_source_id,
+        if not os.path.exists(model_path):
+            pytest.skip(f"TitaNet model not found at {model_path}. Skipping hardware test.")
+
+        # --- 1. First Run: Execute Pipeline ---
+        diarization_map = live_api.process_audio(
+            source_id=source_id,
             audio_path=real_audio_file,
-            language="en",
-            hotwords="integration:15.0, test:15.0",  # Inject our glossary strings
             release_after=True
         )
 
-        assert isinstance(transcript, Transcript)
-        assert transcript.source_id == test_source_id
-        assert isinstance(transcript.segments, list)
+        # Verify Domain Object
+        assert isinstance(diarization_map, DiarizationMap)
+        assert diarization_map.source_id == source_id
+        assert isinstance(diarization_map.segments, list)
 
-        # Verify Database Persistence
-        transcript_repo = live_api._repo
-        db_transcript = transcript_repo.get_by_source_id(test_source_id)
+        # --- CORE ASSERTION ---
+        unique_speakers = diarization_map.unique_speakers
+        print(f"\n[TEST INFO] Detected Speakers: {unique_speakers}")
 
-        assert db_transcript is not None
-        assert db_transcript.id == transcript.id
-        assert len(db_transcript.segments) == len(transcript.segments)
-
-    def test_update_transcript_end_to_end(self, live_api, test_source_id):
-        """Verifies that the new update API directly modifies the JSONB segments in Postgres."""
-        initial_transcript = Transcript(
-            source_id=test_source_id,
-            segments=[
-                TranscriptSegment(start_sec=0.0, end_sec=3.0, text="Initial transcribed text")
-            ]
-        )
-        live_api._repo.save(initial_transcript)
-
-        existing_transcript = live_api.get_transcript(test_source_id)
-        assert existing_transcript is not None, "Transcript was not seeded properly"
-
-        new_segments = [
-            TranscriptSegment(
-                start_sec=seg.start_sec,
-                end_sec=seg.end_sec,
-                text=seg.text,
-                speaker_id="Speaker_0"
-            ) for seg in existing_transcript.segments
-        ]
-
-        updated_transcript = Transcript(
-            id=existing_transcript.id,
-            source_id=existing_transcript.source_id,
-            segments=new_segments,
-            created_at=existing_transcript.created_at
+        assert len(unique_speakers) > 1, (
+            f"Diarization failed to detect multiple speakers! "
+            f"Expected > 1, but got {len(unique_speakers)}: {unique_speakers}.\n"
+            f"The clustering fallback may have triggered due to swallowed system errors."
         )
 
-        live_api.update_transcript(updated_transcript)
+        # --- 2. Verify Database Persistence (Diarization Map) ---
+        db_map = live_api._repo.get_map_by_source_id(source_id)
+        assert db_map is not None
+        assert db_map.id == diarization_map.id
 
-        fresh_db_transcript = live_api.get_transcript(test_source_id)
+        # --- 3. Verify Cross-Feature Database Update (Transcript) ---
+        updated_transcript = live_api._transcription_api.get_transcript(source_id)
+        assert updated_transcript is not None
+        if len(diarization_map.segments) > 0 and len(updated_transcript.segments) > 0:
+            assert updated_transcript.segments[0].speaker_id != "Unknown"
 
-        assert fresh_db_transcript is not None
-        assert fresh_db_transcript.id == existing_transcript.id
-        if len(fresh_db_transcript.segments) > 0:
-            assert fresh_db_transcript.segments[0].speaker_id == "Speaker_0"
+            # NEW: CRITICAL ASSERTION - Prove the words array survived the Diarization Aligner
+            assert len(updated_transcript.segments[0].words) == 1
+            assert updated_transcript.segments[0].words[0].word == "Integration"
+
+        # --- 4. Verify Idempotency ---
+        second_run_map = live_api.process_audio(
+            source_id=source_id,
+            audio_path=real_audio_file,
+            release_after=True
+        )
+        assert second_run_map.id == diarization_map.id

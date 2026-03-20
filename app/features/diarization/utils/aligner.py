@@ -1,4 +1,4 @@
-# Canvas: aligner_v1
+# Canvas: diarization_aligner_v2
 # Path: app/features/diarization/utils/aligner.py
 
 from app.features.transcription.domain.entities import Transcript, TranscriptSegment
@@ -37,7 +37,8 @@ def align_transcript_with_diarization(transcript: Transcript, diarization_map: D
                 start_sec=t_seg.start_sec,
                 end_sec=t_seg.end_sec,
                 text=t_seg.text,
-                speaker_id=best_speaker
+                speaker_id=best_speaker,
+                words=t_seg.words  # CRITICAL FIX: Retain the word-level timestamp array
             )
         )
 

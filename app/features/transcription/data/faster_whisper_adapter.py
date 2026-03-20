@@ -1,4 +1,4 @@
-# Canvas: faster_whisper_adapter_v6
+# Canvas: faster_whisper_adapter_v7
 # Path: app/features/transcription/data/faster_whisper_adapter.py
 
 import os
@@ -9,7 +9,7 @@ from faster_whisper import WhisperModel
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.features.transcription.domain.interfaces import ITranscriptionAdapter
-from app.features.transcription.domain.entities import TranscriptSegment
+from app.features.transcription.domain.entities import TranscriptSegment, TranscriptWord
 from app.features.vad.domain.entities import VadMap, VadSegment
 from app.features.transcription.utils.error_mapper import map_transcription_error
 
@@ -87,21 +87,38 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
                     continue
 
                 # Pass the RAM chunk directly (avoids O(N) re-decoding of the file)
+                # ENFORCED: word_timestamps=True
                 segments, info = whisper_model.transcribe(
                     audio=audio_chunk,
                     language=language,
                     vad_filter=False,
-                    hotwords=hotwords
+                    hotwords=hotwords,
+                    word_timestamps=True
                 )
 
                 for segment in segments:
-                    # Offset the timestamps back to the original file's timeline
+                    domain_words = []
+
+                    # Map the inner words and offset their timestamps back to the original file's timeline
+                    if getattr(segment, "words", None):
+                        for w in segment.words:
+                            domain_words.append(
+                                TranscriptWord(
+                                    start_sec=m_seg.start_sec + w.start,
+                                    end_sec=m_seg.start_sec + w.end,
+                                    word=w.word,
+                                    probability=w.probability
+                                )
+                            )
+
+                    # Offset the segment timestamps back to the original file's timeline
                     segments_out.append(
                         TranscriptSegment(
                             start_sec=m_seg.start_sec + segment.start,
                             end_sec=m_seg.start_sec + segment.end,
                             text=segment.text.strip(),
-                            speaker_id="Unknown"
+                            speaker_id="Unknown",
+                            words=domain_words
                         )
                     )
 

@@ -1,4 +1,4 @@
-# Canvas: test_faster_whisper_adapter_v6
+# Canvas: test_faster_whisper_adapter_v7
 # Path: tests/features/transcription/test_faster_whisper_adapter.py
 
 import uuid
@@ -51,7 +51,7 @@ class TestFasterWhisperAdapter:
 
     @patch("app.features.transcription.data.faster_whisper_adapter.torchaudio")
     def test_transcribe_with_vad_merging_and_hotwords(self, mock_torchaudio, manifest):
-        """Verifies the adapter correctly slices audio, merges VAD, and offsets timestamps."""
+        """Verifies the adapter correctly slices audio, merges VAD, requests word timestamps, and offsets them."""
         # 1. Setup Audio Mock (10 seconds of 16kHz audio)
         sample_rate = 16000
         dummy_waveform = torch.zeros(1, sample_rate * 10)
@@ -69,10 +69,19 @@ class TestFasterWhisperAdapter:
         # 3. Setup Mock Whisper Model
         mock_whisper_instance = MagicMock()
 
+        # Setup mock word
+        mock_whisper_word = MagicMock()
+        mock_whisper_word.start = 0.5  # Relative to the chunk
+        mock_whisper_word.end = 1.0
+        mock_whisper_word.word = "Hello"
+        mock_whisper_word.probability = 0.99
+
+        # Setup mock segment containing the word
         mock_whisper_segment = MagicMock()
-        mock_whisper_segment.start = 0.5  # Relative to the chunk
+        mock_whisper_segment.start = 0.5
         mock_whisper_segment.end = 1.5
         mock_whisper_segment.text = "Hello world"
+        mock_whisper_segment.words = [mock_whisper_word]
 
         def dummy_transcribe_generator(*args, **kwargs):
             yield mock_whisper_segment
@@ -100,9 +109,17 @@ class TestFasterWhisperAdapter:
         # Start sec should be chunk_start (1.0) + segment_start (0.5) = 1.5
         assert segments_out[0].start_sec == 1.5
 
-        # Verify CTranslate2 received our exact language, domain hints, and the raw audio array
+        # Verify word-level timestamps were properly mapped and offset
+        assert len(segments_out[0].words) == 1
+        assert segments_out[0].words[0].word == "Hello"
+        assert segments_out[0].words[0].start_sec == 1.5  # 1.0 + 0.5
+        assert segments_out[0].words[0].end_sec == 2.0    # 1.0 + 1.0
+        assert segments_out[0].words[0].probability == 0.99
+
+        # Verify CTranslate2 received our exact language, domain hints, raw audio, and word_timestamps flag
         mock_whisper_instance.transcribe.assert_called_once()
         call_kwargs = mock_whisper_instance.transcribe.call_args[1]
         assert call_kwargs["language"] == "en"
         assert call_kwargs["hotwords"] == "EBITDA:15.0"
+        assert call_kwargs["word_timestamps"] is True
         assert "audio" in call_kwargs

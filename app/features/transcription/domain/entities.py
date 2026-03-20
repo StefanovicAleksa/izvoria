@@ -1,9 +1,23 @@
-# filename: transcription_entities_v1.py
-# path: app/features/transcription/domain/entities.py
+# Canvas: transcription_entities_v2
+# Path: app/features/transcription/domain/entities.py
+
 import uuid
 from typing import List, Optional
 from datetime import datetime, timezone
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class TranscriptWord(BaseModel):
+    """
+    Represents a single word with absolute timestamps.
+    Crucial for Zero-Math deterministic sentence reconstruction.
+    """
+    start_sec: float
+    end_sec: float
+    word: str
+    probability: float = Field(default=1.0, description="Confidence score for this specific word.")
+
+    model_config = ConfigDict(frozen=True)
 
 
 class TranscriptSegment(BaseModel):
@@ -13,6 +27,9 @@ class TranscriptSegment(BaseModel):
     start_sec: float
     end_sec: float
     text: str = Field(description="The actual transcribed text for this audio segment.")
+
+    # NEW: The precise word-level breakdown of the text
+    words: List[TranscriptWord] = Field(default_factory=list)
 
     # Optional field for future-proofing when we add the Diarization feature
     speaker_id: Optional[str] = None
