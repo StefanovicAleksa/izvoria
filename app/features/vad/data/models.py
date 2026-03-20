@@ -4,13 +4,12 @@ import uuid
 
 from sqlalchemy import Column, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import relationship
 
 # Assuming Base is located here per your core database setup
 from app.core.database.data.engine import Base
 
 
-class VadMapModel(BaseModel if 'BaseModel' in locals() else Base):
+class VadMapModel(Base):
     """
     SQLAlchemy model for storing the VAD Virtual Map.
     Stores the complex list of speech segments as highly optimized JSONB.

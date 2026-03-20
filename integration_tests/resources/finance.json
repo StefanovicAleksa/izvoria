@@ -1,0 +1,22 @@
+{
+    "base_terms": [
+        "liquidity", "volatility", "equity", "drawdown", "portfolio",
+        "basis point", "bullish", "bearish", "bid-ask spread", "slippage",
+        "price action", "yield curve", "risk off", "risk on", "safe haven"
+    ],
+    "sub_domains": {
+        "OPTIONS_TRADING": {
+            "anchor_words": ["strike", "theta", "call", "put", "options", "gamma", "delta", "vega", "iv"],
+            "terms": [
+                "Implied Volatility", "Black-Scholes", "Delta", "Gamma", "Vega", "Theta",
+                "Strike Price", "Expiration", "Call Option", "Put Option", "Iron Condor", "Straddle"
+            ]
+        },
+        "EQUITIES": {
+            "anchor_words": ["shares", "dividend", "earnings", "nasdaq", "nyse"],
+            "terms": [
+                "Market Capitalization", "P/E Ratio", "Dividend Yield", "Blue Chip", "Large Cap"
+            ]
+        }
+    }
+}

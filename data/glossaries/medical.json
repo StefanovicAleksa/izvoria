@@ -1,0 +1,52 @@
+{
+    "base_terms": [
+        "patient", "symptoms", "treatment", "medication", "dosage", "prescription",
+        "vital signs", "blood pressure", "mri", "ct scan", "x-ray", "ultrasound",
+        "blood test", "intravenous", "iv", "anesthesia", "prognosis", "diagnosis",
+        "etiology", "comorbidity", "sequela", "ambulatory", "acute", "chronic"
+    ],
+    "sub_domains": {
+        "SURGERY": {
+            "anchor_words": ["surgery", "procedure", "incision", "surgeon", "operating room", "or"],
+            "terms": [
+                "Laparoscopic", "Laparotomy", "Cholecystectomy", "Appendectomy", "Anastomosis",
+                "Hemostasis", "Cauterization", "Debridement", "Intubation", "Suture",
+                "Ligation", "Incision", "Excision", "Thoracotomy", "Craniotomy",
+                "Herniorrhaphy", "Arthroplasty", "Ostomy", "Resection", "Decompression",
+                "Disarticulation", "Evisceration", "Cannulation", "Tracheostomy",
+                "Incisio", "Excisio", "Sutura", "Hemostasis", "Laparoscopia"
+            ]
+        },
+        "CARDIOLOGY": {
+            "anchor_words": ["heart", "cardiac", "myocardial", "ventricular", "aorta", "ecg"],
+            "terms": [
+                "Myocardial infarction", "Atrial fibrillation", "Congestive heart failure",
+                "Ventricular tachycardia", "Echocardiography", "Atherosclerosis", "Stenosis",
+                "Regurgitation", "Angioplasty", "Stenting", "Cardiomyopathy", "Arrhythmia",
+                "Pericarditis", "Endocarditis", "Aneurysm", "Ischemia", "Tachycardia",
+                "Bradycardia", "Systolic", "Diastolic", "Infarctus myocardii", "Fibrillatio atrialis",
+                "Valvula", "Ventriculus", "Atrium", "Aorta", "Arteria"
+            ]
+        },
+        "ONCOLOGY": {
+            "anchor_words": ["cancer", "tumor", "malignant", "metastasis", "chemotherapy", "biopsy"],
+            "terms": [
+                "Adenocarcinoma", "Metastasis", "Chemotherapy", "Radiotherapy", "Biopsy",
+                "Malignancy", "Carcinoma", "Sarcoma", "Immunotherapy", "Remission",
+                "Neoplasm", "Staging", "Grading", "Palliative", "Lymphadenopathy",
+                "Carcinogenesis", "Angiogenesis", "Genotoxicity", "Myelosuppression",
+                "Neutropenia", "Oncology", "Neoplasma", "Metastasis", "Carcinoma", "Sarcoma"
+            ]
+        },
+        "PATHOLOGY": {
+            "anchor_words": ["pathology", "bacteria", "virus", "infection", "diagnosis"],
+            "terms": [
+                "Histopathology", "Cytology", "Inflammation", "Necrosis", "Apoptosis",
+                "Hypertrophy", "Atrophy", "Metaplasia", "Dysplasia", "Hyperplasia",
+                "Pathogenesis", "Morphology", "Pathogen", "Antibiotic", "Microbiology",
+                "Exudate", "Transudate", "Ischemia", "Infarction", "Cytopathology",
+                "Pathologia", "Inflammatio", "Necrosis", "Atrophia", "Dysplasia"
+            ]
+        }
+    }
+}

@@ -8,7 +8,7 @@ from typing import List, Optional
 
 from app.features.storage.domain.entities import Source, File, SourceType
 from app.features.storage.domain.interfaces import IStorageRepository
-from app.features.storage.utils.file_manager import FileManager
+from app.features.storage.data.file_manager import FileManager
 from app.features.storage.utils.hashing import calculate_file_hash
 from app.features.storage.exceptions.base import StorageError
 

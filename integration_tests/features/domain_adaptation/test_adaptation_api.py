@@ -1,10 +1,12 @@
-# Canvas: it_test_adaptation_real_audio_v5
+# Canvas: it_test_adaptation_real_audio_v9
 # Path: integration_tests/features/domain_adaptation/test_adaptation_real_audio.py
 
 import pytest
 import uuid
+import shutil
 from pathlib import Path
 
+from app.core.config import settings
 from app.core.database.service.manager import db_manager as core_db_manager
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
@@ -18,6 +20,32 @@ from app.features.domain_adaptation.data.deberta_adapter import DebertaClassifie
 from app.features.domain_adaptation.utils.audio_sampler import AudioSampler
 from app.features.domain_adaptation.service.adaptation_api import DomainAdaptationAPI
 from app.features.vad.domain.entities import VadMap, VadSegment
+
+
+@pytest.fixture
+def setup_finance_glossary():
+    """
+    Temporarily copies the isolated finance.json from integration test resources
+    into the application's live glossary directory, ensuring the test is decoupled
+    from future changes to the global application glossaries.
+    """
+    project_root = Path(__file__).resolve().parent.parent.parent.parent
+    resource_path = project_root / "integration_tests" / "resources" / "finance.json"
+    target_path = project_root / "data" / "glossaries" / "finance.json"
+
+    assert resource_path.exists(), f"Missing test glossary at {resource_path}"
+
+    # Ensure the target directory exists
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Copy the file into the active data directory
+    shutil.copy(resource_path, target_path)
+
+    yield
+
+    # Cleanup after test execution
+    if target_path.exists():
+        target_path.unlink()
 
 
 @pytest.fixture
@@ -63,7 +91,7 @@ def real_infrastructure():
 
 
 @pytest.mark.integration
-def test_full_domain_adaptation_pipeline(real_infrastructure, monkeypatch):
+def test_full_domain_adaptation_pipeline(setup_finance_glossary, real_infrastructure, monkeypatch):
     source_id, orchestrator = real_infrastructure
 
     project_root = Path(__file__).resolve().parent.parent.parent.parent
@@ -71,7 +99,8 @@ def test_full_domain_adaptation_pipeline(real_infrastructure, monkeypatch):
 
     assert audio_path.exists(), f"Test audio missing at {audio_path}. Run generate_test_audio.py first!"
 
-    monkeypatch.setenv("APPLIANCE_INDUSTRY", "FINANCE")
+    # FIXED: Patch the instantiated Pydantic settings object directly, not the OS environment
+    monkeypatch.setattr(settings, "APPLIANCE_INDUSTRY", "FINANCE")
 
     repo = DomainAdaptationRepository(core_db_manager)
     scout_adapter = ScoutWhisperAdapter()
@@ -91,6 +120,7 @@ def test_full_domain_adaptation_pipeline(real_infrastructure, monkeypatch):
 
     assert glossary is not None
     assert glossary.source_id == source_id
+
     assert glossary.industry == "FINANCE"
     assert glossary.sub_domain == "OPTIONS_TRADING"
     assert "strike" in glossary.hotword_string.lower() or "theta" in glossary.hotword_string.lower()

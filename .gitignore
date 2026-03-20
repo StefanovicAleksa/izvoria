@@ -15,7 +15,6 @@ __pycache__/
 # --- Environment Variables & Secrets ---
 .env
 .env.local
-.env.*
 
 # --- IDEs & Editors ---
 .vscode/

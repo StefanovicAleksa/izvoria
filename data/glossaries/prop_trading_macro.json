@@ -1,0 +1,73 @@
+{
+    "base_terms": [
+        "liquidity", "volatility", "equity", "drawdown", "portfolio",
+        "basis point", "bullish", "bearish", "bid-ask spread", "slippage",
+        "price action", "yield curve", "risk off", "risk on", "safe haven",
+        "leverage", "margin call", "arbitrage", "correlation", "benchmark"
+    ],
+    "sub_domains": {
+        "CENTRAL_BANK_AND_MACRO": {
+            "anchor_words": ["inflation", "interest rate", "cpi", "gdp", "nfp", "hawkish", "dovish", "fomc"],
+            "terms": [
+                "Quantitative Easing", "Quantitative Tightening", "Forward Guidance", "ZIRP", "NIRP",
+                "Taper Tantrum", "Operation Twist", "Yield Curve Control", "Soft Landing", "Hard Landing",
+                "Stagflation", "Disinflation", "Dual Mandate", "Neutral Rate", "Terminal Rate",
+                "Non-farm Payrolls", "Consumer Price Index", "Producer Price Index", "GDP", "PMI",
+                "Initial Jobless Claims", "Core Inflation", "Headline Inflation", "Wage Growth",
+                "Data Dependent", "Holistic Assessment", "Restrictive Territory", "Policy Stance"
+            ]
+        },
+        "ORDER_FLOW_AND_FUTURES": {
+            "anchor_words": ["order flow", "dom", "volume profile", "tick size", "clearinghouse"],
+            "terms": [
+                "Contango", "Backwardation", "Initial Margin", "Maintenance Margin", "Tick Size",
+                "Roll Yield", "Open Interest", "Cost of Carry", "Depth of Market", "DOM",
+                "Iceberg Order", "Spoofing", "Stacked Imbalances", "Trapped Traders", "VPOC",
+                "Value Area High", "Value Area Low", "Time Price Opportunity", "TPO",
+                "Absorption", "Exhaustion", "Delta Divergence", "Cumulative Delta", "VWAP"
+            ]
+        },
+        "FEDERAL_RESERVE": {
+            "anchor_words": ["fed", "federal reserve", "powell", "yellen", "warsh", "bernanke"],
+            "terms": [
+                "Jerome Powell", "Ben Bernanke", "Janet Yellen", "Kevin Warsh", "John Williams",
+                "Philip Jefferson", "Stephen Miran", "Christopher Waller", "Michelle Bowman",
+                "Lisa Cook", "Michael Barr", "Beth Hammack", "Alberto Musalem", "Austan Goolsbee",
+                "Lorie Logan", "Neel Kashkari", "Thomas Barkin", "Mary Daly", "Susan Collins",
+                "Beige Book", "Dot Plot", "Fed Funds Rate", "Reverse Repo", "SEP", "RRP"
+            ]
+        },
+        "EUROPEAN_CENTRAL_BANK": {
+            "anchor_words": ["ecb", "lagarde", "draghi", "trichet", "eurozone", "frankfurt"],
+            "terms": [
+                "Christine Lagarde", "Mario Draghi", "Jean-Claude Trichet", "Luis de Guindos",
+                "Philip Lane", "Isabel Schnabel", "Piero Cipollone", "Frank Elderson",
+                "Joachim Nagel", "Francois Villeroy de Galhau", "Fabio Panetta", "Klaas Knot",
+                "Main Refinancing Operations", "MRO", "TLTRO", "PEPP", "TPI", "Deposit Rate"
+            ]
+        },
+        "BANK_OF_ENGLAND": {
+            "anchor_words": ["boe", "bailey", "carney", "mervyn king", "gilt", "mpc"],
+            "terms": [
+                "Andrew Bailey", "Mark Carney", "Mervyn King", "Sarah Breeden", "Swati Dhingra",
+                "Megan Greene", "Alan Taylor", "Clare Lombardelli", "Huw Pill", "Dave Ramsden",
+                "Catherine Mann", "Monetary Policy Committee", "MPC", "Bank Rate", "Gilts"
+            ]
+        },
+        "BANK_OF_CANADA": {
+            "anchor_words": ["boc", "bank of canada", "macklem", "poloz", "loonie"],
+            "terms": [
+                "Tiff Macklem", "Stephen Poloz", "Mark Carney", "Carolyn Rogers", "Toni Gravelle",
+                "Sharon Kozicki", "Nicolas Vincent", "Rhys Mendes", "Overnight Rate", "Governing Council"
+            ]
+        },
+        "BANK_OF_JAPAN": {
+            "anchor_words": ["boj", "bank of japan", "ueda", "kuroda", "shirakawa", "yen"],
+            "terms": [
+                "Kazuo Ueda", "Haruhiko Kuroda", "Masaaki Shirakawa", "Shinichi Uchida",
+                "Ryozo Himino", "Toichiro Asada", "Ayano Sato", "Hajime Takata", "Naoki Tamura",
+                "Negative Interest Rate Policy", "NIRP", "Yield Curve Control", "YCC", "JGBs"
+            ]
+        }
+    }
+}

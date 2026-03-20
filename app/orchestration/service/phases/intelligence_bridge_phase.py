@@ -13,7 +13,7 @@ from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.exceptions.base import ModelManagerError
 
-from app.features.intelligence_bridge.service.bridge_api import IntelligenceBridgeAPI
+from app.legacy_features.intelligence_bridge.service.bridge_api import IntelligenceBridgeAPI
 from app.features.storage.service.storage_api import StorageAPI
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
