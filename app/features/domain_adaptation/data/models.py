@@ -1,25 +1,23 @@
-# Canvas: domain_adaptation_models_v1
+# Canvas: domain_adaptation_models_v3
 # Path: app/features/domain_adaptation/data/models.py
 
 import uuid
 from datetime import datetime, timezone
 
 from sqlalchemy import Column, String, DateTime, ForeignKey, Text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 
 from app.core.database.data.engine import Base
 
 
 class DomainGlossaryModel(Base):
     """
-    SQLAlchemy model for storing the output of the CPU Domain Adaptation phase.
-    Stores the exact weighted hotwords injected into the heavy GPU transcriber.
+    SQLAlchemy model for storing the output of the LLM Domain Adaptation phase.
     """
     __tablename__ = "domain_glossaries"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    # Links directly back to the original media file in the Storage feature
     source_id = Column(
         UUID(as_uuid=True),
         ForeignKey("sources.id", ondelete="CASCADE"),
@@ -28,10 +26,13 @@ class DomainGlossaryModel(Base):
     )
 
     industry = Column(String, nullable=False)
-    sub_domain = Column(String, nullable=False)
+    sub_domains = Column(JSONB, nullable=False, server_default='[]')
 
-    # Text column to allow for potentially massive hotword strings
+    # Beam search bias
     hotword_string = Column(Text, nullable=False)
+
+    # Transformer context primer
+    initial_prompt_string = Column(Text, nullable=False, server_default='')
 
     created_at = Column(
         DateTime(timezone=True),

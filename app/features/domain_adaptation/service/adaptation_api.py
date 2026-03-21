@@ -1,4 +1,4 @@
-# Canvas: adaptation_api_v6
+# Canvas: adaptation_api_v8
 # Path: app/features/domain_adaptation/service/adaptation_api.py
 
 import uuid
@@ -11,19 +11,19 @@ from app.core.model_manager.domain.enums import ModelType
 from app.features.vad.domain.entities import VadMap
 from app.features.domain_adaptation.domain.interfaces import (
     IScoutWhisperAdapter,
-    IClassifierAdapter,
+    ILlamaAdapter,
     IDomainAdaptationRepository
 )
 from app.features.domain_adaptation.domain.entities import DomainGlossary
-from app.features.domain_adaptation.utils.audio_sampler import AudioSampler
+from app.features.domain_adaptation.utils.smart_sampler import SmartSampler
 from app.features.domain_adaptation.utils.glossary_builder import GlossaryBuilder
 from app.features.domain_adaptation.utils.error_mapper import map_domain_adaptation_error
 
 
 class DomainAdaptationAPI:
     """
-    Orchestrates the GPU-bound 'Scouting' phase to determine the specific subdomain
-    of the media file and generate heavily weighted hotwords for the main transcriber.
+    Strict Orchestrator for the Domain Adaptation phase.
+    Manages VRAM handoffs between the Whisper Scout and Llama Router.
     """
 
     def __init__(
@@ -31,102 +31,98 @@ class DomainAdaptationAPI:
             repository: IDomainAdaptationRepository,
             orchestrator: ModelManagerOrchestrator,
             scout_adapter: IScoutWhisperAdapter,
-            classifier_adapter: IClassifierAdapter,
-            audio_sampler: AudioSampler
+            llama_adapter: ILlamaAdapter,
+            smart_sampler: SmartSampler
     ):
         self._repo = repository
         self._orchestrator = orchestrator
         self._scout_adapter = scout_adapter
-        self._classifier_adapter = classifier_adapter
-        self._sampler = audio_sampler
+        self._llama_adapter = llama_adapter
+        self._sampler = smart_sampler
 
     def process_domain_adaptation(
             self, source_id: uuid.UUID, audio_path: str, vad_map: VadMap
     ) -> DomainGlossary:
 
-        # 1. Idempotency Check
-        existing_glossary = self._repo.get_glossary_by_source_id(source_id)
-        if existing_glossary:
-            return existing_glossary
-
-        industry = settings.APPLIANCE_INDUSTRY
-        samples = []
-
         try:
-            # 2. Extract Audio using VAD limits
-            if not vad_map.segments:
-                return self._finalize_glossary(source_id, industry, "GENERAL", "")
+            # 1. Idempotency Check
+            existing_glossary = self._repo.get_glossary_by_source_id(source_id)
+            if existing_glossary:
+                return existing_glossary
 
-            samples = self._sampler.extract_samples(audio_path, vad_map)
-            if not samples:
-                return self._finalize_glossary(source_id, industry, "GENERAL", "")
+            industry = settings.APPLIANCE_INDUSTRY
+
+            # 2. Smart Sampling
+            if not vad_map.segments:
+                return self._finalize_glossary(source_id, industry, [], "", "")
+
+            time_slices = self._sampler.calculate_optimal_slices(vad_map)
 
             # 3. GPU Phase 1: Scout
-            scout_result = self._execute_scouting(samples, source_id)
+            scout_result = self._execute_scouting(audio_path, time_slices, source_id)
             if not scout_result.combined_text.strip():
-                return self._finalize_glossary(source_id, industry, "GENERAL", "")
+                return self._finalize_glossary(source_id, industry, [], "", "")
 
-            # 4. GPU Phase 2: Classification
+            # 4. GPU Phase 2: Router
             candidate_labels = GlossaryBuilder.get_candidate_labels(industry)
-            best_subdomain = self._execute_classification(scout_result.combined_text, candidate_labels)
+            predicted_domains = self._execute_llm_routing(scout_result.combined_text, candidate_labels)
 
-            # 5. Domain Logic: Anchor Validation & String Building
+            # 5. Token-Safe Glossary Building
+            hotword_string, initial_prompt = GlossaryBuilder.build_injection_payloads(
+                industry=industry,
+                predicted_domains=predicted_domains
+            )
+
+            # 6. Persistence
             return self._finalize_glossary(
                 source_id=source_id,
                 industry=industry,
-                guessed_subdomain=best_subdomain,
-                scouted_text=scout_result.combined_text
+                sub_domains=predicted_domains,
+                hotword_string=hotword_string,
+                initial_prompt_string=initial_prompt
             )
 
         except Exception as e:
-            raise map_domain_adaptation_error(e, context=f"Domain Adaptation for Source {source_id}") from e
+            raise map_domain_adaptation_error(e, context=f"Domain Adaptation Flow for Source {source_id}") from e
 
-        finally:
-            if samples:
-                self._sampler.cleanup_samples(samples)
-
-    # --- Private Execution Helpers ---
-
-    def _execute_scouting(self, samples, source_id):
-        scout_manifest = ModelManifest(
+    def _execute_scouting(self, audio_path: str, time_slices: list, source_id: uuid.UUID):
+        manifest = ModelManifest(
             model_type=ModelType.DOMAIN_SCOUT,
             model_path=settings.DISCOVERY_SCOUT_MODEL_PATH,
-            required_vram_mb=settings.DISCOVERY_SCOUT_VRAM_REQUIREMENT_MB
+            required_vram_mb=1000.0
         )
-        loaded_scout = None
+        loaded_model = None
         try:
-            loaded_scout = self._orchestrator.acquire_model(scout_manifest, self._scout_adapter)
-            return self._scout_adapter.transcribe_samples(loaded_scout, samples, source_id)
+            loaded_model = self._orchestrator.acquire_model(manifest, self._scout_adapter)
+            return self._scout_adapter.transcribe_samples(loaded_model, audio_path, time_slices, source_id)
         finally:
-            if loaded_scout:
-                self._orchestrator.release_model(loaded_scout, self._scout_adapter, flush=True)
+            if loaded_model:
+                self._orchestrator.release_model(loaded_model, self._scout_adapter, flush=True)
 
-    def _execute_classification(self, text, candidate_labels):
-        classifier_manifest = ModelManifest(
+    def _execute_llm_routing(self, text: str, candidate_labels: list):
+        manifest = ModelManifest(
             model_type=ModelType.DOMAIN_CLASSIFIER,
-            model_path=settings.DISCOVERY_CLASSIFIER_MODEL_PATH,
-            required_vram_mb=settings.DISCOVERY_CLASSIFIER_VRAM_REQUIREMENT_MB
+            model_path=settings.ASR_PHASE_1_MODEL_PATH,
+            required_vram_mb=3500.0
         )
-        loaded_classifier = None
+        loaded_model = None
         try:
-            loaded_classifier = self._orchestrator.acquire_model(classifier_manifest, self._classifier_adapter)
-            return self._classifier_adapter.classify_domain(loaded_classifier, text, candidate_labels)
+            loaded_model = self._orchestrator.acquire_model(manifest, self._llama_adapter)
+            return self._llama_adapter.predict_subdomains(loaded_model, text, candidate_labels)
         finally:
-            if loaded_classifier:
-                self._orchestrator.release_model(loaded_classifier, self._classifier_adapter, flush=True)
+            if loaded_model:
+                self._orchestrator.release_model(loaded_model, self._llama_adapter, flush=True)
 
-    def _finalize_glossary(self, source_id, industry, guessed_subdomain, scouted_text) -> DomainGlossary:
-        # Offloads the complex string building and validation rules to the utility
-        final_subdomain, hotword_string = GlossaryBuilder.validate_and_build(
-            industry=industry,
-            guessed_subdomain=guessed_subdomain,
-            scouted_text=scouted_text
-        )
+    def _finalize_glossary(
+            self, source_id, industry, sub_domains, hotword_string, initial_prompt_string
+    ) -> DomainGlossary:
 
+        # PyCharm warning resolved: actually passing the parameter
         glossary = DomainGlossary(
             source_id=source_id,
             industry=industry,
-            sub_domain=final_subdomain,
-            hotword_string=hotword_string
+            sub_domains=sub_domains,
+            hotword_string=hotword_string,
+            initial_prompt_string=initial_prompt_string
         )
         return self._repo.save_glossary(glossary)

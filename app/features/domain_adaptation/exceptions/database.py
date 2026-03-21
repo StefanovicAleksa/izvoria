@@ -1,4 +1,4 @@
-# Canvas: domain_adaptation_exceptions_database_v1
+# Canvas: domain_adaptation_exceptions_database_v2
 # Path: app/features/domain_adaptation/exceptions/database.py
 
 from .base import DomainAdaptationError

@@ -1,19 +1,26 @@
-# Canvas: domain_adaptation_exceptions_init_v1
+# Canvas: domain_adaptation_exceptions_init_v3
 # Path: app/features/domain_adaptation/exceptions/__init__.py
 
 from .base import DomainAdaptationError
 from .database import DomainDatabaseError, GlossaryPersistenceError
-from .model import CpuModelLoadError, ScoutInferenceError, ClassifierInferenceError
-from .process import AudioSamplingError, GlossaryManifestError, AnchorValidationFailed
+from .system import AudioMemoryProcessingError
+from .model import (
+    ModelLoadError,
+    ScoutInferenceError,
+    LLMRouterInferenceError,
+    TokenLimitExceededError
+)
+from .process import SmartSamplingError, GlossaryManifestError
 
 __all__ = [
     "DomainAdaptationError",
     "DomainDatabaseError",
     "GlossaryPersistenceError",
-    "CpuModelLoadError",
+    "AudioMemoryProcessingError",
+    "ModelLoadError",
     "ScoutInferenceError",
-    "ClassifierInferenceError",
-    "AudioSamplingError",
-    "GlossaryManifestError",
-    "AnchorValidationFailed"
+    "LLMRouterInferenceError",
+    "TokenLimitExceededError",
+    "SmartSamplingError",
+    "GlossaryManifestError"
 ]

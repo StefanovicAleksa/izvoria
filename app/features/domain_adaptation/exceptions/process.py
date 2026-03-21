@@ -1,19 +1,12 @@
-# Canvas: domain_adaptation_exceptions_process_v1
+# Canvas: domain_adaptation_exceptions_process_v2
 # Path: app/features/domain_adaptation/exceptions/process.py
 
 from .base import DomainAdaptationError
 
-class AudioSamplingError(DomainAdaptationError):
-    """Raised when FFmpeg fails to extract the 15/50/85% audio slices."""
+class SmartSamplingError(DomainAdaptationError):
+    """Raised when the VadMap is empty, corrupted, or contains no usable speech blocks."""
     pass
 
 class GlossaryManifestError(DomainAdaptationError):
-    """Raised when the local master JSON glossary (e.g., finance.json) is missing or corrupted."""
-    pass
-
-class AnchorValidationFailed(DomainAdaptationError):
-    """
-    Raised when the DeBERTa model guesses a sub-domain, but the transcribed text
-    contains zero deterministic 'Anchor Words' to prove it. Triggers a fallback.
-    """
+    """Raised when the local master JSON glossaries (e.g., finance.json) are missing or corrupted."""
     pass

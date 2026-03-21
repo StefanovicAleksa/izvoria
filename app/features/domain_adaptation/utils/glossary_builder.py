@@ -1,66 +1,79 @@
-# Canvas: glossary_builder_v1
+# Canvas: glossary_builder_v2
 # Path: app/features/domain_adaptation/utils/glossary_builder.py
 
 import json
 from pathlib import Path
+from typing import List, Tuple
 
 from app.features.domain_adaptation.exceptions.process import GlossaryManifestError
 
-
 class GlossaryBuilder:
     """
-    Handles File I/O for the domain manifests and executes the
-    Anchor Validation business logic.
+    Handles JSON glossary parsing and formats token-safe injection strings
+    for the Whisper Large model to prevent CTranslate2 OOM crashes.
     """
     HOTWORD_WEIGHT = 15.0
+    MAX_ANCHOR_WORDS = 40  # Strict limit to protect the 224 token buffer
 
     @classmethod
-    def validate_and_build(cls, industry: str, guessed_subdomain: str, scouted_text: str) -> tuple[str, str]:
+    def build_injection_payloads(cls, industry: str, predicted_domains: List[str]) -> Tuple[str, str]:
         """
-        Validates the AI's guess against the transcript and builds the Whisper hotword string.
-        Returns: (final_subdomain, hotword_string)
+        Returns: (hotword_string, initial_prompt_string)
         """
         manifest_data = cls._load_master_glossary(industry)
         base_terms = manifest_data.get("base_terms", [])
-        subdomains = manifest_data.get("sub_domains", {})
+        sub_domains_dict = manifest_data.get("sub_domains", {})
 
-        # Edge Case: The API passes "GENERAL" if the Scout heard nothing
-        if guessed_subdomain == "GENERAL" or guessed_subdomain not in subdomains:
-            return "GENERAL", cls._format_hotwords(base_terms)
+        consolidated_anchors = []
 
-        anchor_words = subdomains[guessed_subdomain].get("anchor_words", [])
-        domain_terms = subdomains[guessed_subdomain].get("terms", [])
+        # 1. Gather all high-value anchors from the detected sub-domains
+        for domain in predicted_domains:
+            if domain in sub_domains_dict:
+                domain_anchors = sub_domains_dict[domain].get("anchor_words", [])
+                consolidated_anchors.extend(domain_anchors)
 
-        text_lower = scouted_text.lower()
-        is_valid = any(anchor.lower() in text_lower for anchor in anchor_words)
+        # Fallback if the LLM hallucinated a domain or found nothing
+        if not consolidated_anchors:
+            consolidated_anchors = base_terms
 
-        if not is_valid:
-            print(f"[DOMAIN ADAPTATION] Anchor validation failed for {guessed_subdomain}. Falling back to Base.")
-            return "BASE_FALLBACK", cls._format_hotwords(base_terms)
+        # 2. Deduplicate and apply token safety limit
+        unique_anchors = list(dict.fromkeys(consolidated_anchors))
+        safe_anchors = unique_anchors[:cls.MAX_ANCHOR_WORDS]
 
-        # Merge base terms with specific subdomain jargon and the anchors themselves
-        final_terms = base_terms + domain_terms + anchor_words
-        return guessed_subdomain, cls._format_hotwords(final_terms)
+        # 3. Build Payload A: Hotwords (Beam Search Bias)
+        hotword_string = cls._format_hotwords(safe_anchors)
+
+        # 4. Build Payload B: Initial Prompt (Transformer Context Priming)
+        domain_names = ", ".join([d.replace("_", " ").title() for d in predicted_domains])
+        initial_prompt = (
+            f"The following dictation covers topics related to {domain_names}. "
+            f"It contains specialized terminology such as: {', '.join(safe_anchors)}."
+        )
+
+        return hotword_string, initial_prompt
 
     @classmethod
-    def get_candidate_labels(cls, industry: str) -> list[str]:
-        """Extracts just the keys (e.g., ['UK_MARKETS', 'OPTIONS_TRADING']) for the Classifier."""
+    def get_candidate_labels(cls, industry: str) -> List[str]:
+        """Extracts just the keys for the LLM Router prompt."""
         manifest_data = cls._load_master_glossary(industry)
         return list(manifest_data.get("sub_domains", {}).keys())
 
     @classmethod
-    def _format_hotwords(cls, terms: list[str]) -> str:
-        unique_terms = list(set(terms))
-        return ", ".join([f"{term.strip()}:{cls.HOTWORD_WEIGHT}" for term in unique_terms])
+    def _format_hotwords(cls, terms: List[str]) -> str:
+        return ", ".join([f"{term.strip()}:{cls.HOTWORD_WEIGHT}" for term in terms])
 
     @staticmethod
     def _load_master_glossary(industry: str) -> dict:
         file_name = f"{industry.lower()}.json"
+        # Navigate from utils -> domain_adaptation -> features -> app -> src -> root
         root_dir = Path(__file__).resolve().parent.parent.parent.parent.parent
         glossary_path = root_dir / "data" / "glossaries" / file_name
 
         if not glossary_path.exists():
             raise GlossaryManifestError(f"Master domain glossary not found at {glossary_path}.")
 
-        with open(glossary_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(glossary_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            raise GlossaryManifestError(f"Corrupted JSON in {file_name}: {str(e)}")

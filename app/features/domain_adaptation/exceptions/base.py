@@ -1,4 +1,4 @@
-# Canvas: domain_adaptation_exceptions_base_v1
+# Canvas: domain_adaptation_exceptions_base_v2
 # Path: app/features/domain_adaptation/exceptions/base.py
 
 class DomainAdaptationError(Exception):
