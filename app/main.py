@@ -1,4 +1,4 @@
-# Canvas: main_v13
+# Canvas: main_v14
 # Path: main.py
 
 import argparse
@@ -31,9 +31,10 @@ from app.features.vad.data.repositories import VadRepository
 from app.features.vad.service.vad_api import VadAPI
 
 from app.features.domain_adaptation.data.repositories import DomainAdaptationRepository
-from app.features.domain_adaptation.data.scout_whisper_adapter import ScoutWhisperAdapter
-from app.features.domain_adaptation.data.deberta_adapter import DebertaClassifierAdapter
-from app.features.domain_adaptation.utils.audio_sampler import AudioSampler
+# CRITICAL FIX: Updated imports to match the new Domain Adaptation feature structure
+from app.features.domain_adaptation.data.scout_adapter import ScoutWhisperAdapter
+from app.features.domain_adaptation.data.llama_adapter import LlamaAdapter
+from app.features.domain_adaptation.utils.smart_sampler import SmartSampler
 from app.features.domain_adaptation.service.adaptation_api import DomainAdaptationAPI
 
 from app.features.transcription.data.repositories import TranscriptRepository
@@ -44,7 +45,6 @@ from app.features.diarization.data.repositories import DiarizationRepository
 from app.features.diarization.data.nemo_adapter import NeMoDiarizationAdapter
 from app.features.diarization.service.diarization_api import DiarizationAPI
 
-# --- CORRECTED: Sentence Reconstruction Imports ---
 from app.features.sentence_reconstruction.data.repositories import PostgresSentenceRepository
 from app.features.sentence_reconstruction.data.punctuation_adapter import PunctuationAdapter
 from app.features.sentence_reconstruction.service.reconstruction_api import SentenceReconstructionAPI
@@ -68,7 +68,6 @@ from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaP
 
 def bootstrap_database() -> None:
     try:
-        # CLEAN ARCHITECTURE: Use public SQLAlchemy API to extract the engine safely
         with db_manager.session() as session:
             engine = session.get_bind()
             Base.metadata.create_all(bind=engine)
@@ -111,15 +110,17 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
     # 4. Domain Adaptation
     domain_repo = DomainAdaptationRepository(db_manager)
     scout_adapter = ScoutWhisperAdapter()
-    classifier_adapter = DebertaClassifierAdapter()
-    audio_sampler = AudioSampler(slice_duration_sec=20.0)
+
+    # CRITICAL FIX: Instantiating the new dependencies
+    llama_adapter = LlamaAdapter()
+    smart_sampler = SmartSampler()
 
     domain_adaptation_api = DomainAdaptationAPI(
         repository=domain_repo,
         orchestrator=model_orchestrator,
         scout_adapter=scout_adapter,
-        classifier_adapter=classifier_adapter,
-        audio_sampler=audio_sampler
+        llama_adapter=llama_adapter,
+        smart_sampler=smart_sampler
     )
 
     # 5. Transcription
@@ -156,7 +157,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         required_vram_mb=settings.DIARIZATION_VRAM_REQUIREMENT_MB
     )
 
-    # 7. CORRECTED: Sentence Reconstruction (Phase 7)
+    # 7. Sentence Reconstruction (Phase 7)
     sentence_repo = PostgresSentenceRepository(db_manager)
     punctuation_adapter = PunctuationAdapter()
     reconstruction_api = SentenceReconstructionAPI(

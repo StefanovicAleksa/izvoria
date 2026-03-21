@@ -1,11 +1,13 @@
-# Canvas: dictionary_loader_v1
+# Canvas: dictionary_loader_v2
 # Path: app/features/phonetic_correction/utils/dictionary_loader.py
 
 import json
 import logging
 from pathlib import Path
+from typing import List
 
 logger = logging.getLogger(__name__)
+
 
 class DictionaryLoader:
     """
@@ -14,11 +16,11 @@ class DictionaryLoader:
     """
 
     @staticmethod
-    def build_prompt_dictionary(industry: str, sub_domain: str) -> str:
+    def build_prompt_dictionary(industry: str, sub_domains: List[str]) -> str:
         """
         Reads the master glossary and returns a bulleted string of valid terminology.
+        Aggregates terms from multiple sub-domains if provided.
         """
-        # Match the path logic used in Phase 5 Domain Adaptation
         root_dir = Path(__file__).resolve().parent.parent.parent.parent.parent
         glossary_path = root_dir / "data" / "glossaries" / f"{industry.lower()}.json"
 
@@ -33,11 +35,13 @@ class DictionaryLoader:
             # 1. Grab the base industry terms
             terms = manifest_data.get("base_terms", [])
 
-            # 2. Add the specific sub-domain terms and anchors if they exist
-            sub_domains = manifest_data.get("sub_domains", {})
-            if sub_domain in sub_domains:
-                terms.extend(sub_domains[sub_domain].get("anchor_words", []))
-                terms.extend(sub_domains[sub_domain].get("terms", []))
+            # 2. Iterate through the new sub_domains list and aggregate all anchors/terms
+            manifest_sub_domains = manifest_data.get("sub_domains", {})
+
+            for sub_domain in sub_domains:
+                if sub_domain in manifest_sub_domains:
+                    terms.extend(manifest_sub_domains[sub_domain].get("anchor_words", []))
+                    terms.extend(manifest_sub_domains[sub_domain].get("terms", []))
 
             if not terms:
                 return ""

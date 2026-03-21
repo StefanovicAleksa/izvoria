@@ -1,8 +1,10 @@
+# Canvas: llama_adapter_v5
 # Path: app/features/domain_adaptation/data/llama_adapter.py
 
 import os
 import json
 import re
+import gc
 from typing import List, Any
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
@@ -37,6 +39,16 @@ class LlamaAdapter(ILlamaAdapter):
         try:
             if hasattr(model, "model_instance"):
                 del model.model_instance
+
+            # 1. Force Python Sweep
+            gc.collect()
+
+            # 2. Force PyTorch to release greedy cached VRAM to the OS so CTranslate2 can use it
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+                torch.cuda.ipc_collect()
+
             return True
         except Exception as e:
             raise map_domain_adaptation_error(e, context="Unload Llama Adapter") from e
@@ -48,13 +60,12 @@ class LlamaAdapter(ILlamaAdapter):
             llm: Any = model.model_instance
 
             system_prompt = (
-                "You are an expert legal/medical taxonomy router. "
-                "Analyze the following dirty transcript and identify the sub-domains being discussed. "
-                f"You MUST choose from the following exact labels: {', '.join(candidate_labels)}. "
+                "You are an expert legal/medical taxonomy router.\n"
+                "Analyze the following dirty transcript and identify the sub-domains being discussed.\n"
+                f"You MUST choose from the following exact labels: {', '.join(candidate_labels)}.\n"
                 "Output ONLY a raw JSON array of the identified strings, e.g., [\"M_AND_A\", \"IP_LAW\"]."
             )
 
-            # FIX: Use the high-level Chat Completion API to avoid manual token template collisions
             response = llm.create_chat_completion(
                 messages=[
                     {"role": "system", "content": system_prompt},
@@ -64,7 +75,6 @@ class LlamaAdapter(ILlamaAdapter):
                 temperature=0.1
             )
 
-            # The chat completion payload structure is slightly different
             output_text = response['choices'][0]['message']['content'].strip()
             return self._parse_json_array(output_text)
 
@@ -83,5 +93,5 @@ class LlamaAdapter(ILlamaAdapter):
 
             parsed = json.loads(text)
             return parsed if isinstance(parsed, list) else []
-        except json.JSONDecodeError as e:
-            raise map_domain_adaptation_error(e, context=f"Failed to parse Llama output: {text}") from e
+        except json.JSONDecodeError:
+            return []

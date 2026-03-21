@@ -1,4 +1,4 @@
-# Canvas: phonetic_correction_phase_v2
+# Canvas: phonetic_correction_phase_v4
 # Path: app/orchestration/service/phases/phonetic_correction_phase.py
 
 import concurrent.futures
@@ -13,14 +13,12 @@ from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.exceptions.base import ModelManagerError
 
 from app.features.phonetic_correction.service.correction_api import PhoneticCorrectionAPI
-
-# CRITICAL FIX: Pointing to the new feature directory (removed _old)
 from app.features.sentence_reconstruction.domain.interfaces import ISentenceRepository
-
 from app.features.domain_adaptation.domain.interfaces import IDomainAdaptationRepository
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import PhaseBatchResult, SentenceReconstructionJobResult, PhoneticCorrectionJobResult
+
 
 class PhoneticCorrectionPhase:
     def __init__(
@@ -43,13 +41,9 @@ class PhoneticCorrectionPhase:
         self._preload_future: Optional[concurrent.futures.Future] = None
 
     def preload_model(self) -> None:
-        """Triggers background loading of the Qwen-2.5 model."""
         self._preload_future = self._async_service.trigger_preload(self._manifest, self._adapter)
 
     def execute(self, reconstruction_results: List[SentenceReconstructionJobResult]) -> PhaseBatchResult:
-        """
-        Phase 8: Waits for the correction model to load, then patches anomalies.
-        """
         results: List[PhoneticCorrectionJobResult] = []
         errors: List[str] = []
         success_count = 0
@@ -81,9 +75,10 @@ class PhoneticCorrectionPhase:
                     failed_count += 1
                     continue
 
+                # Fetch glossary safely
                 glossary = self._domain_repo.get_glossary_by_source_id(source_id)
-                industry = glossary.industry if glossary else "GENERAL"
-                sub_domain = glossary.sub_domain if glossary else "GENERAL"
+                industry = getattr(glossary, "industry", "GENERAL") if glossary else "GENERAL"
+                sub_domains_list = getattr(glossary, "sub_domains", []) if glossary else []
 
                 request = JobRequest(
                     job_type=JobType.PHONETIC_CORRECTION,
@@ -92,13 +87,12 @@ class PhoneticCorrectionPhase:
                 )
 
                 try:
-                    # Note that `execute` in PhoneticCorrectionAPI has its own inference loops
                     corrected_transcript = self._job_manager.run_job(
                         request,
                         self._correction_api.execute,
                         transcript=transcript,
                         industry=industry,
-                        sub_domain=sub_domain
+                        sub_domains=sub_domains_list  # FIX: Passed as a list directly to API
                     )
                     results.append(PhoneticCorrectionJobResult(
                         source_id=source_id,

@@ -1,4 +1,4 @@
-# Canvas: test_transcribe_phase_unit_v2
+# Canvas: test_transcribe_phase_unit_v3
 # Path: tests/orchestration/service/phases/test_transcribe_phase_unit.py
 
 import pytest
@@ -85,7 +85,15 @@ class TestTranscribePhaseUnit:
         mock_storage.get_source.return_value = mock_source
 
         # 4. Setup Domain Repo to return hints
-        mock_glossary = DomainGlossary(id=uuid.uuid4(), source_id=source_id, industry="FINANCE", sub_domain="GENERAL", hotword_string="EBITDA:15.0")
+        # FIX: Updated to match the new DomainGlossary signature
+        mock_glossary = DomainGlossary(
+            id=uuid.uuid4(),
+            source_id=source_id,
+            industry="FINANCE",
+            sub_domains=["GENERAL"],
+            hotword_string="EBITDA:15.0",
+            initial_prompt_string="General Finance Primer"
+        )
         mock_domain_repo.get_glossary_by_source_id.return_value = mock_glossary
 
         # 5. Setup JobManager to return a fake Transcript
@@ -109,6 +117,7 @@ class TestTranscribePhaseUnit:
             audio_path="/vault/audio.wav",
             language=settings.APPLIANCE_LANGUAGE,
             hotwords="EBITDA:15.0",
+            initial_prompt="General Finance Primer", # FIX: Added to assertion
             release_after=False
         )
 

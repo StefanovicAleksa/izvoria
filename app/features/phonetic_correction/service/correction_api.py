@@ -1,4 +1,4 @@
-# Canvas: phonetic_api_v6
+# Canvas: phonetic_api_v7
 # Path: app/features/phonetic_correction/service/correction_api.py
 
 import logging
@@ -8,7 +8,6 @@ from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest
 from app.core.model_manager.domain.enums import ModelType
 
-# CRITICAL FIX: Removed _old
 from app.features.sentence_reconstruction.domain.entities import ReconstructedTranscript, ReconstructedSentence
 
 from app.features.phonetic_correction.domain.interfaces import IPhoneticPatchAdapter, IPhoneticRepository
@@ -25,11 +24,6 @@ logger = logging.getLogger(__name__)
 
 
 class PhoneticCorrectionAPI:
-    """
-    Orchestrates Phase 8: Static Dictionary Phonetic Patching & Hallucination Scrubbing.
-    Loads Qwen 2.5, chunks the transcript, retrieves patches, and deterministically applies them.
-    """
-
     def __init__(
             self,
             repository: IPhoneticRepository,
@@ -42,7 +36,7 @@ class PhoneticCorrectionAPI:
             self,
             transcript: ReconstructedTranscript,
             industry: str,
-            sub_domain: str
+            sub_domains: List[str] # FIX: Changed to List[str]
     ) -> PhoneticCorrectedTranscript:
         try:
             existing_record = self._repo.get_by_source_id(transcript.source_id)
@@ -53,12 +47,14 @@ class PhoneticCorrectionAPI:
             if not transcript.sentences:
                 return self._create_passthrough(transcript)
 
-            # Delegate File I/O to the Utils layer
-            domain_dictionary_str = DictionaryLoader.build_prompt_dictionary(industry, sub_domain)
+            # Pass the list directly to the updated dictionary loader
+            domain_dictionary_str = DictionaryLoader.build_prompt_dictionary(industry, sub_domains)
 
             if not domain_dictionary_str:
                 logger.warning(
-                    f"No dictionary loaded for '{industry}/{sub_domain}'. Proceeding with hallucination scrubbing only.")
+                    f"No dictionary loaded for '{industry}' with sub_domains {sub_domains}. "
+                    "Proceeding with hallucination scrubbing only."
+                )
 
             manifest = ModelManifest(
                 model_type=ModelType.ASR_CORRECTION_PHASE_3,
@@ -90,7 +86,6 @@ class PhoneticCorrectionAPI:
                         domain_dictionary=domain_dictionary_str
                     )
 
-                    # Apply patches immutably and accumulate the new objects
                     patched_chunk = self._apply_patches_to_chunk(chunk, patches, audit_records)
                     all_patched_sentences.extend(patched_chunk)
 
@@ -98,7 +93,6 @@ class PhoneticCorrectionAPI:
                 if loaded_model:
                     self._patch_adapter.unload(loaded_model)
 
-            # Filter out any sentences that were completely scrubbed empty by the hallucination remover
             cleaned_sentences = [s for s in all_patched_sentences if s.text.strip()]
 
             final_transcript = PhoneticCorrectedTranscript(
@@ -118,7 +112,6 @@ class PhoneticCorrectionAPI:
             patches: List[PhoneticPatch],
             audit_records: List[AppliedCorrectionRecord]
     ) -> List[ReconstructedSentence]:
-        """Safely applies patches using immutable Pydantic copies and logs the audit trail."""
         patched_sentences = []
 
         for sentence in chunk_sentences:
@@ -139,17 +132,18 @@ class PhoneticCorrectionAPI:
                         else:
                             logger.info(f"Phonetic Patch Applied: '{patch.original}' -> '{patch.correction}'")
 
-            if applied_to_this_sentence:
-                audit_records.append(
-                    AppliedCorrectionRecord(
-                        sentence_id=sentence.sentence_id,
-                        original_text=sentence.text,
-                        corrected_text=new_text,
-                        applied_patches=applied_to_this_sentence
+                if applied_to_this_sentence:
+                    audit_records.append(
+                        AppliedCorrectionRecord(
+                            sentence_id=sentence.sentence_id,
+                            original_text=sentence.text,
+                            corrected_text=new_text,
+                            applied_patches=applied_to_this_sentence
+                        )
                     )
-                )
-                # Immutably create a new sentence object instead of mutating the frozen one
-                patched_sentences.append(sentence.model_copy(update={"text": new_text}))
+                    patched_sentences.append(sentence.model_copy(update={"text": new_text}))
+                else:
+                    patched_sentences.append(sentence)
             else:
                 patched_sentences.append(sentence)
 

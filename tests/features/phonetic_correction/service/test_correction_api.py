@@ -1,10 +1,12 @@
+# Canvas: test_correction_api_v2
+# Path: tests/features/phonetic_correction/service/test_correction_api.py
+
 import uuid
 import pytest
 from unittest.mock import MagicMock, patch
 from app.features.sentence_reconstruction.domain.entities import ReconstructedTranscript, ReconstructedSentence
 from app.features.phonetic_correction.service.correction_api import PhoneticCorrectionAPI
 from app.features.phonetic_correction.domain.entities import PhoneticCorrectedTranscript, PhoneticPatch
-
 
 class TestPhoneticCorrectionAPI:
     @pytest.fixture
@@ -21,7 +23,8 @@ class TestPhoneticCorrectionAPI:
         mocks["repo"].get_by_source_id.return_value = existing_record
 
         transcript = ReconstructedTranscript(source_id=source_id, sentences=[])
-        result = api.execute(transcript, "MEDICAL", "CARDIOLOGY")
+        # FIX: Replaced string sub_domain with a list
+        result = api.execute(transcript, "MEDICAL", ["CARDIOLOGY"])
 
         assert result == existing_record
         mocks["adapter"].load.assert_not_called()
@@ -32,7 +35,6 @@ class TestPhoneticCorrectionAPI:
         mocks["repo"].get_by_source_id.return_value = None
         mock_loader.build_prompt_dictionary.return_value = "- acute angina"
 
-        # FIXED: Replaced segments=[] with words=[]
         sentence = ReconstructedSentence(sentence_id=uuid.uuid4(), start_sec=0, end_sec=1, text="He has a cute angina.",
                                          speaker_id="S0", words=[])
         transcript = ReconstructedTranscript(source_id=source_id, sentences=[sentence])
@@ -50,7 +52,8 @@ class TestPhoneticCorrectionAPI:
         # Mock Repo Save
         mocks["repo"].save.side_effect = lambda x: x
 
-        result = api.execute(transcript, "MEDICAL", "CARDIOLOGY")
+        # FIX: Replaced string sub_domain with a list
+        result = api.execute(transcript, "MEDICAL", ["CARDIOLOGY"])
 
         # Verify logic
         assert len(result.sentences) == 1

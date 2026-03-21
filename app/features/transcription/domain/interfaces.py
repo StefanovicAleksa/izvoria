@@ -1,4 +1,4 @@
-# Canvas: transcription_interfaces_v5
+# Canvas: transcription_interfaces_v6
 # Path: app/features/transcription/domain/interfaces.py
 
 import uuid
@@ -20,7 +20,8 @@ class ITranscriptionAdapter(IModelLoader, ABC):
             audio_path: str,
             vad_map: VadMap,
             language: str,
-            hotwords: Optional[str] = None
+            hotwords: Optional[str] = None,
+            initial_prompt: Optional[str] = None
     ) -> List[TranscriptSegment]:
         pass
 

@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_integration_v13
+# Canvas: test_batch_media_pipeline_integration_v15
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
 import subprocess
@@ -33,9 +33,10 @@ from app.features.vad.service.vad_api import VadAPI
 from app.features.vad.data.nemo_adapter import NeMoVadAdapter
 
 from app.features.domain_adaptation.data.repositories import DomainAdaptationRepository
-from app.features.domain_adaptation.data.scout_whisper_adapter import ScoutWhisperAdapter
-from app.features.domain_adaptation.data.deberta_adapter import DebertaClassifierAdapter
-from app.features.domain_adaptation.utils.audio_sampler import AudioSampler
+# CRITICAL FIX: Updated import paths to match the new Domain Adaptation feature structure
+from app.features.domain_adaptation.data.scout_adapter import ScoutWhisperAdapter
+from app.features.domain_adaptation.data.llama_adapter import LlamaAdapter
+from app.features.domain_adaptation.utils.smart_sampler import SmartSampler
 from app.features.domain_adaptation.service.adaptation_api import DomainAdaptationAPI
 from app.orchestration.service.phases.domain_adaptation_phase import DomainAdaptationPhase
 
@@ -47,7 +48,6 @@ from app.features.diarization.data.repositories import DiarizationRepository
 from app.features.diarization.service.diarization_api import DiarizationAPI
 from app.features.diarization.data.nemo_adapter import NeMoDiarizationAdapter
 
-# CRITICAL FIX: Update imports to the new architecture
 from app.features.sentence_reconstruction.data.repositories import PostgresSentenceRepository
 from app.features.sentence_reconstruction.service.reconstruction_api import SentenceReconstructionAPI
 from app.features.sentence_reconstruction.data.punctuation_adapter import PunctuationAdapter
@@ -115,14 +115,17 @@ class TestBatchMediaPipelineIntegration:
         # Real Domain Adaptation Feature
         domain_repo = DomainAdaptationRepository(db_manager)
         real_scout_adapter = ScoutWhisperAdapter()
-        real_classifier_adapter = DebertaClassifierAdapter()
-        sampler = AudioSampler(slice_duration_sec=20.0)
+        real_classifier_adapter = LlamaAdapter()
+
+        # CRITICAL FIX: Instantiating the new SmartSampler
+        sampler = SmartSampler()
+
         domain_adaptation_api = DomainAdaptationAPI(
             repository=domain_repo,
             orchestrator=orchestrator,
             scout_adapter=real_scout_adapter,
-            classifier_adapter=real_classifier_adapter,
-            audio_sampler=sampler
+            llama_adapter=real_classifier_adapter,
+            smart_sampler=sampler
         )
 
         # Real Transcription Feature

@@ -1,4 +1,4 @@
-# Canvas: test_domain_adaptation_phase_unit_v1
+# Canvas: test_domain_adaptation_phase_unit_v2
 # Path: tests/orchestration/service/phases/test_domain_adaptation_phase_unit.py
 
 import pytest
@@ -55,7 +55,15 @@ class TestDomainAdaptationPhaseUnit:
         mock_vad_repo.get_map_by_source_id.return_value = mock_vad_map
 
         # 4. Setup JobManager to return a fake DomainGlossary
-        fake_glossary = DomainGlossary(id=uuid.uuid4(), source_id=source_id, industry="FINANCE", sub_domain="OPTIONS_TRADING", hotword_string="strike:15.0")
+        # FIX: Updated to match the new DomainGlossary signature (sub_domains list and initial_prompt_string)
+        fake_glossary = DomainGlossary(
+            id=uuid.uuid4(),
+            source_id=source_id,
+            industry="FINANCE",
+            sub_domains=["OPTIONS_TRADING"],
+            hotword_string="strike:15.0",
+            initial_prompt_string="The following dictation covers topics related to Options Trading."
+        )
         mock_job_manager.run_job.return_value = fake_glossary
 
         # Execute

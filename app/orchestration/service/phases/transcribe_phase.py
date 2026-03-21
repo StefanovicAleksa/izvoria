@@ -1,7 +1,8 @@
-# Canvas: transcribe_phase_v3
+# Canvas: transcribe_phase_v5
 # Path: app/orchestration/service/phases/transcribe_phase.py
 
 import concurrent.futures
+import traceback
 from typing import List, Optional
 
 from app.core.config import settings
@@ -44,20 +45,15 @@ class TranscribePhase:
         self._preload_future: Optional[concurrent.futures.Future] = None
 
     def preload_model(self) -> None:
-        """Triggers the background loading of the Transcription model."""
         self._preload_future = self._async_service.trigger_preload(self._manifest, self._adapter)
 
     def execute(self, vad_results: List[VadJobResult]) -> PhaseBatchResult:
-        """
-        Phase 5: Waits for the Whisper model to load, then transcribes sequentially with Domain Hints.
-        """
         results: List[TranscribeJobResult] = []
         errors: List[str] = []
         success_count = 0
         failed_count = 0
         loaded_model: Optional[LoadedModel] = None
 
-        # 1. Wait for the background GPU loading to finish
         if self._preload_future:
             try:
                 loaded_model = self._async_service.resolve_preload(self._preload_future)
@@ -83,9 +79,14 @@ class TranscribePhase:
                     failed_count += 1
                     continue
 
-                # 2. Fetch Domain Adaptation Hints (if they exist)
-                glossary = self._domain_repo.get_glossary_by_source_id(source_id)
-                hotwords = glossary.hotword_string if glossary else None
+                try:
+                    glossary = self._domain_repo.get_glossary_by_source_id(source_id)
+                    hotwords = getattr(glossary, "hotword_string", None) if glossary else None
+                    initial_prompt = getattr(glossary, "initial_prompt_string", None) if glossary else None
+                except Exception as ex:
+                    print(f"\n[WARNING] Failed to fetch Domain Hints for {source_id}: {str(ex)}")
+                    hotwords, initial_prompt = None, None
+
                 language = settings.APPLIANCE_LANGUAGE
 
                 request = JobRequest(
@@ -95,7 +96,6 @@ class TranscribePhase:
                 )
 
                 try:
-                    # Execute API. `release_after=False` retains Whisper in VRAM for the whole batch
                     transcript = self._job_manager.run_job(
                         request,
                         self._transcription_api.process_audio,
@@ -103,6 +103,7 @@ class TranscribePhase:
                         audio_path=source.file.file_path,
                         language=language,
                         hotwords=hotwords,
+                        initial_prompt=initial_prompt,
                         release_after=False
                     )
 
@@ -111,12 +112,14 @@ class TranscribePhase:
 
                 except Exception as e:
                     err_msg = str(e)
+                    # Explicit Print statements to ensure we see the exact stack trace if it fails again
+                    print(f"\n[CRITICAL ERROR] TranscribePhase failed processing audio for source {source_id}:")
+                    traceback.print_exc()
                     results.append(TranscribeJobResult(source_id=source_id, success=False, error_message=err_msg))
                     errors.append(f"Failed Transcription for Source {source_id}: {err_msg}")
                     failed_count += 1
 
         finally:
-            # 3. Safely unload the Whisper model in the background once the entire batch is done
             if loaded_model:
                 self._async_service.trigger_unload(loaded_model, self._adapter, flush=True)
 

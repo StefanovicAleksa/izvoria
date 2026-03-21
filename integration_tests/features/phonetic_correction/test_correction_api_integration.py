@@ -1,3 +1,6 @@
+# Canvas: test_correction_api_integration_v2
+# Path: integration_tests/features/phonetic_correction/test_correction_api_integration.py
+
 import os
 import json
 import uuid
@@ -71,7 +74,6 @@ class TestPhoneticCorrectionAPIIntegration:
         with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        # FIXED: Ensure compatibility with old JSON files lacking the 'words' array
         for seg in data["sentences"]:
             if "segments" in seg:
                 del seg["segments"]
@@ -119,11 +121,11 @@ class TestPhoneticCorrectionAPIIntegration:
         source_id = isolated_setup
 
         try:
-            # 1. Execute the Pipeline (Boot Qwen -> Generate JSON -> Patch -> Save)
+            # 1. Execute the Pipeline
             corrected_transcript = live_api.execute(
                 transcript=real_transcript,
                 industry=live_test_glossary,
-                sub_domain="GENERAL"
+                sub_domains=["GENERAL"]  # FIX: updated to list
             )
         except Exception as e:
             if "cuda" in str(e).lower() or "vram" in str(e).lower():
@@ -149,7 +151,7 @@ class TestPhoneticCorrectionAPIIntegration:
         idempotent_result = live_api.execute(
             transcript=real_transcript,
             industry=live_test_glossary,
-            sub_domain="GENERAL"
+            sub_domains=["GENERAL"]  # FIX: updated to list
         )
         assert idempotent_result.id == db_transcript.id
 

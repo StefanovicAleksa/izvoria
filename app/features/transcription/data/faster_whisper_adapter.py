@@ -1,7 +1,8 @@
-# Canvas: faster_whisper_adapter_v7
+# Canvas: faster_whisper_adapter_v9
 # Path: app/features/transcription/data/faster_whisper_adapter.py
 
 import os
+import gc
 import torch
 import torchaudio
 from typing import List, Optional
@@ -23,6 +24,11 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
     # noinspection PyMethodMayBeStatic
     def load(self, manifest: ModelManifest) -> LoadedModel:
         try:
+            # Absolute failsafe: Clear any residual PyTorch cache before initializing CTranslate2
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
             if not os.path.exists(manifest.model_path):
                 raise FileNotFoundError(f"Whisper model directory missing: {manifest.model_path}")
 
@@ -41,6 +47,9 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
         try:
             if hasattr(model, "model_instance"):
                 del model.model_instance
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             return True
         except Exception as e:
             raise map_transcription_error(e) from e
@@ -52,54 +61,48 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
             audio_path: str,
             vad_map: VadMap,
             language: str,
-            hotwords: Optional[str] = None
+            hotwords: Optional[str] = None,
+            initial_prompt: Optional[str] = None
     ) -> List[TranscriptSegment]:
         try:
             whisper_model: WhisperModel = model.model_instance
             segments_out = []
 
-            # 1. Load full audio into memory ONCE (Prevents massive Disk I/O bottlenecks)
             waveform, sample_rate = torchaudio.load(audio_path)
 
-            # Ensure mono
             if waveform.shape[0] > 1:
                 waveform = torch.mean(waveform, dim=0, keepdim=True)
 
-            # Ensure 16kHz for Whisper
             if sample_rate != 16000:
                 resampler = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=16000)
                 waveform = resampler(waveform)
 
             waveform_1d = waveform.squeeze().numpy()
-
-            # 2. Merge close VAD segments to minimize inference calls
             merged_segments = self._merge_vad_segments(vad_map.segments, gap_threshold=2.0)
 
-            # 3. Transcribe each merged chunk strictly from RAM
+            # Sanitize inputs to prevent underlying C++ string faults in CTranslate2
+            safe_hotwords = hotwords.strip() if hotwords and hotwords.strip() else None
+            safe_prompt = initial_prompt.strip() if initial_prompt and initial_prompt.strip() else None
+
             for m_seg in merged_segments:
                 start_sample = int(m_seg.start_sec * 16000)
                 end_sample = int(m_seg.end_sec * 16000)
-
                 audio_chunk = waveform_1d[start_sample:end_sample]
 
-                # Skip micro-chunks to prevent Whisper from hallucinating
                 if len(audio_chunk) < 1600:
                     continue
 
-                # Pass the RAM chunk directly (avoids O(N) re-decoding of the file)
-                # ENFORCED: word_timestamps=True
                 segments, info = whisper_model.transcribe(
                     audio=audio_chunk,
                     language=language,
                     vad_filter=False,
-                    hotwords=hotwords,
+                    hotwords=safe_hotwords,
+                    initial_prompt=safe_prompt,
                     word_timestamps=True
                 )
 
                 for segment in segments:
                     domain_words = []
-
-                    # Map the inner words and offset their timestamps back to the original file's timeline
                     if getattr(segment, "words", None):
                         for w in segment.words:
                             domain_words.append(
@@ -111,7 +114,6 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
                                 )
                             )
 
-                    # Offset the segment timestamps back to the original file's timeline
                     segments_out.append(
                         TranscriptSegment(
                             start_sec=m_seg.start_sec + segment.start,
@@ -129,7 +131,6 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
 
     # noinspection PyMethodMayBeStatic
     def _merge_vad_segments(self, segments: List[VadSegment], gap_threshold: float = 2.0) -> List[VadSegment]:
-        """Merges VAD segments closer than the gap_threshold to reduce total inference calls."""
         if not segments:
             return []
 

@@ -1,4 +1,4 @@
-# Canvas: test_phonetic_correction_phase_unit_v3
+# Canvas: test_phonetic_correction_phase_unit_v5
 # Path: tests/orchestration/service/phases/test_phonetic_correction_phase_unit.py
 
 import pytest
@@ -12,10 +12,7 @@ from app.orchestration.domain.entities import SentenceReconstructionJobResult, P
 from app.core.model_manager.domain.entities import LoadedModel, ModelManifest
 from app.core.model_manager.domain.enums import ModelType
 from app.core.model_manager.exceptions.base import ModelManagerError
-
-# CRITICAL FIX: Removed the _old suffix to point to our new deterministic architecture
 from app.features.sentence_reconstruction.domain.entities import ReconstructedTranscript
-
 from app.features.phonetic_correction.domain.entities import PhoneticCorrectedTranscript
 
 
@@ -62,13 +59,11 @@ class TestPhoneticCorrectionPhaseUnit:
         )
 
     def test_preload_model_triggers_async_service(self, phase, mock_async_service, mock_manifest, mock_adapter):
-        """Ensures that the phase triggers the background load when instructed."""
         phase.preload_model()
         mock_async_service.trigger_preload.assert_called_once_with(mock_manifest, mock_adapter)
 
     def test_execute_happy_path(self, phase, mock_async_service, mock_job_manager, mock_sentence_repo,
                                 mock_domain_repo):
-        """Ensures successful phonetic correction maps to a COMPLETED batch result."""
         source_id = uuid.uuid4()
         upstream_results = [
             SentenceReconstructionJobResult(source_id=source_id, success=True, reconstructed_transcript_id=uuid.uuid4())
@@ -80,9 +75,11 @@ class TestPhoneticCorrectionPhaseUnit:
         mock_async_service.resolve_preload.return_value = mock_loaded_model
 
         mock_sentence_repo.get_by_source_id.return_value = Mock(spec=ReconstructedTranscript)
+
+        # MOCK UPDATE: Properly defining the sub_domains list as returned by Domain Adaptation
         mock_glossary = Mock()
-        mock_glossary.industry = "MEDICAL"
-        mock_glossary.sub_domain = "CARDIOLOGY"
+        mock_glossary.industry = "FINANCE"
+        mock_glossary.sub_domains = ["OPTIONS_TRADING", "M_AND_A"]
         mock_domain_repo.get_glossary_by_source_id.return_value = mock_glossary
 
         mock_corrected_transcript = Mock(spec=PhoneticCorrectedTranscript)
@@ -101,7 +98,6 @@ class TestPhoneticCorrectionPhaseUnit:
         mock_async_service.trigger_unload.assert_called_once_with(mock_loaded_model, phase._adapter, flush=True)
 
     def test_execute_skips_failed_upstream(self, phase, mock_async_service):
-        """Ensures that if sentence reconstruction failed, phonetic correction bypasses it."""
         phase._preload_future = None
 
         upstream_results = [
@@ -116,7 +112,6 @@ class TestPhoneticCorrectionPhaseUnit:
         assert len(result.items) == 0
 
     def test_execute_fails_if_preload_fails(self, phase, mock_async_service):
-        """Ensures the entire phase halts and reports failure if the GPU model refuses to load."""
         mock_future = Mock(spec=concurrent.futures.Future)
         phase._preload_future = mock_future
 

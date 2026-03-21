@@ -1,4 +1,4 @@
-# Canvas: transcription_api_v5
+# Canvas: transcription_api_v6
 # Path: app/features/transcription/service/transcription_api.py
 
 import uuid
@@ -39,6 +39,7 @@ class TranscriptionAPI:
             audio_path: str,
             language: Optional[str] = None,
             hotwords: Optional[str] = None,
+            initial_prompt: Optional[str] = None, # FIX: Added to signature
             release_after: bool = False
     ) -> Transcript:
 
@@ -50,7 +51,6 @@ class TranscriptionAPI:
         # 2. Fetch VAD Map
         vad_map = self._vad_repo.get_map_by_source_id(source_id)
         if not vad_map or not vad_map.segments:
-            # If no human speech was detected, create an empty transcript.
             return self._repo.save(Transcript(source_id=source_id, segments=[]))
 
         # 3. Determine Language
@@ -71,7 +71,8 @@ class TranscriptionAPI:
                 audio_path=audio_path,
                 vad_map=vad_map,
                 language=target_language,
-                hotwords=hotwords
+                hotwords=hotwords,
+                initial_prompt=initial_prompt # FIX: Passed down to FasterWhisperAdapter
             )
 
             transcript = Transcript(source_id=source_id, segments=segments)
@@ -84,9 +85,7 @@ class TranscriptionAPI:
                 self._orchestrator.release_model(loaded_model, self._adapter, flush=True)
 
     def get_transcript(self, source_id: uuid.UUID) -> Optional[Transcript]:
-        """Retrieves a transcript by its source UUID."""
         return self._repo.get_by_source_id(source_id)
 
     def update_transcript(self, transcript: Transcript) -> Transcript:
-        """Saves modifications made to the transcript (e.g., by the Diarization phase)."""
         return self._repo.update(transcript)

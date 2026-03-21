@@ -1,4 +1,4 @@
-# Canvas: test_transcription_api_v4
+# Canvas: test_transcription_api_v5
 # Path: tests/features/transcription/test_transcription_api.py
 
 import uuid
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 from app.features.transcription.service.transcription_api import TranscriptionAPI
 from app.features.transcription.domain.entities import Transcript
 from app.features.vad.domain.entities import VadMap, VadSegment
-from app.features.transcription.exceptions.model import CTranslateEngineError, TranscriptionAudioError
+from app.features.transcription.exceptions.model import CTranslateEngineError
 
 
 class TestTranscriptionAPI:
@@ -47,10 +47,6 @@ class TestTranscriptionAPI:
         mocks["repo"].get_by_source_id.return_value = None
         mocks["vad_repo"].get_map_by_source_id.return_value = None
 
-        # When VAD map is completely missing, your feature maps it or returns empty.
-        # By your earlier tests, you explicitly check for the absence of a VadMap to raise a TranscriptionAudioError if you strictly required it.
-        # But per our API update, if it's missing or empty, it returns an empty transcript safely.
-        # Let's verify it returns an empty transcript:
         empty_transcript = Transcript(source_id=source_id, segments=[])
         mocks["repo"].save.return_value = empty_transcript
 
@@ -62,7 +58,6 @@ class TestTranscriptionAPI:
         source_id = uuid.uuid4()
         mocks["repo"].get_by_source_id.return_value = None
 
-        # FIX: Supply an actual VAD segment to trigger the GPU logic
         fake_vad_map = VadMap(source_id=source_id, segments=[VadSegment(start_sec=0, end_sec=5.0, confidence=0.99)])
         mocks["vad_repo"].get_map_by_source_id.return_value = fake_vad_map
 
@@ -75,22 +70,26 @@ class TestTranscriptionAPI:
         saved_transcript = Transcript(source_id=source_id, segments=[])
         mocks["repo"].save.return_value = saved_transcript
 
+        # FIX: Provide initial_prompt to match the updated API
         result = api.process_audio(
             source_id,
             "/dummy.wav",
             language="fr",
             hotwords="bonjour:15.0",
+            initial_prompt="French Context Primer",
             release_after=True
         )
 
         assert result == saved_transcript
         mocks["orchestrator"].acquire_model.assert_called_once()
+        # FIX: Assert that initial_prompt was passed down to the adapter
         mocks["adapter"].transcribe.assert_called_once_with(
             model=loaded_model_mock,
             audio_path="/dummy.wav",
             vad_map=fake_vad_map,
             language="fr",
-            hotwords="bonjour:15.0"
+            hotwords="bonjour:15.0",
+            initial_prompt="French Context Primer"
         )
         mocks["repo"].save.assert_called_once()
         mocks["orchestrator"].release_model.assert_called_once_with(
@@ -101,7 +100,6 @@ class TestTranscriptionAPI:
         source_id = uuid.uuid4()
         mocks["repo"].get_by_source_id.return_value = None
 
-        # FIX: Supply an actual VAD segment to trigger the GPU logic
         fake_vad_map = VadMap(source_id=source_id, segments=[VadSegment(start_sec=0, end_sec=5.0, confidence=0.99)])
         mocks["vad_repo"].get_map_by_source_id.return_value = fake_vad_map
 
