@@ -102,7 +102,7 @@ class DomainAdaptationAPI:
     def _execute_llm_routing(self, text: str, candidate_labels: list):
         manifest = ModelManifest(
             model_type=ModelType.DOMAIN_CLASSIFIER,
-            model_path=settings.ASR_PHASE_1_MODEL_PATH,
+            model_path=settings.DOMAIN_CLASSIFIER_MODEL_PATH,
             required_vram_mb=3500.0
         )
         loaded_model = None

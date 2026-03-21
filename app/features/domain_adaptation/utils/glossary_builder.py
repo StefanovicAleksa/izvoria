@@ -1,4 +1,3 @@
-# Canvas: glossary_builder_v2
 # Path: app/features/domain_adaptation/utils/glossary_builder.py
 
 import json
@@ -6,6 +5,8 @@ from pathlib import Path
 from typing import List, Tuple
 
 from app.features.domain_adaptation.exceptions.process import GlossaryManifestError
+from app.features.domain_adaptation.data.prompts import INITIAL_PROMPT_TEMPLATE
+
 
 class GlossaryBuilder:
     """
@@ -13,7 +14,7 @@ class GlossaryBuilder:
     for the Whisper Large model to prevent CTranslate2 OOM crashes.
     """
     HOTWORD_WEIGHT = 15.0
-    MAX_ANCHOR_WORDS = 40  # Strict limit to protect the 224 token buffer
+    MAX_ANCHOR_WORDS = 40
 
     @classmethod
     def build_injection_payloads(cls, industry: str, predicted_domains: List[str]) -> Tuple[str, str]:
@@ -32,7 +33,6 @@ class GlossaryBuilder:
                 domain_anchors = sub_domains_dict[domain].get("anchor_words", [])
                 consolidated_anchors.extend(domain_anchors)
 
-        # Fallback if the LLM hallucinated a domain or found nothing
         if not consolidated_anchors:
             consolidated_anchors = base_terms
 
@@ -43,18 +43,20 @@ class GlossaryBuilder:
         # 3. Build Payload A: Hotwords (Beam Search Bias)
         hotword_string = cls._format_hotwords(safe_anchors)
 
-        # 4. Build Payload B: Initial Prompt (Transformer Context Priming)
-        domain_names = ", ".join([d.replace("_", " ").title() for d in predicted_domains])
-        initial_prompt = (
-            f"The following dictation covers topics related to {domain_names}. "
-            f"It contains specialized terminology such as: {', '.join(safe_anchors)}."
+        # 4. Build Payload B: Initial Prompt (from imported template)
+        # Fallback to "General" if the array is empty to prevent weird grammar
+        domain_names = ", ".join([d.replace("_", " ").title() for d in predicted_domains]) or "General"
+        anchor_words_str = ", ".join(safe_anchors)
+
+        initial_prompt = INITIAL_PROMPT_TEMPLATE.format(
+            domain_names=domain_names,
+            anchor_words=anchor_words_str
         )
 
         return hotword_string, initial_prompt
 
     @classmethod
     def get_candidate_labels(cls, industry: str) -> List[str]:
-        """Extracts just the keys for the LLM Router prompt."""
         manifest_data = cls._load_master_glossary(industry)
         return list(manifest_data.get("sub_domains", {}).keys())
 
@@ -65,7 +67,6 @@ class GlossaryBuilder:
     @staticmethod
     def _load_master_glossary(industry: str) -> dict:
         file_name = f"{industry.lower()}.json"
-        # Navigate from utils -> domain_adaptation -> features -> app -> src -> root
         root_dir = Path(__file__).resolve().parent.parent.parent.parent.parent
         glossary_path = root_dir / "data" / "glossaries" / file_name
 

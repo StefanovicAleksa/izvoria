@@ -34,8 +34,8 @@ class Settings(BaseSettings):
     DISCOVERY_SCOUT_MODEL_PATH: str = "models/whisper-tiny-en"
     DISCOVERY_SCOUT_VRAM_REQUIREMENT_MB: float = 200.0
 
-    DISCOVERY_CLASSIFIER_MODEL_PATH: str = "models/nli-deberta-v3-xsmall"
-    DISCOVERY_CLASSIFIER_VRAM_REQUIREMENT_MB: float = 200.0
+    DOMAIN_CLASSIFIER_MODEL_PATH: str = "models/llama-3.2-3b-instruct-q8_0.gguf"
+    DOMAIN_CLASSIFIER_MODEL_VRAM_REQUIREMENT_MB: float = 3500
 
     # ==========================================
     # GPU MODELS (Pipeline Phases)

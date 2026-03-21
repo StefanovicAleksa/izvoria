@@ -1,65 +1,58 @@
-# Canvas: test_glossary_builder_v1
-# Path: tests/features/domain_adaptation/test_glossary_builder.py
+# Path: tests/features/domain_adaptation/utils/test_glossary_builder.py
 
 import pytest
+from unittest.mock import patch
+
 from app.features.domain_adaptation.utils.glossary_builder import GlossaryBuilder
 
 
 class TestGlossaryBuilder:
-
     @pytest.fixture
-    def mock_manifest(self, mocker):
-        """Mocks the physical JSON file read to provide controlled test data."""
-        manifest_data = {
-            "base_terms": ["EBITDA"],
+    def mock_manifest_data(self):
+        return {
+            "base_terms": ["EBITDA", "CapEx"],
             "sub_domains": {
-                "OPTIONS_TRADING": {
-                    "anchor_words": ["strike", "theta"],
-                    "terms": ["Gamma"]
-                }
+                "OPTIONS_TRADING": {"anchor_words": ["strike", "theta"]},
+                "M_AND_A": {"anchor_words": ["merger", "acquisition"]}
             }
         }
-        mocker.patch.object(GlossaryBuilder, "_load_master_glossary", return_value=manifest_data)
 
-    def test_get_candidate_labels(self, mock_manifest):
+    @patch.object(GlossaryBuilder, '_load_master_glossary')
+    def test_get_candidate_labels(self, mock_load_glossary, mock_manifest_data):
+        mock_load_glossary.return_value = mock_manifest_data
+
         labels = GlossaryBuilder.get_candidate_labels("FINANCE")
-        assert labels == ["OPTIONS_TRADING"]
 
-    def test_validate_and_build_success(self, mock_manifest):
-        """If anchor words are found, it should merge base, domain, and anchor words."""
-        subdomain, hotwords = GlossaryBuilder.validate_and_build(
+        assert len(labels) == 2
+        assert "OPTIONS_TRADING" in labels
+        assert "M_AND_A" in labels
+
+    @patch.object(GlossaryBuilder, '_load_master_glossary')
+    def test_build_injection_payloads_multi_domain(self, mock_load_glossary, mock_manifest_data):
+        mock_load_glossary.return_value = mock_manifest_data
+
+        hotwords, initial_prompt = GlossaryBuilder.build_injection_payloads(
             industry="FINANCE",
-            guessed_subdomain="OPTIONS_TRADING",
-            scouted_text="We are looking at the strike price today."
+            predicted_domains=["OPTIONS_TRADING", "M_AND_A"]
         )
 
-        assert subdomain == "OPTIONS_TRADING"
-        # Verify all three tiers made it into the hotwords
-        assert "EBITDA:15.0" in hotwords
-        assert "Gamma:15.0" in hotwords
         assert "strike:15.0" in hotwords
+        assert "merger:15.0" in hotwords
 
-    def test_validate_and_build_anchor_failure(self, mock_manifest):
-        """If no anchor words are found, it should fall back to BASE."""
-        subdomain, hotwords = GlossaryBuilder.validate_and_build(
+        # Verify the actual template string from prompts.py was formatted correctly
+        assert "The following dictation covers topics related to Options Trading, M And A" in initial_prompt
+        assert "It contains specialized terminology such as: strike, theta, merger, acquisition." in initial_prompt
+
+    @patch.object(GlossaryBuilder, '_load_master_glossary')
+    def test_build_injection_payloads_fallback_to_base(self, mock_load_glossary, mock_manifest_data):
+        mock_load_glossary.return_value = mock_manifest_data
+
+        # LLM hallucinated a domain
+        hotwords, initial_prompt = GlossaryBuilder.build_injection_payloads(
             industry="FINANCE",
-            guessed_subdomain="OPTIONS_TRADING",
-            scouted_text="Just some normal financial conversation."
+            predicted_domains=["CRYPTO_TRADING"]
         )
 
-        assert subdomain == "BASE_FALLBACK"
-        # Only base terms should be injected
         assert "EBITDA:15.0" in hotwords
-        assert "Gamma:15.0" not in hotwords
-        assert "strike:15.0" not in hotwords
-
-    def test_validate_and_build_general_domain(self, mock_manifest):
-        """If the classifier guessed GENERAL (or scout failed), it just returns base terms."""
-        subdomain, hotwords = GlossaryBuilder.validate_and_build(
-            industry="FINANCE",
-            guessed_subdomain="GENERAL",
-            scouted_text=""
-        )
-
-        assert subdomain == "GENERAL"
-        assert "EBITDA:15.0" in hotwords
+        assert "The following dictation covers topics related to Crypto Trading" in initial_prompt
+        assert "It contains specialized terminology such as: EBITDA, CapEx." in initial_prompt

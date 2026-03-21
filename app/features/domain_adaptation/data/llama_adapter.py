@@ -1,13 +1,9 @@
-# Canvas: llama_adapter_v1
 # Path: app/features/domain_adaptation/data/llama_adapter.py
 
 import os
 import json
 import re
-from typing import List
-
-# Assuming llama_cpp is your engine for .gguf models
-from llama_cpp import Llama
+from typing import List, Any
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.features.domain_adaptation.domain.interfaces import ILlamaAdapter
@@ -22,11 +18,11 @@ class LlamaAdapter(ILlamaAdapter):
 
     def load(self, manifest: ModelManifest) -> LoadedModel:
         try:
+            from llama_cpp import Llama
+
             if not os.path.exists(manifest.model_path):
                 raise FileNotFoundError(f"Llama model file missing: {manifest.model_path}")
 
-            # n_gpu_layers=-1 offloads all layers to the GTX 3060
-            # n_ctx=4096 is plenty for 10 minutes of dense text
             llm = Llama(
                 model_path=manifest.model_path,
                 n_gpu_layers=-1,
@@ -49,7 +45,7 @@ class LlamaAdapter(ILlamaAdapter):
             self, model: LoadedModel, scout_text: str, candidate_labels: List[str]
     ) -> List[str]:
         try:
-            llm: Llama = model.model_instance
+            llm: Any = model.model_instance
 
             system_prompt = (
                 "You are an expert legal/medical taxonomy router. "
@@ -58,17 +54,18 @@ class LlamaAdapter(ILlamaAdapter):
                 "Output ONLY a raw JSON array of the identified strings, e.g., [\"M_AND_A\", \"IP_LAW\"]."
             )
 
-            # Llama 3 instructional format
-            prompt = f"<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n{system_prompt}<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{scout_text}<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
-
-            response = llm(
-                prompt,
+            # FIX: Use the high-level Chat Completion API to avoid manual token template collisions
+            response = llm.create_chat_completion(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": scout_text}
+                ],
                 max_tokens=64,
-                temperature=0.1,  # Low temp for deterministic JSON output
-                stop=["<|eot_id|>"]
+                temperature=0.1
             )
 
-            output_text = response['choices'][0]['text'].strip()
+            # The chat completion payload structure is slightly different
+            output_text = response['choices'][0]['message']['content'].strip()
             return self._parse_json_array(output_text)
 
         except Exception as e:
@@ -76,9 +73,7 @@ class LlamaAdapter(ILlamaAdapter):
 
     @staticmethod
     def _parse_json_array(text: str) -> List[str]:
-        """Safely extracts a JSON array, even if Llama wraps it in markdown blocks."""
         try:
-            # Strip potential markdown formatting (e.g., ```json [...] ```)
             match = re.search(r'\[.*]', text, re.DOTALL)
             if match:
                 clean_json = match.group(0)
@@ -86,7 +81,6 @@ class LlamaAdapter(ILlamaAdapter):
                 if isinstance(parsed, list):
                     return parsed
 
-            # Fallback
             parsed = json.loads(text)
             return parsed if isinstance(parsed, list) else []
         except json.JSONDecodeError as e:

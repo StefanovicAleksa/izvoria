@@ -82,7 +82,6 @@ class ScoutWhisperAdapter(IScoutWhisperAdapter):
 
             return ScoutResult(
                 source_id=source_id,
-                samples=[], # Removed physical samples tracking
                 combined_text=concatenated_text.strip()
             )
         except Exception as e:

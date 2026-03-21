@@ -1,5 +1,4 @@
-# Canvas: it_test_adaptation_real_audio_v9
-# Path: integration_tests/features/domain_adaptation/test_adaptation_real_audio.py
+# Path: integration_tests/features/domain_adaptation/test_adaptation_api.py
 
 import pytest
 import uuid
@@ -15,9 +14,9 @@ from app.features.storage.data.models import SourceModel, FileModel
 from app.features.storage.domain.entities import SourceType
 
 from app.features.domain_adaptation.data.repositories import DomainAdaptationRepository
-from app.features.domain_adaptation.data.scout_whisper_adapter import ScoutWhisperAdapter
-from app.features.domain_adaptation.data.deberta_adapter import DebertaClassifierAdapter
-from app.features.domain_adaptation.utils.audio_sampler import AudioSampler
+from app.features.domain_adaptation.data.scout_adapter import ScoutWhisperAdapter
+from app.features.domain_adaptation.data.llama_adapter import LlamaAdapter
+from app.features.domain_adaptation.utils.smart_sampler import SmartSampler
 from app.features.domain_adaptation.service.adaptation_api import DomainAdaptationAPI
 from app.features.vad.domain.entities import VadMap, VadSegment
 
@@ -35,15 +34,11 @@ def setup_finance_glossary():
 
     assert resource_path.exists(), f"Missing test glossary at {resource_path}"
 
-    # Ensure the target directory exists
     target_path.parent.mkdir(parents=True, exist_ok=True)
-
-    # Copy the file into the active data directory
     shutil.copy(resource_path, target_path)
 
     yield
 
-    # Cleanup after test execution
     if target_path.exists():
         target_path.unlink()
 
@@ -54,7 +49,6 @@ def real_infrastructure():
     file_id = uuid.uuid4()
 
     with core_db_manager.session() as session:
-        # 1. Create the physical file record first
         test_file = FileModel(
             id=file_id,
             file_path="/tmp/test_options_trading.wav",
@@ -64,7 +58,6 @@ def real_infrastructure():
         )
         session.add(test_file)
 
-        # 2. Create the Source record linking to the file
         test_source = SourceModel(
             id=source_id,
             name="test_options_trading.wav",
@@ -99,15 +92,20 @@ def test_full_domain_adaptation_pipeline(setup_finance_glossary, real_infrastruc
 
     assert audio_path.exists(), f"Test audio missing at {audio_path}. Run generate_test_audio.py first!"
 
-    # FIXED: Patch the instantiated Pydantic settings object directly, not the OS environment
     monkeypatch.setattr(settings, "APPLIANCE_INDUSTRY", "FINANCE")
 
     repo = DomainAdaptationRepository(core_db_manager)
     scout_adapter = ScoutWhisperAdapter()
-    classifier_adapter = DebertaClassifierAdapter()
-    sampler = AudioSampler(slice_duration_sec=20.0)
+    llama_adapter = LlamaAdapter()
+    sampler = SmartSampler(max_slices=10, min_duration_sec=2.0)
 
-    api = DomainAdaptationAPI(repo, orchestrator, scout_adapter, classifier_adapter, sampler)
+    api = DomainAdaptationAPI(
+        repository=repo,
+        orchestrator=orchestrator,
+        scout_adapter=scout_adapter,
+        llama_adapter=llama_adapter,
+        smart_sampler=sampler
+    )
 
     vad_map = VadMap(
         source_id=source_id,
@@ -120,8 +118,13 @@ def test_full_domain_adaptation_pipeline(setup_finance_glossary, real_infrastruc
 
     assert glossary is not None
     assert glossary.source_id == source_id
-
     assert glossary.industry == "FINANCE"
-    assert glossary.sub_domain == "OPTIONS_TRADING"
+
+    assert "OPTIONS_TRADING" in glossary.sub_domains
+
     assert "strike" in glossary.hotword_string.lower() or "theta" in glossary.hotword_string.lower()
     assert ":15.0" in glossary.hotword_string
+
+    # Assert GlossaryBuilder properly used the prompts.py template
+    assert "Options Trading" in glossary.initial_prompt_string
+    assert "strike" in glossary.initial_prompt_string.lower()
