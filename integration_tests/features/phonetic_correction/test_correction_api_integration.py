@@ -1,4 +1,4 @@
-# Canvas: test_correction_api_integration_v2
+# Canvas: test_correction_api_integration_v4
 # Path: integration_tests/features/phonetic_correction/test_correction_api_integration.py
 
 import os
@@ -11,6 +11,10 @@ from sqlalchemy import text
 from app.core.config import settings
 from app.core.database.data.engine import Base
 from app.core.database.service.manager import db_manager
+
+# CRITICAL FIX: Import missing Orchestrator dependencies
+from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
+from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 
 from app.features.sentence_reconstruction.domain.entities import ReconstructedTranscript, ReconstructedSentence
 from app.features.phonetic_correction.data.repositories import PhoneticRepository
@@ -102,8 +106,13 @@ class TestPhoneticCorrectionAPIIntegration:
         repo = PhoneticRepository(db_manager)
         qwen_adapter = QwenAdapter()
 
+        # CRITICAL FIX: Instantiate and inject the Orchestrator
+        vram_monitor = PyTorchVramMonitor()
+        orchestrator = ModelManagerOrchestrator(vram_monitor)
+
         return PhoneticCorrectionAPI(
             repository=repo,
+            orchestrator=orchestrator,
             patch_adapter=qwen_adapter
         )
 
@@ -125,7 +134,8 @@ class TestPhoneticCorrectionAPIIntegration:
             corrected_transcript = live_api.execute(
                 transcript=real_transcript,
                 industry=live_test_glossary,
-                sub_domains=["GENERAL"]  # FIX: updated to list
+                sub_domains=["GENERAL"],
+                release_after=True
             )
         except Exception as e:
             if "cuda" in str(e).lower() or "vram" in str(e).lower():
@@ -142,16 +152,22 @@ class TestPhoneticCorrectionAPIIntegration:
         # The Phonetic error should be perfectly patched
         patched_text = " ".join([s.text for s in corrected_transcript.sentences])
 
+        assert "acute angina" in patched_text.lower(), "Phonetic correction was not applied."
+        assert "a cute angina" not in patched_text.lower(), "Original misspelled text is still present."
+        assert "subscribe to the channel" not in patched_text.lower(), "Hallucination was not scrubbed."
+
         # 3. Verify Database Persistence & Audit Trail
         db_transcript = live_api._repo.get_by_source_id(source_id)
         assert db_transcript is not None
         assert db_transcript.id == corrected_transcript.id
+        assert len(db_transcript.audit_trail) > 0, "Cryptographic audit trail failed to save."
 
         # 4. Verify Idempotency
         idempotent_result = live_api.execute(
             transcript=real_transcript,
             industry=live_test_glossary,
-            sub_domains=["GENERAL"]  # FIX: updated to list
+            sub_domains=["GENERAL"],
+            release_after=True
         )
         assert idempotent_result.id == db_transcript.id
 

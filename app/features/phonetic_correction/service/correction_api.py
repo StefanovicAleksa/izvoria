@@ -1,12 +1,14 @@
-# Canvas: phonetic_api_v7
+# Canvas: correction_api_v9
 # Path: app/features/phonetic_correction/service/correction_api.py
 
 import logging
+import re
 from typing import List
 
 from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest
 from app.core.model_manager.domain.enums import ModelType
+from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 
 from app.features.sentence_reconstruction.domain.entities import ReconstructedTranscript, ReconstructedSentence
 
@@ -27,34 +29,29 @@ class PhoneticCorrectionAPI:
     def __init__(
             self,
             repository: IPhoneticRepository,
+            orchestrator: ModelManagerOrchestrator,  # CRITICAL FIX: Inject Orchestrator
             patch_adapter: IPhoneticPatchAdapter
     ):
         self._repo = repository
+        self._orchestrator = orchestrator
         self._patch_adapter = patch_adapter
 
     def execute(
             self,
             transcript: ReconstructedTranscript,
             industry: str,
-            sub_domains: List[str] # FIX: Changed to List[str]
+            sub_domains: List[str],
+            release_after: bool = False  # CRITICAL FIX: Add parameter for Pipeline orchestration
     ) -> PhoneticCorrectedTranscript:
         try:
             existing_record = self._repo.get_by_source_id(transcript.source_id)
             if existing_record:
-                logger.info(f"Phonetic correction already completed for source {transcript.source_id}")
                 return existing_record
 
             if not transcript.sentences:
                 return self._create_passthrough(transcript)
 
-            # Pass the list directly to the updated dictionary loader
             domain_dictionary_str = DictionaryLoader.build_prompt_dictionary(industry, sub_domains)
-
-            if not domain_dictionary_str:
-                logger.warning(
-                    f"No dictionary loaded for '{industry}' with sub_domains {sub_domains}. "
-                    "Proceeding with hallucination scrubbing only."
-                )
 
             manifest = ModelManifest(
                 model_type=ModelType.ASR_CORRECTION_PHASE_3,
@@ -64,17 +61,19 @@ class PhoneticCorrectionAPI:
 
             loaded_model = None
             audit_records: List[AppliedCorrectionRecord] = []
-            all_patched_sentences: List[ReconstructedSentence] = []
+            processed_sentences_map = {}
 
             try:
-                loaded_model = self._patch_adapter.load(manifest)
+                # CRITICAL FIX: Acquire through Orchestrator instead of adapter direct load
+                loaded_model = self._orchestrator.acquire_model(manifest, self._patch_adapter)
 
                 tokenize_func = lambda text: loaded_model.model_instance.tokenize(text.encode("utf-8"), add_bos=False)
 
                 chunks = chunk_sentences_by_exact_tokens(
                     sentences=transcript.sentences,
                     tokenize_func=tokenize_func,
-                    max_tokens_per_chunk=4000
+                    max_tokens_per_chunk=4000,
+                    overlap_sentences=1
                 )
 
                 for chunk in chunks:
@@ -87,12 +86,16 @@ class PhoneticCorrectionAPI:
                     )
 
                     patched_chunk = self._apply_patches_to_chunk(chunk, patches, audit_records)
-                    all_patched_sentences.extend(patched_chunk)
+
+                    for s in patched_chunk:
+                        processed_sentences_map[s.sentence_id] = s
 
             finally:
-                if loaded_model:
-                    self._patch_adapter.unload(loaded_model)
+                # CRITICAL FIX: Respect the Orchestrator's batch locks
+                if loaded_model and release_after:
+                    self._orchestrator.release_model(loaded_model, self._patch_adapter, flush=True)
 
+            all_patched_sentences = list(processed_sentences_map.values())
             cleaned_sentences = [s for s in all_patched_sentences if s.text.strip()]
 
             final_transcript = PhoneticCorrectedTranscript(
@@ -123,8 +126,11 @@ class PhoneticCorrectionAPI:
                     if not patch.original:
                         continue
 
-                    if patch.original in new_text:
-                        new_text = new_text.replace(patch.original, patch.correction).strip()
+                    escaped_target = re.escape(patch.original)
+                    pattern = re.compile(rf'(?<!\w){escaped_target}(?!\w)', re.IGNORECASE)
+
+                    if pattern.search(new_text):
+                        new_text = pattern.sub(patch.correction, new_text).strip()
                         applied_to_this_sentence.append(patch)
 
                         if patch.correction == "":

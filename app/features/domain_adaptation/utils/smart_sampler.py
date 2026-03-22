@@ -1,4 +1,4 @@
-# Canvas: smart_sampler_v1
+# Canvas: smart_sampler_v2
 # Path: app/features/domain_adaptation/utils/smart_sampler.py
 
 from typing import List
@@ -10,47 +10,54 @@ from app.features.domain_adaptation.exceptions.process import SmartSamplingError
 
 class SmartSampler:
     """
-    Pure utility to calculate the most contextually dense audio blocks
-    based on VAD segment durations.
+    Calculates uniform contextual audio blocks across the entire timeline
+    to ensure the Scout model gets a true cross-section of the conversation.
     """
 
-    def __init__(self, max_slices: int = 10, min_duration_sec: float = 5.0):
+    def __init__(self, max_slices: int = 10, min_duration_sec: float = 3.0):
         self.max_slices = max_slices
         self.min_duration_sec = min_duration_sec
 
     def calculate_optimal_slices(self, vad_map: VadMap) -> List[TimeSlice]:
-        """
-        Scans the VAD map and returns the `max_slices` longest continuous speech blocks.
-        """
         if not vad_map or not vad_map.segments:
             raise SmartSamplingError("Cannot sample audio: VAD Map is empty or invalid.")
 
-        valid_slices = []
+        # 1. Filter viable segments
+        valid_segments = [
+            s for s in vad_map.segments
+            if (s.end_sec - s.start_sec) >= self.min_duration_sec
+        ]
 
-        # 1. Filter out micro-segments and calculate durations
-        for segment in vad_map.segments:
-            duration = segment.end_sec - segment.start_sec
-            if duration >= self.min_duration_sec:
-                valid_slices.append({
-                    "start_sec": segment.start_sec,
-                    "end_sec": segment.end_sec,
-                    "duration": duration,
-                    "confidence": segment.confidence
-                })
-
-        if not valid_slices:
+        if not valid_segments:
             raise SmartSamplingError(f"No speech segments longer than {self.min_duration_sec}s found.")
 
-        # 2. Sort by duration (descending) to find the densest blocks of speech
-        valid_slices.sort(key=lambda x: x["duration"], reverse=True)
+        # If we have fewer segments than requested slices, just return them all
+        if len(valid_segments) <= self.max_slices:
+            return [TimeSlice(start_sec=s.start_sec, end_sec=s.end_sec) for s in valid_segments]
 
-        # 3. Take the top N slices
-        top_slices = valid_slices[:self.max_slices]
+        # 2. Bucket the timeline uniformly
+        total_duration = valid_segments[-1].end_sec
+        bucket_size = total_duration / self.max_slices
 
-        # 4. Re-sort chronologically so the LLM reads the transcript in order
-        top_slices.sort(key=lambda x: x["start_sec"])
+        selected_slices = []
 
-        return [
-            TimeSlice(start_sec=s["start_sec"], end_sec=s["end_sec"])
-            for s in top_slices
-        ]
+        # 3. Pick the longest/highest-confidence segment from each bucket
+        for i in range(self.max_slices):
+            bucket_start = i * bucket_size
+            bucket_end = (i + 1) * bucket_size
+
+            # Find segments that fall primarily in this bucket
+            bucket_segs = [
+                s for s in valid_segments
+                if (bucket_start <= s.start_sec < bucket_end)
+            ]
+
+            if bucket_segs:
+                # Pick the densest segment in this specific time window
+                best_seg = max(bucket_segs, key=lambda x: x.end_sec - x.start_sec)
+                selected_slices.append(TimeSlice(start_sec=best_seg.start_sec, end_sec=best_seg.end_sec))
+
+        # 4. Ensure chronological order for the LLM
+        selected_slices.sort(key=lambda x: x.start_sec)
+
+        return selected_slices

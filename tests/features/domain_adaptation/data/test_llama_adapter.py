@@ -1,3 +1,4 @@
+# Canvas: test_llama_adapter_v3
 # Path: tests/features/domain_adaptation/data/test_llama_adapter.py
 
 import pytest
@@ -18,8 +19,8 @@ class TestLlamaAdapter:
             required_vram_mb=3500.0
         )
 
-    # FIX: Patch the external library since the adapter now lazy-loads it
-    @patch("llama_cpp.Llama")
+    # CRITICAL FIX: Patching the local module namespace where Llama is actually imported
+    @patch("app.features.domain_adaptation.data.llama_adapter.Llama")
     @patch("os.path.exists")
     def test_load_success(self, mock_exists, mock_llama_cls, manifest):
         mock_exists.return_value = True
@@ -46,11 +47,14 @@ class TestLlamaAdapter:
         with pytest.raises(ModelLoadError):
             adapter.load(manifest)
 
-    def test_predict_subdomains_clean_json(self, manifest):
+    @patch("app.features.domain_adaptation.data.llama_adapter.LlamaGrammar.from_string")
+    def test_predict_subdomains_uses_gbnf_grammar(self, mock_grammar_cls, manifest):
         adapter = LlamaAdapter()
         mock_llm = MagicMock()
+        mock_grammar_instance = MagicMock()
 
-        # FIX: Update mock to match the `create_chat_completion` return structure
+        mock_grammar_cls.return_value = mock_grammar_instance
+
         mock_llm.create_chat_completion.return_value = {
             "choices": [{"message": {"content": '["OPTIONS_TRADING", "M_AND_A"]'}}]
         }
@@ -64,19 +68,19 @@ class TestLlamaAdapter:
 
         assert len(predicted) == 2
         assert "OPTIONS_TRADING" in predicted
-        mock_llm.create_chat_completion.assert_called_once()
 
-    def test_predict_subdomains_markdown_json_fallback(self, manifest):
-        adapter = LlamaAdapter()
-        mock_llm = MagicMock()
-
-        # FIX: Update mock to match the `create_chat_completion` return structure
-        mock_llm.create_chat_completion.return_value = {
-            "choices": [{"message": {"content": '```json\n["CORPORATE_FINANCE"]\n```'}}]
-        }
-        loaded_model = LoadedModel(manifest=manifest, model_instance=mock_llm)
-
-        predicted = adapter.predict_subdomains(loaded_model, "Dirty text", ["CORPORATE_FINANCE"])
-
-        assert len(predicted) == 1
-        assert predicted[0] == "CORPORATE_FINANCE"
+        mock_grammar_cls.assert_called_once_with(adapter.JSON_ARRAY_GRAMMAR)
+        mock_llm.create_chat_completion.assert_called_once_with(
+            messages=[
+                {"role": "system", "content": (
+                    "You are an expert legal/medical taxonomy router.\n"
+                    "Analyze the following dirty transcript and identify the sub-domains being discussed.\n"
+                    "You MUST choose from the following exact labels: OPTIONS_TRADING, M_AND_A.\n"
+                    "Output ONLY a raw JSON array of the identified strings."
+                )},
+                {"role": "user", "content": "Dirty scout text"}
+            ],
+            max_tokens=128,
+            temperature=0.0,
+            grammar=mock_grammar_instance
+        )

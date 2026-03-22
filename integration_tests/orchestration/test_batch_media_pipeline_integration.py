@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_integration_v15
+# Canvas: test_batch_media_pipeline_integration_v16
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
 import subprocess
@@ -33,7 +33,6 @@ from app.features.vad.service.vad_api import VadAPI
 from app.features.vad.data.nemo_adapter import NeMoVadAdapter
 
 from app.features.domain_adaptation.data.repositories import DomainAdaptationRepository
-# CRITICAL FIX: Updated import paths to match the new Domain Adaptation feature structure
 from app.features.domain_adaptation.data.scout_adapter import ScoutWhisperAdapter
 from app.features.domain_adaptation.data.llama_adapter import LlamaAdapter
 from app.features.domain_adaptation.utils.smart_sampler import SmartSampler
@@ -116,8 +115,6 @@ class TestBatchMediaPipelineIntegration:
         domain_repo = DomainAdaptationRepository(db_manager)
         real_scout_adapter = ScoutWhisperAdapter()
         real_classifier_adapter = LlamaAdapter()
-
-        # CRITICAL FIX: Instantiating the new SmartSampler
         sampler = SmartSampler()
 
         domain_adaptation_api = DomainAdaptationAPI(
@@ -164,7 +161,13 @@ class TestBatchMediaPipelineIntegration:
         # Real Phonetic Correction Feature
         phonetic_repo = PhoneticRepository(db_manager)
         real_phonetic_adapter = QwenAdapter()
-        phonetic_correction_api = PhoneticCorrectionAPI(phonetic_repo, real_phonetic_adapter)
+
+        # CRITICAL FIX: Injected the orchestrator into the API
+        phonetic_correction_api = PhoneticCorrectionAPI(
+            repository=phonetic_repo,
+            orchestrator=orchestrator,
+            patch_adapter=real_phonetic_adapter
+        )
 
         phonetic_manifest = ModelManifest(
             model_type=ModelType.ASR_CORRECTION_PHASE_3,

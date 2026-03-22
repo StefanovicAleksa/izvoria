@@ -1,4 +1,4 @@
-# Canvas: phonetic_correction_phase_v4
+# Canvas: phonetic_correction_phase_v5
 # Path: app/orchestration/service/phases/phonetic_correction_phase.py
 
 import concurrent.futures
@@ -92,7 +92,8 @@ class PhoneticCorrectionPhase:
                         self._correction_api.execute,
                         transcript=transcript,
                         industry=industry,
-                        sub_domains=sub_domains_list  # FIX: Passed as a list directly to API
+                        sub_domains=sub_domains_list,
+                        release_after=False  # <-- CRITICAL FIX: Tell the API to leave Qwen in VRAM for the next batch item
                     )
                     results.append(PhoneticCorrectionJobResult(
                         source_id=source_id,
@@ -107,6 +108,7 @@ class PhoneticCorrectionPhase:
                     failed_count += 1
 
         finally:
+            # Safely unload the Phonetic model in the background once the ENTIRE batch is done
             if loaded_model:
                 self._async_service.trigger_unload(loaded_model, self._adapter, flush=True)
 

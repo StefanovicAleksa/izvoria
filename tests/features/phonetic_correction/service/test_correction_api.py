@@ -1,66 +1,111 @@
-# Canvas: test_correction_api_v2
+# Canvas: test_correction_api_v3
 # Path: tests/features/phonetic_correction/service/test_correction_api.py
 
 import uuid
 import pytest
 from unittest.mock import MagicMock, patch
-from app.features.sentence_reconstruction.domain.entities import ReconstructedTranscript, ReconstructedSentence
+
+from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.features.phonetic_correction.service.correction_api import PhoneticCorrectionAPI
+from app.features.sentence_reconstruction.domain.entities import ReconstructedTranscript, ReconstructedSentence
 from app.features.phonetic_correction.domain.entities import PhoneticCorrectedTranscript, PhoneticPatch
+
 
 class TestPhoneticCorrectionAPI:
     @pytest.fixture
-    def mocks(self):
-        return {"repo": MagicMock(), "adapter": MagicMock()}
+    def mock_repo(self):
+        return MagicMock()
 
     @pytest.fixture
-    def api(self, mocks):
-        return PhoneticCorrectionAPI(repository=mocks["repo"], patch_adapter=mocks["adapter"])
+    def mock_orchestrator(self):
+        return MagicMock(spec=ModelManagerOrchestrator)
 
-    def test_execute_idempotent_return(self, api, mocks):
-        source_id = uuid.uuid4()
-        existing_record = PhoneticCorrectedTranscript(source_id=source_id, sentences=[], audit_trail=[])
-        mocks["repo"].get_by_source_id.return_value = existing_record
+    @pytest.fixture
+    def mock_adapter(self):
+        return MagicMock()
 
-        transcript = ReconstructedTranscript(source_id=source_id, sentences=[])
-        # FIX: Replaced string sub_domain with a list
-        result = api.execute(transcript, "MEDICAL", ["CARDIOLOGY"])
+    @pytest.fixture
+    def api(self, mock_repo, mock_orchestrator, mock_adapter):
+        # API now correctly takes the orchestrator dependency
+        return PhoneticCorrectionAPI(
+            repository=mock_repo,
+            orchestrator=mock_orchestrator,
+            patch_adapter=mock_adapter
+        )
 
-        assert result == existing_record
-        mocks["adapter"].load.assert_not_called()
+    def test_execute_idempotent_return(self, api, mock_repo):
+        """Ensures the API returns early if the Phase 8 transcript already exists in the DB."""
+        transcript_id = uuid.uuid4()
+        mock_existing = PhoneticCorrectedTranscript(source_id=transcript_id, sentences=[], audit_trail=[])
+        mock_repo.get_by_source_id.return_value = mock_existing
+
+        dummy_transcript = ReconstructedTranscript(source_id=transcript_id, sentences=[])
+        result = api.execute(dummy_transcript, "GENERAL", [])
+
+        assert result == mock_existing
+        mock_repo.get_by_source_id.assert_called_once_with(transcript_id)
+
+    def test_execute_passthrough_empty_transcript(self, api, mock_repo, mock_orchestrator):
+        """Ensures that an empty transcript bypasses the GPU entirely."""
+        mock_repo.get_by_source_id.return_value = None
+
+        transcript_id = uuid.uuid4()
+        dummy_transcript = ReconstructedTranscript(source_id=transcript_id, sentences=[])
+
+        result = api.execute(dummy_transcript, "GENERAL", [])
+
+        assert result.source_id == transcript_id
+        assert len(result.sentences) == 0
+        assert len(result.audit_trail) == 0
+
+        # GPU should never be touched for an empty file
+        mock_orchestrator.acquire_model.assert_not_called()
 
     @patch("app.features.phonetic_correction.service.correction_api.DictionaryLoader")
-    def test_execute_applies_patches_and_unloads_vram(self, mock_loader, api, mocks):
-        source_id = uuid.uuid4()
-        mocks["repo"].get_by_source_id.return_value = None
-        mock_loader.build_prompt_dictionary.return_value = "- acute angina"
+    def test_execute_applies_patches_and_unloads_vram(self, mock_dict_loader, api, mock_repo, mock_orchestrator,
+                                                      mock_adapter):
+        """Tests the full success path: acquiring VRAM, chunking, patching, auditing, and releasing VRAM."""
+        mock_repo.get_by_source_id.return_value = None
+        mock_dict_loader.build_prompt_dictionary.return_value = "- test dictionary term"
 
-        sentence = ReconstructedSentence(sentence_id=uuid.uuid4(), start_sec=0, end_sec=1, text="He has a cute angina.",
-                                         speaker_id="S0", words=[])
-        transcript = ReconstructedTranscript(source_id=source_id, sentences=[sentence])
+        transcript_id = uuid.uuid4()
+        dummy_sentence = ReconstructedSentence(
+            sentence_id=uuid.uuid4(),
+            start_sec=0,
+            end_sec=1,
+            text="I have a cute angina.",
+            speaker_id="S0",
+            words=[]
+        )
+        dummy_transcript = ReconstructedTranscript(source_id=transcript_id, sentences=[dummy_sentence])
 
-        # Mock Model & Tokenizer
-        mock_model = MagicMock()
-        mock_model.model_instance.tokenize.return_value = [1, 2, 3]
-        mocks["adapter"].load.return_value = mock_model
+        # Mock the Orchestrator's behavior
+        mock_loaded_model = MagicMock()
 
-        # Mock LLM Patch output
-        mocks["adapter"].generate_patches.return_value = [
-            PhoneticPatch(original="a cute angina", correction="acute angina")
-        ]
+        # Ensure the mock tokenizer returns a valid list so len(tokens) in the chunker doesn't crash
+        mock_loaded_model.model_instance.tokenize.return_value = [1, 2, 3, 4]
+        mock_orchestrator.acquire_model.return_value = mock_loaded_model
 
-        # Mock Repo Save
-        mocks["repo"].save.side_effect = lambda x: x
+        mock_adapter.generate_patches.return_value = [
+            PhoneticPatch(original="a cute angina", correction="acute angina")]
 
-        # FIX: Replaced string sub_domain with a list
-        result = api.execute(transcript, "MEDICAL", ["CARDIOLOGY"])
+        # Echo the saved object back from the repository mock
+        mock_repo.save.side_effect = lambda x: x
 
-        # Verify logic
-        assert len(result.sentences) == 1
-        assert result.sentences[0].text == "He has acute angina."
-        # Assert patch applied
+        # Execute
+        result = api.execute(dummy_transcript, "MEDICAL", [], release_after=True)
+
+        # 1. Ensure the API asked the Orchestrator for the model, NOT the adapter
+        mock_orchestrator.acquire_model.assert_called_once()
+
+        # 2. Ensure inference occurred
+        mock_adapter.generate_patches.assert_called_once()
+
+        # 3. Ensure the Orchestrator was commanded to release the model back from VRAM
+        mock_orchestrator.release_model.assert_called_once_with(mock_loaded_model, mock_adapter, flush=True)
+
+        # 4. Verify Domain logic
+        assert "acute angina" in result.sentences[0].text
         assert len(result.audit_trail) == 1
-
-        # Verify strict VRAM control
-        mocks["adapter"].load.assert_called_once()
-        mocks["adapter"].unload.assert_called_once_with(mock_model)
+        assert result.audit_trail[0].original_text == "I have a cute angina."
+        assert result.audit_trail[0].corrected_text == "I have acute angina."
