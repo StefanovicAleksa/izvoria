@@ -1,18 +1,10 @@
-# Canvas: qwen_adapter_v2
+# Canvas: qwen_adapter_v4
 # Path: app/features/phonetic_correction/data/qwen_adapter.py
 
 import os
 import json
-import torch
-from typing import List
-
-# Import the strict TypedDicts directly from llama_cpp
-from llama_cpp import (
-    Llama,
-    ChatCompletionRequestSystemMessage,
-    ChatCompletionRequestUserMessage,
-    ChatCompletionRequestResponseFormat
-)
+import gc
+from typing import List, Any
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.features.phonetic_correction.domain.interfaces import IPhoneticPatchAdapter
@@ -24,23 +16,27 @@ from app.features.phonetic_correction.utils.error_mapper import map_phonetic_err
 class QwenAdapter(IPhoneticPatchAdapter):
     """
     Infrastructure adapter for Qwen 2.5 (GGUF).
-    Fulfills the IPhoneticPatchAdapter contract by executing the Read-Only JSON strategy.
+    Executes the Read-Only JSON Patch strategy with strict DLL isolation.
     """
+
+    @staticmethod
+    def _get_qwen_model(model_path: str) -> Any:
+        """FACTORY METHOD: Prevents llama-cpp-python CUDA collisions with PyTorch."""
+        from llama_cpp import Llama
+        return Llama(
+            model_path=model_path,
+            n_gpu_layers=-1,
+            n_ctx=8192,
+            verbose=False
+        )
 
     def load(self, manifest: ModelManifest) -> LoadedModel:
         try:
             if not os.path.exists(manifest.model_path):
                 raise FileNotFoundError(f"Model file missing: {manifest.model_path}")
 
-            # Qwen 2.5 requires a healthy context window for the dictionary + chunk
-            llm = Llama(
-                model_path=manifest.model_path,
-                n_gpu_layers=-1,
-                n_ctx=8192,
-                verbose=False
-            )
+            llm = self._get_qwen_model(manifest.model_path)
             return LoadedModel(manifest=manifest, model_instance=llm)
-
         except Exception as e:
             raise map_phonetic_error(e, context=f"Load Qwen 2.5 Model: {manifest.model_path}") from e
 
@@ -48,10 +44,7 @@ class QwenAdapter(IPhoneticPatchAdapter):
         try:
             if hasattr(model, "model_instance"):
                 del model.model_instance
-
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
+            gc.collect()
             return True
         except Exception as e:
             raise map_phonetic_error(e, context="Unload Qwen 2.5 Model") from e
@@ -62,13 +55,17 @@ class QwenAdapter(IPhoneticPatchAdapter):
             text_chunk: str,
             domain_dictionary: str
     ) -> List[PhoneticPatch]:
-
         try:
-            llm: Llama = model.model_instance
+            # Lazy load the TypedDicts to keep the global namespace clean
+            from llama_cpp import (
+                ChatCompletionRequestSystemMessage,
+                ChatCompletionRequestUserMessage,
+                ChatCompletionRequestResponseFormat
+            )
 
+            llm: Any = model.model_instance
             system_content = QWEN_PHONETIC_SYSTEM_PROMPT.format(domain_dictionary=domain_dictionary)
 
-            # Strictly type-hinted variables to satisfy PyCharm and Clean Architecture requirements
             system_msg = ChatCompletionRequestSystemMessage(role="system", content=system_content)
             user_msg = ChatCompletionRequestUserMessage(role="user",
                                                         content=f"<INPUT_TEXT>\n{text_chunk}\n</INPUT_TEXT>")
@@ -78,13 +75,18 @@ class QwenAdapter(IPhoneticPatchAdapter):
             response = llm.create_chat_completion(
                 messages=[system_msg, user_msg],
                 response_format=response_format,
-                temperature=0.0,  # Absolute zero temperature for maximum determinism
-                max_tokens=1024
+                temperature=0.0,
+                max_tokens=2048  # CRITICAL FIX: Increased to 2048 to prevent mid-JSON cutoff
             )
 
             raw_output = response["choices"][0]["message"]["content"].strip()
 
-            # Parse the JSON and map to Domain Entities
+            # Clean markdown code blocks just in case
+            if raw_output.startswith("```json"):
+                raw_output = raw_output[7:]
+            if raw_output.endswith("```"):
+                raw_output = raw_output[:-3]
+
             parsed_json = json.loads(raw_output)
             raw_corrections = parsed_json.get("corrections", [])
 
@@ -100,5 +102,9 @@ class QwenAdapter(IPhoneticPatchAdapter):
 
             return patches
 
+        except json.JSONDecodeError as e:
+            # CRITICAL FIX: Graceful Degradation if Qwen hallucinates bad JSON
+            print(f"\n[WARNING] Qwen produced invalid JSON for chunk. Skipping patches. Reason: {e}")
+            return []
         except Exception as e:
             raise map_phonetic_error(e, context="Generate Qwen JSON Patches") from e

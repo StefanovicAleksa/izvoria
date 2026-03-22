@@ -1,51 +1,33 @@
-# Canvas: chunker_v5
+# Canvas: chunker_v6
 # Path: app/features/phonetic_correction/utils/chunker.py
 
-from typing import List, Callable, Any
-from app.features.sentence_reconstruction.domain.entities import ReconstructedSentence
-from app.features.phonetic_correction.exceptions.pipeline import PhoneticPipelineError
+from typing import List, TypeVar
+
+T = TypeVar('T')
 
 
-def chunk_sentences_by_exact_tokens(
-        sentences: List[ReconstructedSentence],
-        tokenize_func: Callable[[str], List[Any]],
-        max_tokens_per_chunk: int = 4000,
-        overlap_sentences: int = 1  # NEW: Context sliding window
-) -> List[List[ReconstructedSentence]]:
+def sliding_window_chunker(items: List[T], chunk_size: int = 40, overlap: int = 5) -> List[List[T]]:
     """
-    Safely groups sentences into chunks using the exact GGUF tokenizer.
-    Includes an overlapping window so the LLM retains context across chunk boundaries.
+    Slices a list into overlapping windows to prevent LLM context loss at chunk boundaries.
+
+    Example (Size 40, Overlap 5):
+      Chunk 1: Items 0 to 40
+      Chunk 2: Items 35 to 75
+      Chunk 3: Items 70 to 110
     """
-    if not sentences:
+    if not items:
         return []
 
-    chunks: List[List[ReconstructedSentence]] = []
-    current_chunk: List[ReconstructedSentence] = []
-    current_token_count = 0
+    chunks = []
+    # Ensure step is at least 1 to prevent infinite loops
+    step = max(1, chunk_size - overlap)
 
-    for idx, sentence in enumerate(sentences):
-        try:
-            tokens = tokenize_func(sentence.text)
-        except Exception as e:
-            raise PhoneticPipelineError(f"Failed to tokenize sentence: {e}") from e
+    for i in range(0, len(items), step):
+        chunk = items[i: i + chunk_size]
+        chunks.append(chunk)
 
-        sentence_token_count = len(tokens)
+        # If this chunk reached the end of the list, stop to prevent trailing duplicate micro-chunks
+        if i + chunk_size >= len(items):
+            break
 
-        if current_token_count + sentence_token_count > max_tokens_per_chunk and current_chunk:
-            chunks.append(current_chunk)
-
-            # Sliding Window: Start the new chunk with the last N sentences of the previous chunk
-            overlap_slice = current_chunk[-overlap_sentences:] if overlap_sentences > 0 else []
-            current_chunk = overlap_slice.copy()
-
-            # Recalculate token count for the carried-over overlap
-            current_token_count = sum(len(tokenize_func(s.text)) for s in current_chunk)
-
-        current_chunk.append(sentence)
-        current_token_count += sentence_token_count
-
-    if current_chunk:
-        chunks.append(current_chunk)
-
-    # Deduplicate sentences at the API level during final assembly
     return chunks

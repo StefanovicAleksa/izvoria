@@ -1,9 +1,10 @@
-# Canvas: correction_api_v9
+# Canvas: correction_api_v10
 # Path: app/features/phonetic_correction/service/correction_api.py
 
 import logging
 import re
-from typing import List
+import uuid
+from typing import List, Dict
 
 from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest
@@ -18,7 +19,7 @@ from app.features.phonetic_correction.domain.entities import (
     AppliedCorrectionRecord,
     PhoneticPatch
 )
-from app.features.phonetic_correction.utils.chunker import chunk_sentences_by_exact_tokens
+from app.features.phonetic_correction.utils.chunker import sliding_window_chunker
 from app.features.phonetic_correction.utils.dictionary_loader import DictionaryLoader
 from app.features.phonetic_correction.utils.error_mapper import map_phonetic_error
 
@@ -29,7 +30,7 @@ class PhoneticCorrectionAPI:
     def __init__(
             self,
             repository: IPhoneticRepository,
-            orchestrator: ModelManagerOrchestrator,  # CRITICAL FIX: Inject Orchestrator
+            orchestrator: ModelManagerOrchestrator,
             patch_adapter: IPhoneticPatchAdapter
     ):
         self._repo = repository
@@ -41,7 +42,7 @@ class PhoneticCorrectionAPI:
             transcript: ReconstructedTranscript,
             industry: str,
             sub_domains: List[str],
-            release_after: bool = False  # CRITICAL FIX: Add parameter for Pipeline orchestration
+            release_after: bool = False
     ) -> PhoneticCorrectedTranscript:
         try:
             existing_record = self._repo.get_by_source_id(transcript.source_id)
@@ -61,22 +62,18 @@ class PhoneticCorrectionAPI:
 
             loaded_model = None
             audit_records: List[AppliedCorrectionRecord] = []
-            processed_sentences_map = {}
+
+            # Dictionary for deduplicating overlapping sentences
+            processed_sentences_map: Dict[uuid.UUID, ReconstructedSentence] = {}
 
             try:
-                # CRITICAL FIX: Acquire through Orchestrator instead of adapter direct load
                 loaded_model = self._orchestrator.acquire_model(manifest, self._patch_adapter)
 
-                tokenize_func = lambda text: loaded_model.model_instance.tokenize(text.encode("utf-8"), add_bos=False)
+                # CRITICAL FIX: Use the new Sliding Window chunker
+                chunks = sliding_window_chunker(transcript.sentences, chunk_size=40, overlap=5)
 
-                chunks = chunk_sentences_by_exact_tokens(
-                    sentences=transcript.sentences,
-                    tokenize_func=tokenize_func,
-                    max_tokens_per_chunk=4000,
-                    overlap_sentences=1
-                )
-
-                for chunk in chunks:
+                for idx, chunk in enumerate(chunks):
+                    logger.info(f"  -> Processing Phonetic Window {idx + 1}/{len(chunks)}...")
                     chunk_text = " ".join([s.text for s in chunk])
 
                     patches: List[PhoneticPatch] = self._patch_adapter.generate_patches(
@@ -87,15 +84,18 @@ class PhoneticCorrectionAPI:
 
                     patched_chunk = self._apply_patches_to_chunk(chunk, patches, audit_records)
 
+                    # Store the results. Since chunk edges overlap, newer patches overwrite older ones smoothly
                     for s in patched_chunk:
                         processed_sentences_map[s.sentence_id] = s
 
             finally:
-                # CRITICAL FIX: Respect the Orchestrator's batch locks
                 if loaded_model and release_after:
                     self._orchestrator.release_model(loaded_model, self._patch_adapter, flush=True)
 
             all_patched_sentences = list(processed_sentences_map.values())
+
+            # Re-sort to maintain exact chronological order
+            all_patched_sentences.sort(key=lambda x: x.start_sec)
             cleaned_sentences = [s for s in all_patched_sentences if s.text.strip()]
 
             final_transcript = PhoneticCorrectedTranscript(
