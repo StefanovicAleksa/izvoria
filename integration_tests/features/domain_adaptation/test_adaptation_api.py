@@ -1,3 +1,4 @@
+# Canvas: it_test_adaptation_api_v2
 # Path: integration_tests/features/domain_adaptation/test_adaptation_api.py
 
 import pytest
@@ -97,7 +98,9 @@ def test_full_domain_adaptation_pipeline(setup_finance_glossary, real_infrastruc
     repo = DomainAdaptationRepository(core_db_manager)
     scout_adapter = ScoutWhisperAdapter()
     llama_adapter = LlamaAdapter()
-    sampler = SmartSampler(max_slices=10, min_duration_sec=2.0)
+
+    # CRITICAL FIX: Updated to match new Trailer approach arguments
+    sampler = SmartSampler(max_speech_per_zone_sec=120.0, min_duration_sec=2.0)
 
     api = DomainAdaptationAPI(
         repository=repo,

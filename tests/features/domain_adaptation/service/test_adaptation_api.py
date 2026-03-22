@@ -1,3 +1,4 @@
+# Canvas: test_adaptation_api_v5
 # Path: tests/features/domain_adaptation/service/test_adaptation_api.py
 
 import uuid
@@ -34,7 +35,8 @@ class TestDomainAdaptationAPI:
     def test_process_domain_adaptation_idempotent(self, api, mocks):
         source_id = uuid.uuid4()
         existing_glossary = DomainGlossary(
-            source_id=source_id, industry="FINANCE", sub_domains=[], hotword_string="", initial_prompt_string=""
+            source_id=source_id, industry="FINANCE", sub_domains=[],
+            hotword_string="", initial_prompt_string=""
         )
         mocks["repo"].get_glossary_by_source_id.return_value = existing_glossary
 
@@ -46,7 +48,6 @@ class TestDomainAdaptationAPI:
     @patch("app.features.domain_adaptation.service.adaptation_api.settings")
     @patch("app.features.domain_adaptation.service.adaptation_api.GlossaryBuilder")
     def test_process_domain_adaptation_success_flow(self, mock_builder, mock_settings, api, mocks):
-        # FIX: Explicitly map all possible paths to strings so Pydantic doesn't receive a MagicMock
         mock_settings.APPLIANCE_INDUSTRY = "FINANCE"
         mock_settings.DISCOVERY_SCOUT_MODEL_PATH = "/mock/scout"
         mock_settings.DOMAIN_CLASSIFIER_MODEL_PATH = "/mock/llama.gguf"
@@ -86,10 +87,34 @@ class TestDomainAdaptationAPI:
         assert mocks["orchestrator"].acquire_model.call_count == 2
         assert mocks["orchestrator"].release_model.call_count == 2
 
+    @patch("app.features.domain_adaptation.service.adaptation_api.settings")
+    def test_process_domain_adaptation_graceful_on_empty_scout_text(self, mock_settings, api, mocks):
+        """Verifies that if Whisper Scout finds no speech, we return a default glossary instead of crashing."""
+        mock_settings.APPLIANCE_INDUSTRY = "GENERAL"
+        # CRITICAL FIX: Give Pydantic actual strings to validate against!
+        mock_settings.DISCOVERY_SCOUT_MODEL_PATH = "/mock/scout"
+        mock_settings.DOMAIN_CLASSIFIER_MODEL_PATH = "/mock/llama.gguf"
+
+        source_id = uuid.uuid4()
+        mocks["repo"].get_glossary_by_source_id.return_value = None
+
+        vad_map = VadMap(source_id=source_id, segments=[VadSegment(start_sec=0, end_sec=5, confidence=0.9)])
+        mocks["sampler"].calculate_optimal_slices.return_value = [TimeSlice(start_sec=0, end_sec=5)]
+
+        mocks["orchestrator"].acquire_model.return_value = MagicMock()
+        mocks["scout_adapter"].transcribe_samples.return_value = ScoutResult(source_id=source_id, combined_text="")
+
+        mocks["repo"].save_glossary.side_effect = lambda glossary: glossary
+
+        result = api.process_domain_adaptation(source_id, "/dummy.wav", vad_map)
+
+        assert result.industry == "GENERAL"
+        assert result.sub_domains == []
+        mocks["repo"].save_glossary.assert_called_once()
+
     @patch("app.features.domain_adaptation.service.adaptation_api.map_domain_adaptation_error")
     @patch("app.features.domain_adaptation.service.adaptation_api.settings")
     def test_process_guarantees_vram_release_on_crash(self, mock_settings, mock_error_mapper, api, mocks):
-        # FIX: Explicitly map all possible paths to strings here as well
         mock_settings.APPLIANCE_INDUSTRY = "FINANCE"
         mock_settings.DISCOVERY_SCOUT_MODEL_PATH = "/mock/scout"
         mock_settings.DOMAIN_CLASSIFIER_MODEL_PATH = "/mock/llama.gguf"

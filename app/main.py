@@ -1,9 +1,13 @@
-# Canvas: main_v15
-# Path: main.py
+# Canvas: main_v16
+# Path: app/main.py
 
 import argparse
 import sys
+import os
 from pathlib import Path
+
+# CRITICAL FIX: Ensure PyTorch uses expandable segments to prevent fragmentation crashes
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 from app.core.config import settings
 from app.core.database.service.manager import db_manager
@@ -65,9 +69,6 @@ from app.orchestration.service.phases.phonetic_correction_phase import PhoneticC
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 
 
-import os
-os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
-
 def bootstrap_database() -> None:
     try:
         with db_manager.session() as session:
@@ -112,9 +113,10 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
     # 4. Domain Adaptation
     domain_repo = DomainAdaptationRepository(db_manager)
     scout_adapter = ScoutWhisperAdapter()
-
     llama_adapter = LlamaAdapter()
-    smart_sampler = SmartSampler()
+
+    # CRITICAL FIX: Updated Sampler initialization to match new Trailer approach
+    smart_sampler = SmartSampler(max_speech_per_zone_sec=120.0, min_duration_sec=2.0)
 
     domain_adaptation_api = DomainAdaptationAPI(
         repository=domain_repo,
@@ -178,7 +180,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
     phonetic_adapter = QwenAdapter()
     phonetic_correction_api = PhoneticCorrectionAPI(
         repository=phonetic_repo,
-        orchestrator=model_orchestrator,  # <-- FIXED: Added missing orchestrator dependency
+        orchestrator=model_orchestrator,
         patch_adapter=phonetic_adapter
     )
 
