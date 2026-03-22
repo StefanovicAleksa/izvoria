@@ -1,6 +1,8 @@
-# File: app/core/model_manager/data/vram_monitor.py
+# Canvas: vram_monitor_v2
+# Path: app/core/model_manager/data/vram_monitor.py
 import gc
 import torch
+from typing import Tuple
 
 from app.core.model_manager.domain.interfaces import IVramMonitor
 from app.core.model_manager.domain.entities import VramStatus
@@ -19,12 +21,8 @@ class PyTorchVramMonitor(IVramMonitor):
         """
         try:
             if not torch.cuda.is_available():
-                # For Onyx, we strictly require the provided NVIDIA workstation hardware.
                 raise RuntimeError("Hardware Error: CUDA device is not available.")
 
-            # mem_get_info() returns (free_bytes, total_bytes)
-            # This is highly accurate as it bypasses the PyTorch allocator caching
-            # and queries the underlying NVIDIA driver directly.
             free_bytes, total_bytes = torch.cuda.mem_get_info()
             used_bytes = total_bytes - free_bytes
 
@@ -33,9 +31,30 @@ class PyTorchVramMonitor(IVramMonitor):
                 used_vram_mb=used_bytes / (1024 ** 2),
                 free_vram_mb=free_bytes / (1024 ** 2)
             )
-
         except Exception as e:
             raise map_model_manager_error(e) from e
+
+    def get_pytorch_memory_stats(self) -> Tuple[float, float]:
+        """
+        Queries PyTorch specifically for Tensor allocations to calculate the "Backpack".
+        """
+        try:
+            if not torch.cuda.is_available():
+                return 0.0, 0.0
+
+            current_alloc = torch.cuda.memory_allocated() / (1024 ** 2)
+            peak_alloc = torch.cuda.max_memory_allocated() / (1024 ** 2)
+            return current_alloc, peak_alloc
+        except Exception:
+            return 0.0, 0.0
+
+    def reset_peak_stats(self) -> None:
+        """Resets the peak tracker so we can measure the next phase cleanly."""
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.reset_peak_memory_stats()
+        except Exception:
+            pass
 
     def flush_memory(self) -> None:
         """
@@ -43,13 +62,9 @@ class PyTorchVramMonitor(IVramMonitor):
         This is critical before loading a new model to prevent OutOfVram errors.
         """
         try:
-            # 1. Force Python to clean up unreferenced objects (like unloaded models)
             gc.collect()
-
-            # 2. Force PyTorch to release its cached memory blocks back to the GPU
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
                 torch.cuda.ipc_collect()
-
         except Exception as e:
             raise map_model_manager_error(e) from e

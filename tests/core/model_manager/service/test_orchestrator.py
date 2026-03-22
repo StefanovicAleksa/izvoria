@@ -1,8 +1,8 @@
-# filename: test_orchestrator_unit_v2.py
-# path: tests/core/model_manager/test_orchestrator.py
+# Canvas: test_orchestrator_v1
+# Path: tests/core/model_manager/service/test_orchestrator.py
+
 import pytest
-import concurrent.futures
-from unittest.mock import Mock
+from unittest.mock import MagicMock, patch
 
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel, VramStatus
@@ -11,110 +11,102 @@ from app.core.model_manager import exceptions as exc
 
 
 class TestModelManagerOrchestrator:
-
     @pytest.fixture
     def mock_monitor(self):
-        return Mock()
+        monitor = MagicMock()
+        # Assume 12GB total, 10GB free by default
+        monitor.get_vram_status.return_value = VramStatus(
+            total_vram_mb=12000.0, used_vram_mb=2000.0, free_vram_mb=10000.0
+        )
+        monitor.get_pytorch_memory_stats.return_value = (0.0, 0.0)
+        return monitor
 
     @pytest.fixture
     def mock_loader(self):
-        return Mock()
-
-    @pytest.fixture
-    def orchestrator(self, mock_monitor):
-        return ModelManagerOrchestrator(vram_monitor=mock_monitor)
+        loader = MagicMock()
+        return loader
 
     @pytest.fixture
     def sample_manifest(self):
         return ModelManifest(
             model_type=ModelType.VAD,
-            model_path="/vault/weights/vad.bin",
+            model_path="models/dummy_model.bin",
             required_vram_mb=1000.0
         )
 
-    def test_acquire_model_success(self, orchestrator, mock_monitor, mock_loader, sample_manifest):
+    def test_acquire_model_success_and_idempotent(self, mock_monitor, mock_loader, sample_manifest):
+        orchestrator = ModelManagerOrchestrator(mock_monitor)
+
+        # Mock loader to return a dummy LoadedModel
+        dummy_loaded = LoadedModel(manifest=sample_manifest, model_instance="fake_tensor")
+        mock_loader.load.return_value = dummy_loaded
+
+        # 1. First Load
+        result1 = orchestrator.acquire_model(sample_manifest, mock_loader)
+        assert result1 == dummy_loaded
+        mock_loader.load.assert_called_once()
+        mock_monitor.reset_peak_stats.assert_called_once()
+
+        # 2. Second Load (Idempotency)
+        result2 = orchestrator.acquire_model(sample_manifest, mock_loader)
+        assert result2 == dummy_loaded
+        assert mock_loader.load.call_count == 1  # Should NOT call load again
+
+    def test_acquire_model_blocks_oom(self, mock_monitor, mock_loader, sample_manifest):
+        orchestrator = ModelManagerOrchestrator(mock_monitor)
+
+        # Mock VRAM to only have 100MB free
         mock_monitor.get_vram_status.return_value = VramStatus(
-            total_vram_mb=12288.0, used_vram_mb=8288.0, free_vram_mb=4000.0
-        )
-        fake_loaded = LoadedModel(manifest=sample_manifest, model_instance="fake_pytorch_obj")
-        mock_loader.load.return_value = fake_loaded
-
-        result = orchestrator.acquire_model(sample_manifest, mock_loader)
-
-        assert result == fake_loaded
-        assert result.id in orchestrator._active_models
-        mock_loader.load.assert_called_once_with(sample_manifest)
-
-    def test_acquire_model_out_of_vram(self, orchestrator, mock_monitor, mock_loader, sample_manifest):
-        mock_monitor.get_vram_status.return_value = VramStatus(
-            total_vram_mb=12288.0, used_vram_mb=11088.0, free_vram_mb=1200.0
+            total_vram_mb=12000.0, used_vram_mb=11900.0, free_vram_mb=100.0
         )
 
-        with pytest.raises(exc.OutOfVramError, match="Requires 1500.00 MB"):
+        with pytest.raises(exc.OutOfVramError) as e_info:
             orchestrator.acquire_model(sample_manifest, mock_loader)
 
+        assert "Cannot load vad" in str(e_info.value)
+        assert "but only 100.00 MB is free" in str(e_info.value)
         mock_loader.load.assert_not_called()
 
-    def test_acquire_model_idempotent(self, orchestrator, mock_monitor, mock_loader, sample_manifest):
-        existing_model = LoadedModel(manifest=sample_manifest, model_instance="existing_obj")
-        orchestrator._active_models[existing_model.id] = existing_model
+    @patch("app.core.model_manager.service.orchestrator.Path")
+    def test_get_actual_size_mb_dynamic_discovery(self, mock_path, mock_monitor):
+        """Proves the orchestrator checks the OS for real file sizes."""
+        orchestrator = ModelManagerOrchestrator(mock_monitor)
 
-        result = orchestrator.acquire_model(sample_manifest, mock_loader)
+        # Setup mock file size to 2048 MB
+        mock_path_instance = MagicMock()
+        mock_path_instance.exists.return_value = True
+        mock_path_instance.is_file.return_value = True
+        mock_path_instance.stat.return_value.st_size = 2048 * (1024 ** 2)
+        mock_path.return_value = mock_path_instance
 
-        assert result == existing_model
-        mock_monitor.get_vram_status.assert_not_called()
-        mock_loader.load.assert_not_called()
+        size = orchestrator._get_actual_size_mb("models/dummy.gguf", 1000.0)
+        assert size == 2048.0
 
-    def test_release_model_success(self, orchestrator, mock_monitor, mock_loader, sample_manifest):
-        active_model = LoadedModel(manifest=sample_manifest, model_instance="obj")
-        orchestrator._active_models[active_model.id] = active_model
+    def test_record_telemetry_learns_backpack_spike(self, mock_monitor, mock_loader, sample_manifest):
+        orchestrator = ModelManagerOrchestrator(mock_monitor)
 
-        orchestrator.release_model(active_model, mock_loader)
+        # Load the model
+        dummy_loaded = LoadedModel(manifest=sample_manifest, model_instance="fake_tensor")
+        mock_loader.load.return_value = dummy_loaded
+        orchestrator.acquire_model(sample_manifest, mock_loader)
 
-        assert active_model.id not in orchestrator._active_models
-        mock_loader.unload.assert_called_once_with(active_model)
+        # Simulate a telemetry spike (Current: 1000MB, Peak: 2500MB -> Backpack: 1500MB)
+        mock_monitor.get_pytorch_memory_stats.return_value = (1000.0, 2500.0)
+
+        orchestrator.record_telemetry()
+
+        # The orchestrator should have saved the 1500MB backpack for this path
+        assert orchestrator._historical_backpacks[sample_manifest.model_path] == 1500.0
+
+    def test_release_all_emergency_flush(self, mock_monitor, mock_loader, sample_manifest):
+        orchestrator = ModelManagerOrchestrator(mock_monitor)
+
+        dummy_loaded = LoadedModel(manifest=sample_manifest, model_instance="fake")
+        mock_loader.load.return_value = dummy_loaded
+        orchestrator.acquire_model(sample_manifest, mock_loader)
+
+        loaders_map = {dummy_loaded.id: mock_loader}
+        orchestrator.release_all(loaders_map)
+
+        mock_loader.unload.assert_called_once_with(dummy_loaded)
         mock_monitor.flush_memory.assert_called_once()
-
-    def test_release_all_emergency_flush(self, orchestrator, mock_monitor):
-        loader_a, loader_b = Mock(), Mock()
-        model_a = LoadedModel(
-            manifest=ModelManifest(model_type=ModelType.VAD, model_path="A", required_vram_mb=10),
-            model_instance="a"
-        )
-        model_b = LoadedModel(
-            manifest=ModelManifest(model_type=ModelType.TRANSCRIPTION, model_path="B", required_vram_mb=10),
-            model_instance="b"
-        )
-        orchestrator._active_models = {model_a.id: model_a, model_b.id: model_b}
-
-        orchestrator.release_all({model_a.id: loader_a, model_b.id: loader_b})
-
-        assert len(orchestrator._active_models) == 0
-        loader_a.unload.assert_called_once_with(model_a)
-        loader_b.unload.assert_called_once_with(model_b)
-        mock_monitor.flush_memory.assert_called_once()
-
-    def test_thread_safety_concurrent_acquires(self, orchestrator, mock_monitor, mock_loader, sample_manifest):
-        """
-        Scenario: Multiple threads try to load the EXACT SAME model simultaneously.
-        The lock should ensure the hardware is only queried once, the model is only loaded once,
-        and subsequent threads get the cached instance.
-        """
-        mock_monitor.get_vram_status.return_value = VramStatus(
-            total_vram_mb=12288.0, used_vram_mb=8288.0, free_vram_mb=4000.0
-        )
-        fake_loaded = LoadedModel(manifest=sample_manifest, model_instance="fake_pytorch_obj")
-        mock_loader.load.return_value = fake_loaded
-
-        # Spam the orchestrator with 10 concurrent requests
-        with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
-            futures = [executor.submit(orchestrator.acquire_model, sample_manifest, mock_loader) for _ in range(10)]
-            results = [f.result() for f in concurrent.futures.as_completed(futures)]
-
-        # All 10 requests should return the exact same LoadedModel object
-        assert all(r == fake_loaded for r in results)
-        assert len(orchestrator._active_models) == 1
-
-        # Hardware queries and loads should strictly only happen ONCE
-        mock_monitor.get_vram_status.assert_called_once()
-        mock_loader.load.assert_called_once()

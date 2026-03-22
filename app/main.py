@@ -1,4 +1,4 @@
-# Canvas: main_v14
+# Canvas: main_v15
 # Path: main.py
 
 import argparse
@@ -31,7 +31,6 @@ from app.features.vad.data.repositories import VadRepository
 from app.features.vad.service.vad_api import VadAPI
 
 from app.features.domain_adaptation.data.repositories import DomainAdaptationRepository
-# CRITICAL FIX: Updated imports to match the new Domain Adaptation feature structure
 from app.features.domain_adaptation.data.scout_adapter import ScoutWhisperAdapter
 from app.features.domain_adaptation.data.llama_adapter import LlamaAdapter
 from app.features.domain_adaptation.utils.smart_sampler import SmartSampler
@@ -65,6 +64,9 @@ from app.orchestration.service.phases.sentence_reconstruction_phase import Sente
 from app.orchestration.service.phases.phonetic_correction_phase import PhoneticCorrectionPhase
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 
+
+import os
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 def bootstrap_database() -> None:
     try:
@@ -111,7 +113,6 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
     domain_repo = DomainAdaptationRepository(db_manager)
     scout_adapter = ScoutWhisperAdapter()
 
-    # CRITICAL FIX: Instantiating the new dependencies
     llama_adapter = LlamaAdapter()
     smart_sampler = SmartSampler()
 
@@ -177,6 +178,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
     phonetic_adapter = QwenAdapter()
     phonetic_correction_api = PhoneticCorrectionAPI(
         repository=phonetic_repo,
+        orchestrator=model_orchestrator,  # <-- FIXED: Added missing orchestrator dependency
         patch_adapter=phonetic_adapter
     )
 

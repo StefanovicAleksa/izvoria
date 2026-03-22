@@ -1,6 +1,7 @@
-# File: app/core/model_manager/domain/interfaces.py
+# Canvas: model_interfaces_v2
+# Path: app/core/model_manager/domain/interfaces.py
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any, Tuple
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel, VramStatus
 
@@ -16,6 +17,19 @@ class IVramMonitor(ABC):
     @abstractmethod
     def flush_memory(self) -> None:
         """Forces Python garbage collection and clears the CUDA cache."""
+        pass
+
+    @abstractmethod
+    def get_pytorch_memory_stats(self) -> Tuple[float, float]:
+        """
+        Returns PyTorch's internal tensor tracking in MB.
+        Format: (current_allocated_mb, peak_allocated_mb)
+        """
+        pass
+
+    @abstractmethod
+    def reset_peak_stats(self) -> None:
+        """Resets the peak high-water mark for future tracking."""
         pass
 
 

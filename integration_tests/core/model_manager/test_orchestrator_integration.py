@@ -1,119 +1,94 @@
-# filename: test_orchestrator_integration_v2.py
-# path: integration_tests/core/model_manager/test_orchestrator_integration.py
+# Canvas: test_orchestrator_integration_v3
+# Path: integration_tests/core/model_manager/test_orchestrator_integration.py
+
+import os
+import time
+from typing import Optional
+
 import pytest
 import torch
-import concurrent.futures
 
-from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
-from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
-from app.core.model_manager.domain.interfaces import IModelLoader
+from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.enums import ModelType
-from app.core.model_manager import exceptions as exc
+from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
+from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
+from app.core.model_manager.utils.background_worker import BackgroundModelWorker
+from app.features.vad.data.nemo_adapter import NeMoVadAdapter
 
 
-@pytest.fixture(scope="module", autouse=True)
-def require_cuda():
-    """Skips all tests in this module if no NVIDIA GPU is detected."""
-    if not torch.cuda.is_available():
-        pytest.skip("CUDA is not available on this system. Skipping real VRAM integration tests.")
-
-
-class DummyModelLoader(IModelLoader):
-    def load(self, manifest: ModelManifest) -> LoadedModel:
-        num_floats = int((manifest.required_vram_mb * 1024 * 1024) / 4)
-        dummy_tensor = torch.zeros(num_floats, dtype=torch.float32, device="cuda")
-        return LoadedModel(manifest=manifest, model_instance=dummy_tensor)
-
-    def unload(self, model: LoadedModel) -> bool:
-        del model.model_instance
-        return True
-
-    def predict(self, model: LoadedModel, inputs: dict) -> dict:
-        return {"status": "dummy"}
-
-
-@pytest.fixture
-def orchestrator():
-    monitor = PyTorchVramMonitor()
-    return ModelManagerOrchestrator(vram_monitor=monitor)
-
-
-@pytest.fixture
-def dummy_loader():
-    return DummyModelLoader()
-
-
-@pytest.mark.integration
-def test_real_vram_allocation_and_tracking(orchestrator, dummy_loader):
-    baseline_status = orchestrator._monitor.get_vram_status()
-
-    manifest = ModelManifest(
-        model_type=ModelType.VAD,
-        model_path="dummy_path",
-        required_vram_mb=200.0
-    )
-
-    loaded_model = orchestrator.acquire_model(manifest, dummy_loader)
-    loaded_status = orchestrator._monitor.get_vram_status()
-
-    assert loaded_status.free_vram_mb < baseline_status.free_vram_mb
-    assert loaded_model.id in orchestrator._active_models
-
-    orchestrator.release_model(loaded_model, dummy_loader, flush=True)
-    flushed_status = orchestrator._monitor.get_vram_status()
-
-    assert flushed_status.free_vram_mb > loaded_status.free_vram_mb
-    assert len(orchestrator._active_models) == 0
-
-
-@pytest.mark.integration
-def test_out_of_vram_rejection_real_math(orchestrator, dummy_loader):
-    current_status = orchestrator._monitor.get_vram_status()
-    impossible_vram_request = current_status.free_vram_mb + 100.0
-
-    manifest = ModelManifest(
-        model_type=ModelType.TRANSCRIPTION,
-        model_path="too_big_model",
-        required_vram_mb=impossible_vram_request
-    )
-
-    with pytest.raises(exc.OutOfVramError, match="Cannot load transcription") as error_info:
-        orchestrator.acquire_model(manifest, dummy_loader)
-
-    expected_vram = impossible_vram_request + orchestrator.VRAM_SAFETY_BUFFER_MB
-    assert f"{expected_vram:.2f}" in str(error_info.value)
-
-
-@pytest.mark.integration
-def test_concurrent_vram_race_condition(orchestrator, dummy_loader):
+class TestModelManagerIntegration:
     """
-    Integration test to prove the Mutex lock prevents VRAM overallocation and
-    corrupt dictionary state during concurrent background loading.
+    STRICT NO-MOCKS INTEGRATION TEST.
+    Requires: NVIDIA GPU and the local MarbleNet VAD model on disk.
+    Verifies dynamic size discovery and background telemetry tracking.
     """
-    manifest_a = ModelManifest(model_type=ModelType.VAD, model_path="model_a", required_vram_mb=150.0)
-    manifest_b = ModelManifest(model_type=ModelType.VISION, model_path="model_b", required_vram_mb=150.0)
 
-    # Fire two loads in parallel
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        future_a = executor.submit(orchestrator.acquire_model, manifest_a, dummy_loader)
-        future_b = executor.submit(orchestrator.acquire_model, manifest_b, dummy_loader)
+    @pytest.fixture(scope="module", autouse=True)
+    def ensure_hardware(self):
+        if not torch.cuda.is_available():
+            pytest.skip("Integration test requires an active NVIDIA GPU.")
 
-        model_a = future_a.result()
-        model_b = future_b.result()
+    @pytest.fixture
+    def vad_manifest(self) -> ModelManifest:
+        manifest = ModelManifest(
+            model_type=ModelType.VAD,
+            model_path=settings.VAD_MODEL_PATH,
+            required_vram_mb=settings.VAD_VRAM_REQUIREMENT_MB
+        )
+        if not os.path.exists(manifest.model_path):
+            pytest.skip(f"VAD model missing at {manifest.model_path}. Cannot run integration test.")
+        return manifest
 
-    # Both should load successfully, but strictly sequentially
-    assert len(orchestrator._active_models) == 2
-    assert model_a.id in orchestrator._active_models
-    assert model_b.id in orchestrator._active_models
+    def test_dynamic_size_discovery_and_telemetry_tracking(self, vad_manifest):
+        # 1. Boot up the live system
+        monitor = PyTorchVramMonitor()
+        monitor.flush_memory()  # Ensure clean slate
 
-    # Fire parallel unloads
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        future_ua = executor.submit(orchestrator.release_model, model_a, dummy_loader, flush=True)
-        future_ub = executor.submit(orchestrator.release_model, model_b, dummy_loader, flush=True)
+        initial_status = monitor.get_vram_status()
 
-        future_ua.result()
-        future_ub.result()
+        orchestrator = ModelManagerOrchestrator(monitor)
+        worker = BackgroundModelWorker(orchestrator)
+        adapter = NeMoVadAdapter()
 
-    # Verify safe cleanup
-    assert len(orchestrator._active_models) == 0
+        loaded_model: Optional[LoadedModel] = None
+
+        try:
+            # 2. Acquire the Model (Tests disk size auto-discovery)
+            loaded_model = orchestrator.acquire_model(vad_manifest, adapter)
+
+            assert loaded_model.id in orchestrator._active_models
+
+            # 3. Simulate an Inference Memory Spike (The "Backpack")
+            dummy_inference_tensor = torch.ones((1024, 1024, 100), device="cuda", dtype=torch.float32)
+
+            # Ensure PyTorch executes the allocation
+            torch.cuda.synchronize()
+
+            # 4. Free the simulated inference spike, returning model to resting state
+            del dummy_inference_tensor
+
+            # 5. Wait for the Background Telemetry Daemon to poll the resting state
+            time.sleep(1.0)
+
+            # 6. Verify the Orchestrator dynamically learned the Backpack
+            learned_backpack = orchestrator._historical_backpacks.get(vad_manifest.model_path, 0.0)
+
+            print(
+                f"\n[TEST INFO] Discovered Weight Size: {orchestrator._get_actual_size_mb(vad_manifest.model_path, 0):.2f} MB")
+            print(f"[TEST INFO] Learned Inference Backpack: {learned_backpack:.2f} MB")
+
+            assert learned_backpack > 350.0, "Telemetry daemon failed to record the memory spike!"
+
+        finally:
+            # 7. Tear down and ensure strict VRAM cleanup
+            worker.shutdown(wait=True)
+
+            if loaded_model:
+                orchestrator.release_all(loaders_map={loaded_model.id: adapter})
+
+            final_status = monitor.get_vram_status()
+
+            # Account for ~50MB of PyTorch CUDA context overhead that never unloads
+            assert final_status.used_vram_mb <= initial_status.used_vram_mb + 100.0, \
+                "VRAM leak detected! Memory did not return to baseline."

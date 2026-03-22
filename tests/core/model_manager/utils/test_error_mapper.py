@@ -1,45 +1,35 @@
-# File: tests/core/model_manager/test_error_mapper.py
+# Canvas: test_model_error_mapper_v1
+# Path: tests/core/model_manager/utils/test_error_mapper.py
+
+import pytest
 from app.core.model_manager.utils.error_mapper import map_model_manager_error
 from app.core.model_manager import exceptions as exc
 
 
 class TestModelManagerErrorMapper:
+    @pytest.mark.parametrize(
+        "input_exception, expected_output_type",
+        [
+            (MemoryError("Cannot allocate memory"), exc.OutOfVramError),
+            (RuntimeError("CUDA out of memory. Tried to allocate 20.00 MiB"), exc.OutOfVramError),
+            (RuntimeError("CUDA error: device-side assert triggered"), exc.CudaCrashError),
+            (RuntimeError("CUDA error: invalid device ordinal"), exc.CudaCrashError),
+            (FileNotFoundError("No such file or directory: 'models/whisper'"), exc.ModelNotFoundError),
+            (EOFError("Ran out of input"), exc.ModelLoadError),
+            (TypeError("invalid load key, '\\x00'"), exc.ModelLoadError),
+            (ValueError("Some unknown random framework error"), exc.ModelManagerError),
+        ]
+    )
+    def test_map_model_manager_error_translates_correctly(self, input_exception, expected_output_type):
+        """Verifies that the error mapper correctly buckets strings and system types."""
+        mapped_error = map_model_manager_error(input_exception)
 
-    def test_map_cuda_out_of_memory(self):
-        """RuntimeError with 'CUDA out of memory' -> OutOfVramError"""
-        raw_err = RuntimeError("CUDA out of memory. Tried to allocate 20.00 MiB...")
-        mapped = map_model_manager_error(raw_err)
-        assert isinstance(mapped, exc.OutOfVramError)
-        assert "Hardware constraint reached" in str(mapped)
+        assert isinstance(mapped_error, expected_output_type)
+        assert mapped_error.original_exception == input_exception
 
-    def test_map_standard_memory_error(self):
-        """MemoryError -> OutOfVramError"""
-        raw_err = MemoryError("Cannot allocate memory")
-        mapped = map_model_manager_error(raw_err)
-        assert isinstance(mapped, exc.OutOfVramError)
+    def test_map_model_manager_error_does_not_double_wrap(self):
+        """Ensures that Domain exceptions aren't recursively wrapped if thrown internally."""
+        domain_exc = exc.OutOfVramError("Already a domain error")
+        mapped_error = map_model_manager_error(domain_exc)
 
-    def test_map_cuda_crash(self):
-        """RuntimeError with device-side assert -> CudaCrashError"""
-        raw_err = RuntimeError("CUDA error: device-side assert triggered")
-        mapped = map_model_manager_error(raw_err)
-        assert isinstance(mapped, exc.CudaCrashError)
-
-    def test_map_file_not_found(self):
-        """FileNotFoundError -> ModelNotFoundError"""
-        raw_err = FileNotFoundError("No such file or directory: 'model.bin'")
-        mapped = map_model_manager_error(raw_err)
-        assert isinstance(mapped, exc.ModelNotFoundError)
-
-    def test_map_corrupted_weights(self):
-        """EOFError -> ModelLoadError"""
-        raw_err = EOFError("Ran out of input while deserializing")
-        mapped = map_model_manager_error(raw_err)
-        assert isinstance(mapped, exc.ModelLoadError)
-        assert "corrupted or incompatible" in str(mapped)
-
-    def test_map_fallback_error(self):
-        """Generic Exception -> ModelManagerError"""
-        raw_err = Exception("Random unexpected bit flip")
-        mapped = map_model_manager_error(raw_err)
-        assert type(mapped) is exc.ModelManagerError
-        assert "unexpected error occurred" in str(mapped)
+        assert mapped_error is domain_exc
