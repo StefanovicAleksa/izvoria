@@ -1,12 +1,11 @@
-# Canvas: faster_whisper_adapter_v9
+# Canvas: faster_whisper_adapter_v11
 # Path: app/features/transcription/data/faster_whisper_adapter.py
 
 import os
 import gc
 import torch
 import torchaudio
-from typing import List, Optional
-from faster_whisper import WhisperModel
+from typing import List, Optional, Any
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.features.transcription.domain.interfaces import ITranscriptionAdapter
@@ -21,10 +20,22 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
     Uses RAM-based audio chunking to prevent O(N) Disk I/O bottlenecks.
     """
 
-    # noinspection PyMethodMayBeStatic
+    @staticmethod
+    def _get_whisper_model(model_path: str) -> Any:
+        """
+        FACTORY METHOD & LAZY IMPORT
+        Prevents CTranslate2 from seizing the CUDA context during App/Test Startup.
+        """
+        from faster_whisper import WhisperModel
+        return WhisperModel(
+            model_size_or_path=model_path,
+            device="cuda",
+            compute_type="float16",
+            local_files_only=True
+        )
+
     def load(self, manifest: ModelManifest) -> LoadedModel:
         try:
-            # Absolute failsafe: Clear any residual PyTorch cache before initializing CTranslate2
             gc.collect()
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
@@ -32,17 +43,11 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
             if not os.path.exists(manifest.model_path):
                 raise FileNotFoundError(f"Whisper model directory missing: {manifest.model_path}")
 
-            model = WhisperModel(
-                model_size_or_path=manifest.model_path,
-                device="cuda",
-                compute_type="float16",
-                local_files_only=True
-            )
+            model = self._get_whisper_model(manifest.model_path)
             return LoadedModel(manifest=manifest, model_instance=model)
         except Exception as e:
             raise map_transcription_error(e) from e
 
-    # noinspection PyMethodMayBeStatic
     def unload(self, model: LoadedModel) -> bool:
         try:
             if hasattr(model, "model_instance"):
@@ -54,7 +59,6 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
         except Exception as e:
             raise map_transcription_error(e) from e
 
-    # noinspection PyMethodMayBeStatic
     def transcribe(
             self,
             model: LoadedModel,
@@ -65,7 +69,7 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
             initial_prompt: Optional[str] = None
     ) -> List[TranscriptSegment]:
         try:
-            whisper_model: WhisperModel = model.model_instance
+            whisper_model: Any = model.model_instance
             segments_out = []
 
             waveform, sample_rate = torchaudio.load(audio_path)
@@ -80,7 +84,6 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
             waveform_1d = waveform.squeeze().numpy()
             merged_segments = self._merge_vad_segments(vad_map.segments, gap_threshold=2.0)
 
-            # Sanitize inputs to prevent underlying C++ string faults in CTranslate2
             safe_hotwords = hotwords.strip() if hotwords and hotwords.strip() else None
             safe_prompt = initial_prompt.strip() if initial_prompt and initial_prompt.strip() else None
 
@@ -89,7 +92,9 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
                 end_sample = int(m_seg.end_sec * 16000)
                 audio_chunk = waveform_1d[start_sample:end_sample]
 
-                if len(audio_chunk) < 1600:
+                # CRITICAL FIX: Increased minimum chunk size to 0.4 seconds (6400 samples)
+                # CTranslate2 will crash with "maximum decoding length must be > 0" if fed micro-segments
+                if len(audio_chunk) < 6400:
                     continue
 
                 segments, info = whisper_model.transcribe(
@@ -129,7 +134,6 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
         except Exception as e:
             raise map_transcription_error(e) from e
 
-    # noinspection PyMethodMayBeStatic
     def _merge_vad_segments(self, segments: List[VadSegment], gap_threshold: float = 2.0) -> List[VadSegment]:
         if not segments:
             return []

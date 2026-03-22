@@ -1,5 +1,5 @@
-# Canvas: test_transcription_api_v5
-# Path: tests/features/transcription/test_transcription_api.py
+# Canvas: test_transcription_api_v6
+# Path: tests/features/transcription/service/test_transcription_api.py
 
 import uuid
 import pytest
@@ -42,7 +42,6 @@ class TestTranscriptionAPI:
         mocks["orchestrator"].acquire_model.assert_not_called()
 
     def test_process_audio_fails_without_vad_map(self, api, mocks):
-        """Cannot transcribe without the VAD map prerequisites."""
         source_id = uuid.uuid4()
         mocks["repo"].get_by_source_id.return_value = None
         mocks["vad_repo"].get_map_by_source_id.return_value = None
@@ -70,7 +69,6 @@ class TestTranscriptionAPI:
         saved_transcript = Transcript(source_id=source_id, segments=[])
         mocks["repo"].save.return_value = saved_transcript
 
-        # FIX: Provide initial_prompt to match the updated API
         result = api.process_audio(
             source_id,
             "/dummy.wav",
@@ -82,7 +80,8 @@ class TestTranscriptionAPI:
 
         assert result == saved_transcript
         mocks["orchestrator"].acquire_model.assert_called_once()
-        # FIX: Assert that initial_prompt was passed down to the adapter
+
+        # Verifies domain adaptation payload is passed securely to the whisper engine
         mocks["adapter"].transcribe.assert_called_once_with(
             model=loaded_model_mock,
             audio_path="/dummy.wav",
