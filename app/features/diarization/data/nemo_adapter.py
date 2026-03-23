@@ -1,4 +1,4 @@
-# Canvas: nemo_diarization_adapter_v5
+# Canvas: nemo_diarization_adapter_v6
 # Path: app/features/diarization/data/nemo_adapter.py
 
 import os
@@ -60,7 +60,7 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
             with tempfile.TemporaryDirectory(prefix="onyx_diarization_") as tmpdir:
                 tmp_path = Path(tmpdir)
 
-                # --- NEW: ENFORCE 16KHz MONO ---
+                # --- ENFORCE 16KHz MONO ---
                 # Ensure the audio file is strictly Mono and 16kHz to prevent NeMo Shape Mismatches.
                 waveform, sample_rate = torchaudio.load(audio_path_obj)
                 needs_rewrite = False
@@ -111,7 +111,15 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                     "device": "cuda",
                     "num_workers": 1,
                     "sample_rate": 16000,
-                    "batch_size": 64,
+
+                    # ==========================================================
+                    # CRITICAL FIX: The Enterprise VRAM Throttle
+                    # ==========================================================
+                    # Was 64. Clamping this to 16 completely flattens the Activation
+                    # VRAM curve, preventing the 2GB+ spike that causes OOM on long files.
+                    "batch_size": 16,
+                    # ==========================================================
+
                     "verbose": False,
                     "diarizer": {
                         "manifest_filepath": str(manifest_path),
