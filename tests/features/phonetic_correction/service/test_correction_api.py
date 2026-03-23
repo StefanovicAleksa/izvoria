@@ -1,4 +1,4 @@
-# Canvas: test_correction_api_v4
+# Canvas: test_correction_api_v5
 # Path: tests/features/phonetic_correction/service/test_correction_api.py
 
 import uuid
@@ -56,7 +56,8 @@ class TestPhoneticCorrectionAPI:
         mock_orchestrator.acquire_model.assert_not_called()
 
     @patch("app.features.phonetic_correction.service.correction_api.DictionaryLoader")
-    def test_execute_applies_patches_and_unloads_vram(self, mock_dict_loader, api, mock_repo, mock_orchestrator, mock_adapter):
+    @patch("app.features.phonetic_correction.service.correction_api.split_massive_sentences")
+    def test_execute_applies_patches_and_unloads_vram(self, mock_splitter, mock_dict_loader, api, mock_repo, mock_orchestrator, mock_adapter):
         mock_repo.get_by_source_id.return_value = None
         mock_dict_loader.build_prompt_dictionary.return_value = "- test dictionary term"
 
@@ -71,6 +72,9 @@ class TestPhoneticCorrectionAPI:
         )
         dummy_transcript = ReconstructedTranscript(source_id=transcript_id, sentences=[dummy_sentence])
 
+        # Ensure the pre-processor utility passes the sentence through
+        mock_splitter.return_value = [dummy_sentence]
+
         mock_loaded_model = MagicMock()
         mock_orchestrator.acquire_model.return_value = mock_loaded_model
 
@@ -82,6 +86,7 @@ class TestPhoneticCorrectionAPI:
 
         result = api.execute(dummy_transcript, "MEDICAL", [], release_after=True)
 
+        mock_splitter.assert_called_once_with(dummy_transcript.sentences, max_chars=10000)
         mock_orchestrator.acquire_model.assert_called_once()
         mock_adapter.generate_patches.assert_called_once()
         mock_orchestrator.release_model.assert_called_once_with(mock_loaded_model, mock_adapter, flush=True)

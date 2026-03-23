@@ -1,4 +1,4 @@
-# Canvas: correction_api_v10
+# Canvas: correction_api_v13
 # Path: app/features/phonetic_correction/service/correction_api.py
 
 import logging
@@ -19,6 +19,7 @@ from app.features.phonetic_correction.domain.entities import (
     AppliedCorrectionRecord,
     PhoneticPatch
 )
+from app.features.phonetic_correction.utils.sentence_splitter import split_massive_sentences
 from app.features.phonetic_correction.utils.chunker import sliding_window_chunker
 from app.features.phonetic_correction.utils.dictionary_loader import DictionaryLoader
 from app.features.phonetic_correction.utils.error_mapper import map_phonetic_error
@@ -62,15 +63,21 @@ class PhoneticCorrectionAPI:
 
             loaded_model = None
             audit_records: List[AppliedCorrectionRecord] = []
-
-            # Dictionary for deduplicating overlapping sentences
             processed_sentences_map: Dict[uuid.UUID, ReconstructedSentence] = {}
+
+            # 1. Bruteforce protection: Pre-split massive runaway sentences
+            safe_sentences = split_massive_sentences(transcript.sentences, max_chars=10000)
 
             try:
                 loaded_model = self._orchestrator.acquire_model(manifest, self._patch_adapter)
 
-                # CRITICAL FIX: Use the new Sliding Window chunker
-                chunks = sliding_window_chunker(transcript.sentences, chunk_size=40, overlap=5)
+                # 2. Dynamic Character-Aware Chunking
+                chunks = sliding_window_chunker(
+                    items=safe_sentences,
+                    text_extractor=lambda s: s.text,
+                    max_chars=12000,
+                    overlap_items=2
+                )
 
                 for idx, chunk in enumerate(chunks):
                     logger.info(f"  -> Processing Phonetic Window {idx + 1}/{len(chunks)}...")
@@ -84,7 +91,6 @@ class PhoneticCorrectionAPI:
 
                     patched_chunk = self._apply_patches_to_chunk(chunk, patches, audit_records)
 
-                    # Store the results. Since chunk edges overlap, newer patches overwrite older ones smoothly
                     for s in patched_chunk:
                         processed_sentences_map[s.sentence_id] = s
 
@@ -93,8 +99,6 @@ class PhoneticCorrectionAPI:
                     self._orchestrator.release_model(loaded_model, self._patch_adapter, flush=True)
 
             all_patched_sentences = list(processed_sentences_map.values())
-
-            # Re-sort to maintain exact chronological order
             all_patched_sentences.sort(key=lambda x: x.start_sec)
             cleaned_sentences = [s for s in all_patched_sentences if s.text.strip()]
 

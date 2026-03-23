@@ -1,4 +1,4 @@
-# Canvas: test_chunker_v3
+# Canvas: test_chunker_v8
 # Path: tests/features/phonetic_correction/utils/test_chunker.py
 
 import uuid
@@ -6,30 +6,33 @@ from app.features.sentence_reconstruction.domain.entities import ReconstructedSe
 from app.features.phonetic_correction.utils.chunker import sliding_window_chunker
 
 
-def test_sliding_window_chunker_basic():
-    # Create 10 dummy sentences
+def test_sliding_window_chunker_dynamic_chars_and_overlap():
     sentences = [
-        ReconstructedSentence(sentence_id=uuid.uuid4(), start_sec=i, end_sec=i + 1, text=f"Sentence {i}",
+        ReconstructedSentence(sentence_id=uuid.uuid4(), start_sec=1, end_sec=2, text="A short sentence.",
+                              speaker_id="S0", words=[]),
+        ReconstructedSentence(sentence_id=uuid.uuid4(), start_sec=2, end_sec=3, text="Another short sentence.",
+                              speaker_id="S0", words=[]),
+        ReconstructedSentence(sentence_id=uuid.uuid4(), start_sec=3, end_sec=4, text="A third short sentence.",
                               speaker_id="S0", words=[])
-        for i in range(10)
     ]
 
-    # Chunk size 4, overlap 2 -> Step size is 2
-    chunks = sliding_window_chunker(sentences, chunk_size=4, overlap=2)
+    chunks = sliding_window_chunker(
+        items=sentences,
+        text_extractor=lambda s: s.text,
+        max_chars=30,
+        overlap_items=1
+    )
 
-    assert len(chunks) == 4
+    assert len(chunks[0]) == 1
+    assert chunks[0][0].text == "A short sentence."
 
-    # Chunk 1: Sentences 0, 1, 2, 3
-    assert len(chunks[0]) == 4
-    assert chunks[0][0].text == "Sentence 0"
-    assert chunks[0][-1].text == "Sentence 3"
+    assert len(chunks[1]) == 1
+    assert chunks[1][0].text == "Another short sentence."
 
-    # Chunk 2: Sentences 2, 3, 4, 5 (Overlap of 2, 3)
-    assert len(chunks[1]) == 4
-    assert chunks[1][0].text == "Sentence 2"
-    assert chunks[1][-1].text == "Sentence 5"
+    assert len(chunks[2]) == 1
+    assert chunks[2][0].text == "A third short sentence."
 
 
 def test_sliding_window_chunker_empty_list():
-    chunks = sliding_window_chunker([], chunk_size=40, overlap=5)
+    chunks = sliding_window_chunker([], text_extractor=lambda x: x.text, max_chars=40, overlap_items=1)
     assert len(chunks) == 0

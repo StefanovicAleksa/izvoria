@@ -1,4 +1,4 @@
-# Canvas: test_correction_api_integration_v6
+# Canvas: test_correction_api_integration_v13
 # Path: integration_tests/features/phonetic_correction/test_correction_api_integration.py
 
 import os
@@ -7,7 +7,7 @@ import uuid
 import shutil
 import pytest
 from pathlib import Path
-from sqlalchemy import text as sa_text  # Aliased to prevent shadowing
+from sqlalchemy import text as sa_text
 
 from app.core.config import settings
 from app.core.database.data.engine import Base
@@ -27,7 +27,10 @@ class TestPhoneticCorrectionAPIIntegration:
     """
     STRICT NO-MOCKS INTEGRATION TEST.
     Requires: Live PostgreSQL, NVIDIA GPU, and the Qwen 2.5 7B GGUF model downloaded locally.
-    Tests the full execution pipeline, Sliding Window Chunking, Hallucination Scrubbing, and DB persistence.
+    Tests the full execution pipeline:
+      1. Base Case (Real JSON transcript)
+      2. Array Stress Test (100 sentences -> Sliding Window Chunking)
+      3. String Stress Test (11,000 char sentence -> Brutal Splitting)
     """
 
     @pytest.fixture(scope="module", autouse=True)
@@ -43,10 +46,6 @@ class TestPhoneticCorrectionAPIIntegration:
 
     @pytest.fixture(scope="module")
     def setup_medical_glossary(self):
-        """
-        Copies the isolated medical.json from integration test resources
-        into the application's live glossary directory for the test duration.
-        """
         project_root = Path(__file__).resolve().parent.parent.parent.parent
         resource_path = project_root / "integration_tests" / "resources" / "medical.json"
         target_path = project_root / "data" / "glossaries" / "medical.json"
@@ -61,9 +60,7 @@ class TestPhoneticCorrectionAPIIntegration:
 
         target_path.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy(resource_path, target_path)
-
         yield "MEDICAL"
-
         if target_path.exists():
             target_path.unlink()
 
@@ -88,16 +85,11 @@ class TestPhoneticCorrectionAPIIntegration:
         return ReconstructedTranscript(source_id=uuid.UUID(data["source_id"]), sentences=sentences)
 
     @pytest.fixture
-    def massive_transcript(self) -> ReconstructedTranscript:
-        """
-        Generates a massive 100-sentence transcript to force the Phonetic API
-        to trigger multiple overlapping Sliding Windows.
-        """
+    def massive_array_transcript(self) -> ReconstructedTranscript:
         source_id = uuid.uuid4()
         sentences = []
 
         for i in range(100):
-            # FIX: Renamed variable to sentence_text to avoid shadowing sqlalchemy.text
             if i == 45:
                 sentence_text = "The patient presented with a cute angina."
             elif i == 85:
@@ -119,6 +111,31 @@ class TestPhoneticCorrectionAPIIntegration:
         return ReconstructedTranscript(source_id=source_id, sentences=sentences)
 
     @pytest.fixture
+    def brutal_oversized_transcript(self) -> ReconstructedTranscript:
+        source_id = uuid.uuid4()
+
+        # CRITICAL FIX FOR SPEED:
+        # 80 iterations * ~70 chars = ~5,600 chars per side.
+        # Total string will be ~11,200 characters.
+        # This is enough to trigger the 10,000 char pre-split, but small enough to fit in a SINGLE LLM chunk!
+        part_1 = " ".join(
+            [f"This is unique medical observation number {i} to pad the context window." for i in range(80)])
+        part_2 = " ".join([f"This is unique follow up number {i} to pad the context window." for i in range(80)])
+
+        massive_text = part_1 + " a cute angina " + part_2
+
+        sentence = ReconstructedSentence(
+            sentence_id=uuid.uuid4(),
+            start_sec=0.0,
+            end_sec=10.0,
+            text=massive_text,
+            speaker_id="Speaker_0",
+            words=[]
+        )
+
+        return ReconstructedTranscript(source_id=source_id, sentences=[sentence])
+
+    @pytest.fixture
     def live_api(self) -> PhoneticCorrectionAPI:
         repo = PhoneticRepository(db_manager)
         qwen_adapter = QwenAdapter()
@@ -133,7 +150,6 @@ class TestPhoneticCorrectionAPIIntegration:
 
     @pytest.fixture
     def isolated_setup(self) -> None:
-        """Drops foreign keys so we can insert transcripts without needing real media files."""
         with db_manager.session() as session:
             session.execute(sa_text(
                 "ALTER TABLE phonetic_corrected_transcripts DROP CONSTRAINT IF EXISTS phonetic_corrected_transcripts_source_id_fkey;"
@@ -147,7 +163,6 @@ class TestPhoneticCorrectionAPIIntegration:
             setup_medical_glossary: str,
             real_transcript: ReconstructedTranscript
     ):
-        """Tests the standard base-case correction on a small real transcript."""
         try:
             corrected_transcript = live_api.execute(
                 transcript=real_transcript,
@@ -160,7 +175,6 @@ class TestPhoneticCorrectionAPIIntegration:
                 pytest.skip(f"Skipping test due to insufficient VRAM: {e}")
             raise e
 
-        # FIX: Added strict type assertion to utilize the PhoneticCorrectedTranscript import
         assert isinstance(corrected_transcript, PhoneticCorrectedTranscript)
 
         patched_text = " ".join([s.text for s in corrected_transcript.sentences])
@@ -168,22 +182,16 @@ class TestPhoneticCorrectionAPIIntegration:
         assert "a cute angina" not in patched_text.lower()
         assert "subscribe to the channel" not in patched_text.lower()
 
-    def test_sliding_window_stress_test(
+    def test_sliding_window_array_stress_test(
             self,
             isolated_setup: None,
             live_api: PhoneticCorrectionAPI,
             setup_medical_glossary: str,
-            massive_transcript: ReconstructedTranscript
+            massive_array_transcript: ReconstructedTranscript
     ):
-        """
-        STRESS TEST: Forces the pipeline to process 100 sentences.
-        Proves the sliding window chunker safely handles massive transcripts
-        without OOMing the Qwen 2.5 8192 token limit, and correctly maps
-        JSON patches across multiple chunk boundaries.
-        """
         try:
             corrected_transcript = live_api.execute(
-                transcript=massive_transcript,
+                transcript=massive_array_transcript,
                 industry=setup_medical_glossary,
                 sub_domains=["GENERAL"],
                 release_after=True
@@ -193,20 +201,47 @@ class TestPhoneticCorrectionAPIIntegration:
                 pytest.skip(f"Skipping stress test due to insufficient VRAM: {e}")
             raise e
 
-        # FIX: Added strict type assertion
         assert isinstance(corrected_transcript, PhoneticCorrectedTranscript)
 
-        # 1. Verify the API returned a full-length transcript (no dropped chunks)
+        # The hallucinated sentence was cleanly dropped by the API, so 99 is exactly what we want!
         assert len(corrected_transcript.sentences) == 99
 
         patched_text = " ".join([s.text for s in corrected_transcript.sentences])
 
-        # 2. Verify patches applied across different sliding window chunks
-        assert "acute angina" in patched_text.lower(), "Phonetic patch in Chunk 2 failed!"
+        assert "acute angina" in patched_text.lower(), "Phonetic patch in later chunk failed!"
         assert "a cute angina" not in patched_text.lower()
-        assert "subscribe to the channel" not in patched_text.lower(), "Hallucination in Chunk 3 failed to scrub!"
-
-        # 3. Verify Audit Trail captured both cross-chunk corrections
+        assert "subscribe to the channel" not in patched_text.lower(), "Hallucination failed to scrub!"
         assert len(corrected_transcript.audit_trail) == 2
 
-        print(f"\n[DEBUG] Sliding Window Stress Test Executed Successfully! (3 Chunks Processed)")
+    def test_massive_sentence_splitting_and_chunking(
+            self,
+            isolated_setup: None,
+            live_api: PhoneticCorrectionAPI,
+            setup_medical_glossary: str,
+            brutal_oversized_transcript: ReconstructedTranscript
+    ):
+        try:
+            corrected_transcript = live_api.execute(
+                transcript=brutal_oversized_transcript,
+                industry=setup_medical_glossary,
+                sub_domains=["GENERAL"],
+                release_after=True
+            )
+        except Exception as e:
+            if "cuda" in str(e).lower() or "vram" in str(e).lower():
+                pytest.skip(f"Skipping stress test due to insufficient VRAM: {e}")
+            raise e
+
+        assert isinstance(corrected_transcript, PhoneticCorrectedTranscript)
+
+        # The string is ~11,200 chars, which means it triggers the 10,000 threshold and splits into 2 sentences!
+        assert len(corrected_transcript.sentences) >= 2
+
+        patched_text = " ".join([s.text for s in corrected_transcript.sentences])
+
+        assert "acute angina" in patched_text.lower(), "Phonetic patch failed on the pre-split sentence!"
+        assert "a cute angina" not in patched_text.lower()
+
+        assert len(corrected_transcript.audit_trail) == 1
+
+        print(f"\n[DEBUG] Brutal Sentence Splitting Passed (Lightning Fast Edition)!")
