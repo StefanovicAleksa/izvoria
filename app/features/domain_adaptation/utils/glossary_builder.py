@@ -1,3 +1,4 @@
+# Canvas: domain_adaptation_glossary_builder_v2
 # Path: app/features/domain_adaptation/utils/glossary_builder.py
 
 import json
@@ -46,11 +47,9 @@ class GlossaryBuilder:
         # 4. Build Payload B: Initial Prompt (from imported template)
         # Fallback to "General" if the array is empty to prevent weird grammar
         domain_names = ", ".join([d.replace("_", " ").title() for d in predicted_domains]) or "General"
-        anchor_words_str = ", ".join(safe_anchors)
 
         initial_prompt = INITIAL_PROMPT_TEMPLATE.format(
-            domain_names=domain_names,
-            anchor_words=anchor_words_str
+            domain_names=domain_names
         )
 
         return hotword_string, initial_prompt

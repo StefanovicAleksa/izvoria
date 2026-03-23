@@ -1,3 +1,4 @@
+# Canvas: test_glossary_builder_v2
 # Path: tests/features/domain_adaptation/utils/test_glossary_builder.py
 
 import pytest
@@ -40,8 +41,8 @@ class TestGlossaryBuilder:
         assert "merger:15.0" in hotwords
 
         # Verify the actual template string from prompts.py was formatted correctly
-        assert "The following dictation covers topics related to Options Trading, M And A" in initial_prompt
-        assert "It contains specialized terminology such as: strike, theta, merger, acquisition." in initial_prompt
+        assert "The following dictation is a formal, professional transcript covering topics related to Options Trading, M And A" in initial_prompt
+        assert "Use proper capitalization and punctuation." in initial_prompt
 
     @patch.object(GlossaryBuilder, '_load_master_glossary')
     def test_build_injection_payloads_fallback_to_base(self, mock_load_glossary, mock_manifest_data):
@@ -54,5 +55,5 @@ class TestGlossaryBuilder:
         )
 
         assert "EBITDA:15.0" in hotwords
-        assert "The following dictation covers topics related to Crypto Trading" in initial_prompt
-        assert "It contains specialized terminology such as: EBITDA, CapEx." in initial_prompt
+        assert "The following dictation is a formal, professional transcript covering topics related to Crypto Trading" in initial_prompt
+        assert "Use proper capitalization and punctuation." in initial_prompt

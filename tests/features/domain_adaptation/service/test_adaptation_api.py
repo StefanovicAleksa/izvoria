@@ -1,4 +1,4 @@
-# Canvas: test_adaptation_api_v5
+# Canvas: test_adaptation_api_v6
 # Path: tests/features/domain_adaptation/service/test_adaptation_api.py
 
 import uuid
@@ -70,14 +70,17 @@ class TestDomainAdaptationAPI:
         mocks["llama_adapter"].predict_subdomains.return_value = ["M_AND_A"]
 
         mock_builder.get_candidate_labels.return_value = ["M_AND_A"]
-        mock_builder.build_injection_payloads.return_value = ("merger:15.0", "Prompt text.")
+
+        # Updated to reflect the new decoupled prompt structure
+        expected_prompt = "The following dictation is a formal, professional transcript covering topics related to M And A. Use proper capitalization and punctuation."
+        mock_builder.build_injection_payloads.return_value = ("merger:15.0", expected_prompt)
 
         saved_glossary = DomainGlossary(
             source_id=source_id,
             industry="FINANCE",
             sub_domains=["M_AND_A"],
             hotword_string="merger:15.0",
-            initial_prompt_string="Prompt text."
+            initial_prompt_string=expected_prompt
         )
         mocks["repo"].save_glossary.return_value = saved_glossary
 

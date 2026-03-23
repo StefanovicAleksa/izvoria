@@ -1,4 +1,4 @@
-# Canvas: it_test_adaptation_api_v2
+# Canvas: test_adaptation_api_integration_v3
 # Path: integration_tests/features/domain_adaptation/test_adaptation_api.py
 
 import pytest
@@ -128,6 +128,9 @@ def test_full_domain_adaptation_pipeline(setup_finance_glossary, real_infrastruc
     assert "strike" in glossary.hotword_string.lower() or "theta" in glossary.hotword_string.lower()
     assert ":15.0" in glossary.hotword_string
 
-    # Assert GlossaryBuilder properly used the prompts.py template
+    # Assert GlossaryBuilder properly used the newly decoupled prompts.py template
     assert "Options Trading" in glossary.initial_prompt_string
-    assert "strike" in glossary.initial_prompt_string.lower()
+    assert "Use proper capitalization and punctuation." in glossary.initial_prompt_string
+
+    # Ensure anchor words are NO LONGER leaking into the initial prompt context window
+    assert "strike" not in glossary.initial_prompt_string.lower()
