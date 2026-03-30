@@ -1,4 +1,4 @@
-# Canvas: jobs_enums_v6
+# Canvas: jobs_enums_v7
 # Path: app/core/jobs/domain/enums.py
 
 from enum import Enum
@@ -21,3 +21,4 @@ class JobType(str, Enum):
     INTELLIGENCE_BRIDGE = "intelligence_bridge"
     SENTENCE_RECONSTRUCTION = "sentence_reconstruction"
     PHONETIC_CORRECTION = "phonetic_correction"
+    CONTEXTUAL_RETRIEVAL = "contextual_retrieval" # Phase 9

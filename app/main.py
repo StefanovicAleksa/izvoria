@@ -1,4 +1,4 @@
-# Canvas: main_v16
+# Canvas: main_v17
 # Path: app/main.py
 
 import argparse
@@ -56,6 +56,10 @@ from app.features.phonetic_correction.data.repositories import PhoneticRepositor
 from app.features.phonetic_correction.data.qwen_adapter import QwenAdapter
 from app.features.phonetic_correction.service.correction_api import PhoneticCorrectionAPI
 
+from app.features.contextual_retrieval.data.repositories import ContextualRepository
+from app.features.contextual_retrieval.data.slm_adapter import SLMContextAdapter
+from app.features.contextual_retrieval.service.contextualizer_api import ContextualizerAPI
+
 from app.orchestration.domain.enums import PipelinePhase
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
@@ -66,6 +70,7 @@ from app.orchestration.service.phases.transcribe_phase import TranscribePhase
 from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
 from app.orchestration.service.phases.phonetic_correction_phase import PhoneticCorrectionPhase
+from app.orchestration.service.phases.contextual_retrieval_phase import ContextualRetrievalPhase
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 
 
@@ -115,7 +120,6 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
     scout_adapter = ScoutWhisperAdapter()
     llama_adapter = LlamaAdapter()
 
-    # CRITICAL FIX: Updated Sampler initialization to match new Trailer approach
     smart_sampler = SmartSampler(max_speech_per_zone_sec=120.0, min_duration_sec=2.0)
 
     domain_adaptation_api = DomainAdaptationAPI(
@@ -190,6 +194,21 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         required_vram_mb=settings.ASR_PHASE_3_VRAM_REQUIREMENT_MB
     )
 
+    # 9. Contextual Retrieval (Phase 9)
+    contextual_repo = ContextualRepository(db_manager)
+    slm_adapter = SLMContextAdapter()
+    contextualizer_api = ContextualizerAPI(
+        repository=contextual_repo,
+        orchestrator=model_orchestrator,
+        slm_adapter=slm_adapter
+    )
+
+    contextual_manifest = ModelManifest(
+        model_type=ModelType.DOMAIN_CLASSIFIER,
+        model_path=settings.DOMAIN_CLASSIFIER_MODEL_PATH,
+        required_vram_mb=settings.DOMAIN_CLASSIFIER_MODEL_VRAM_REQUIREMENT_MB
+    )
+
     # --- Orchestration Phases ---
     scan_phase = ScanPhase(job_manager, scanner)
     ingest_phase = IngestPhase(job_manager, storage_api)
@@ -249,6 +268,15 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         adapter=phonetic_adapter
     )
 
+    contextual_retrieval_phase = ContextualRetrievalPhase(
+        job_manager=job_manager,
+        contextualizer_api=contextualizer_api,
+        phonetic_repo=phonetic_repo,
+        async_model_service=async_model_service,
+        manifest=contextual_manifest,
+        adapter=slm_adapter
+    )
+
     # Pipeline Assembly
     return BatchMediaPipeline(
         scan_phase=scan_phase,
@@ -259,7 +287,8 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         transcribe_phase=transcribe_phase,
         diarize_phase=diarize_phase,
         sentence_reconstruction_phase=sentence_reconstruction_phase,
-        phonetic_correction_phase=phonetic_correction_phase
+        phonetic_correction_phase=phonetic_correction_phase,
+        contextual_retrieval_phase=contextual_retrieval_phase
     )
 
 

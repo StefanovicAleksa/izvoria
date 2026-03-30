@@ -1,4 +1,4 @@
-# Canvas: batch_media_pipeline_v13
+# Canvas: batch_media_pipeline_v14
 # Path: app/orchestration/service/pipelines/batch_media_pipeline.py
 
 import uuid
@@ -13,7 +13,8 @@ from app.orchestration.domain.entities import (
     VadJobResult,
     TranscribeJobResult,
     DiarizeJobResult,
-    SentenceReconstructionJobResult
+    SentenceReconstructionJobResult,
+    PhoneticCorrectionJobResult,
 )
 from app.orchestration.exceptions.workflow import WorkflowStateError, WorkflowExecutionError
 
@@ -26,6 +27,7 @@ from app.orchestration.service.phases.transcribe_phase import TranscribePhase
 from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
 from app.orchestration.service.phases.phonetic_correction_phase import PhoneticCorrectionPhase
+from app.orchestration.service.phases.contextual_retrieval_phase import ContextualRetrievalPhase
 
 
 class BatchMediaPipeline:
@@ -39,7 +41,8 @@ class BatchMediaPipeline:
             transcribe_phase: TranscribePhase,
             diarize_phase: DiarizePhase,
             sentence_reconstruction_phase: SentenceReconstructionPhase,
-            phonetic_correction_phase: PhoneticCorrectionPhase  # <-- THIS makes PyCharm happy
+            phonetic_correction_phase: PhoneticCorrectionPhase,
+            contextual_retrieval_phase: ContextualRetrievalPhase
     ):
         self._scan_phase = scan_phase
         self._ingest_phase = ingest_phase
@@ -50,6 +53,7 @@ class BatchMediaPipeline:
         self._diarize_phase = diarize_phase
         self._sentence_reconstruction_phase = sentence_reconstruction_phase
         self._phonetic_correction_phase = phonetic_correction_phase
+        self._contextual_retrieval_phase = contextual_retrieval_phase
 
     def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[
         PipelinePhase, PhaseBatchResult]:
@@ -185,6 +189,21 @@ class BatchMediaPipeline:
 
             phonetic_result = self._phonetic_correction_phase.execute(successful_sentence_items)
             pipeline_results[PipelinePhase.PHONETIC_CORRECTION] = phonetic_result
+
+            successful_phonetic_items: List[PhoneticCorrectionJobResult] = [
+                item for item in phonetic_result.items
+                if isinstance(item, PhoneticCorrectionJobResult) and item.success
+            ]
+            if not successful_phonetic_items:
+                return pipeline_results
+
+            # ==========================================
+            # PHASE 9: CONTEXTUAL RETRIEVAL (GPU BOUND)
+            # ==========================================
+            self._contextual_retrieval_phase.preload_model()
+
+            contextual_result = self._contextual_retrieval_phase.execute(successful_phonetic_items)
+            pipeline_results[PipelinePhase.CONTEXTUAL_RETRIEVAL] = contextual_result
 
             # End of pipeline. Returning the full result dictionary containing all phase statuses and errors.
             return pipeline_results

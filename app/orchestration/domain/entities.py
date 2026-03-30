@@ -1,4 +1,4 @@
-# Canvas: orchestration_entities_v8
+# Canvas: orchestration_entities_v9
 # Path: app/orchestration/domain/entities.py
 
 import uuid
@@ -91,6 +91,15 @@ class PhoneticCorrectionJobResult(BaseModel):
     source_id: uuid.UUID
     success: bool
     phonetic_transcript_id: Optional[uuid.UUID] = None
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
+
+class ContextualRetrievalJobResult(BaseModel):
+    """Result of Phase 9: Contextual Retrieval."""
+    source_id: uuid.UUID
+    success: bool
+    contextual_transcript_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 

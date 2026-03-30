@@ -1,4 +1,4 @@
-# Canvas: orchestration_enums_v7
+# Canvas: orchestration_enums_v8
 # Path: app/orchestration/domain/enums.py
 
 from enum import Enum
@@ -15,6 +15,7 @@ class PipelinePhase(str, Enum):
     SENTENCE_RECONSTRUCTION = "sentence_reconstruction"
     INTELLIGENCE_BRIDGE = "intelligence_bridge" # Kept in domain, benched from active pipeline
     PHONETIC_CORRECTION = "phonetic_correction"
+    CONTEXTUAL_RETRIEVAL = "contextual_retrieval" # Phase 9
 
 class PhaseStatus(str, Enum):
     """The execution status of an entire batch phase."""

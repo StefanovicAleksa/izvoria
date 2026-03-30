@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_unit_v9
+# Canvas: test_batch_media_pipeline_unit_v10
 # Path: tests/orchestration/service/pipelines/test_batch_media_pipeline_unit.py
 
 import pytest
@@ -16,7 +16,8 @@ from app.orchestration.domain.entities import (
     TranscribeJobResult,
     DiarizeJobResult,
     SentenceReconstructionJobResult,
-    PhoneticCorrectionJobResult
+    PhoneticCorrectionJobResult,
+    ContextualRetrievalJobResult
 )
 from app.features.storage.domain.entities import SourceType
 
@@ -50,8 +51,11 @@ class TestBatchMediaPipelineUnit:
     def mock_phonetic(self): return Mock()
 
     @pytest.fixture
+    def mock_contextual(self): return Mock()
+
+    @pytest.fixture
     def pipeline(self, mock_scan, mock_ingest, mock_extract, mock_vad, mock_domain_adaptation, mock_transcribe,
-                 mock_diarize, mock_sentence, mock_phonetic):
+                 mock_diarize, mock_sentence, mock_phonetic, mock_contextual):
         return BatchMediaPipeline(
             scan_phase=mock_scan,
             ingest_phase=mock_ingest,
@@ -61,12 +65,13 @@ class TestBatchMediaPipelineUnit:
             transcribe_phase=mock_transcribe,
             diarize_phase=mock_diarize,
             sentence_reconstruction_phase=mock_sentence,
-            phonetic_correction_phase=mock_phonetic
+            phonetic_correction_phase=mock_phonetic,
+            contextual_retrieval_phase=mock_contextual
         )
 
     def test_pipeline_happy_path(self, pipeline, mock_scan, mock_ingest, mock_extract, mock_vad, mock_domain_adaptation,
-                                 mock_transcribe, mock_diarize, mock_sentence, mock_phonetic):
-        """Tests that a fully successful run flows perfectly through all 8 phases."""
+                                 mock_transcribe, mock_diarize, mock_sentence, mock_phonetic, mock_contextual):
+        """Tests that a fully successful run flows perfectly through all 9 phases."""
         target_dir = "/dummy/path"
         source_id = uuid.uuid4()
 
@@ -97,12 +102,15 @@ class TestBatchMediaPipelineUnit:
         mock_phonetic.execute.return_value = PhaseBatchResult(phase=PipelinePhase.PHONETIC_CORRECTION,
                                                               status=PhaseStatus.COMPLETED, items=[
                 PhoneticCorrectionJobResult(source_id=source_id, success=True, phonetic_transcript_id=uuid.uuid4())])
+        mock_contextual.execute.return_value = PhaseBatchResult(phase=PipelinePhase.CONTEXTUAL_RETRIEVAL,
+                                                                status=PhaseStatus.COMPLETED, items=[
+                ContextualRetrievalJobResult(source_id=source_id, success=True, contextual_transcript_id=uuid.uuid4())])
 
         # Execute
         results = pipeline.process_directory(target_dir, SourceType.VIDEO)
 
         # Assertions
-        assert len(results) == 9
+        assert len(results) == 10  # 10 stages (9 phases + Contextual)
 
         # Assert Preloads triggered right before GPU bounds
         mock_vad.preload_model.assert_called_once()
@@ -110,6 +118,7 @@ class TestBatchMediaPipelineUnit:
         mock_diarize.preload_model.assert_called_once()
         mock_sentence.preload_model.assert_called_once()
         mock_phonetic.preload_model.assert_called_once()
+        mock_contextual.preload_model.assert_called_once()
 
-        assert PipelinePhase.PHONETIC_CORRECTION in results
-        assert results[PipelinePhase.PHONETIC_CORRECTION].status == PhaseStatus.COMPLETED
+        assert PipelinePhase.CONTEXTUAL_RETRIEVAL in results
+        assert results[PipelinePhase.CONTEXTUAL_RETRIEVAL].status == PhaseStatus.COMPLETED
