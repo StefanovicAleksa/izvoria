@@ -1,4 +1,4 @@
-# Canvas: sentence_entities_v5
+# Canvas: sentence_entities_v6
 # Path: app/features/sentence_reconstruction/domain/entities.py
 
 import uuid
@@ -6,16 +6,10 @@ from typing import List
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field, ConfigDict
 
-# We import TranscriptWord because it is now our atomic building block
 from app.features.transcription.domain.entities import TranscriptWord
 
 
 class PunctuatedWord(BaseModel):
-    """
-    A transient data structure used only during the Phase 7 pipeline execution.
-    It pairs the original, mathematically perfect acoustic word with the
-    punctuation tag predicted by the Token Classifier (e.g., '.', '?', ',', or '0' for NONE).
-    """
     acoustic_word: TranscriptWord
     punctuation_tag: str = Field(description="The strict punctuation class predicted by the model.")
 
@@ -29,16 +23,18 @@ class ReconstructedSentence(BaseModel):
     that form the sentence, guaranteeing a flawless audit trail for the video player UI.
     """
     sentence_id: uuid.UUID = Field(default_factory=uuid.uuid4)
-    text: str = Field(description="The fully assembled string (words + injected punctuation).")
+
+    # Adding default="" registers the attribute at the class level for the IDE
+    text: str = Field(default="", description="The fully assembled string (words + injected punctuation).")
 
     # Strictly enforced: If Diarization fails, this phase must also fail.
-    speaker_id: str
+    speaker_id: str = Field(default="Unknown", description="The assigned speaker ID from Diarization.")
 
-    start_sec: float
-    end_sec: float
+    start_sec: float = Field(default=0.0)
+    end_sec: float = Field(default=0.0)
 
-    # NEW: The absolute acoustic audit trail replaces the old 'segments' array
-    words: List[TranscriptWord]
+    # The absolute acoustic audit trail replaces the old 'segments' array
+    words: List[TranscriptWord] = Field(default_factory=list)
 
     model_config = ConfigDict(frozen=True)
 
@@ -53,5 +49,4 @@ class ReconstructedTranscript(BaseModel):
     sentences: List[ReconstructedSentence] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-    # Required to deserialize from SQLAlchemy DB models
     model_config = ConfigDict(from_attributes=True)
