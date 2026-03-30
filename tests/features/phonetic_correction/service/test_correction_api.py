@@ -1,4 +1,4 @@
-# Canvas: test_correction_api_v5
+# Canvas: test_correction_api_v6
 # Path: tests/features/phonetic_correction/service/test_correction_api.py
 
 import uuid
@@ -57,7 +57,8 @@ class TestPhoneticCorrectionAPI:
 
     @patch("app.features.phonetic_correction.service.correction_api.DictionaryLoader")
     @patch("app.features.phonetic_correction.service.correction_api.split_massive_sentences")
-    def test_execute_applies_patches_and_unloads_vram(self, mock_splitter, mock_dict_loader, api, mock_repo, mock_orchestrator, mock_adapter):
+    def test_execute_applies_patches_and_unloads_vram(self, mock_splitter, mock_dict_loader, api, mock_repo,
+                                                      mock_orchestrator, mock_adapter):
         mock_repo.get_by_source_id.return_value = None
         mock_dict_loader.build_prompt_dictionary.return_value = "- test dictionary term"
 
@@ -95,3 +96,34 @@ class TestPhoneticCorrectionAPI:
         assert len(result.audit_trail) == 1
         assert result.audit_trail[0].original_text == "I have a cute angina."
         assert result.audit_trail[0].corrected_text == "I have acute angina."
+
+    def test_apply_patches_to_chunk_safely_handles_regex_hallucinations(self):
+        """
+        Proves that the re.sub lambda fix prevents Python from fatally crashing
+        if the LLM hallucinates an escaped regex group like \1.
+        """
+        sentences = [
+            ReconstructedSentence(
+                sentence_id=uuid.uuid4(),
+                start_sec=0,
+                end_sec=1,
+                text="The patient has acute angina.",
+                speaker_id="S0",
+                words=[]
+            )
+        ]
+
+        # If Qwen hallucinates a regex backreference like \1
+        patches = [
+            PhoneticPatch(original="acute angina", correction=r"\1")
+        ]
+
+        audit_records = []
+
+        # If the lambda fix is missing, this next line would throw:
+        # re.error: invalid group reference 1
+        result = PhoneticCorrectionAPI._apply_patches_to_chunk(sentences, patches, audit_records)
+
+        # The text was successfully updated without parsing the \1 as a capture group
+        assert result[0].text == r"The patient has \1."
+        assert len(audit_records) == 1

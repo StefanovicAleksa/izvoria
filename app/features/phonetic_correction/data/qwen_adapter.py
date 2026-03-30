@@ -1,4 +1,4 @@
-# Canvas: qwen_adapter_v4
+# Canvas: qwen_adapter_v5
 # Path: app/features/phonetic_correction/data/qwen_adapter.py
 
 import os
@@ -90,13 +90,34 @@ class QwenAdapter(IPhoneticPatchAdapter):
             parsed_json = json.loads(raw_output)
             raw_corrections = parsed_json.get("corrections", [])
 
+            # Safety check if the LLM hallucinated a dict instead of a list
+            if isinstance(raw_corrections, dict):
+                raw_corrections = [raw_corrections]
+            elif not isinstance(raw_corrections, list):
+                raw_corrections = []
+
             patches: List[PhoneticPatch] = []
             for item in raw_corrections:
-                if "original_text" in item and "corrected_text" in item:
+                # Type guard to ensure we are looking at a valid object
+                if isinstance(item, dict) and "original_text" in item and "corrected_text" in item:
+                    orig = item["original_text"]
+                    corr = item["corrected_text"]
+
+                    # ==========================================================
+                    # CRITICAL FIX: The "Random 0" Sanitizer
+                    # ==========================================================
+                    # LLMs frequently hallucinate integers or nulls instead of ""
+                    if corr in [0, "0", None, False, "null", "None"]:
+                        corr = ""
+
+                    # Ignore the patch entirely if the target text isn't a string
+                    if not orig or not isinstance(orig, str):
+                        continue
+
                     patches.append(
                         PhoneticPatch(
-                            original=str(item["original_text"]),
-                            correction=str(item["corrected_text"])
+                            original=str(orig),
+                            correction=str(corr)
                         )
                     )
 

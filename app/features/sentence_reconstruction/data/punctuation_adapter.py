@@ -1,4 +1,4 @@
-# Canvas: punctuation_adapter_v3
+# Canvas: punctuation_adapter_v4
 # Path: app/features/sentence_reconstruction/data/punctuation_adapter.py
 
 import os
@@ -31,7 +31,16 @@ class PunctuationAdapter(IPunctuationAdapter):
                 model=manifest.model_path,
                 tokenizer=manifest.model_path,
                 device=0 if torch.cuda.is_available() else -1,
-                aggregation_strategy="simple",  # CRITICAL FIX: Changed from "word" to "simple"
+                aggregation_strategy="simple",
+                # ==========================================================
+                # CRITICAL FIX: Native Hugging Face GPU Chunking
+                # ==========================================================
+                # Forces the pipeline to chunk massive transcripts into 512-token
+                # windows with a 16-token overlap (stride). This prevents silent
+                # truncation and guarantees the entire video receives punctuation.
+                stride=16,
+                ignore_labels=["O"],
+                # ==========================================================
                 model_kwargs={"local_files_only": True}
             )
 

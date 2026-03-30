@@ -1,4 +1,4 @@
-# Canvas: test_qwen_adapter_v2
+# Canvas: test_qwen_adapter_v3
 # Path: tests/features/phonetic_correction/data/test_qwen_adapter.py
 
 import pytest
@@ -12,7 +12,7 @@ class TestQwenAdapter:
     @pytest.fixture
     def manifest(self):
         return ModelManifest(
-            model_type=ModelType.ASR_CORRECTION_PHASE_3, 
+            model_type=ModelType.ASR_CORRECTION_PHASE_3,
             model_path="/fake/qwen.gguf",
             required_vram_mb=4000
         )
@@ -57,3 +57,35 @@ class TestQwenAdapter:
         patches = adapter.generate_patches(loaded_model, "text", "dictionary")
 
         assert len(patches) == 0
+
+    def test_generate_patches_sanitizes_hallucinated_falsy_values(self, manifest):
+        """
+        Ensures that if Qwen tries to use integers or nulls to represent an empty string,
+        we aggressively normalize it to an actual empty string to prevent random "0"s in transcripts.
+        """
+        adapter = QwenAdapter()
+        mock_llm = MagicMock()
+
+        # Simulate LLM returning 0, null, and false instead of ""
+        bad_json_content = '''{
+            "corrections": [
+                {"original_text": "subscribe", "corrected_text": 0},
+                {"original_text": "like", "corrected_text": null},
+                {"original_text": "comment", "corrected_text": false},
+                {"original_text": "valid", "corrected_text": "real word"}
+            ]
+        }'''
+        mock_llm.create_chat_completion.return_value = {
+            "choices": [{"message": {"content": bad_json_content}}]
+        }
+        loaded_model = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        patches = adapter.generate_patches(loaded_model, "text", "dictionary")
+
+        assert len(patches) == 4
+        # Assert the hallucinated values were safely scrubbed to empty strings
+        assert patches[0].correction == ""
+        assert patches[1].correction == ""
+        assert patches[2].correction == ""
+        # Assert valid data remains untouched
+        assert patches[3].correction == "real word"

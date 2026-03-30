@@ -1,4 +1,4 @@
-# Canvas: correction_api_v13
+# Canvas: correction_api_v14
 # Path: app/features/phonetic_correction/service/correction_api.py
 
 import logging
@@ -134,7 +134,13 @@ class PhoneticCorrectionAPI:
                     pattern = re.compile(rf'(?<!\w){escaped_target}(?!\w)', re.IGNORECASE)
 
                     if pattern.search(new_text):
-                        new_text = pattern.sub(patch.correction, new_text).strip()
+                        # ==========================================================
+                        # CRITICAL FIX: Regex Replacement Safety
+                        # ==========================================================
+                        # Pass correction via lambda so re.sub treats it as a raw literal,
+                        # preventing hallucinated backslashes from being parsed as group IDs.
+                        new_text = pattern.sub(lambda m: patch.correction, new_text).strip()
+
                         applied_to_this_sentence.append(patch)
 
                         if patch.correction == "":

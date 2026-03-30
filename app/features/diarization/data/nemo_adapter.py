@@ -1,4 +1,4 @@
-# Canvas: nemo_diarization_adapter_v6
+# Canvas: nemo_diarization_adapter_v7
 # Path: app/features/diarization/data/nemo_adapter.py
 
 import os
@@ -61,7 +61,6 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                 tmp_path = Path(tmpdir)
 
                 # --- ENFORCE 16KHz MONO ---
-                # Ensure the audio file is strictly Mono and 16kHz to prevent NeMo Shape Mismatches.
                 waveform, sample_rate = torchaudio.load(audio_path_obj)
                 needs_rewrite = False
 
@@ -78,12 +77,7 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                     processed_audio_path = tmp_path / f"{audio_id}_mono.wav"
                     torchaudio.save(processed_audio_path, waveform, 16000)
                     audio_path_obj = processed_audio_path
-
-                    # --- FILENAME SYNC FIX ---
-                    # Update the audio_id so the RTTM file lookup matches what NeMo generates
                     audio_id = audio_path_obj.stem
-                    # -------------------------
-                # -------------------------------
 
                 # 1. Oracle VAD RTTM
                 vad_rttm_path = tmp_path / f"{audio_id}.rttm"
@@ -112,13 +106,8 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                     "num_workers": 1,
                     "sample_rate": 16000,
 
-                    # ==========================================================
-                    # CRITICAL FIX: The Enterprise VRAM Throttle
-                    # ==========================================================
-                    # Was 64. Clamping this to 16 completely flattens the Activation
-                    # VRAM curve, preventing the 2GB+ spike that causes OOM on long files.
+                    # Enterprise VRAM Throttle
                     "batch_size": 16,
-                    # ==========================================================
 
                     "verbose": False,
                     "diarizer": {
@@ -147,10 +136,16 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                         "speaker_embeddings": {
                             "model_path": model.model_instance,
                             "parameters": {
-                                "window_length_in_sec": [1.5, 1.25, 1.0, 0.75, 0.5],
-                                "shift_length_in_sec": [0.75, 0.625, 0.5, 0.375, 0.25],
-                                "multiscale_weights": [1, 1, 1, 1, 1],
+                                # ==========================================================
+                                # CRITICAL FIX: The 2-Scale VRAM Compromise
+                                # ==========================================================
+                                # Drastically reduces O(N^2) Spectral Clustering Matrix Size
+                                # while retaining the 0.5s window for rapid legal objections.
+                                "window_length_in_sec": [1.5, 0.5],
+                                "shift_length_in_sec": [0.75, 0.25],
+                                "multiscale_weights": [1, 1],
                                 "save_embeddings": False
+                                # ==========================================================
                             }
                         },
                         "clustering": {
@@ -173,8 +168,6 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                     diarizer.diarize()
                 except Exception as fallback_err:
                     err_str = str(fallback_err).lower()
-
-                    # 1. Math/Clustering anomalies indicative of a monologue
                     is_math_error = isinstance(fallback_err, (ValueError, IndexError, ArithmeticError))
                     is_clustering_fault = "linalg" in err_str or "singular matrix" in err_str or "converge" in err_str
 
@@ -190,14 +183,12 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                         ]
                         return DiarizationMap(source_id=source_id, segments=fallback_segments)
 
-                    # 2. Re-raise true system/configuration crashes (AttributeError, RuntimeError, etc.)
                     raise fallback_err
                 # ----------------------------------
 
                 # 5. Parse Output
                 pred_rttm_path = tmp_path / "pred_rttms" / f"{audio_id}.rttm"
                 if not pred_rttm_path.exists():
-                    # Fallback if it completed but failed to write the file (or file mismatch)
                     print(f"[DIARIZATION FALLBACK] RTTM output missing at {pred_rttm_path}. Applying fallback.")
                     fallback_segments = [
                         DiarizationSegment(

@@ -1,4 +1,4 @@
-# Canvas: test_punctuation_adapter_v3
+# Canvas: test_punctuation_adapter_v4
 # Path: tests/features/sentence_reconstruction/data/test_punctuation_adapter.py
 
 import pytest
@@ -21,9 +21,15 @@ class TestPunctuationAdapter:
             required_vram_mb=500.0
         )
 
+    @patch("app.features.sentence_reconstruction.data.punctuation_adapter.torch.cuda.is_available", return_value=True)
     @patch("app.features.sentence_reconstruction.data.punctuation_adapter.pipeline")
     @patch("os.path.exists")
-    def test_load_success(self, mock_exists, mock_pipeline, manifest):
+    def test_load_success_enforces_native_gpu_chunking(self, mock_exists, mock_pipeline, mock_cuda, manifest):
+        """
+        CRITICAL TEST: Ensures that the Hugging Face pipeline is strictly instantiated
+        with stride=16 and ignore_labels=["O", "0"] to prevent the 512-token truncation bug
+        that causes massive infinite run-on sentences.
+        """
         mock_exists.return_value = True
         mock_pipe_instance = MagicMock()
         mock_pipeline.return_value = mock_pipe_instance
@@ -34,13 +40,15 @@ class TestPunctuationAdapter:
         assert loaded_model.manifest == manifest
         assert loaded_model.model_instance == mock_pipe_instance
 
-        # CRITICAL FIX: Assertions updated to match actual adapter changes
+        # Prove the pipeline was initialized with the native HF chunking arguments
         mock_pipeline.assert_called_once_with(
             task="token-classification",
             model=manifest.model_path,
             tokenizer=manifest.model_path,
             device=0,
             aggregation_strategy="simple",
+            stride=16,
+            ignore_labels=["O"],
             model_kwargs={"local_files_only": True}
         )
 
