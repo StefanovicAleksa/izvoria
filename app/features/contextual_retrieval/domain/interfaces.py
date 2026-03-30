@@ -1,4 +1,4 @@
-# Canvas: contextual_interfaces_v1
+# Canvas: contextual_interfaces_v2
 # Path: app/features/contextual_retrieval/domain/interfaces.py
 
 import uuid
@@ -12,7 +12,7 @@ from app.features.contextual_retrieval.domain.entities import ContextualizedTran
 
 class ISLMContextAdapter(IModelLoader, ABC):
     """
-    Contract for the Small Language Model (SLM) Adapter (e.g., Llama 3.2 1B/3B via llama.cpp).
+    Contract for the Small Language Model (SLM) Adapter.
     Inherits from IModelLoader to support strict VRAM management via the Orchestrator.
     """
 
@@ -39,6 +39,14 @@ class IContextualRepository(ABC):
     @abstractmethod
     def save(self, transcript: ContextualizedTranscript) -> ContextualizedTranscript:
         """Saves a new Contextualized Transcript to the database."""
+        pass
+
+    @abstractmethod
+    def update(self, transcript: ContextualizedTranscript) -> ContextualizedTranscript:
+        """
+        Overwrites the JSONB chunks column for an existing transcript.
+        Used to persist state changes (like `needs_visual` flags) without replacing the whole row.
+        """
         pass
 
     @abstractmethod
