@@ -1,4 +1,4 @@
-# Canvas: test_contextualizer_api_integration_v1
+# Canvas: test_contextualizer_api_integration_v3
 # Path: integration_tests/features/contextual_retrieval/test_contextualizer_api_integration.py
 
 import os
@@ -19,7 +19,7 @@ from app.features.phonetic_correction.domain.entities import PhoneticCorrectedTr
 from app.features.contextual_retrieval.data.repositories import ContextualRepository
 from app.features.contextual_retrieval.data.slm_adapter import SLMContextAdapter
 from app.features.contextual_retrieval.service.contextualizer_api import ContextualizerAPI
-from app.features.contextual_retrieval.domain.entities import ContextualizedTranscript
+from app.features.contextual_retrieval.domain.entities import ContextualizedTranscript, ContextualizedChunk
 
 
 class TestContextualizerAPIIntegration:
@@ -145,3 +145,24 @@ class TestContextualizerAPIIntegration:
         assert len(db_transcript.chunks[0].sentences) == 4
 
         print(f"\n[DEBUG] Generated Context: {chunk.context_string}")
+
+    def test_update_transcript_modifies_jsonb_in_db(self, isolated_setup: uuid.UUID, live_api: ContextualizerAPI):
+        """Verifies that we can load a transcript, modify its chunk flags, and save it back using update_transcript."""
+        source_id = isolated_setup
+
+        # 1. Create and save initial transcript
+        chunk = ContextualizedChunk(original_text="Test", needs_visual=False)
+        transcript = ContextualizedTranscript(source_id=source_id, chunks=[chunk])
+        live_api._repo.save(transcript)
+
+        # 2. Modify the chunk (immutable copy)
+        updated_chunk = chunk.model_copy(update={"needs_visual": True})
+        updated_transcript = transcript.model_copy(update={"chunks": [updated_chunk]})
+
+        # 3. Call the API update
+        result = live_api.update_transcript(updated_transcript)
+        assert result.chunks[0].needs_visual is True
+
+        # 4. Fetch directly from the DB to verify the JSONB overwrite was successful
+        db_transcript = live_api._repo.get_by_source_id(source_id)
+        assert db_transcript.chunks[0].needs_visual is True

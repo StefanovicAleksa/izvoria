@@ -1,4 +1,4 @@
-# Canvas: test_contextualizer_api_v1
+# Canvas: test_contextualizer_api_v2
 # Path: tests/features/contextual_retrieval/service/test_contextualizer_api.py
 
 import uuid
@@ -30,6 +30,16 @@ class TestContextualizerAPI:
             slm_adapter=mocks["slm_adapter"]
         )
 
+    def test_update_transcript_delegates_to_repo(self, api, mocks):
+        """Verifies the new boundary method correctly proxies to the repository."""
+        mock_transcript = MagicMock(spec=ContextualizedTranscript)
+        mocks["repo"].update.return_value = mock_transcript
+
+        result = api.update_transcript(mock_transcript)
+
+        assert result == mock_transcript
+        mocks["repo"].update.assert_called_once_with(mock_transcript)
+
     def test_execute_idempotent_return(self, api, mocks):
         source_id = uuid.uuid4()
         mock_existing = ContextualizedTranscript(source_id=source_id, chunks=[])
@@ -60,7 +70,6 @@ class TestContextualizerAPI:
         source_id = uuid.uuid4()
         mocks["repo"].get_by_source_id.return_value = None
 
-        # Setup 1 Sentence
         dummy_sentence = ReconstructedSentence(
             sentence_id=uuid.uuid4(), text="I have angina.", speaker_id="S0", start_sec=0, end_sec=1, words=[]
         )
@@ -77,7 +86,6 @@ class TestContextualizerAPI:
 
         result = api.execute(dummy_input, release_after=True)
 
-        # Verify GPU execution
         mocks["orchestrator"].acquire_model.assert_called_once()
         mocks["slm_adapter"].generate_context.assert_called_once_with(
             model=mock_loaded_model,
@@ -88,7 +96,6 @@ class TestContextualizerAPI:
             mock_loaded_model, mocks["slm_adapter"], flush=True
         )
 
-        # Verify output structure
         assert len(result.chunks) == 1
         assert result.chunks[0].context_string == "Patient statement."
         assert result.chunks[0].original_text == "I have angina."
@@ -108,13 +115,11 @@ class TestContextualizerAPI:
         mock_loaded_model = MagicMock()
         mocks["orchestrator"].acquire_model.return_value = mock_loaded_model
 
-        # Simulate SLM crashing
         mocks["slm_adapter"].generate_context.side_effect = SLMInferenceError("Out of Memory")
 
         with pytest.raises(SLMInferenceError):
             api.execute(dummy_input, release_after=True)
 
-        # The finally block MUST have executed
         mocks["orchestrator"].release_model.assert_called_once_with(
             mock_loaded_model, mocks["slm_adapter"], flush=True
         )
