@@ -1,5 +1,6 @@
-# filename: test_storage_api_v2.py
-# path: tests/features/storage/test_storage_api.py
+# Canvas: test_storage_api_v3
+# Path: tests/features/storage/test_storage_api.py
+
 import pytest
 import uuid
 from unittest.mock import Mock, patch, MagicMock
@@ -9,6 +10,7 @@ from typing import cast
 from app.features.storage.service.storage_api import StorageAPI
 from app.features.storage.domain.entities import Source, SourceType, File
 from app.features.storage.exceptions.base import StorageError
+from app.features.storage.exceptions.not_found import FileNotFound
 
 
 class TestStorageAPI:
@@ -39,6 +41,50 @@ class TestStorageAPI:
 
         assert result == mock_file
         repo_mock.get_file_by_id.assert_called_once_with(file_id)
+
+    @patch("app.features.storage.service.storage_api.Path")
+    def test_get_file_path_happy_path(self, mock_path_cls, api):
+        """Happy Path: Retrieves the physical Path object when DB and disk agree."""
+        repo_mock = cast(Mock, api.repository)
+        mock_file = MagicMock(spec=File)
+        mock_file.file_path = "/mock/vault/frame.jpg"
+        file_id = uuid.uuid4()
+        repo_mock.get_file_by_id.return_value = mock_file
+
+        mock_path_obj = MagicMock()
+        mock_path_obj.exists.return_value = True
+        mock_path_cls.return_value = mock_path_obj
+
+        result = api.get_file_path(file_id)
+
+        assert result == mock_path_obj
+        repo_mock.get_file_by_id.assert_called_once_with(file_id)
+        mock_path_cls.assert_called_once_with("/mock/vault/frame.jpg")
+
+    def test_get_file_path_db_record_missing(self, api):
+        """Error Path: Fails immediately if the File UUID is not in the DB."""
+        repo_mock = cast(Mock, api.repository)
+        file_id = uuid.uuid4()
+        repo_mock.get_file_by_id.return_value = None
+
+        with pytest.raises(FileNotFound, match="Database record missing"):
+            api.get_file_path(file_id)
+
+    @patch("app.features.storage.service.storage_api.Path")
+    def test_get_file_path_physical_file_missing(self, mock_path_cls, api):
+        """Error Path: DB record exists, but file is missing from hard drive."""
+        repo_mock = cast(Mock, api.repository)
+        mock_file = MagicMock(spec=File)
+        mock_file.file_path = "/mock/vault/ghost_frame.jpg"
+        file_id = uuid.uuid4()
+        repo_mock.get_file_by_id.return_value = mock_file
+
+        mock_path_obj = MagicMock()
+        mock_path_obj.exists.return_value = False
+        mock_path_cls.return_value = mock_path_obj
+
+        with pytest.raises(FileNotFoundError, match="Physical file missing"):
+            api.get_file_path(file_id)
 
     @patch("app.features.storage.service.storage_api.mimetypes.guess_type")
     @patch("app.features.storage.service.storage_api.Path")

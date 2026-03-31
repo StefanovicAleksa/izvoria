@@ -1,5 +1,5 @@
-# filename: storage_api_v2.py
-# path: app/features/storage/service/storage_api.py
+# Canvas: storage_api_v3
+# Path: app/features/storage/service/storage_api.py
 import os
 import uuid
 import mimetypes
@@ -11,6 +11,8 @@ from app.features.storage.domain.interfaces import IStorageRepository
 from app.features.storage.data.file_manager import FileManager
 from app.features.storage.utils.hashing import calculate_file_hash
 from app.features.storage.exceptions.base import StorageError
+from app.features.storage.exceptions.not_found import FileNotFound
+
 
 class StorageAPI:
     def __init__(self, repository: IStorageRepository):
@@ -89,6 +91,21 @@ class StorageAPI:
     def get_file(self, file_id: uuid.UUID) -> Optional[File]:
         """Fetches a standalone raw file directly by its UUID."""
         return self.repository.get_file_by_id(file_id)
+
+    def get_file_path(self, file_id: uuid.UUID) -> Path:
+        """
+        Fetches a file record and strictly verifies the physical file exists in the vault.
+        Used securely by internal features (like Visual Analysis) to locate JPEGs.
+        """
+        file_record = self.repository.get_file_by_id(file_id)
+        if not file_record:
+            raise FileNotFound(f"Database record missing for file ID: {file_id}")
+
+        physical_path = Path(file_record.file_path)
+        if not physical_path.exists():
+            raise FileNotFoundError(f"Physical file missing from Onyx Vault: {physical_path}")
+
+        return physical_path
 
     def list_sources(self) -> List[Source]:
         return self.repository.list_all()

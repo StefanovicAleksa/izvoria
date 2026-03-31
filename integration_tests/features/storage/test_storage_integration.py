@@ -1,10 +1,13 @@
-# filename: integration_tests/features/storage/test_storage_integration.py
+# Canvas: test_storage_integration_v2
+# Path: integration_tests/features/storage/test_storage_integration.py
 
 import pytest
+import uuid
 from pathlib import Path
 from app.features.storage.service.storage_api import StorageAPI
 from app.features.storage.data.repositories import StorageRepository
 from app.features.storage.domain.entities import SourceType, File
+from app.features.storage.exceptions.not_found import FileNotFound
 
 
 class TestStorageIntegration:
@@ -41,6 +44,28 @@ class TestStorageIntegration:
         vault_path = Path(vaulted_file.file_path)
         assert vault_path.exists()
         assert vault_path.read_bytes() == file_content
+
+    def test_get_file_path_integration(self, api, tmp_path):
+        """Tests the robust physical path retrieval for vaulted files."""
+        # 1. Ingest a real file (mimicking Phase 9 frame extraction)
+        source_file = tmp_path / "vision_frame_0001.jpg"
+        source_file.write_bytes(b"fake_jpeg_pixels")
+
+        vaulted_file = api.ingest_raw_file(str(source_file))
+
+        # 2. Happy Path: Retrieve the verified path
+        verified_path = api.get_file_path(vaulted_file.id)
+        assert verified_path.exists()
+        assert verified_path.read_bytes() == b"fake_jpeg_pixels"
+
+        # 3. Error Path 1: Database record completely missing
+        with pytest.raises(FileNotFound, match="Database record missing"):
+            api.get_file_path(uuid.uuid4())
+
+        # 4. Error Path 2: Physical file maliciously deleted, but DB record remains
+        verified_path.unlink()  # Delete from the physical disk
+        with pytest.raises(FileNotFoundError, match="Physical file missing from Onyx Vault"):
+            api.get_file_path(vaulted_file.id)
 
     def test_end_to_end_ingestion(self, api, tmp_path):
         """Scenario: Ingest, Vault, and Deduplicate a Source File."""
@@ -90,7 +115,6 @@ class TestStorageIntegration:
         # Assertion 4: Disk check - exactly 1 file should exist
         vault_files = list(api.file_manager.base_path.rglob("*.*"))
         assert len(vault_files) == 1
-
 
     def test_ingest_move_mode(self, api, tmp_path):
         """Scenario: Test 'Move' mode where original file is deleted."""
