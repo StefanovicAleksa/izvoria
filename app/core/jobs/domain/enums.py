@@ -1,4 +1,4 @@
-# Canvas: jobs_enums_v7
+# Canvas: jobs_enums_v12
 # Path: app/core/jobs/domain/enums.py
 
 from enum import Enum
@@ -22,3 +22,6 @@ class JobType(str, Enum):
     SENTENCE_RECONSTRUCTION = "sentence_reconstruction"
     PHONETIC_CORRECTION = "phonetic_correction"
     CONTEXTUAL_RETRIEVAL = "contextual_retrieval" # Phase 9
+    VISUAL_CUE_DETECTION = "visual_cue_detection" # Phase 10
+    FRAME_EXTRACTION = "frame_extraction" # Phase 11
+    VISUAL_ANALYSIS = "visual_analysis" # Phase 12

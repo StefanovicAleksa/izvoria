@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_unit_v10
+# Canvas: test_batch_media_pipeline_unit_v11
 # Path: tests/orchestration/service/pipelines/test_batch_media_pipeline_unit.py
 
 import pytest
@@ -17,7 +17,10 @@ from app.orchestration.domain.entities import (
     DiarizeJobResult,
     SentenceReconstructionJobResult,
     PhoneticCorrectionJobResult,
-    ContextualRetrievalJobResult
+    ContextualRetrievalJobResult,
+    VisualCueDetectionJobResult,
+    FrameExtractionJobResult,
+    VisualAnalysisJobResult
 )
 from app.features.storage.domain.entities import SourceType
 
@@ -54,8 +57,18 @@ class TestBatchMediaPipelineUnit:
     def mock_contextual(self): return Mock()
 
     @pytest.fixture
+    def mock_visual_cue(self): return Mock()
+
+    @pytest.fixture
+    def mock_frame_extraction(self): return Mock()
+
+    @pytest.fixture
+    def mock_visual_analysis(self): return Mock()
+
+    @pytest.fixture
     def pipeline(self, mock_scan, mock_ingest, mock_extract, mock_vad, mock_domain_adaptation, mock_transcribe,
-                 mock_diarize, mock_sentence, mock_phonetic, mock_contextual):
+                 mock_diarize, mock_sentence, mock_phonetic, mock_contextual, mock_visual_cue, mock_frame_extraction,
+                 mock_visual_analysis):
         return BatchMediaPipeline(
             scan_phase=mock_scan,
             ingest_phase=mock_ingest,
@@ -66,12 +79,16 @@ class TestBatchMediaPipelineUnit:
             diarize_phase=mock_diarize,
             sentence_reconstruction_phase=mock_sentence,
             phonetic_correction_phase=mock_phonetic,
-            contextual_retrieval_phase=mock_contextual
+            contextual_retrieval_phase=mock_contextual,
+            visual_cue_detection_phase=mock_visual_cue,
+            frame_extraction_phase=mock_frame_extraction,
+            visual_analysis_phase=mock_visual_analysis
         )
 
     def test_pipeline_happy_path(self, pipeline, mock_scan, mock_ingest, mock_extract, mock_vad, mock_domain_adaptation,
-                                 mock_transcribe, mock_diarize, mock_sentence, mock_phonetic, mock_contextual):
-        """Tests that a fully successful run flows perfectly through all 9 phases."""
+                                 mock_transcribe, mock_diarize, mock_sentence, mock_phonetic, mock_contextual,
+                                 mock_visual_cue, mock_frame_extraction, mock_visual_analysis):
+        """Tests that a fully successful run flows perfectly through all 12 phases."""
         target_dir = "/dummy/path"
         source_id = uuid.uuid4()
 
@@ -105,12 +122,21 @@ class TestBatchMediaPipelineUnit:
         mock_contextual.execute.return_value = PhaseBatchResult(phase=PipelinePhase.CONTEXTUAL_RETRIEVAL,
                                                                 status=PhaseStatus.COMPLETED, items=[
                 ContextualRetrievalJobResult(source_id=source_id, success=True, contextual_transcript_id=uuid.uuid4())])
+        mock_visual_cue.execute.return_value = PhaseBatchResult(phase=PipelinePhase.VISUAL_CUE_DETECTION,
+                                                                status=PhaseStatus.COMPLETED, items=[
+                VisualCueDetectionJobResult(source_id=source_id, success=True, evaluated_transcript_id=uuid.uuid4())])
+        mock_frame_extraction.execute.return_value = PhaseBatchResult(phase=PipelinePhase.FRAME_EXTRACTION,
+                                                                      status=PhaseStatus.COMPLETED, items=[
+                FrameExtractionJobResult(source_id=source_id, success=True, extracted_chunks_count=1)])
+        mock_visual_analysis.execute.return_value = PhaseBatchResult(phase=PipelinePhase.VISUAL_ANALYSIS,
+                                                                     status=PhaseStatus.COMPLETED, items=[
+                VisualAnalysisJobResult(source_id=source_id, success=True, analyzed_chunks_count=1)])
 
         # Execute
         results = pipeline.process_directory(target_dir, SourceType.VIDEO)
 
         # Assertions
-        assert len(results) == 10  # 10 stages (9 phases + Contextual)
+        assert len(results) == 13  # 13 stages (Phase 1 to 12 + Phase 4.5 Domain Adaptation)
 
         # Assert Preloads triggered right before GPU bounds
         mock_vad.preload_model.assert_called_once()
@@ -119,6 +145,8 @@ class TestBatchMediaPipelineUnit:
         mock_sentence.preload_model.assert_called_once()
         mock_phonetic.preload_model.assert_called_once()
         mock_contextual.preload_model.assert_called_once()
+        mock_visual_cue.preload_model.assert_called_once()
+        mock_visual_analysis.preload_model.assert_called_once()
 
-        assert PipelinePhase.CONTEXTUAL_RETRIEVAL in results
-        assert results[PipelinePhase.CONTEXTUAL_RETRIEVAL].status == PhaseStatus.COMPLETED
+        assert PipelinePhase.VISUAL_ANALYSIS in results
+        assert results[PipelinePhase.VISUAL_ANALYSIS].status == PhaseStatus.COMPLETED

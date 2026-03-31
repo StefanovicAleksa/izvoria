@@ -1,11 +1,10 @@
-# Canvas: orchestration_entities_v9
+# Canvas: orchestration_entities_v14
 # Path: app/orchestration/domain/entities.py
 
 import uuid
 from typing import List, Optional, Any
 from pydantic import BaseModel, Field, ConfigDict
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
-
 
 # --- Individual Job Results ---
 
@@ -15,7 +14,6 @@ class ScanJobResult(BaseModel):
     file_paths: List[str]
     model_config = ConfigDict(frozen=True)
 
-
 class IngestJobResult(BaseModel):
     file_path: str
     success: bool
@@ -23,14 +21,12 @@ class IngestJobResult(BaseModel):
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 
-
 class AudioExtractionJobResult(BaseModel):
     source_id: uuid.UUID
     success: bool
     extracted_file_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
-
 
 class VadJobResult(BaseModel):
     """Result of Phase 4: Voice Activity Detection."""
@@ -40,7 +36,6 @@ class VadJobResult(BaseModel):
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 
-
 class DomainAdaptationJobResult(BaseModel):
     """Result of Phase 4.5: Domain Adaptation."""
     source_id: uuid.UUID
@@ -48,7 +43,6 @@ class DomainAdaptationJobResult(BaseModel):
     glossary_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
-
 
 class TranscribeJobResult(BaseModel):
     """Result of Phase 5: Transcription."""
@@ -58,7 +52,6 @@ class TranscribeJobResult(BaseModel):
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 
-
 class DiarizeJobResult(BaseModel):
     """Result of Phase 6: Speaker Diarization."""
     source_id: uuid.UUID
@@ -66,7 +59,6 @@ class DiarizeJobResult(BaseModel):
     diarization_map_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
-
 
 class IntelligenceBridgeJobResult(BaseModel):
     """Result of Phase: Intelligence Bridge (Multimodal Scene Mapping)."""
@@ -76,7 +68,6 @@ class IntelligenceBridgeJobResult(BaseModel):
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 
-
 class SentenceReconstructionJobResult(BaseModel):
     """Result of Phase 7: Sentence Reconstruction."""
     source_id: uuid.UUID
@@ -84,7 +75,6 @@ class SentenceReconstructionJobResult(BaseModel):
     reconstructed_transcript_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
-
 
 class PhoneticCorrectionJobResult(BaseModel):
     """Result of Phase 8: Phonetic Error Correction."""
@@ -94,7 +84,6 @@ class PhoneticCorrectionJobResult(BaseModel):
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 
-
 class ContextualRetrievalJobResult(BaseModel):
     """Result of Phase 9: Contextual Retrieval."""
     source_id: uuid.UUID
@@ -103,6 +92,29 @@ class ContextualRetrievalJobResult(BaseModel):
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 
+class VisualCueDetectionJobResult(BaseModel):
+    """Result of Phase 10: Visual Cue Detection."""
+    source_id: uuid.UUID
+    success: bool
+    evaluated_transcript_id: Optional[uuid.UUID] = None
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
+class FrameExtractionJobResult(BaseModel):
+    """Result of Phase 11: Frame Extraction."""
+    source_id: uuid.UUID
+    success: bool
+    extracted_chunks_count: int = 0
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
+class VisualAnalysisJobResult(BaseModel):
+    """Result of Phase 12: Visual Analysis (VLM)."""
+    source_id: uuid.UUID
+    success: bool
+    analyzed_chunks_count: int = 0
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
 
 # --- Aggregate Batch Results ---
 

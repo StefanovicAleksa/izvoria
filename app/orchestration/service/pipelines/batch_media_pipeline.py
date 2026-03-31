@@ -1,4 +1,4 @@
-# Canvas: batch_media_pipeline_v14
+# Canvas: batch_media_pipeline_v21
 # Path: app/orchestration/service/pipelines/batch_media_pipeline.py
 
 import uuid
@@ -15,6 +15,9 @@ from app.orchestration.domain.entities import (
     DiarizeJobResult,
     SentenceReconstructionJobResult,
     PhoneticCorrectionJobResult,
+    ContextualRetrievalJobResult,
+    VisualCueDetectionJobResult,
+    FrameExtractionJobResult,
 )
 from app.orchestration.exceptions.workflow import WorkflowStateError, WorkflowExecutionError
 
@@ -28,6 +31,9 @@ from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
 from app.orchestration.service.phases.phonetic_correction_phase import PhoneticCorrectionPhase
 from app.orchestration.service.phases.contextual_retrieval_phase import ContextualRetrievalPhase
+from app.orchestration.service.phases.visual_cue_detection_phase import VisualCueDetectionPhase
+from app.orchestration.service.phases.frame_extraction_phase import FrameExtractionPhase
+from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysisPhase
 
 
 class BatchMediaPipeline:
@@ -42,7 +48,10 @@ class BatchMediaPipeline:
             diarize_phase: DiarizePhase,
             sentence_reconstruction_phase: SentenceReconstructionPhase,
             phonetic_correction_phase: PhoneticCorrectionPhase,
-            contextual_retrieval_phase: ContextualRetrievalPhase
+            contextual_retrieval_phase: ContextualRetrievalPhase,
+            visual_cue_detection_phase: VisualCueDetectionPhase,
+            frame_extraction_phase: FrameExtractionPhase,
+            visual_analysis_phase: VisualAnalysisPhase
     ):
         self._scan_phase = scan_phase
         self._ingest_phase = ingest_phase
@@ -54,6 +63,9 @@ class BatchMediaPipeline:
         self._sentence_reconstruction_phase = sentence_reconstruction_phase
         self._phonetic_correction_phase = phonetic_correction_phase
         self._contextual_retrieval_phase = contextual_retrieval_phase
+        self._visual_cue_detection_phase = visual_cue_detection_phase
+        self._frame_extraction_phase = frame_extraction_phase
+        self._visual_analysis_phase = visual_analysis_phase
 
     def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[
         PipelinePhase, PhaseBatchResult]:
@@ -121,7 +133,6 @@ class BatchMediaPipeline:
                 if isinstance(item, VadJobResult) and item.success
             ]
             if not successful_vad_items:
-                # If VAD fails completely, there is no audio to transcribe. Halt.
                 return pipeline_results
 
             # ==========================================
@@ -131,8 +142,6 @@ class BatchMediaPipeline:
             pipeline_results[PipelinePhase.DOMAIN_ADAPTATION] = domain_result
 
             if domain_result.status == PhaseStatus.FAILED:
-                # NON-FATAL ERROR: If we fail to build a custom glossary, we tolerate the failure
-                # and proceed to standard transcription without domain-specific hints.
                 pass
 
             # ==========================================
@@ -140,7 +149,6 @@ class BatchMediaPipeline:
             # ==========================================
             self._transcribe_phase.preload_model()
 
-            # Transcription relies on VAD output, fetching the glossary from the DB automatically.
             transcribe_result = self._transcribe_phase.execute(successful_vad_items)
             pipeline_results[PipelinePhase.TRANSCRIBE] = transcribe_result
 
@@ -149,7 +157,6 @@ class BatchMediaPipeline:
                 if isinstance(item, TranscribeJobResult) and item.success
             ]
             if not successful_transcribe_items:
-                # If transcription fails, subsequent NLP tasks cannot proceed. Halt.
                 return pipeline_results
 
             # ==========================================
@@ -205,7 +212,52 @@ class BatchMediaPipeline:
             contextual_result = self._contextual_retrieval_phase.execute(successful_phonetic_items)
             pipeline_results[PipelinePhase.CONTEXTUAL_RETRIEVAL] = contextual_result
 
-            # End of pipeline. Returning the full result dictionary containing all phase statuses and errors.
+            successful_contextual_items: List[ContextualRetrievalJobResult] = [
+                item for item in contextual_result.items
+                if isinstance(item, ContextualRetrievalJobResult) and item.success
+            ]
+            if not successful_contextual_items:
+                return pipeline_results
+
+            # ==========================================
+            # PHASE 10: VISUAL CUE DETECTION (GPU BOUND)
+            # ==========================================
+            # FIXED: Preload triggered here, AFTER Phase 9 safely unloaded the shared model instance
+            self._visual_cue_detection_phase.preload_model()
+
+            visual_cue_result = self._visual_cue_detection_phase.execute(successful_contextual_items)
+            pipeline_results[PipelinePhase.VISUAL_CUE_DETECTION] = visual_cue_result
+
+            successful_cue_items: List[VisualCueDetectionJobResult] = [
+                item for item in visual_cue_result.items
+                if isinstance(item, VisualCueDetectionJobResult) and item.success
+            ]
+            if not successful_cue_items:
+                return pipeline_results
+
+            # ==========================================
+            # PHASE 11: FRAME EXTRACTION (CPU BOUND)
+            # ==========================================
+            # This concurrency is perfectly safe. VRAM is completely empty right now, so we spin up
+            # the heavy 6.5GB VLM on the GPU while the CPU thrashes FFmpeg locally.
+            self._visual_analysis_phase.preload_model()
+
+            extraction_result = self._frame_extraction_phase.execute(successful_cue_items)
+            pipeline_results[PipelinePhase.FRAME_EXTRACTION] = extraction_result
+
+            successful_extraction_items: List[FrameExtractionJobResult] = [
+                item for item in extraction_result.items
+                if isinstance(item, FrameExtractionJobResult) and item.success
+            ]
+            if not successful_extraction_items:
+                return pipeline_results
+
+            # ==========================================
+            # PHASE 12: VISUAL ANALYSIS (GPU BOUND)
+            # ==========================================
+            analysis_result = self._visual_analysis_phase.execute(successful_extraction_items)
+            pipeline_results[PipelinePhase.VISUAL_ANALYSIS] = analysis_result
+
             return pipeline_results
 
         except WorkflowStateError as e:

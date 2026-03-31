@@ -1,4 +1,4 @@
-# Canvas: main_v17
+# Canvas: main_v20
 # Path: app/main.py
 
 import argparse
@@ -60,6 +60,19 @@ from app.features.contextual_retrieval.data.repositories import ContextualReposi
 from app.features.contextual_retrieval.data.slm_adapter import SLMContextAdapter
 from app.features.contextual_retrieval.service.contextualizer_api import ContextualizerAPI
 
+from app.features.visual_cue_detection.data.llama_adapter import LlamaDetectorAdapter
+from app.features.visual_cue_detection.service.detection_api import VisualCueDetectionAPI
+
+from app.features.frame_extraction.data.ffmpeg_adapter import FFmpegExtractionAdapter
+from app.features.frame_extraction.data.repositories import FrameExtractionRepository
+from app.features.frame_extraction.service.extraction_api import FrameExtractionAPI
+from app.features.frame_extraction.utils.quality_filter import QualityFilter
+from app.features.frame_extraction.utils.frame_deduplicator import FrameDeduplicator
+
+from app.features.visual_analysis.data.vlm_adapter import LlamaVLMAdapter
+from app.features.visual_analysis.data.repositories import VisualAnalysisRepository
+from app.features.visual_analysis.service.analysis_api import VisualAnalysisAPI
+
 from app.orchestration.domain.enums import PipelinePhase
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
@@ -71,6 +84,9 @@ from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
 from app.orchestration.service.phases.phonetic_correction_phase import PhoneticCorrectionPhase
 from app.orchestration.service.phases.contextual_retrieval_phase import ContextualRetrievalPhase
+from app.orchestration.service.phases.visual_cue_detection_phase import VisualCueDetectionPhase
+from app.orchestration.service.phases.frame_extraction_phase import FrameExtractionPhase
+from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysisPhase
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 
 
@@ -209,6 +225,41 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         required_vram_mb=settings.DOMAIN_CLASSIFIER_MODEL_VRAM_REQUIREMENT_MB
     )
 
+    # 10. Visual Cue Detection (Phase 10)
+    cue_detector_adapter = LlamaDetectorAdapter()
+    visual_cue_api = VisualCueDetectionAPI(
+        detector_adapter=cue_detector_adapter,
+        contextualizer_api=contextualizer_api
+    )
+
+    # 11. Frame Extraction (Phase 11)
+    frame_repo = FrameExtractionRepository(db_manager)
+    ffmpeg_ext_adapter = FFmpegExtractionAdapter()
+    quality_filter = QualityFilter()
+    deduplicator = FrameDeduplicator()
+    frame_extraction_api = FrameExtractionAPI(
+        repository=frame_repo,
+        ffmpeg_adapter=ffmpeg_ext_adapter,
+        storage_api=storage_api,
+        quality_filter=quality_filter,
+        deduplicator=deduplicator
+    )
+
+    # 12. Visual Analysis (Phase 12)
+    visual_analysis_repo = VisualAnalysisRepository(db_manager)
+    vlm_adapter = LlamaVLMAdapter()
+    visual_analysis_api = VisualAnalysisAPI(
+        repository=visual_analysis_repo,
+        vlm_adapter=vlm_adapter,
+        storage_api=storage_api
+    )
+
+    vision_manifest = ModelManifest(
+        model_type=ModelType.VISION,
+        model_path=settings.VISION_MODEL_PATH,
+        required_vram_mb=settings.VISION_VRAM_REQUIREMENT_MB
+    )
+
     # --- Orchestration Phases ---
     scan_phase = ScanPhase(job_manager, scanner)
     ingest_phase = IngestPhase(job_manager, storage_api)
@@ -277,6 +328,32 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         adapter=slm_adapter
     )
 
+    visual_cue_detection_phase = VisualCueDetectionPhase(
+        job_manager=job_manager,
+        detection_api=visual_cue_api,
+        contextual_repo=contextual_repo,
+        async_model_service=async_model_service,
+        manifest=contextual_manifest,
+        adapter=slm_adapter  # Reuse SLM Loader
+    )
+
+    frame_extraction_phase = FrameExtractionPhase(
+        job_manager=job_manager,
+        extraction_api=frame_extraction_api,
+        contextual_repo=contextual_repo,
+        storage_api=storage_api
+    )
+
+    visual_analysis_phase = VisualAnalysisPhase(
+        job_manager=job_manager,
+        analysis_api=visual_analysis_api,
+        contextual_repo=contextual_repo,
+        frame_repo=frame_repo,
+        async_model_service=async_model_service,
+        manifest=vision_manifest,
+        adapter=vlm_adapter
+    )
+
     # Pipeline Assembly
     return BatchMediaPipeline(
         scan_phase=scan_phase,
@@ -288,7 +365,10 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         diarize_phase=diarize_phase,
         sentence_reconstruction_phase=sentence_reconstruction_phase,
         phonetic_correction_phase=phonetic_correction_phase,
-        contextual_retrieval_phase=contextual_retrieval_phase
+        contextual_retrieval_phase=contextual_retrieval_phase,
+        visual_cue_detection_phase=visual_cue_detection_phase,
+        frame_extraction_phase=frame_extraction_phase,
+        visual_analysis_phase=visual_analysis_phase
     )
 
 
@@ -329,6 +409,9 @@ def main() -> None:
 
         storage_repo = StorageRepository(db_manager)
 
+        output_dir = target_path.joinpath("onyx_outputs")
+        output_dir.mkdir(parents=True, exist_ok=True)
+
         if PipelinePhase.PHONETIC_CORRECTION in results:
             print("\n==================================================")
             print("  WRITING CORRECTED TRANSCRIPTS TO DISK")
@@ -337,9 +420,6 @@ def main() -> None:
             phonetic_repo = PhoneticRepository(db_manager)
             target_batch = results[PipelinePhase.PHONETIC_CORRECTION]
 
-            output_dir = target_path / "output_transcripts"
-            output_dir.mkdir(parents=True, exist_ok=True)
-
             for item in target_batch.items:
                 if item.success and item.source_id:
                     source = storage_repo.get_by_id(item.source_id)
@@ -347,7 +427,7 @@ def main() -> None:
 
                     if source and corrected_transcript:
                         safe_name = Path(source.name).stem
-                        out_file = output_dir / f"{safe_name}_transcript.txt"
+                        out_file = output_dir.joinpath(f"{safe_name}_transcript.txt")
 
                         try:
                             formatted_text = ""
@@ -357,7 +437,32 @@ def main() -> None:
 
                             with open(out_file, "w", encoding="utf-8") as f:
                                 f.write(formatted_text)
-                            print(f"  [SUCCESS] Saved: {out_file}")
+                            print(f"  [SUCCESS] Saved Transcript: {out_file}")
+                        except IOError as e:
+                            print(f"  [ERROR] Failed to write {out_file.name}: {e}")
+
+        if PipelinePhase.VISUAL_ANALYSIS in results:
+            print("\n==================================================")
+            print("  WRITING VISUAL ANALYSIS REPORTS TO DISK")
+            print("==================================================")
+
+            target_batch = results[PipelinePhase.VISUAL_ANALYSIS]
+
+            for item in target_batch.items:
+                if item.success and item.source_id:
+                    source = storage_repo.get_by_id(item.source_id)
+                    if source:
+                        safe_name = Path(source.name).stem
+                        out_file = output_dir.joinpath(f"{safe_name}_visual_report.txt")
+
+                        try:
+                            formatted_text = f"Visual Analysis Report for {source.name}\n"
+                            formatted_text += "=" * 50 + "\n\n"
+                            formatted_text += f"Analyzed chunks: {item.analyzed_chunks_count}\n"
+
+                            with open(out_file, "w", encoding="utf-8") as f:
+                                f.write(formatted_text)
+                            print(f"  [SUCCESS] Saved Visual Report: {out_file}")
                         except IOError as e:
                             print(f"  [ERROR] Failed to write {out_file.name}: {e}")
 

@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_integration_v17
+# Canvas: test_batch_media_pipeline_integration_v18
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
 import subprocess
@@ -58,6 +58,19 @@ from app.features.contextual_retrieval.data.repositories import ContextualReposi
 from app.features.contextual_retrieval.data.slm_adapter import SLMContextAdapter
 from app.features.contextual_retrieval.service.contextualizer_api import ContextualizerAPI
 
+from app.features.visual_cue_detection.data.llama_adapter import LlamaDetectorAdapter
+from app.features.visual_cue_detection.service.detection_api import VisualCueDetectionAPI
+
+from app.features.frame_extraction.data.ffmpeg_adapter import FFmpegExtractionAdapter
+from app.features.frame_extraction.data.repositories import FrameExtractionRepository
+from app.features.frame_extraction.service.extraction_api import FrameExtractionAPI
+from app.features.frame_extraction.utils.quality_filter import QualityFilter
+from app.features.frame_extraction.utils.frame_deduplicator import FrameDeduplicator
+
+from app.features.visual_analysis.data.vlm_adapter import LlamaVLMAdapter
+from app.features.visual_analysis.data.repositories import VisualAnalysisRepository
+from app.features.visual_analysis.service.analysis_api import VisualAnalysisAPI
+
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
 from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPhase
@@ -68,6 +81,10 @@ from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
 from app.orchestration.service.phases.phonetic_correction_phase import PhoneticCorrectionPhase
 from app.orchestration.service.phases.contextual_retrieval_phase import ContextualRetrievalPhase
+from app.orchestration.service.phases.visual_cue_detection_phase import VisualCueDetectionPhase
+from app.orchestration.service.phases.frame_extraction_phase import FrameExtractionPhase
+from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysisPhase
+
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 
@@ -191,6 +208,40 @@ class TestBatchMediaPipelineIntegration:
             required_vram_mb=settings.DOMAIN_CLASSIFIER_MODEL_VRAM_REQUIREMENT_MB
         )
 
+        # Real Visual Cue Detection Feature (Phase 10)
+        cue_detector_adapter = LlamaDetectorAdapter()
+        visual_cue_api = VisualCueDetectionAPI(
+            detector_adapter=cue_detector_adapter,
+            contextualizer_api=contextualizer_api
+        )
+
+        # Real Frame Extraction Feature (Phase 11)
+        frame_repo = FrameExtractionRepository(db_manager)
+        ffmpeg_ext_adapter = FFmpegExtractionAdapter()
+        quality_filter = QualityFilter()
+        deduplicator = FrameDeduplicator()
+        frame_extraction_api = FrameExtractionAPI(
+            repository=frame_repo,
+            ffmpeg_adapter=ffmpeg_ext_adapter,
+            storage_api=storage_api,
+            quality_filter=quality_filter,
+            deduplicator=deduplicator
+        )
+
+        # Real Visual Analysis Feature (Phase 12)
+        visual_analysis_repo = VisualAnalysisRepository(db_manager)
+        vlm_adapter = LlamaVLMAdapter()
+        visual_analysis_api = VisualAnalysisAPI(
+            repository=visual_analysis_repo,
+            vlm_adapter=vlm_adapter,
+            storage_api=storage_api
+        )
+        vision_manifest = ModelManifest(
+            model_type=ModelType.VISION,
+            model_path=settings.VISION_MODEL_PATH,
+            required_vram_mb=settings.VISION_VRAM_REQUIREMENT_MB
+        )
+
         # Phases
         scan_phase = ScanPhase(job_manager, scanner)
         ingest_phase = IngestPhase(job_manager, storage_api)
@@ -216,6 +267,18 @@ class TestBatchMediaPipelineIntegration:
             job_manager, contextualizer_api, phonetic_repo, async_service, contextual_manifest, real_slm_adapter
         )
 
+        visual_cue_phase = VisualCueDetectionPhase(
+            job_manager, visual_cue_api, contextual_repo, async_service, contextual_manifest, real_slm_adapter
+        )
+
+        frame_extraction_phase = FrameExtractionPhase(
+            job_manager, frame_extraction_api, contextual_repo, storage_api
+        )
+
+        visual_analysis_phase = VisualAnalysisPhase(
+            job_manager, visual_analysis_api, contextual_repo, frame_repo, async_service, vision_manifest, vlm_adapter
+        )
+
         pipeline = BatchMediaPipeline(
             scan_phase=scan_phase,
             ingest_phase=ingest_phase,
@@ -226,7 +289,10 @@ class TestBatchMediaPipelineIntegration:
             diarize_phase=diarize_phase,
             sentence_reconstruction_phase=sentence_phase,
             phonetic_correction_phase=phonetic_phase,
-            contextual_retrieval_phase=contextual_phase
+            contextual_retrieval_phase=contextual_phase,
+            visual_cue_detection_phase=visual_cue_phase,
+            frame_extraction_phase=frame_extraction_phase,
+            visual_analysis_phase=visual_analysis_phase
         )
 
         yield pipeline, storage_api
@@ -235,12 +301,15 @@ class TestBatchMediaPipelineIntegration:
 
     @pytest.mark.integration
     def test_end_to_end_media_pipeline(self, pipeline_setup, tmp_path):
-        """Tests the seamless flow from Directory Scan -> Domain Adapt -> DB Generating Transcript -> Reconstructed Sentences -> Phonetic Correction -> Contextual Retrieval without mocks."""
+        """Tests the seamless flow from Directory Scan -> Domain Adapt -> DB Generating Transcript -> Reconstructed Sentences -> Phonetic Correction -> Contextual Retrieval -> Visual Analysis without mocks."""
         pipeline, storage_api = pipeline_setup
 
-        # Fail fast if SLM model is missing
+        # Fail fast if SLM or Vision models are missing
         if not os.path.exists(settings.DOMAIN_CLASSIFIER_MODEL_PATH):
-            pytest.skip(f"Integration test skipped due to missing SLM model at: {settings.DOMAIN_CLASSIFIER_MODEL_PATH}")
+            pytest.skip(
+                f"Integration test skipped due to missing SLM model at: {settings.DOMAIN_CLASSIFIER_MODEL_PATH}")
+        if not os.path.exists(settings.VISION_MODEL_PATH):
+            pytest.skip(f"Integration test skipped due to missing Vision model at: {settings.VISION_MODEL_PATH}")
 
         source_dir = tmp_path / "usb_drive"
         source_dir.mkdir()
@@ -271,14 +340,24 @@ class TestBatchMediaPipelineIntegration:
         assert PipelinePhase.SENTENCE_RECONSTRUCTION in results
         assert PipelinePhase.PHONETIC_CORRECTION in results
         assert PipelinePhase.CONTEXTUAL_RETRIEVAL in results
+        assert PipelinePhase.VISUAL_CUE_DETECTION in results
+        assert PipelinePhase.FRAME_EXTRACTION in results
+        assert PipelinePhase.VISUAL_ANALYSIS in results
 
-        assert results[PipelinePhase.SCAN].status == PhaseStatus.COMPLETED, f"Scan failed: {results[PipelinePhase.SCAN].errors}"
-        assert results[PipelinePhase.INGEST].status == PhaseStatus.COMPLETED, f"Ingest failed: {results[PipelinePhase.INGEST].errors}"
-        assert results[PipelinePhase.AUDIO_EXTRACTION].status == PhaseStatus.COMPLETED, f"Audio Extraction failed: {results[PipelinePhase.AUDIO_EXTRACTION].errors}"
-        assert results[PipelinePhase.VAD].status == PhaseStatus.COMPLETED, f"VAD failed: {results[PipelinePhase.VAD].errors}"
-        assert results[PipelinePhase.DOMAIN_ADAPTATION].status == PhaseStatus.COMPLETED, f"Domain Adaptation failed: {results[PipelinePhase.DOMAIN_ADAPTATION].errors}"
-        assert results[PipelinePhase.TRANSCRIBE].status == PhaseStatus.COMPLETED, f"Transcribe failed: {results[PipelinePhase.TRANSCRIBE].errors}"
-        assert results[PipelinePhase.DIARIZE].status == PhaseStatus.COMPLETED, f"Diarize failed: {results[PipelinePhase.DIARIZE].errors}"
+        assert results[
+                   PipelinePhase.SCAN].status == PhaseStatus.COMPLETED, f"Scan failed: {results[PipelinePhase.SCAN].errors}"
+        assert results[
+                   PipelinePhase.INGEST].status == PhaseStatus.COMPLETED, f"Ingest failed: {results[PipelinePhase.INGEST].errors}"
+        assert results[
+                   PipelinePhase.AUDIO_EXTRACTION].status == PhaseStatus.COMPLETED, f"Audio Extraction failed: {results[PipelinePhase.AUDIO_EXTRACTION].errors}"
+        assert results[
+                   PipelinePhase.VAD].status == PhaseStatus.COMPLETED, f"VAD failed: {results[PipelinePhase.VAD].errors}"
+        assert results[
+                   PipelinePhase.DOMAIN_ADAPTATION].status == PhaseStatus.COMPLETED, f"Domain Adaptation failed: {results[PipelinePhase.DOMAIN_ADAPTATION].errors}"
+        assert results[
+                   PipelinePhase.TRANSCRIBE].status == PhaseStatus.COMPLETED, f"Transcribe failed: {results[PipelinePhase.TRANSCRIBE].errors}"
+        assert results[
+                   PipelinePhase.DIARIZE].status == PhaseStatus.COMPLETED, f"Diarize failed: {results[PipelinePhase.DIARIZE].errors}"
 
         sentence_result = results[PipelinePhase.SENTENCE_RECONSTRUCTION]
         assert sentence_result.status == PhaseStatus.COMPLETED, f"Sentence Reconstruction failed: {sentence_result.errors}"
@@ -294,3 +373,16 @@ class TestBatchMediaPipelineIntegration:
         assert contextual_result.status == PhaseStatus.COMPLETED, f"Contextual Retrieval failed: {contextual_result.errors}"
         assert contextual_result.successful_count == 1
         assert contextual_result.items[0].contextual_transcript_id is not None
+
+        visual_cue_result = results[PipelinePhase.VISUAL_CUE_DETECTION]
+        assert visual_cue_result.status == PhaseStatus.COMPLETED, f"Visual Cue Detection failed: {visual_cue_result.errors}"
+        assert visual_cue_result.successful_count == 1
+        assert visual_cue_result.items[0].evaluated_transcript_id is not None
+
+        frame_result = results[PipelinePhase.FRAME_EXTRACTION]
+        assert frame_result.status == PhaseStatus.COMPLETED, f"Frame Extraction failed: {frame_result.errors}"
+        assert frame_result.successful_count == 1
+
+        analysis_result = results[PipelinePhase.VISUAL_ANALYSIS]
+        assert analysis_result.status == PhaseStatus.COMPLETED, f"Visual Analysis failed: {analysis_result.errors}"
+        assert analysis_result.successful_count == 1

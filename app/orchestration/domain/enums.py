@@ -16,6 +16,9 @@ class PipelinePhase(str, Enum):
     INTELLIGENCE_BRIDGE = "intelligence_bridge" # Kept in domain, benched from active pipeline
     PHONETIC_CORRECTION = "phonetic_correction"
     CONTEXTUAL_RETRIEVAL = "contextual_retrieval" # Phase 9
+    VISUAL_CUE_DETECTION = "visual_cue_detection"  # Phase 10
+    FRAME_EXTRACTION = "frame_extraction"  # Phase 11
+    VISUAL_ANALYSIS = "visual_analysis"  # Phase 12
 
 class PhaseStatus(str, Enum):
     """The execution status of an entire batch phase."""
