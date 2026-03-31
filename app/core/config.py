@@ -64,6 +64,12 @@ class Settings(BaseSettings):
     ASR_PHASE_3_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
     ASR_PHASE_3_VRAM_REQUIREMENT_MB: float = 5000.0
 
+    # Phase 10: Vision Analysis
+    VISION_MODEL_PATH: str = "models/llava-1.5-7b/ggml-model-q4_k.gguf"
+    VISION_MMPROJ_PATH: str = "models/llava-1.5-7b/mmproj-model-f16.gguf"
+    # 4.5GB weights + ~2GB multimodal context allocation buffer
+    VISION_VRAM_REQUIREMENT_MB: float = 6500.0
+
     @property
     def DATABASE_URL(self) -> str:
         return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
