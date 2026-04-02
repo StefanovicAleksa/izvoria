@@ -1,4 +1,4 @@
-# Canvas: llama_detector_adapter_v5
+# Canvas: llama_detector_adapter_v6
 # Path: app/features/visual_cue_detection/data/llama_detector_adapter.py
 
 import json
@@ -28,14 +28,11 @@ class LlamaDetectorAdapter(IVisualCueDetectorAdapter):
         user_message = f"Context: {chunk.context_string}\n\nChunk Text: {chunk.original_text}"
 
         try:
-            # Wrap dictionaries in TypedDicts to satisfy PyCharm's strict type checking
             messages = [
                 ChatCompletionRequestSystemMessage(role="system", content=VISUAL_CUE_SYSTEM_PROMPT),
                 ChatCompletionRequestUserMessage(role="user", content=user_message)
             ]
 
-            # Typing as Any bypasses PyCharm's strict TypedDict inheritance check
-            # while still allowing us to pass the custom schema extension to the C++ backend
             response_format: Any = {
                 "type": "json_object",
                 "schema": CUE_DETECTION_SCHEMA
@@ -44,16 +41,16 @@ class LlamaDetectorAdapter(IVisualCueDetectorAdapter):
             response = llm.create_chat_completion(
                 messages=messages,
                 response_format=response_format,
-                temperature=0.1,  # Near-zero temperature for deterministic extraction
-                max_tokens=50  # We only need a tiny response containing the boolean
+                temperature=0.1,
+                max_tokens=250  # Increased to allow room for the CoT 'reasoning' generation
             )
 
-            # Extract and parse the guaranteed JSON
             raw_content = response["choices"][0]["message"]["content"]
             parsed_data = json.loads(raw_content)
+
+            # The reasoning string is generated to improve accuracy, but we only need the boolean flag
             needs_visual_flag = parsed_data.get("needs_visual", False)
 
-            # Return a completely new immutable copy of the chunk with the flag updated
             return chunk.model_copy(update={"needs_visual": needs_visual_flag})
 
         except Exception as e:
