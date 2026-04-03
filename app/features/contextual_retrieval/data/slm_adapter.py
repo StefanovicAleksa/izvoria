@@ -1,4 +1,4 @@
-# Canvas: contextual_slm_adapter_v1
+# Canvas: contextual_slm_adapter_v5
 # Path: app/features/contextual_retrieval/data/slm_adapter.py
 
 import os
@@ -46,8 +46,12 @@ class SLMContextAdapter(ISLMContextAdapter):
 
     def unload(self, model: LoadedModel) -> bool:
         try:
-            if hasattr(model, "model_instance"):
+            # FIX: Explicitly close the C++ object before deletion
+            if hasattr(model, "model_instance") and model.model_instance is not None:
+                if hasattr(model.model_instance, "close"):
+                    model.model_instance.close()
                 del model.model_instance
+                model.model_instance = None
             gc.collect()
             return True
         except Exception as e:

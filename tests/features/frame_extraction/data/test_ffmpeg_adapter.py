@@ -1,4 +1,4 @@
-# Canvas: test_ffmpeg_extraction_adapter_v1
+# Canvas: test_ffmpeg_extraction_adapter_v2
 # Path: tests/features/frame_extraction/data/test_ffmpeg_adapter.py
 
 import pytest
@@ -14,7 +14,8 @@ from app.features.frame_extraction import exceptions as exc
 class TestFFmpegExtractionAdapter:
     @pytest.fixture
     def adapter(self):
-        return FFmpegExtractionAdapter(timeout_seconds=60)
+        # Initialized with our new max_dimension parameter
+        return FFmpegExtractionAdapter(timeout_seconds=60, max_dimension=1024)
 
     @pytest.fixture
     def sample_chunk(self):
@@ -38,10 +39,19 @@ class TestFFmpegExtractionAdapter:
         # Verify FFmpeg fast-seek command structure
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
+
         assert "-ss" in cmd
         assert "-t" in cmd
         assert "10.0" in cmd  # Start time
         assert "2.0" in cmd  # Duration
+
+        # Verify the new video filter string includes both fps and the downscale logic
+        vf_index = cmd.index("-vf")
+        vf_string = cmd[vf_index + 1]
+
+        assert "fps=1" in vf_string
+        assert "scale='min(1024,iw)':'min(1024,ih)'" in vf_string
+        assert "force_original_aspect_ratio=decrease" in vf_string
 
     def test_extract_raw_frames_missing_video(self, adapter, sample_chunk):
         with pytest.raises(exc.FFmpegProcessError):

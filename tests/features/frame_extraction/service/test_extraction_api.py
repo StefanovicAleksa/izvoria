@@ -1,4 +1,4 @@
-# Canvas: test_extraction_api_v1
+# Canvas: test_extraction_api_v3
 # Path: tests/features/frame_extraction/service/test_extraction_api.py
 
 import pytest
@@ -9,6 +9,7 @@ from unittest.mock import Mock, MagicMock, patch
 from app.features.contextual_retrieval.domain.entities import ContextualizedChunk
 from app.features.frame_extraction.service.extraction_api import FrameExtractionAPI
 from app.features.frame_extraction.domain.entities import ExtractedChunkFrames
+from app.features.frame_extraction.exceptions.base import FrameExtractionError
 
 
 class TestFrameExtractionAPI:
@@ -39,6 +40,40 @@ class TestFrameExtractionAPI:
             start_sec=10.0,
             end_sec=15.0
         )
+
+    def test_process_chunks_batch_parallel(self, api, sample_chunk):
+        """Verifies that batching successfully passes multiple chunks to the internal isolated logic."""
+        chunk2 = ContextualizedChunk(chunk_id=uuid.uuid4(), start_sec=20.0, end_sec=25.0)
+
+        # We patch the internal singular method to isolate testing the concurrency logic
+        with patch.object(api, 'process_chunk') as mock_process:
+            mock_process.side_effect = [
+                ExtractedChunkFrames(source_id=uuid.uuid4(), chunk_id=sample_chunk.chunk_id, frames=[]),
+                ExtractedChunkFrames(source_id=uuid.uuid4(), chunk_id=chunk2.chunk_id, frames=[])
+            ]
+
+            results = api.process_chunks_batch(uuid.uuid4(), "vid.mp4", [sample_chunk, chunk2])
+
+            assert len(results) == 2
+            assert mock_process.call_count == 2
+
+    def test_process_chunks_batch_empty(self, api):
+        """Verifies safe handling of an empty list."""
+        results = api.process_chunks_batch(uuid.uuid4(), "vid.mp4", [])
+        assert len(results) == 0
+
+    def test_process_chunks_batch_exception_handling(self, api, sample_chunk):
+        """Verifies that an exception in a worker thread is caught, mapped, and bubbled up."""
+        with patch.object(api, 'process_chunk') as mock_process:
+            # Simulate an unexpected crash inside the isolated chunk processing
+            mock_process.side_effect = ValueError("Simulated processing crash")
+
+            with pytest.raises(FrameExtractionError) as exc_info:
+                api.process_chunks_batch(uuid.uuid4(), "vid.mp4", [sample_chunk])
+
+            # Verify the error mapper correctly wrapped it with context
+            assert "Parallel batch processing" in str(exc_info.value)
+            assert mock_process.call_count == 1
 
     def test_process_chunk_idempotency(self, api, mocks, sample_chunk):
         """Verifies that if a chunk is already processed, we skip extraction."""

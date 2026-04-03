@@ -1,4 +1,4 @@
-# Canvas: faster_whisper_adapter_v15
+# Canvas: faster_whisper_adapter_v18
 # Path: app/features/transcription/data/faster_whisper_adapter.py
 
 import os
@@ -84,6 +84,7 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
             whisper_model: Any = model.model_instance
             segments_out = []
 
+            # FIX: Removed backend="soundfile" so torchcodec can natively parse .mp4 and .wav via GPU
             waveform, sample_rate = torchaudio.load(audio_path)
 
             if waveform.shape[0] > 1:
@@ -96,11 +97,6 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
             waveform_1d = waveform.squeeze().numpy()
             merged_segments = _merge_vad_segments(vad_map.segments, gap_threshold=2.0)
 
-            # --- CRITICAL FIX: Smart Word-Boundary Truncation ---
-            # Max tokens for Whisper prompt is 224.
-            # We strictly take the first 45 words.
-            # 45 words * ~3 tokens max per word = ~135 tokens.
-            # This guarantees it fits, while keeping whole, meaningful sentences intact.
             safe_hotwords = hotwords.strip() if hotwords and hotwords.strip() else None
             safe_prompt = None
 
@@ -113,7 +109,6 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
                 end_sample = int(m_seg.end_sec * 16000)
                 audio_chunk = waveform_1d[start_sample:end_sample]
 
-                # Prevent Micro-Segment Crashes
                 if len(audio_chunk) < 6400:
                     continue
 
@@ -124,7 +119,7 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
                     hotwords=safe_hotwords,
                     initial_prompt=safe_prompt,
                     word_timestamps=True,
-                    condition_on_previous_text=False  # CRITICAL FIX: Prevents sliding-window token accumulation OOM
+                    condition_on_previous_text=False
                 )
 
                 for segment in segments:
@@ -154,4 +149,3 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
 
         except Exception as e:
             raise map_transcription_error(e) from e
-

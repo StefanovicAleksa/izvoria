@@ -1,4 +1,4 @@
-# Canvas: test_qwen_adapter_v3
+# Canvas: test_qwen_adapter_v6
 # Path: tests/features/phonetic_correction/data/test_qwen_adapter.py
 
 import pytest
@@ -48,7 +48,6 @@ class TestQwenAdapter:
         adapter = QwenAdapter()
         mock_llm = MagicMock()
 
-        # Simulate bad JSON output
         mock_llm.create_chat_completion.return_value = {
             "choices": [{"message": {"content": '{ bad json'}}]
         }
@@ -58,15 +57,15 @@ class TestQwenAdapter:
 
         assert len(patches) == 0
 
-    def test_generate_patches_sanitizes_hallucinated_falsy_values(self, manifest):
+    def test_generate_patches_drops_hallucinated_falsy_values_to_prevent_deletion(self, manifest):
         """
         Ensures that if Qwen tries to use integers or nulls to represent an empty string,
-        we aggressively normalize it to an actual empty string to prevent random "0"s in transcripts.
+        we aggressively drop the patch entirely instead of resolving it to "" which would
+        delete the word from the transcript.
         """
         adapter = QwenAdapter()
         mock_llm = MagicMock()
 
-        # Simulate LLM returning 0, null, and false instead of ""
         bad_json_content = '''{
             "corrections": [
                 {"original_text": "subscribe", "corrected_text": 0},
@@ -82,10 +81,20 @@ class TestQwenAdapter:
 
         patches = adapter.generate_patches(loaded_model, "text", "dictionary")
 
-        assert len(patches) == 4
-        # Assert the hallucinated values were safely scrubbed to empty strings
-        assert patches[0].correction == ""
-        assert patches[1].correction == ""
-        assert patches[2].correction == ""
-        # Assert valid data remains untouched
-        assert patches[3].correction == "real word"
+        # The first three hallucinated patches should be safely dropped, leaving only the valid one.
+        assert len(patches) == 1
+        assert patches[0].original == "valid"
+        assert patches[0].correction == "real word"
+
+    @patch("app.features.phonetic_correction.data.qwen_adapter.gc.collect")
+    def test_unload_explicitly_closes_c_bindings(self, mock_gc, manifest):
+        adapter = QwenAdapter()
+        mock_llm = MagicMock()
+        loaded_model = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        result = adapter.unload(loaded_model)
+
+        assert result is True
+        mock_llm.close.assert_called_once()
+        assert loaded_model.model_instance is None
+        mock_gc.assert_called_once()

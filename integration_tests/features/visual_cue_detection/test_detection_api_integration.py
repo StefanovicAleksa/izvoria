@@ -1,5 +1,5 @@
-# Canvas: test_detection_api_integration_v2
-# Path: integration_tests/features/visual_cue_detection/test_detection_api_integration.py
+# Canvas: test_detection_api_integration_no_mocks_v5
+# Path: integration_tests/features/visual_cue_detection/test_detection_api_integration_no_mocks.py
 
 import os
 import uuid
@@ -17,17 +17,16 @@ from app.core.model_manager.domain.enums import ModelType
 
 from app.features.contextual_retrieval.domain.entities import ContextualizedTranscript, ContextualizedChunk
 from app.features.contextual_retrieval.data.repositories import ContextualRepository
-from app.features.contextual_retrieval.service.contextualizer_api import ContextualizerAPI
 
-from app.features.visual_cue_detection.data.llama_adapter import LlamaDetectorAdapter
+from app.features.visual_cue_detection.data.qwen_detector_adapter import QwenDetectorAdapter
 from app.features.visual_cue_detection.service.detection_api import VisualCueDetectionAPI
 
 
-class TestVisualCueDetectionAPIIntegration:
+class TestVisualCueDetectionAPIIntegrationNoMocks:
     """
     STRICT NO-MOCKS INTEGRATION TEST.
     Verifies the Visual Cue Detection API can correctly analyze text using the local SLM,
-    parse the JSON boolean, and persist the updated flags to the Database via the Contextualizer API.
+    parse the JSON boolean, and persist the updated flags to the Database directly.
     """
 
     @pytest.fixture(scope="module", autouse=True)
@@ -56,23 +55,19 @@ class TestVisualCueDetectionAPIIntegration:
         repo = ContextualRepository(db_manager)
         vram_monitor = PyTorchVramMonitor()
         orchestrator = ModelManagerOrchestrator(vram_monitor)
+        adapter = QwenDetectorAdapter()
 
-        contextualizer_api = ContextualizerAPI(
-            repository=repo,
-            orchestrator=orchestrator,
-            slm_adapter=None  # type: ignore
-        )
-
-        adapter = LlamaDetectorAdapter()
-
+        # FIX: Added repository dependency and removed dead contextualizer_api code
         return VisualCueDetectionAPI(
-            detector_adapter=adapter,
-            contextualizer_api=contextualizer_api
+            orchestrator=orchestrator,
+            adapter=adapter,
+            repository=repo
         )
 
     def test_process_transcript_detects_cues_and_saves_to_db(self, isolated_setup: uuid.UUID,
                                                              detection_api: VisualCueDetectionAPI):
         source_id = isolated_setup
+        repo = ContextualRepository(db_manager)
 
         # 1. Create a dummy transcript saved in the DB
         chunk_visual = ContextualizedChunk(
@@ -92,7 +87,7 @@ class TestVisualCueDetectionAPIIntegration:
         )
 
         # Save it to DB directly using the repo for setup
-        detection_api._contextual_api._repo.save(transcript)
+        repo.save(transcript)
 
         # 2. Setup the SLM Model Loader
         manifest = ModelManifest(
@@ -126,7 +121,13 @@ class TestVisualCueDetectionAPIIntegration:
 
             # 3. Execute Detection API
             print("[DEBUG] Running visual cue detection...")
-            updated_transcript = detection_api.process_transcript(transcript, loaded_model)
+
+            # CRITICAL FIX: Match the phase loop by explicitly passing release_after=False
+            updated_transcript = detection_api.process_transcript(
+                transcript=transcript,
+                model=loaded_model,
+                release_after=False
+            )
 
         finally:
             if loaded_model:
@@ -141,8 +142,8 @@ class TestVisualCueDetectionAPIIntegration:
         # The general timeline statement should remain FALSE
         assert updated_transcript.chunks[1].needs_visual is False
 
-        # 5. Verify the API successfully asked ContextualizerAPI to save it to the DB
-        db_transcript = detection_api._contextual_api._repo.get_by_source_id(source_id)
+        # 5. Verify the API successfully saved it to the DB
+        db_transcript = repo.get_by_source_id(source_id)
         assert db_transcript is not None
         assert db_transcript.chunks[0].needs_visual is True
         assert db_transcript.chunks[1].needs_visual is False

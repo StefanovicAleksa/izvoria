@@ -1,8 +1,10 @@
-# Canvas: extraction_api_v1
+# Canvas: extraction_api_v3
 # Path: app/features/frame_extraction/service/extraction_api.py
 
+import os
 import uuid
 import tempfile
+import concurrent.futures
 from pathlib import Path
 import logging
 from typing import List
@@ -23,6 +25,7 @@ class FrameExtractionAPI:
     """
     Orchestrates the strictly CPU-bound extraction of visual frames for a given text chunk.
     Filters out blurry/duplicate frames before moving the survivors to the Storage Vault.
+    Now heavily multithreaded to saturate local enterprise workstation CPUs.
     """
 
     def __init__(
@@ -39,15 +42,55 @@ class FrameExtractionAPI:
         self._quality_filter = quality_filter
         self._deduplicator = deduplicator
 
+    def process_chunks_batch(
+            self,
+            source_id: uuid.UUID,
+            video_path: str,
+            chunks: List[ContextualizedChunk]
+    ) -> List[ExtractedChunkFrames]:
+        """
+        Processes multiple chunks concurrently. Bypasses the GIL limitations by relying
+        on OS-level FFmpeg subprocesses and OpenCV C++ bindings.
+        """
+        results: List[ExtractedChunkFrames] = []
+
+        if not chunks:
+            return results
+
+        # Determine thread count (Cap at 32 to prevent OS file handle exhaustion)
+        max_workers = min(32, (os.cpu_count() or 4) * 2)
+        logger.info(f"Spinning up {max_workers} concurrent CPU workers for Frame Extraction...")
+
+        # FIXED: Changed variable name to `target_chunk` to prevent shadowing warning
+        def _worker(target_chunk: ContextualizedChunk) -> ExtractedChunkFrames:
+            return self.process_chunk(source_id, video_path, target_chunk)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_chunk_map = {executor.submit(_worker, c): c for c in chunks}
+
+            for future in concurrent.futures.as_completed(future_to_chunk_map):
+                # FIXED: Changed variable name to `completed_chunk` to prevent shadowing
+                completed_chunk = future_to_chunk_map[future]
+                try:
+                    result = future.result()
+                    results.append(result)
+                except Exception as e:
+                    # If a single thread fails, bubble the error up so the Job Manager
+                    # correctly marks the overarching Job as FAILED and saves the stack trace.
+                    raise map_extraction_error(e,
+                                               context=f"Parallel batch processing for chunk {completed_chunk.chunk_id}") from e
+
+        return results
+
     def process_chunk(
             self,
             source_id: uuid.UUID,
             video_path: str,
             chunk: ContextualizedChunk
     ) -> ExtractedChunkFrames:
-
+        """Isolated processing logic for a single chunk."""
         try:
-            # 1. Idempotency Check: Don't re-extract if we already survived a crash here
+            # 1. Idempotency Check
             existing_record = self._repo.get_by_chunk_id(chunk.chunk_id)
             if existing_record:
                 logger.info(f"Frames already extracted for chunk {chunk.chunk_id}. Skipping.")
@@ -81,7 +124,6 @@ class FrameExtractionAPI:
                 final_extracted_frames: List[ExtractedFrame] = []
 
                 for timestamp_sec, img_path, quality_score, phash_val in unique_frames:
-                    # Move from temp dir to the highly secure Onyx Storage vault
                     vaulted_file = self._storage.ingest_raw_file(
                         file_path=str(img_path),
                         delete_original=True
@@ -109,7 +151,6 @@ class FrameExtractionAPI:
             raise map_extraction_error(e, context=f"FrameExtractionAPI.process_chunk for {chunk.chunk_id}") from e
 
     def _save_empty_result(self, source_id: uuid.UUID, chunk: ContextualizedChunk) -> ExtractedChunkFrames:
-        """Saves an empty record if all frames were dropped (e.g., completely blurry chunk)."""
         empty_frames = ExtractedChunkFrames(
             source_id=source_id,
             chunk_id=chunk.chunk_id,

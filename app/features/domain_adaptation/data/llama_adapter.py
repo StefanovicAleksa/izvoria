@@ -1,4 +1,4 @@
-# Canvas: llama_adapter_v9
+# Canvas: llama_adapter_v10
 # Path: app/features/domain_adaptation/data/llama_adapter.py
 
 import os
@@ -56,8 +56,12 @@ class LlamaAdapter(ILlamaAdapter):
 
     def unload(self, model: LoadedModel) -> bool:
         try:
-            if hasattr(model, "model_instance"):
+            # FIX: Explicitly close the C++ object before deletion
+            if hasattr(model, "model_instance") and model.model_instance is not None:
+                if hasattr(model.model_instance, "close"):
+                    model.model_instance.close()
                 del model.model_instance
+                model.model_instance = None
             gc.collect()
             return True
         except Exception as e:

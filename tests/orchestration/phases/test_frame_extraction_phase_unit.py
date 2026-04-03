@@ -1,4 +1,4 @@
-# Canvas: test_frame_extraction_phase_unit_v1
+# Canvas: test_frame_extraction_phase_unit_v2
 # Path: tests/orchestration/service/phases/test_frame_extraction_phase_unit.py
 
 import pytest
@@ -8,7 +8,7 @@ from unittest.mock import Mock
 from app.orchestration.service.phases.frame_extraction_phase import FrameExtractionPhase
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import VisualCueDetectionJobResult, FrameExtractionJobResult
-from app.features.contextual_retrieval.domain.entities import ContextualizedTranscript
+from app.features.contextual_retrieval.domain.entities import ContextualizedTranscript, ContextualizedChunk
 from app.features.storage.domain.entities import Source, File, SourceType
 
 
@@ -44,7 +44,8 @@ class TestFrameExtractionPhaseUnit:
 
         # Setup Storage
         mock_file = File(id=uuid.uuid4(), file_path="/vault/vid.mp4", file_name="v", file_size_bytes=100)
-        mock_source = Source(id=source_id, name="v", source_type=SourceType.VIDEO, content_hash="123", file_id=mock_file.id, file=mock_file)
+        mock_source = Source(id=source_id, name="v", source_type=SourceType.VIDEO, content_hash="123",
+                             file_id=mock_file.id, file=mock_file)
         mock_storage.get_source.return_value = mock_source
 
         # Setup Transcript
@@ -73,3 +74,30 @@ class TestFrameExtractionPhaseUnit:
         assert result.status == PhaseStatus.COMPLETED
         assert result.successful_count == 0
         assert result.failed_count == 0
+
+    def test_process_transcript_frames_batch_filters_chunks(self, phase, mock_extraction_api):
+        """Validates that ONLY chunks with `needs_visual=True` are sent to the API."""
+        chunk1 = ContextualizedChunk(chunk_id=uuid.uuid4(), needs_visual=True)
+        chunk2 = ContextualizedChunk(chunk_id=uuid.uuid4(), needs_visual=False)
+        transcript = ContextualizedTranscript(source_id=uuid.uuid4(), chunks=[chunk1, chunk2])
+
+        mock_extraction_api.process_chunks_batch.return_value = [Mock()]
+
+        result = phase._process_transcript_frames_batch(transcript.source_id, transcript, "/vid.mp4")
+
+        assert result["extracted_chunks_count"] == 1
+        mock_extraction_api.process_chunks_batch.assert_called_once_with(
+            source_id=transcript.source_id,
+            video_path="/vid.mp4",
+            chunks=[chunk1]
+        )
+
+    def test_process_transcript_frames_batch_empty(self, phase, mock_extraction_api):
+        """Validates it safely exits if no chunks were flagged."""
+        chunk1 = ContextualizedChunk(chunk_id=uuid.uuid4(), needs_visual=False)
+        transcript = ContextualizedTranscript(source_id=uuid.uuid4(), chunks=[chunk1])
+
+        result = phase._process_transcript_frames_batch(transcript.source_id, transcript, "/vid.mp4")
+
+        assert result["extracted_chunks_count"] == 0
+        mock_extraction_api.process_chunks_batch.assert_not_called()

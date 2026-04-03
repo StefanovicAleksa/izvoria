@@ -1,7 +1,8 @@
-# Canvas: batch_media_pipeline_v21
+# Canvas: batch_media_pipeline_v23
 # Path: app/orchestration/service/pipelines/batch_media_pipeline.py
 
 import uuid
+import logging
 from typing import Dict, List
 
 from app.features.storage.domain.entities import SourceType
@@ -35,6 +36,8 @@ from app.orchestration.service.phases.visual_cue_detection_phase import VisualCu
 from app.orchestration.service.phases.frame_extraction_phase import FrameExtractionPhase
 from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysisPhase
 
+logger = logging.getLogger(__name__)
+
 
 class BatchMediaPipeline:
     def __init__(
@@ -67,9 +70,12 @@ class BatchMediaPipeline:
         self._frame_extraction_phase = frame_extraction_phase
         self._visual_analysis_phase = visual_analysis_phase
 
-    def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[
-        PipelinePhase, PhaseBatchResult]:
+    # FIXED: Removed unused industry/sub_domains. PhoneticCorrectionPhase reads this natively from DomainRepo.
+    def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[PipelinePhase, PhaseBatchResult]:
+        """Executes the full local Onyx pipeline sequentially with strict memory isolation."""
+
         pipeline_results: Dict[PipelinePhase, PhaseBatchResult] = {}
+        logger.info(f"========== Starting Onyx Batch Pipeline for [{target_directory}] ==========")
 
         try:
             # ==========================================
@@ -82,6 +88,7 @@ class BatchMediaPipeline:
                 raise WorkflowStateError(f"Pipeline halted: Scan phase failed. Errors: {scan_result.errors}")
 
             if scan_result.successful_count == 0:
+                logger.info("Scan complete but no targets found. Halting pipeline gracefully.")
                 return pipeline_results
 
             # ==========================================
@@ -92,8 +99,7 @@ class BatchMediaPipeline:
             pipeline_results[PipelinePhase.INGEST] = ingest_result
 
             if ingest_result.status == PhaseStatus.FAILED:
-                raise WorkflowStateError(
-                    f"Pipeline halted: Ingest phase failed entirely. Errors: {ingest_result.errors}")
+                raise WorkflowStateError(f"Pipeline halted: Ingest phase failed entirely. Errors: {ingest_result.errors}")
 
             video_source_ids: List[uuid.UUID] = [
                 item.source_id for item in ingest_result.items
@@ -112,8 +118,7 @@ class BatchMediaPipeline:
             pipeline_results[PipelinePhase.AUDIO_EXTRACTION] = extraction_result
 
             if extraction_result.status == PhaseStatus.FAILED:
-                raise WorkflowStateError(
-                    f"Pipeline halted: Audio Extraction failed entirely. Errors: {extraction_result.errors}")
+                raise WorkflowStateError(f"Pipeline halted: Audio Extraction failed entirely. Errors: {extraction_result.errors}")
 
             successful_extraction_items: List[AudioExtractionJobResult] = [
                 item for item in extraction_result.items
@@ -142,7 +147,7 @@ class BatchMediaPipeline:
             pipeline_results[PipelinePhase.DOMAIN_ADAPTATION] = domain_result
 
             if domain_result.status == PhaseStatus.FAILED:
-                pass
+                logger.warning("Domain Adaptation failed, but pipeline will continue without domain hints.")
 
             # ==========================================
             # PHASE 5: TRANSCRIPTION (GPU BOUND)
@@ -194,7 +199,10 @@ class BatchMediaPipeline:
             # ==========================================
             self._phonetic_correction_phase.preload_model()
 
-            phonetic_result = self._phonetic_correction_phase.execute(successful_sentence_items)
+            # FIXED: Execute relying on the phase to naturally fetch Domain info from the DB
+            phonetic_result = self._phonetic_correction_phase.execute(
+                reconstruction_results=successful_sentence_items
+            )
             pipeline_results[PipelinePhase.PHONETIC_CORRECTION] = phonetic_result
 
             successful_phonetic_items: List[PhoneticCorrectionJobResult] = [
@@ -222,7 +230,6 @@ class BatchMediaPipeline:
             # ==========================================
             # PHASE 10: VISUAL CUE DETECTION (GPU BOUND)
             # ==========================================
-            # FIXED: Preload triggered here, AFTER Phase 9 safely unloaded the shared model instance
             self._visual_cue_detection_phase.preload_model()
 
             visual_cue_result = self._visual_cue_detection_phase.execute(successful_contextual_items)
@@ -238,8 +245,8 @@ class BatchMediaPipeline:
             # ==========================================
             # PHASE 11: FRAME EXTRACTION (CPU BOUND)
             # ==========================================
-            # This concurrency is perfectly safe. VRAM is completely empty right now, so we spin up
-            # the heavy 6.5GB VLM on the GPU while the CPU thrashes FFmpeg locally.
+            # VRAM is completely empty right now, so we spin up the heavy VLM on the GPU
+            # while the CPU thrashes FFmpeg locally.
             self._visual_analysis_phase.preload_model()
 
             extraction_result = self._frame_extraction_phase.execute(successful_cue_items)
@@ -250,6 +257,7 @@ class BatchMediaPipeline:
                 if isinstance(item, FrameExtractionJobResult) and item.success
             ]
             if not successful_extraction_items:
+                logger.info("No frames extracted; skipping Visual Analysis phase.")
                 return pipeline_results
 
             # ==========================================
@@ -258,9 +266,12 @@ class BatchMediaPipeline:
             analysis_result = self._visual_analysis_phase.execute(successful_extraction_items)
             pipeline_results[PipelinePhase.VISUAL_ANALYSIS] = analysis_result
 
+            logger.info(f"========== Pipeline Completed for Batch [{target_directory}] ==========")
             return pipeline_results
 
         except WorkflowStateError as e:
+            logger.error(f"Workflow State Error: {e}")
             raise e
         except Exception as e:
+            logger.error(f"Critical Pipeline Crash: {e}")
             raise WorkflowExecutionError(f"Critical Pipeline Crash: {str(e)}", original_exception=e) from e

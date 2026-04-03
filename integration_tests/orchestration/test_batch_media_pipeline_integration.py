@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_integration_v18
+# Canvas: test_batch_media_pipeline_integration_v23
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
 import subprocess
@@ -58,7 +58,7 @@ from app.features.contextual_retrieval.data.repositories import ContextualReposi
 from app.features.contextual_retrieval.data.slm_adapter import SLMContextAdapter
 from app.features.contextual_retrieval.service.contextualizer_api import ContextualizerAPI
 
-from app.features.visual_cue_detection.data.llama_adapter import LlamaDetectorAdapter
+from app.features.visual_cue_detection.data.qwen_detector_adapter import QwenDetectorAdapter
 from app.features.visual_cue_detection.service.detection_api import VisualCueDetectionAPI
 
 from app.features.frame_extraction.data.ffmpeg_adapter import FFmpegExtractionAdapter
@@ -67,7 +67,7 @@ from app.features.frame_extraction.service.extraction_api import FrameExtraction
 from app.features.frame_extraction.utils.quality_filter import QualityFilter
 from app.features.frame_extraction.utils.frame_deduplicator import FrameDeduplicator
 
-from app.features.visual_analysis.data.vlm_adapter import LlamaVLMAdapter
+from app.features.visual_analysis.data.vlm_adapter import QwenVLMAdapter
 from app.features.visual_analysis.data.repositories import VisualAnalysisRepository
 from app.features.visual_analysis.service.analysis_api import VisualAnalysisAPI
 
@@ -180,7 +180,7 @@ class TestBatchMediaPipelineIntegration:
             required_vram_mb=getattr(settings, "PUNCTUATION_VRAM_REQUIREMENT_MB", 500.0)
         )
 
-        # Real Phonetic Correction Feature
+        # Real Phonetic Correction Feature (Phase 8 - Qwen)
         phonetic_repo = PhoneticRepository(db_manager)
         real_phonetic_adapter = QwenAdapter()
         phonetic_correction_api = PhoneticCorrectionAPI(
@@ -194,7 +194,7 @@ class TestBatchMediaPipelineIntegration:
             required_vram_mb=settings.ASR_PHASE_3_VRAM_REQUIREMENT_MB
         )
 
-        # Real Contextual Retrieval Feature (Phase 9)
+        # Real Contextual Retrieval Feature (Phase 9 - Llama)
         contextual_repo = ContextualRepository(db_manager)
         real_slm_adapter = SLMContextAdapter()
         contextualizer_api = ContextualizerAPI(
@@ -202,17 +202,13 @@ class TestBatchMediaPipelineIntegration:
             orchestrator=orchestrator,
             slm_adapter=real_slm_adapter
         )
-        contextual_manifest = ModelManifest(
-            model_type=ModelType.DOMAIN_CLASSIFIER,
-            model_path=settings.DOMAIN_CLASSIFIER_MODEL_PATH,
-            required_vram_mb=settings.DOMAIN_CLASSIFIER_MODEL_VRAM_REQUIREMENT_MB
-        )
 
-        # Real Visual Cue Detection Feature (Phase 10)
-        cue_detector_adapter = LlamaDetectorAdapter()
+        # Real Visual Cue Detection Feature (Phase 10 - Qwen)
+        cue_detector_adapter = QwenDetectorAdapter()
         visual_cue_api = VisualCueDetectionAPI(
-            detector_adapter=cue_detector_adapter,
-            contextualizer_api=contextualizer_api
+            orchestrator=orchestrator,
+            adapter=cue_detector_adapter,
+            repository=contextual_repo  # FIX: Injected missing repository
         )
 
         # Real Frame Extraction Feature (Phase 11)
@@ -230,19 +226,14 @@ class TestBatchMediaPipelineIntegration:
 
         # Real Visual Analysis Feature (Phase 12)
         visual_analysis_repo = VisualAnalysisRepository(db_manager)
-        vlm_adapter = LlamaVLMAdapter()
+        vlm_adapter = QwenVLMAdapter()
         visual_analysis_api = VisualAnalysisAPI(
             repository=visual_analysis_repo,
             vlm_adapter=vlm_adapter,
             storage_api=storage_api
         )
-        vision_manifest = ModelManifest(
-            model_type=ModelType.VISION,
-            model_path=settings.VISION_MODEL_PATH,
-            required_vram_mb=settings.VISION_VRAM_REQUIREMENT_MB
-        )
 
-        # Phases
+        # Phases Wiring
         scan_phase = ScanPhase(job_manager, scanner)
         ingest_phase = IngestPhase(job_manager, storage_api)
         extract_audio_phase = ExtractAudioPhase(job_manager, audio_extractor)
@@ -264,11 +255,19 @@ class TestBatchMediaPipelineIntegration:
         )
 
         contextual_phase = ContextualRetrievalPhase(
-            job_manager, contextualizer_api, phonetic_repo, async_service, contextual_manifest, real_slm_adapter
+            job_manager=job_manager,
+            contextualizer_api=contextualizer_api,
+            phonetic_repo=phonetic_repo,
+            async_model_service=async_service,
+            loader=real_slm_adapter
         )
 
         visual_cue_phase = VisualCueDetectionPhase(
-            job_manager, visual_cue_api, contextual_repo, async_service, contextual_manifest, real_slm_adapter
+            job_manager=job_manager,
+            detection_api=visual_cue_api,
+            contextual_repo=contextual_repo,
+            async_model_service=async_service,
+            loader=cue_detector_adapter
         )
 
         frame_extraction_phase = FrameExtractionPhase(
@@ -276,7 +275,12 @@ class TestBatchMediaPipelineIntegration:
         )
 
         visual_analysis_phase = VisualAnalysisPhase(
-            job_manager, visual_analysis_api, contextual_repo, frame_repo, async_service, vision_manifest, vlm_adapter
+            job_manager=job_manager,
+            analysis_api=visual_analysis_api,
+            contextual_repo=contextual_repo,
+            frame_repo=frame_repo,
+            async_model_service=async_service,
+            loader=vlm_adapter
         )
 
         pipeline = BatchMediaPipeline(
@@ -344,20 +348,13 @@ class TestBatchMediaPipelineIntegration:
         assert PipelinePhase.FRAME_EXTRACTION in results
         assert PipelinePhase.VISUAL_ANALYSIS in results
 
-        assert results[
-                   PipelinePhase.SCAN].status == PhaseStatus.COMPLETED, f"Scan failed: {results[PipelinePhase.SCAN].errors}"
-        assert results[
-                   PipelinePhase.INGEST].status == PhaseStatus.COMPLETED, f"Ingest failed: {results[PipelinePhase.INGEST].errors}"
-        assert results[
-                   PipelinePhase.AUDIO_EXTRACTION].status == PhaseStatus.COMPLETED, f"Audio Extraction failed: {results[PipelinePhase.AUDIO_EXTRACTION].errors}"
-        assert results[
-                   PipelinePhase.VAD].status == PhaseStatus.COMPLETED, f"VAD failed: {results[PipelinePhase.VAD].errors}"
-        assert results[
-                   PipelinePhase.DOMAIN_ADAPTATION].status == PhaseStatus.COMPLETED, f"Domain Adaptation failed: {results[PipelinePhase.DOMAIN_ADAPTATION].errors}"
-        assert results[
-                   PipelinePhase.TRANSCRIBE].status == PhaseStatus.COMPLETED, f"Transcribe failed: {results[PipelinePhase.TRANSCRIBE].errors}"
-        assert results[
-                   PipelinePhase.DIARIZE].status == PhaseStatus.COMPLETED, f"Diarize failed: {results[PipelinePhase.DIARIZE].errors}"
+        assert results[PipelinePhase.SCAN].status == PhaseStatus.COMPLETED, f"Scan failed: {results[PipelinePhase.SCAN].errors}"
+        assert results[PipelinePhase.INGEST].status == PhaseStatus.COMPLETED, f"Ingest failed: {results[PipelinePhase.INGEST].errors}"
+        assert results[PipelinePhase.AUDIO_EXTRACTION].status == PhaseStatus.COMPLETED, f"Audio Extraction failed: {results[PipelinePhase.AUDIO_EXTRACTION].errors}"
+        assert results[PipelinePhase.VAD].status == PhaseStatus.COMPLETED, f"VAD failed: {results[PipelinePhase.VAD].errors}"
+        assert results[PipelinePhase.DOMAIN_ADAPTATION].status == PhaseStatus.COMPLETED, f"Domain Adaptation failed: {results[PipelinePhase.DOMAIN_ADAPTATION].errors}"
+        assert results[PipelinePhase.TRANSCRIBE].status == PhaseStatus.COMPLETED, f"Transcribe failed: {results[PipelinePhase.TRANSCRIBE].errors}"
+        assert results[PipelinePhase.DIARIZE].status == PhaseStatus.COMPLETED, f"Diarize failed: {results[PipelinePhase.DIARIZE].errors}"
 
         sentence_result = results[PipelinePhase.SENTENCE_RECONSTRUCTION]
         assert sentence_result.status == PhaseStatus.COMPLETED, f"Sentence Reconstruction failed: {sentence_result.errors}"

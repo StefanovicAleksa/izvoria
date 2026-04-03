@@ -1,4 +1,4 @@
-# Canvas: visual_analysis_phase_v2
+# Canvas: visual_analysis_phase_v3
 # Path: app/orchestration/service/phases/visual_analysis_phase.py
 
 import concurrent.futures
@@ -10,7 +10,7 @@ from app.core.jobs.domain.entities import JobRequest
 from app.core.jobs.domain.enums import JobType
 
 from app.core.model_manager.service.async_model_service import AsyncModelService
-from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
+from app.core.model_manager.domain.entities import LoadedModel
 from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.exceptions.base import ModelManagerError
 
@@ -31,34 +31,32 @@ class VisualAnalysisPhase:
             contextual_repo: IContextualRepository,
             frame_repo: IFrameExtractionRepository,
             async_model_service: AsyncModelService,
-            manifest: ModelManifest,
-            adapter: IModelLoader
+            loader: IModelLoader
     ):
         self._job_manager = job_manager
         self._analysis_api = analysis_api
         self._contextual_repo = contextual_repo
         self._frame_repo = frame_repo
         self._async_service = async_model_service
-        self._manifest = manifest
-        self._adapter = adapter
+        self._loader = loader
         self._preload_future: Optional[concurrent.futures.Future] = None
 
     def preload_model(self) -> None:
-        """Triggers the background loading of the VLM (e.g., LLaVA)."""
-        self._preload_future = self._async_service.trigger_preload(self._manifest, self._adapter)
+        """Triggers the background loading of Qwen-VL."""
+        self._preload_future = self._async_service.trigger_preload(
+            manifest=self._analysis_api.manifest,
+            loader=self._loader
+        )
 
     def _process_transcript_analysis(self, source_id: uuid.UUID, transcript: ContextualizedTranscript,
                                      vlm_model: LoadedModel) -> dict:
-        """Helper method executed within the Job context to loop through chunks and apply VLM."""
+        """Helper method executed within the Job context."""
         analyzed_chunks_count = 0
 
         for chunk in transcript.chunks:
-            # We strictly respect the NLP gatekeeper's flag
             if getattr(chunk, "needs_visual", False):
-                # Fetch the physical frames we extracted in Phase 11
                 extracted_frames = self._frame_repo.get_by_chunk_id(chunk.chunk_id)
 
-                # Execute inference using the extracted frames and the chunk's text context
                 if extracted_frames and extracted_frames.frames:
                     self._analysis_api.process_chunk(
                         source_id=source_id,
@@ -68,12 +66,14 @@ class VisualAnalysisPhase:
                     )
                     analyzed_chunks_count += 1
 
+        # Update the transcript in the database to persist the new visual descriptions
+        self._contextual_repo.update(transcript)
+
         return {"analyzed_chunks_count": analyzed_chunks_count}
 
     def execute(self, frame_extraction_results: List[FrameExtractionJobResult]) -> PhaseBatchResult:
         """
-        Phase 12: Waits for the VLM model to load, then evaluates all extracted frames across the entire batch
-        to generate semantic text descriptions.
+        Phase 12: Waits for the VLM model to load, then evaluates all extracted frames.
         """
         results: List[VisualAnalysisJobResult] = []
         errors: List[str] = []
@@ -137,18 +137,18 @@ class VisualAnalysisPhase:
                     failed_count += 1
 
         finally:
-            # Safely unload the massive VLM to free up the 6.5GB VRAM
             if loaded_model:
-                self._async_service.trigger_unload(loaded_model, self._adapter, flush=True)
+                self._async_service.trigger_unload(
+                    loaded_model=loaded_model,
+                    loader=self._loader,
+                    flush=True
+                )
 
-        if failed_count == 0 and success_count > 0:
-            status = PhaseStatus.COMPLETED
-        elif success_count == 0 and failed_count > 0:
+        status = PhaseStatus.COMPLETED
+        if success_count == 0 and failed_count > 0:
             status = PhaseStatus.FAILED
         elif success_count > 0 and failed_count > 0:
             status = PhaseStatus.PARTIAL_SUCCESS
-        else:
-            status = PhaseStatus.COMPLETED
 
         return PhaseBatchResult(
             phase=PipelinePhase.VISUAL_ANALYSIS,

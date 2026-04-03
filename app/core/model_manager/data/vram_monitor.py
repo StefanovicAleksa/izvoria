@@ -1,12 +1,13 @@
-# Canvas: vram_monitor_v2
-# Path: app/core/model_manager/data/vram_monitor.py
 import gc
 import torch
+import logging
 from typing import Tuple
 
 from app.core.model_manager.domain.interfaces import IVramMonitor
 from app.core.model_manager.domain.entities import VramStatus
 from app.core.model_manager.utils.error_mapper import map_model_manager_error
+
+logger = logging.getLogger(__name__)
 
 
 class PyTorchVramMonitor(IVramMonitor):
@@ -59,12 +60,25 @@ class PyTorchVramMonitor(IVramMonitor):
     def flush_memory(self) -> None:
         """
         Aggressively forces garbage collection and clears PyTorch's CUDA cache.
-        This is critical before loading a new model to prevent OutOfVram errors.
+        Includes synchronization to ensure hardware stability during backend swaps.
         """
         try:
+            # 1. Drop Python references
             gc.collect()
+
             if torch.cuda.is_available():
+                # 2. Wait for all pending GPU kernels to complete
+                torch.cuda.synchronize()
+
+                # 3. Clear the internal PyTorch memory pool
                 torch.cuda.empty_cache()
+
+                # 4. Release IPC handles
                 torch.cuda.ipc_collect()
+
+            # 5. Final pass for circular references
+            gc.collect()
+            logger.debug("Aggressive VRAM deep flush completed.")
+
         except Exception as e:
             raise map_model_manager_error(e) from e

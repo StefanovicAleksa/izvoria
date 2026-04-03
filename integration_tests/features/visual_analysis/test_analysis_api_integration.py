@@ -23,7 +23,7 @@ from app.features.contextual_retrieval.domain.entities import ContextualizedChun
 from app.features.frame_extraction.domain.entities import ExtractedChunkFrames, ExtractedFrame
 
 from app.features.visual_analysis.data.repositories import VisualAnalysisRepository
-from app.features.visual_analysis.data.vlm_adapter import LlamaVLMAdapter
+from app.features.visual_analysis.data.vlm_adapter import QwenVLMAdapter
 from app.features.visual_analysis.service.analysis_api import VisualAnalysisAPI
 from app.features.visual_analysis.domain.entities import ChunkVisualAnalysis
 
@@ -77,7 +77,7 @@ class TestVisualAnalysisAPIIntegration:
 
         # 2. Setup Visual Analysis feature components
         repo = VisualAnalysisRepository(db_manager)
-        vlm_adapter = LlamaVLMAdapter()
+        vlm_adapter = QwenVLMAdapter()
 
         return VisualAnalysisAPI(
             repository=repo,
@@ -134,7 +134,7 @@ class TestVisualAnalysisAPIIntegration:
 
         try:
             print("\n[DEBUG] Loading LLaVA 1.5 7B into VRAM... This will take a few seconds.")
-            # This uses the underlying LlamaVLMAdapter we built
+            # This uses the underlying QwenVLMAdapter we built
             loaded_model = orchestrator.acquire_model(manifest, live_api._vlm_adapter)
 
             # 4. Execute the actual pipeline orchestration

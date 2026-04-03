@@ -1,4 +1,4 @@
-# Canvas: test_extraction_api_integration_v1
+# Canvas: test_extraction_api_integration_v2
 # Path: integration_tests/features/frame_extraction/test_extraction_api_integration.py
 
 import os
@@ -40,7 +40,7 @@ class TestExtractionAPIIntegration:
         """Skip these integration tests if FFmpeg is not installed on the host machine."""
         try:
             subprocess.run(
-                ["ffmpeg", "-version"],
+                 ["ffmpeg", "-version"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 check=False
@@ -91,15 +91,15 @@ class TestExtractionAPIIntegration:
         ]
         subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
 
-    def test_end_to_end_chunk_extraction(self, api_setup, tmp_path):
+    def test_end_to_end_chunk_extraction_batch(self, api_setup, tmp_path):
         """
         Scenario:
         1. A REAL dummy video is generated and ingested into the REAL Storage Vault.
         2. A ContextualizedChunk is simulated for [1.0s -> 4.0s].
-        3. Extractor API invokes REAL FFmpeg to fast-seek and extract frames.
+        3. Extractor API is called with the batch processor.
         4. Frames pass through REAL OpenCV Blur Detection and pHash Deduplication.
         5. Surviving frames are vaulted, and JSONB mapping is saved to Postgres.
-        6. Idempotency is verified by running it again.
+        6. Idempotency is verified by running the batch processor again.
         """
         extraction_api, storage_api = api_setup
 
@@ -127,13 +127,14 @@ class TestExtractionAPIIntegration:
         )
 
         # ---------------------------------------------------------
-        # PHASE 2: FIRST EXTRACTION (Heavy Lifting)
+        # PHASE 2: FIRST EXTRACTION (Heavy Lifting, Multi-Threaded)
         # ---------------------------------------------------------
-        extraction_record_1 = extraction_api.process_chunk(
+        extraction_records = extraction_api.process_chunks_batch(
             source_id=video_source.id,
             video_path=video_source.file.file_path,
-            chunk=test_chunk
+            chunks=[test_chunk]
         )
+        extraction_record_1 = extraction_records[0]
 
         # Assertions
         assert isinstance(extraction_record_1, ExtractedChunkFrames)
@@ -155,11 +156,12 @@ class TestExtractionAPIIntegration:
         # ---------------------------------------------------------
         # PHASE 3: IDEMPOTENCY CHECK
         # ---------------------------------------------------------
-        extraction_record_2 = extraction_api.process_chunk(
+        extraction_records_2 = extraction_api.process_chunks_batch(
             source_id=video_source.id,
             video_path=video_source.file.file_path,
-            chunk=test_chunk
+            chunks=[test_chunk]
         )
+        extraction_record_2 = extraction_records_2[0]
 
         # Verify the exact same DB record was returned instantly
         assert extraction_record_1.id == extraction_record_2.id

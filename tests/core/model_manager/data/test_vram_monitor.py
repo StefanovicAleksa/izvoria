@@ -1,6 +1,3 @@
-# Canvas: test_vram_monitor_v1
-# Path: tests/core/model_manager/data/test_vram_monitor.py
-
 import pytest
 from unittest.mock import patch, MagicMock
 from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
@@ -46,10 +43,13 @@ class TestPyTorchVramMonitor:
 
     @patch("app.core.model_manager.data.vram_monitor.torch")
     def test_flush_memory_success(self, mock_torch):
+        """Verifies the deep flush sequence including hardware synchronization."""
         mock_torch.cuda.is_available.return_value = True
 
         monitor = PyTorchVramMonitor()
         monitor.flush_memory()
 
+        # FIXED: Ensure hardware sync is called to prevent race conditions
+        mock_torch.cuda.synchronize.assert_called_once()
         mock_torch.cuda.empty_cache.assert_called_once()
         mock_torch.cuda.ipc_collect.assert_called_once()

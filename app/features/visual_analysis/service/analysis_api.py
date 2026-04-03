@@ -1,11 +1,14 @@
-# Canvas: visual_analysis_api_v1
+# Canvas: visual_analysis_api_v2
 # Path: app/features/visual_analysis/service/analysis_api.py
 
 import logging
 import uuid
 from typing import List
 
-from app.core.model_manager.domain.entities import LoadedModel
+from app.core.config import settings
+from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
+from app.core.model_manager.domain.enums import ModelType
+
 from app.features.contextual_retrieval.domain.entities import ContextualizedChunk
 from app.features.frame_extraction.domain.entities import ExtractedChunkFrames
 from app.features.storage.service.storage_api import StorageAPI
@@ -34,6 +37,23 @@ class VisualAnalysisAPI:
         self._vlm_adapter = vlm_adapter
         self._storage = storage_api
 
+        # Strict Domain Manifest Isolation for Vision Analysis (Phase 12)
+        self._manifest = ModelManifest(
+            model_type=ModelType.VISION,
+            model_path=settings.VISION_MODEL_PATH,
+            required_vram_mb=settings.VISION_VRAM_REQUIREMENT_MB
+        )
+
+    @property
+    def manifest(self) -> ModelManifest:
+        """Exposes the specific VLM manifest to the orchestrator for background preloading."""
+        return self._manifest
+
+    @property
+    def adapter(self) -> IVisualLanguageModelAdapter:
+        """Exposes the internal adapter to the orchestrator for standardized loading/unloading."""
+        return self._vlm_adapter
+
     def process_chunk(
         self,
         source_id: uuid.UUID,
@@ -44,7 +64,7 @@ class VisualAnalysisAPI:
         """
         Executes the Vision-Language Model on all vaulted frames for a given chunk.
         The `vlm_model` is passed in to allow the parent pipeline to batch-process
-        multiple chunks without reloading the 4.5GB weights every time.
+        multiple chunks without reloading the massive 7B+ weights every time.
         """
         try:
             # 1. Idempotency Check: Don't re-run expensive VLM inference if we survived a crash

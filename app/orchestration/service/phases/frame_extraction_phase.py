@@ -1,4 +1,4 @@
-# Canvas: frame_extraction_phase_v3
+# Canvas: frame_extraction_phase_v4
 # Path: app/orchestration/service/phases/frame_extraction_phase.py
 
 import uuid
@@ -30,27 +30,29 @@ class FrameExtractionPhase:
         self._contextual_repo = contextual_repo
         self._storage = storage_api
 
-    def _process_transcript_frames(self, source_id: uuid.UUID, transcript: ContextualizedTranscript,
-                                   video_path: str) -> dict:
-        """Helper method executed within the Job context to loop through chunks."""
-        extracted_chunks_count = 0
+    def _process_transcript_frames_batch(self, source_id: uuid.UUID, transcript: ContextualizedTranscript,
+                                         video_path: str) -> dict:
+        """Helper method executed within the Job context to route chunks to the threaded API."""
 
-        for chunk in transcript.chunks:
-            # We strictly respect the NLP gatekeeper's flag set in Phase 10
-            if getattr(chunk, "needs_visual", False):
-                self._extraction_api.process_chunk(
-                    source_id=source_id,
-                    video_path=video_path,
-                    chunk=chunk
-                )
-                extracted_chunks_count += 1
+        # 1. Filter out only the chunks that were explicitly flagged by Phase 10
+        chunks_to_process = [chunk for chunk in transcript.chunks if getattr(chunk, "needs_visual", False)]
 
-        return {"extracted_chunks_count": extracted_chunks_count}
+        if not chunks_to_process:
+            return {"extracted_chunks_count": 0}
+
+        # 2. Hand the batch over to the threaded API for parallel CPU extraction
+        extracted_results = self._extraction_api.process_chunks_batch(
+            source_id=source_id,
+            video_path=video_path,
+            chunks=chunks_to_process
+        )
+
+        return {"extracted_chunks_count": len(extracted_results)}
 
     def execute(self, cue_detection_results: List[VisualCueDetectionJobResult]) -> PhaseBatchResult:
         """
         Phase 11: Iterates through transcripts evaluated by Phase 10. For any chunk
-        flagged with `needs_visual`, delegates to the CPU-bound FrameExtractionAPI.
+        flagged with `needs_visual`, delegates to the CPU-bound FrameExtractionAPI concurrently.
         """
         results: List[FrameExtractionJobResult] = []
         errors: List[str] = []
@@ -91,7 +93,7 @@ class FrameExtractionPhase:
                 # Execute API via JobManager to track execution state
                 job_result_data = self._job_manager.run_job(
                     request,
-                    self._process_transcript_frames,
+                    self._process_transcript_frames_batch,
                     source_id=source_id,
                     transcript=transcript,
                     video_path=source.file.file_path

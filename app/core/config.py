@@ -1,4 +1,4 @@
-# Canvas: core_config_v10
+# Canvas: core_config_v12
 # Path: app/core/config.py
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -14,7 +14,6 @@ class Settings(BaseSettings):
     POSTGRES_USER: str = "postgres"
     POSTGRES_PASSWORD: str = "password"
 
-    # Connection Pooling
     DB_POOL_SIZE: int = 20
     DB_MAX_OVERFLOW: int = 10
 
@@ -30,7 +29,6 @@ class Settings(BaseSettings):
     APPLIANCE_INDUSTRY: str = "GENERAL"
     APPLIANCE_LANGUAGE: str = "en"
 
-    # GPU Models (Discovery Phase / Domain Adaptation)
     DISCOVERY_SCOUT_MODEL_PATH: str = "models/whisper-tiny-en"
     DISCOVERY_SCOUT_VRAM_REQUIREMENT_MB: float = 200.0
 
@@ -55,6 +53,7 @@ class Settings(BaseSettings):
     PUNCTUATION_MODEL_PATH: str = "models/fullstop-punctuation-multilingual-base"
     PUNCTUATION_VRAM_REQUIREMENT_MB: float = 500.0
 
+    # Legacy ASR
     ASR_PHASE_1_MODEL_PATH: str = "models/llama-3.2-3b-instruct-q8_0.gguf"
     ASR_PHASE_1_VRAM_REQUIREMENT_MB: float = 3500.0
 
@@ -64,17 +63,27 @@ class Settings(BaseSettings):
     ASR_PHASE_3_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
     ASR_PHASE_3_VRAM_REQUIREMENT_MB: float = 5000.0
 
-    # Phase 10: Vision Analysis
-    VISION_MODEL_PATH: str = "models/llava-1.5-7b/ggml-model-q4_k.gguf"
-    VISION_MMPROJ_PATH: str = "models/llava-1.5-7b/mmproj-model-f16.gguf"
-    # 4.5GB weights + ~2GB multimodal context allocation buffer
-    VISION_VRAM_REQUIREMENT_MB: float = 6500.0
+    # Phase 8: Phonetic Correction
+    PHONETIC_CORRECTION_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+    PHONETIC_CORRECTION_VRAM_REQUIREMENT_MB: float = 5000.0
+
+    # Phase 9: Contextual Retrieval
+    CONTEXTUAL_RETRIEVAL_MODEL_PATH: str = "models/llama-3.2-3b-instruct-q8_0.gguf"
+    CONTEXTUAL_RETRIEVAL_VRAM_REQUIREMENT_MB: float = 3500.0
+
+    # Phase 10: Visual Cue Detection
+    VISUAL_CUE_DETECTION_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+    VISUAL_CUE_DETECTION_VRAM_REQUIREMENT_MB: float = 5000.0
+
+    # Phase 12: Vision Analysis (Qwen-VL)
+    VISION_MODEL_PATH: str = "models/qwen2-vl-7b/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
+    VISION_MMPROJ_PATH: str = "models/qwen2-vl-7b/Qwen2-VL-7B-Instruct-vision-encoder.gguf"
+    VISION_VRAM_REQUIREMENT_MB: float = 7500.0
 
     @property
     def DATABASE_URL(self) -> str:
         return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
-    # Instructs Pydantic to read from the .env file and ignore extra variables
     model_config = SettingsConfigDict(
         env_file=".env",
         env_ignore_empty=True,

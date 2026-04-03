@@ -1,15 +1,18 @@
-# Canvas: contextual_retrieval_phase_v1
+# Canvas: contextual_retrieval_phase_v4
 # Path: app/orchestration/service/phases/contextual_retrieval_phase.py
 
+import logging
 import concurrent.futures
 from typing import List, Optional
 
+from app.core.config import settings
 from app.core.jobs.service.manager import JobManager
 from app.core.jobs.domain.entities import JobRequest
 from app.core.jobs.domain.enums import JobType
 
 from app.core.model_manager.service.async_model_service import AsyncModelService
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
+from app.core.model_manager.domain.enums import ModelType
 from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.exceptions.base import ModelManagerError
 
@@ -20,6 +23,8 @@ from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import PhaseBatchResult, PhoneticCorrectionJobResult, \
     ContextualRetrievalJobResult
 
+logger = logging.getLogger(__name__)
+
 
 class ContextualRetrievalPhase:
     def __init__(
@@ -28,25 +33,30 @@ class ContextualRetrievalPhase:
             contextualizer_api: ContextualizerAPI,
             phonetic_repo: IPhoneticRepository,
             async_model_service: AsyncModelService,
-            manifest: ModelManifest,
-            adapter: IModelLoader
+            loader: IModelLoader  # FIXED: Inject the loader cleanly to avoid protected member access
     ):
         self._job_manager = job_manager
         self._contextualizer_api = contextualizer_api
         self._phonetic_repo = phonetic_repo
         self._async_service = async_model_service
-        self._manifest = manifest
-        self._adapter = adapter
+        self._loader = loader
         self._preload_future: Optional[concurrent.futures.Future] = None
 
     def preload_model(self) -> None:
-        """Triggers the background loading of the SLM (Llama 3.2)."""
-        self._preload_future = self._async_service.trigger_preload(self._manifest, self._adapter)
+        logger.info("Triggering background preload for Contextual Retrieval SLM...")
+        manifest = ModelManifest(
+            model_type=ModelType.CONTEXTUAL_RETRIEVAL,
+            model_path=settings.CONTEXTUAL_RETRIEVAL_MODEL_PATH,
+            required_vram_mb=settings.CONTEXTUAL_RETRIEVAL_VRAM_REQUIREMENT_MB
+        )
+
+        # FIXED: Properly map kwargs 'manifest' and 'loader'
+        self._preload_future = self._async_service.trigger_preload(
+            manifest=manifest,
+            loader=self._loader
+        )
 
     def execute(self, phonetic_results: List[PhoneticCorrectionJobResult]) -> PhaseBatchResult:
-        """
-        Phase 9: Waits for the SLM model to load, then generates succinct contexts for RAG chunks sequentially.
-        """
         results: List[ContextualRetrievalJobResult] = []
         errors: List[str] = []
         success_count = 0
@@ -56,7 +66,9 @@ class ContextualRetrievalPhase:
         if self._preload_future:
             try:
                 loaded_model = self._async_service.resolve_preload(self._preload_future)
+                logger.info("Successfully resolved preloaded Contextual Retrieval SLM.")
             except ModelManagerError as e:
+                logger.error(f"Failed to load Contextual SLM: {e}")
                 return PhaseBatchResult(
                     phase=PipelinePhase.CONTEXTUAL_RETRIEVAL,
                     status=PhaseStatus.FAILED,
@@ -69,10 +81,11 @@ class ContextualRetrievalPhase:
                     continue
 
                 source_id = item.source_id
-
                 transcript = self._phonetic_repo.get_by_source_id(source_id)
+
                 if not transcript:
                     err_msg = f"Cannot apply contextual retrieval: Phonetic Transcript for Source {source_id} missing."
+                    logger.error(err_msg)
                     results.append(
                         ContextualRetrievalJobResult(source_id=source_id, success=False, error_message=err_msg))
                     errors.append(err_msg)
@@ -86,7 +99,7 @@ class ContextualRetrievalPhase:
                 )
 
                 try:
-                    # `release_after=False` retains Llama 3.2 in VRAM for the whole batch
+                    logger.info(f"Processing Contextual Retrieval for Source: {source_id}")
                     contextualized_transcript = self._job_manager.run_job(
                         request,
                         self._contextualizer_api.execute,
@@ -103,24 +116,27 @@ class ContextualRetrievalPhase:
 
                 except Exception as e:
                     err_msg = str(e)
+                    logger.error(f"Job failed for Source {source_id}: {err_msg}")
                     results.append(
                         ContextualRetrievalJobResult(source_id=source_id, success=False, error_message=err_msg))
                     errors.append(f"Failed Contextual Retrieval for Source {source_id}: {err_msg}")
                     failed_count += 1
 
         finally:
-            # Safely unload the SLM model in the background once the ENTIRE batch is done
             if loaded_model:
-                self._async_service.trigger_unload(loaded_model, self._adapter, flush=True)
+                logger.info("Unloading Contextual Retrieval SLM to free VRAM...")
+                # FIXED: Properly map kwargs 'loaded_model' and 'loader'
+                self._async_service.trigger_unload(
+                    loaded_model=loaded_model,
+                    loader=self._loader,
+                    flush=True
+                )
 
-        if failed_count == 0 and success_count > 0:
-            status = PhaseStatus.COMPLETED
-        elif success_count == 0 and failed_count > 0:
+        status = PhaseStatus.COMPLETED
+        if success_count == 0 and failed_count > 0:
             status = PhaseStatus.FAILED
         elif success_count > 0 and failed_count > 0:
             status = PhaseStatus.PARTIAL_SUCCESS
-        else:
-            status = PhaseStatus.COMPLETED
 
         return PhaseBatchResult(
             phase=PipelinePhase.CONTEXTUAL_RETRIEVAL,

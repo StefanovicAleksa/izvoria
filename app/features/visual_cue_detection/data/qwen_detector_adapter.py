@@ -1,30 +1,50 @@
-# Canvas: llama_detector_adapter_v6
-# Path: app/features/visual_cue_detection/data/llama_detector_adapter.py
+# Canvas: qwen_detector_adapter_v3
+# Path: app/features/visual_cue_detection/data/qwen_detector_adapter.py
 
 import json
+import gc
+import torch
 from typing import Any
-from llama_cpp import Llama
-from llama_cpp.llama_types import (
-    ChatCompletionRequestSystemMessage,
-    ChatCompletionRequestUserMessage
-)
+from llama_cpp import Llama, ChatCompletionRequestSystemMessage, ChatCompletionRequestUserMessage
 
-from app.core.model_manager.domain.entities import LoadedModel
-from app.features.contextual_retrieval.domain.entities import ContextualizedChunk
+from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.features.visual_cue_detection.domain.interfaces import IVisualCueDetectorAdapter
+from app.features.contextual_retrieval.domain.entities import ContextualizedChunk
 from app.features.visual_cue_detection.data.prompts import VISUAL_CUE_SYSTEM_PROMPT, CUE_DETECTION_SCHEMA
 from app.features.visual_cue_detection.utils.error_mapper import map_detection_error
 
 
-class LlamaDetectorAdapter(IVisualCueDetectorAdapter):
+class QwenDetectorAdapter(IVisualCueDetectorAdapter):
     """
-    NLP Data Adapter that uses a local SLM to detect visual dependencies in text.
-    Enforces strict JSON schema output to guarantee pipeline stability.
+    Adapter for running Qwen 2.5 (GGUF) via llama.cpp to detect visual cues.
     """
+
+    def load(self, manifest: ModelManifest) -> LoadedModel:
+        llm = Llama(
+            model_path=manifest.model_path,
+            n_gpu_layers=-1,
+            flash_attn=True,
+            n_ctx=2048,
+            verbose=False
+        )
+        return LoadedModel(manifest=manifest, model_instance=llm)
+
+    def unload(self, model: LoadedModel) -> bool:
+        """Purges the model from VRAM and flushes the CUDA cache."""
+        if model.model_instance:
+            # FIX: Explicitly close the C++ object before deletion
+            if hasattr(model.model_instance, "close"):
+                model.model_instance.close()
+            del model.model_instance
+            model.model_instance = None
+
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        return True
 
     def detect_cues(self, model: LoadedModel, chunk: ContextualizedChunk) -> ContextualizedChunk:
         llm: Llama = model.model_instance
-
         user_message = f"Context: {chunk.context_string}\n\nChunk Text: {chunk.original_text}"
 
         try:
@@ -42,13 +62,12 @@ class LlamaDetectorAdapter(IVisualCueDetectorAdapter):
                 messages=messages,
                 response_format=response_format,
                 temperature=0.1,
-                max_tokens=250  # Increased to allow room for the CoT 'reasoning' generation
+                max_tokens=250
             )
 
             raw_content = response["choices"][0]["message"]["content"]
             parsed_data = json.loads(raw_content)
 
-            # The reasoning string is generated to improve accuracy, but we only need the boolean flag
             needs_visual_flag = parsed_data.get("needs_visual", False)
 
             return chunk.model_copy(update={"needs_visual": needs_visual_flag})

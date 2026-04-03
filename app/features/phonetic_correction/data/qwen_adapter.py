@@ -1,4 +1,4 @@
-# Canvas: qwen_adapter_v5
+# Canvas: qwen_adapter_v7
 # Path: app/features/phonetic_correction/data/qwen_adapter.py
 
 import os
@@ -42,8 +42,11 @@ class QwenAdapter(IPhoneticPatchAdapter):
 
     def unload(self, model: LoadedModel) -> bool:
         try:
-            if hasattr(model, "model_instance"):
+            if hasattr(model, "model_instance") and model.model_instance is not None:
+                if hasattr(model.model_instance, "close"):
+                    model.model_instance.close()
                 del model.model_instance
+                model.model_instance = None
             gc.collect()
             return True
         except Exception as e:
@@ -56,7 +59,6 @@ class QwenAdapter(IPhoneticPatchAdapter):
             domain_dictionary: str
     ) -> List[PhoneticPatch]:
         try:
-            # Lazy load the TypedDicts to keep the global namespace clean
             from llama_cpp import (
                 ChatCompletionRequestSystemMessage,
                 ChatCompletionRequestUserMessage,
@@ -71,17 +73,15 @@ class QwenAdapter(IPhoneticPatchAdapter):
                                                         content=f"<INPUT_TEXT>\n{text_chunk}\n</INPUT_TEXT>")
             response_format = ChatCompletionRequestResponseFormat(type="json_object")
 
-            # Force Qwen to output strict JSON using llama.cpp's response_format
             response = llm.create_chat_completion(
                 messages=[system_msg, user_msg],
                 response_format=response_format,
                 temperature=0.0,
-                max_tokens=2048  # CRITICAL FIX: Increased to 2048 to prevent mid-JSON cutoff
+                max_tokens=2048
             )
 
             raw_output = response["choices"][0]["message"]["content"].strip()
 
-            # Clean markdown code blocks just in case
             if raw_output.startswith("```json"):
                 raw_output = raw_output[7:]
             if raw_output.endswith("```"):
@@ -90,7 +90,6 @@ class QwenAdapter(IPhoneticPatchAdapter):
             parsed_json = json.loads(raw_output)
             raw_corrections = parsed_json.get("corrections", [])
 
-            # Safety check if the LLM hallucinated a dict instead of a list
             if isinstance(raw_corrections, dict):
                 raw_corrections = [raw_corrections]
             elif not isinstance(raw_corrections, list):
@@ -98,20 +97,21 @@ class QwenAdapter(IPhoneticPatchAdapter):
 
             patches: List[PhoneticPatch] = []
             for item in raw_corrections:
-                # Type guard to ensure we are looking at a valid object
                 if isinstance(item, dict) and "original_text" in item and "corrected_text" in item:
                     orig = item["original_text"]
                     corr = item["corrected_text"]
 
-                    # ==========================================================
-                    # CRITICAL FIX: The "Random 0" Sanitizer
-                    # ==========================================================
-                    # LLMs frequently hallucinate integers or nulls instead of ""
-                    if corr in [0, "0", None, False, "null", "None"]:
-                        corr = ""
-
-                    # Ignore the patch entirely if the target text isn't a string
+                    # Safety Check 1: Ensure target is a valid string
                     if not orig or not isinstance(orig, str):
+                        continue
+
+                    # Safety Check 2: DO NOT turn `null`/`0` into empty strings.
+                    # If the LLM didn't return a string, it hallucinated. Drop the patch entirely.
+                    if not isinstance(corr, str):
+                        continue
+
+                    # Safety Check 3: If original and correction are identical, drop it
+                    if orig.strip() == corr.strip():
                         continue
 
                     patches.append(
@@ -124,7 +124,6 @@ class QwenAdapter(IPhoneticPatchAdapter):
             return patches
 
         except json.JSONDecodeError as e:
-            # CRITICAL FIX: Graceful Degradation if Qwen hallucinates bad JSON
             print(f"\n[WARNING] Qwen produced invalid JSON for chunk. Skipping patches. Reason: {e}")
             return []
         except Exception as e:

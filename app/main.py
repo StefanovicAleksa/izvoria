@@ -1,4 +1,4 @@
-# Canvas: main_v20
+# Canvas: main_v21
 # Path: app/main.py
 
 import argparse
@@ -60,7 +60,7 @@ from app.features.contextual_retrieval.data.repositories import ContextualReposi
 from app.features.contextual_retrieval.data.slm_adapter import SLMContextAdapter
 from app.features.contextual_retrieval.service.contextualizer_api import ContextualizerAPI
 
-from app.features.visual_cue_detection.data.llama_adapter import LlamaDetectorAdapter
+from app.features.visual_cue_detection.data.qwen_detector_adapter import QwenDetectorAdapter
 from app.features.visual_cue_detection.service.detection_api import VisualCueDetectionAPI
 
 from app.features.frame_extraction.data.ffmpeg_adapter import FFmpegExtractionAdapter
@@ -69,7 +69,7 @@ from app.features.frame_extraction.service.extraction_api import FrameExtraction
 from app.features.frame_extraction.utils.quality_filter import QualityFilter
 from app.features.frame_extraction.utils.frame_deduplicator import FrameDeduplicator
 
-from app.features.visual_analysis.data.vlm_adapter import LlamaVLMAdapter
+from app.features.visual_analysis.data.vlm_adapter import QwenVLMAdapter
 from app.features.visual_analysis.data.repositories import VisualAnalysisRepository
 from app.features.visual_analysis.service.analysis_api import VisualAnalysisAPI
 
@@ -210,7 +210,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         required_vram_mb=settings.ASR_PHASE_3_VRAM_REQUIREMENT_MB
     )
 
-    # 9. Contextual Retrieval (Phase 9)
+    # 9. Contextual Retrieval (Phase 9 - Llama)
     contextual_repo = ContextualRepository(db_manager)
     slm_adapter = SLMContextAdapter()
     contextualizer_api = ContextualizerAPI(
@@ -219,17 +219,14 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         slm_adapter=slm_adapter
     )
 
-    contextual_manifest = ModelManifest(
-        model_type=ModelType.DOMAIN_CLASSIFIER,
-        model_path=settings.DOMAIN_CLASSIFIER_MODEL_PATH,
-        required_vram_mb=settings.DOMAIN_CLASSIFIER_MODEL_VRAM_REQUIREMENT_MB
-    )
+    # 10. Visual Cue Detection (Phase 10 - Qwen)
+    cue_detector_adapter = QwenDetectorAdapter()
 
-    # 10. Visual Cue Detection (Phase 10)
-    cue_detector_adapter = LlamaDetectorAdapter()
+    # FIX: Correctly instantiate the API with updated kwargs
     visual_cue_api = VisualCueDetectionAPI(
-        detector_adapter=cue_detector_adapter,
-        contextualizer_api=contextualizer_api
+        orchestrator=model_orchestrator,
+        adapter=cue_detector_adapter,
+        repository=contextual_repo
     )
 
     # 11. Frame Extraction (Phase 11)
@@ -247,17 +244,11 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
 
     # 12. Visual Analysis (Phase 12)
     visual_analysis_repo = VisualAnalysisRepository(db_manager)
-    vlm_adapter = LlamaVLMAdapter()
+    vlm_adapter = QwenVLMAdapter()
     visual_analysis_api = VisualAnalysisAPI(
         repository=visual_analysis_repo,
         vlm_adapter=vlm_adapter,
         storage_api=storage_api
-    )
-
-    vision_manifest = ModelManifest(
-        model_type=ModelType.VISION,
-        model_path=settings.VISION_MODEL_PATH,
-        required_vram_mb=settings.VISION_VRAM_REQUIREMENT_MB
     )
 
     # --- Orchestration Phases ---
@@ -319,13 +310,13 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         adapter=phonetic_adapter
     )
 
+    # FIX: Use `loader` kwargs and remove dead `manifest` kwargs for Phases 9, 10, 12
     contextual_retrieval_phase = ContextualRetrievalPhase(
         job_manager=job_manager,
         contextualizer_api=contextualizer_api,
         phonetic_repo=phonetic_repo,
         async_model_service=async_model_service,
-        manifest=contextual_manifest,
-        adapter=slm_adapter
+        loader=slm_adapter
     )
 
     visual_cue_detection_phase = VisualCueDetectionPhase(
@@ -333,8 +324,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         detection_api=visual_cue_api,
         contextual_repo=contextual_repo,
         async_model_service=async_model_service,
-        manifest=contextual_manifest,
-        adapter=slm_adapter  # Reuse SLM Loader
+        loader=cue_detector_adapter
     )
 
     frame_extraction_phase = FrameExtractionPhase(
@@ -350,8 +340,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         contextual_repo=contextual_repo,
         frame_repo=frame_repo,
         async_model_service=async_model_service,
-        manifest=vision_manifest,
-        adapter=vlm_adapter
+        loader=vlm_adapter
     )
 
     # Pipeline Assembly

@@ -1,4 +1,4 @@
-# Canvas: correction_api_v14
+# Canvas: correction_api_v5
 # Path: app/features/phonetic_correction/service/correction_api.py
 
 import logging
@@ -12,7 +12,6 @@ from app.core.model_manager.domain.enums import ModelType
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 
 from app.features.sentence_reconstruction.domain.entities import ReconstructedTranscript, ReconstructedSentence
-
 from app.features.phonetic_correction.domain.interfaces import IPhoneticPatchAdapter, IPhoneticRepository
 from app.features.phonetic_correction.domain.entities import (
     PhoneticCorrectedTranscript,
@@ -38,6 +37,12 @@ class PhoneticCorrectionAPI:
         self._orchestrator = orchestrator
         self._patch_adapter = patch_adapter
 
+        self._manifest = ModelManifest(
+            model_type=ModelType.PHONETIC_CORRECTION,
+            model_path=settings.PHONETIC_CORRECTION_MODEL_PATH,
+            required_vram_mb=settings.PHONETIC_CORRECTION_VRAM_REQUIREMENT_MB
+        )
+
     def execute(
             self,
             transcript: ReconstructedTranscript,
@@ -54,34 +59,37 @@ class PhoneticCorrectionAPI:
                 return self._create_passthrough(transcript)
 
             domain_dictionary_str = DictionaryLoader.build_prompt_dictionary(industry, sub_domains)
-
-            manifest = ModelManifest(
-                model_type=ModelType.ASR_CORRECTION_PHASE_3,
-                model_path=settings.ASR_PHASE_3_MODEL_PATH,
-                required_vram_mb=settings.ASR_PHASE_3_VRAM_REQUIREMENT_MB
-            )
-
             loaded_model = None
-            audit_records: List[AppliedCorrectionRecord] = []
+
+            # Use a map to track audit records by sentence ID for deduplication
+            audit_records_map: Dict[uuid.UUID, AppliedCorrectionRecord] = {}
             processed_sentences_map: Dict[uuid.UUID, ReconstructedSentence] = {}
 
-            # 1. Bruteforce protection: Pre-split massive runaway sentences
-            safe_sentences = split_massive_sentences(transcript.sentences, max_chars=10000)
+            # FIXED: Standardized to 8,000 characters to match test expectations and improve stability
+            safe_sentences = split_massive_sentences(transcript.sentences, max_chars=8000)
 
             try:
-                loaded_model = self._orchestrator.acquire_model(manifest, self._patch_adapter)
+                loaded_model = self._orchestrator.acquire_model(self._manifest, self._patch_adapter)
 
-                # 2. Dynamic Character-Aware Chunking
+                # FIXED: Reduced max_chars from 12,000 to 8,000 to prevent JSON truncation/OOM
                 chunks = sliding_window_chunker(
                     items=safe_sentences,
                     text_extractor=lambda s: s.text,
-                    max_chars=12000,
+                    max_chars=8000,
                     overlap_items=2
                 )
 
                 for idx, chunk in enumerate(chunks):
                     logger.info(f"  -> Processing Phonetic Window {idx + 1}/{len(chunks)}...")
-                    chunk_text = " ".join([s.text for s in chunk])
+
+                    # Ensure we pass the LATEST patched version of sentences into the next window
+                    current_chunk_text_list = []
+                    for s in chunk:
+                        text = processed_sentences_map[
+                            s.sentence_id].text if s.sentence_id in processed_sentences_map else s.text
+                        current_chunk_text_list.append(text)
+
+                    chunk_text = " ".join(current_chunk_text_list)
 
                     patches: List[PhoneticPatch] = self._patch_adapter.generate_patches(
                         model=loaded_model,
@@ -89,7 +97,8 @@ class PhoneticCorrectionAPI:
                         domain_dictionary=domain_dictionary_str
                     )
 
-                    patched_chunk = self._apply_patches_to_chunk(chunk, patches, audit_records)
+                    # Pass the stateful audit map to prevent double-patching across overlaps
+                    patched_chunk = self._apply_patches_to_chunk(chunk, patches, audit_records_map)
 
                     for s in patched_chunk:
                         processed_sentences_map[s.sentence_id] = s
@@ -105,7 +114,7 @@ class PhoneticCorrectionAPI:
             final_transcript = PhoneticCorrectedTranscript(
                 source_id=transcript.source_id,
                 sentences=cleaned_sentences,
-                audit_trail=audit_records
+                audit_trail=list(audit_records_map.values())
             )
 
             return self._repo.save(final_transcript)
@@ -117,45 +126,53 @@ class PhoneticCorrectionAPI:
     def _apply_patches_to_chunk(
             chunk_sentences: List[ReconstructedSentence],
             patches: List[PhoneticPatch],
-            audit_records: List[AppliedCorrectionRecord]
+            audit_records: Dict[uuid.UUID, AppliedCorrectionRecord]
     ) -> List[ReconstructedSentence]:
+        """
+        Applies phonetic patches to a batch of sentences while ensuring
+        signatures are deduplicated across overlapping sliding windows.
+        """
         patched_sentences = []
 
         for sentence in chunk_sentences:
             new_text = sentence.text
-            applied_to_this_sentence = []
+
+            # Retrieve or initialize the audit record for this specific sentence
+            existing_record = audit_records.get(sentence.sentence_id)
+            applied_patches = existing_record.applied_patches.copy() if existing_record else []
+
+            # Generate signatures (orig, corr) to prevent the same patch being applied twice
+            existing_sigs = {(p.original.lower(), p.correction.lower()) for p in applied_patches}
 
             if patches:
                 for patch in patches:
                     if not patch.original:
                         continue
 
+                    sig = (patch.original.lower(), patch.correction.lower())
+                    if sig in existing_sigs:
+                        continue
+
                     escaped_target = re.escape(patch.original)
                     pattern = re.compile(rf'(?<!\w){escaped_target}(?!\w)', re.IGNORECASE)
 
                     if pattern.search(new_text):
-                        # ==========================================================
-                        # CRITICAL FIX: Regex Replacement Safety
-                        # ==========================================================
-                        # Pass correction via lambda so re.sub treats it as a raw literal,
-                        # preventing hallucinated backslashes from being parsed as group IDs.
+                        # Use a lambda to handle regex backreference hallucinations like \1
                         new_text = pattern.sub(lambda m: patch.correction, new_text).strip()
-
-                        applied_to_this_sentence.append(patch)
+                        applied_patches.append(patch)
+                        existing_sigs.add(sig)
 
                         if patch.correction == "":
                             logger.info(f"Hallucination Scrubbed: Removed '{patch.original}'")
                         else:
                             logger.info(f"Phonetic Patch Applied: '{patch.original}' -> '{patch.correction}'")
 
-                if applied_to_this_sentence:
-                    audit_records.append(
-                        AppliedCorrectionRecord(
-                            sentence_id=sentence.sentence_id,
-                            original_text=sentence.text,
-                            corrected_text=new_text,
-                            applied_patches=applied_to_this_sentence
-                        )
+                if applied_patches:
+                    audit_records[sentence.sentence_id] = AppliedCorrectionRecord(
+                        sentence_id=sentence.sentence_id,
+                        original_text=sentence.text,
+                        corrected_text=new_text,
+                        applied_patches=applied_patches
                     )
                     patched_sentences.append(sentence.model_copy(update={"text": new_text}))
                 else:

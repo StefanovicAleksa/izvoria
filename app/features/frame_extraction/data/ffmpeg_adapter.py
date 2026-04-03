@@ -1,4 +1,4 @@
-# Canvas: ffmpeg_extraction_adapter_v2
+# Canvas: ffmpeg_extraction_adapter_v3
 # Path: app/features/frame_extraction/data/ffmpeg_adapter.py
 
 import subprocess
@@ -14,11 +14,13 @@ class FFmpegExtractionAdapter(IFFmpegExtractionAdapter):
     """
     Adapter for executing OS-level FFmpeg commands to slice out physical frames
     based on a chunk's exact time boundaries.
+    Now automatically downscales frames to a max dimension of 1024px to save Vault
+    storage space and accelerate downstream VLM prefill times.
     """
 
-    def __init__(self, timeout_seconds: int = 300):
-        # 5 minutes is generous for a single chunk's extraction
+    def __init__(self, timeout_seconds: int = 300, max_dimension: int = 1024):
         self._timeout = timeout_seconds
+        self._max_dimension = max_dimension
 
     def extract_raw_frames(
             self,
@@ -37,10 +39,18 @@ class FFmpegExtractionAdapter(IFFmpegExtractionAdapter):
 
             out_dir.mkdir(parents=True, exist_ok=True)
 
-            # CORRECTED: Using start_sec and end_sec matching the Domain Entity
             start_sec = float(chunk.start_sec)
             end_sec = float(chunk.end_sec)
             duration = max(0.1, end_sec - start_sec)
+
+            # Build the video filter string:
+            # 1. Extract at the specified FPS
+            # 2. Scale down to max_dimension (preserving aspect ratio, preventing upscaling)
+            vf_string = (
+                f"fps={fps},"
+                f"scale='min({self._max_dimension},iw)':'min({self._max_dimension},ih)':"
+                f"force_original_aspect_ratio=decrease"
+            )
 
             # Build the fast-seeking FFmpeg command
             command: list[str] = [
@@ -51,7 +61,7 @@ class FFmpegExtractionAdapter(IFFmpegExtractionAdapter):
                 "-ss", str(start_sec),
                 "-t", str(duration),
                 "-i", str(src_path),
-                "-vf", f"fps={fps}",
+                "-vf", vf_string,
                 "-q:v", "2",
                 str(out_dir / "frame_%04d.jpg")
             ]
@@ -76,5 +86,4 @@ class FFmpegExtractionAdapter(IFFmpegExtractionAdapter):
             return extracted_frames
 
         except Exception as e:
-            # CORRECTED: Using chunk.chunk_id matching the Domain Entity
             raise map_extraction_error(e, context=f"FFmpeg extraction for chunk {chunk.chunk_id}") from e

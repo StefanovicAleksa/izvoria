@@ -1,6 +1,3 @@
-# Canvas: test_orchestrator_v1
-# Path: tests/core/model_manager/service/test_orchestrator.py
-
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -23,8 +20,7 @@ class TestModelManagerOrchestrator:
 
     @pytest.fixture
     def mock_loader(self):
-        loader = MagicMock()
-        return loader
+        return MagicMock()
 
     @pytest.fixture
     def sample_manifest(self):
@@ -37,12 +33,14 @@ class TestModelManagerOrchestrator:
     def test_acquire_model_success_and_idempotent(self, mock_monitor, mock_loader, sample_manifest):
         orchestrator = ModelManagerOrchestrator(mock_monitor)
 
-        # Mock loader to return a dummy LoadedModel
         dummy_loaded = LoadedModel(manifest=sample_manifest, model_instance="fake_tensor")
         mock_loader.load.return_value = dummy_loaded
 
         # 1. First Load
         result1 = orchestrator.acquire_model(sample_manifest, mock_loader)
+
+        # FIXED: Verify pre-emptive flush happened
+        mock_monitor.flush_memory.assert_called_once()
         assert result1 == dummy_loaded
         mock_loader.load.assert_called_once()
         mock_monitor.reset_peak_stats.assert_called_once()
@@ -63,8 +61,9 @@ class TestModelManagerOrchestrator:
         with pytest.raises(exc.OutOfVramError) as e_info:
             orchestrator.acquire_model(sample_manifest, mock_loader)
 
-        assert "Cannot load vad" in str(e_info.value)
-        assert "but only 100.00 MB is free" in str(e_info.value)
+        # FIXED: Verify pre-emptive flush happened even before OOM check
+        mock_monitor.flush_memory.assert_called_once()
+        assert "Insufficient VRAM for vad" in str(e_info.value)
         mock_loader.load.assert_not_called()
 
     @patch("app.core.model_manager.service.orchestrator.Path")
@@ -72,7 +71,6 @@ class TestModelManagerOrchestrator:
         """Proves the orchestrator checks the OS for real file sizes."""
         orchestrator = ModelManagerOrchestrator(mock_monitor)
 
-        # Setup mock file size to 2048 MB
         mock_path_instance = MagicMock()
         mock_path_instance.exists.return_value = True
         mock_path_instance.is_file.return_value = True
@@ -85,17 +83,14 @@ class TestModelManagerOrchestrator:
     def test_record_telemetry_learns_backpack_spike(self, mock_monitor, mock_loader, sample_manifest):
         orchestrator = ModelManagerOrchestrator(mock_monitor)
 
-        # Load the model
         dummy_loaded = LoadedModel(manifest=sample_manifest, model_instance="fake_tensor")
         mock_loader.load.return_value = dummy_loaded
         orchestrator.acquire_model(sample_manifest, mock_loader)
 
         # Simulate a telemetry spike (Current: 1000MB, Peak: 2500MB -> Backpack: 1500MB)
         mock_monitor.get_pytorch_memory_stats.return_value = (1000.0, 2500.0)
-
         orchestrator.record_telemetry()
 
-        # The orchestrator should have saved the 1500MB backpack for this path
         assert orchestrator._historical_backpacks[sample_manifest.model_path] == 1500.0
 
     def test_release_all_emergency_flush(self, mock_monitor, mock_loader, sample_manifest):
@@ -104,6 +99,9 @@ class TestModelManagerOrchestrator:
         dummy_loaded = LoadedModel(manifest=sample_manifest, model_instance="fake")
         mock_loader.load.return_value = dummy_loaded
         orchestrator.acquire_model(sample_manifest, mock_loader)
+
+        # Reset mock to clear pre-emptive calls from acquire_model
+        mock_monitor.flush_memory.reset_mock()
 
         loaders_map = {dummy_loaded.id: mock_loader}
         orchestrator.release_all(loaders_map)

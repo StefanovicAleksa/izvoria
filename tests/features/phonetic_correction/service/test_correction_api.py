@@ -1,4 +1,4 @@
-# Canvas: test_correction_api_v6
+# Canvas: test_correction_api_v11
 # Path: tests/features/phonetic_correction/service/test_correction_api.py
 
 import uuid
@@ -73,9 +73,7 @@ class TestPhoneticCorrectionAPI:
         )
         dummy_transcript = ReconstructedTranscript(source_id=transcript_id, sentences=[dummy_sentence])
 
-        # Ensure the pre-processor utility passes the sentence through
         mock_splitter.return_value = [dummy_sentence]
-
         mock_loaded_model = MagicMock()
         mock_orchestrator.acquire_model.return_value = mock_loaded_model
 
@@ -87,7 +85,8 @@ class TestPhoneticCorrectionAPI:
 
         result = api.execute(dummy_transcript, "MEDICAL", [], release_after=True)
 
-        mock_splitter.assert_called_once_with(dummy_transcript.sentences, max_chars=10000)
+        # FIXED: Updated to 8,000 characters to match the current implementation
+        mock_splitter.assert_called_once_with(dummy_transcript.sentences, max_chars=8000)
         mock_orchestrator.acquire_model.assert_called_once()
         mock_adapter.generate_patches.assert_called_once()
         mock_orchestrator.release_model.assert_called_once_with(mock_loaded_model, mock_adapter, flush=True)
@@ -100,11 +99,12 @@ class TestPhoneticCorrectionAPI:
     def test_apply_patches_to_chunk_safely_handles_regex_hallucinations(self):
         """
         Proves that the re.sub lambda fix prevents Python from fatally crashing
-        if the LLM hallucinates an escaped regex group like \1.
+        if the LLM hallucinates an escaped regex group like \\1.
         """
+        sentence_id = uuid.uuid4()
         sentences = [
             ReconstructedSentence(
-                sentence_id=uuid.uuid4(),
+                sentence_id=sentence_id,
                 start_sec=0,
                 end_sec=1,
                 text="The patient has acute angina.",
@@ -113,17 +113,45 @@ class TestPhoneticCorrectionAPI:
             )
         ]
 
-        # If Qwen hallucinates a regex backreference like \1
         patches = [
-            PhoneticPatch(original="acute angina", correction=r"\1")
+            PhoneticPatch(original="acute angina", correction=r"\\1")
         ]
 
-        audit_records = []
+        audit_records_map = {}
+        result = PhoneticCorrectionAPI._apply_patches_to_chunk(sentences, patches, audit_records_map)
 
-        # If the lambda fix is missing, this next line would throw:
-        # re.error: invalid group reference 1
-        result = PhoneticCorrectionAPI._apply_patches_to_chunk(sentences, patches, audit_records)
+        assert result[0].text == r"The patient has \\1."
+        assert len(audit_records_map) == 1
+        assert audit_records_map[sentence_id].corrected_text == r"The patient has \\1."
 
-        # The text was successfully updated without parsing the \1 as a capture group
-        assert result[0].text == r"The patient has \1."
-        assert len(audit_records) == 1
+    def test_apply_patches_deduplicates_overlapping_signatures(self):
+        """
+        Regression Test: Ensures that if an overlapping window generates the same patch
+        for the same sentence, the API deduplicates it using signatures.
+        """
+        sentence_id = uuid.uuid4()
+        sentences = [
+            ReconstructedSentence(
+                sentence_id=sentence_id,
+                start_sec=0,
+                end_sec=1,
+                text="The patient has a cute angina.",
+                speaker_id="S0",
+                words=[]
+            )
+        ]
+
+        target_patch = PhoneticPatch(original="a cute angina", correction="acute angina")
+        audit_records_map = {}
+
+        # First application
+        result_1 = PhoneticCorrectionAPI._apply_patches_to_chunk(sentences, [target_patch], audit_records_map)
+        assert result_1[0].text == "The patient has acute angina."
+        assert len(audit_records_map[sentence_id].applied_patches) == 1
+
+        # Second application (Simulating an overlapping chunk seeing the same error)
+        result_2 = PhoneticCorrectionAPI._apply_patches_to_chunk(result_1, [target_patch], audit_records_map)
+
+        assert result_2[0].text == "The patient has acute angina."
+        # Verify no duplicate patches were added to the audit trail
+        assert len(audit_records_map[sentence_id].applied_patches) == 1

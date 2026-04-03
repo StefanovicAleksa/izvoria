@@ -1,22 +1,23 @@
-# Canvas: requirements_v3
+# Canvas: requirements_v8
 # Path: requirements.txt
 
+# --- Core Application ---
 pydantic>=2.6.0
 pydantic-settings>=2.1.0
 sqlalchemy>=2.0.25
 psycopg2-binary>=2.9.9
 python-dotenv>=1.0.1
 
-# AI & Hardware Infrastructure
-torch>=2.2.0        # Required for Model Manager VRAM and NeMo (CUDA 12.1+)
-torchaudio>=2.2.0   # Required for audio resampling and NeMo tensor conversions
-numpy>=1.26.0       # Required for in-memory virtual slicing and PyTorch warnings
+# --- AI & Hardware Infrastructure ---
+torch>=2.6.0
+torchaudio>=2.6.0
+numpy>=1.26.0,<2.0.0  # FIXED: Pinned <2.0.0 to prevent NeMo Diarization np.sctypes crash
 
-# Media Processing & AI Models
-soundfile>=0.12.1         # Required for lightning-fast raw audio I/O and validation
-nemo_toolkit[asr]>=1.22.0 # Required for Voice Activity Detection and Speaker Diarization
-torchcodec>=0.1.1
-faster-whisper>=1.0.0     # Required for CTranslate2 optimized transcription
+# --- Media Processing & AI Models ---
+soundfile>=0.12.1
+nemo_toolkit[asr]>=1.22.0
+faster-whisper>=1.0.0
+torchcodec>=0.7.0     # Re-enabled for CUDA 13/12.4 GPU acceleration
 
 # Configuration parsing for NeMo Diarization Graphs
 omegaconf>=2.3.0
@@ -25,23 +26,24 @@ scipy>=1.10.0
 # --- Scene Detection & Vision Prep ---
 Pillow>=10.2.0
 ImageHash>=4.3.1
-opencv-python-headless>=4.9.0.80 # Required for cv2 Laplacian variance blur detection
+opencv-python-headless>=4.9.0.80
 
 # Native Hugging Face Inference Engine
 transformers>=4.40.0
 accelerate>=0.28.0
 
-# --- NEW: Sentence Reconstruction (Phase 7) ---
-wtpsplit>=1.2.0       # Neural punctuation restoration and sentence boundary detection
+# --- Sentence Reconstruction (Phase 7) ---
+wtpsplit>=1.2.0
 
 # --- Contextual Retrieval (Phase 8) ---
-huggingface_hub[hf_transfer]>=0.23.0
+huggingface_hub>=0.23.0
+hf-transfer>=0.1.6
 llama-cpp-python>=0.2.75
 
-# Testing Dependencies
+# --- Testing Dependencies ---
 pytest>=8.0.0
 pytest-mock>=3.12.0
 pytest-cov>=4.1.0
 
 # --- Glossary Miner (Dev Tool) ---
-SPARQLWrapper>=2.0.0      # Required for querying the Wikidata Knowledge Graph
+SPARQLWrapper>=2.0.0

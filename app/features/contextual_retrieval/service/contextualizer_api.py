@@ -1,4 +1,4 @@
-# Canvas: contextual_api_v2
+# Canvas: contextualizer_api_v3
 # Path: app/features/contextual_retrieval/service/contextualizer_api.py
 
 import logging
@@ -19,12 +19,6 @@ logger = logging.getLogger(__name__)
 
 
 class ContextualizerAPI:
-    """
-    Orchestrates the Anthropic Contextual Retrieval pattern (Locally).
-    Transforms a PhoneticCorrectedTranscript into semantic chunks, generates situational
-    context using a cached SLM, and prepares the payload for Hybrid RAG indexing.
-    """
-
     def __init__(
             self,
             repository: IContextualRepository,
@@ -35,11 +29,14 @@ class ContextualizerAPI:
         self._orchestrator = orchestrator
         self._slm_adapter = slm_adapter
 
+        # Strict Domain Manifest Isolation
+        self._manifest = ModelManifest(
+            model_type=ModelType.CONTEXTUAL_RETRIEVAL,
+            model_path=settings.CONTEXTUAL_RETRIEVAL_MODEL_PATH,
+            required_vram_mb=settings.CONTEXTUAL_RETRIEVAL_VRAM_REQUIREMENT_MB
+        )
+
     def update_transcript(self, transcript: ContextualizedTranscript) -> ContextualizedTranscript:
-        """
-        Public API method allowing other features to safely mutate an existing transcript.
-        Delegates to the repository to safely overwrite the JSONB column.
-        """
         try:
             return self._repo.update(transcript)
         except Exception as e:
@@ -50,11 +47,10 @@ class ContextualizerAPI:
             transcript: PhoneticCorrectedTranscript,
             release_after: bool = True
     ) -> ContextualizedTranscript:
-        # ... (Rest of the existing execute method remains exactly the same) ...
         try:
             existing_record = self._repo.get_by_source_id(transcript.source_id)
             if existing_record:
-                logger.info(f"Contextualized Transcript already exists for Source {transcript.source_id}. Skipping.")
+                logger.info(f"Contextualized Transcript exists for Source {transcript.source_id}. Skipping.")
                 return existing_record
 
             if not transcript.sentences:
@@ -64,22 +60,16 @@ class ContextualizerAPI:
             full_document_text = " ".join([s.text for s in transcript.sentences])
             raw_chunks = build_rag_chunks(transcript.sentences, max_words=250, overlap_sentences=1)
 
-            manifest = ModelManifest(
-                model_type=ModelType.DOMAIN_CLASSIFIER,
-                model_path=settings.DOMAIN_CLASSIFIER_MODEL_PATH,
-                required_vram_mb=settings.DOMAIN_CLASSIFIER_MODEL_VRAM_REQUIREMENT_MB
-            )
-
             loaded_model = None
             contextualized_chunks: List[ContextualizedChunk] = []
 
             try:
-                loaded_model = self._orchestrator.acquire_model(manifest, self._slm_adapter)
+                loaded_model = self._orchestrator.acquire_model(self._manifest, self._slm_adapter)
 
                 for idx, chunk_sentences in enumerate(raw_chunks):
                     logger.info(f"  -> Generating Context for Chunk {idx + 1}/{len(raw_chunks)}...")
-
                     chunk_text = " ".join([s.text for s in chunk_sentences])
+
                     context_string = self._slm_adapter.generate_context(
                         model=loaded_model,
                         full_document_text=full_document_text,
