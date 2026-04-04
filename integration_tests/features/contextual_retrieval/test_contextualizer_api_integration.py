@@ -14,7 +14,7 @@ from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 
 from app.features.sentence_reconstruction.domain.entities import ReconstructedSentence
-from app.features.phonetic_correction.domain.entities import PhoneticCorrectedTranscript
+from app.features.domain_phonetic_correction.domain.entities import DomainPhoneticCorrectedTranscript
 
 from app.features.contextual_retrieval.data.repositories import ContextualRepository
 from app.features.contextual_retrieval.data.slm_adapter import SLMContextAdapter
@@ -95,7 +95,7 @@ class TestContextualizerAPIIntegration:
             )
         ]
 
-        dummy_transcript = PhoneticCorrectedTranscript(
+        dummy_transcript = DomainPhoneticCorrectedTranscript(
             source_id=source_id,
             sentences=sentences,
             audit_trail=[]

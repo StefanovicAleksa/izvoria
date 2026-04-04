@@ -51,7 +51,7 @@ class ContextualizedChunk(BaseModel):
 class ContextualizedTranscript(BaseModel):
     """
     The Aggregate Root for Phase 9.
-    This replaces the PhoneticCorrectedTranscript as the primary data payload moving forward.
+    This replaces the DomainPhoneticCorrectedTranscript as the primary data payload moving forward.
     """
     id: uuid.UUID = Field(default_factory=uuid.uuid4)
     # Added default factory to prevent PyCharm unresolved initialization warnings

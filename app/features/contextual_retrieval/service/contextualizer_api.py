@@ -9,7 +9,7 @@ from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.domain.entities import ModelManifest
 from app.core.model_manager.domain.enums import ModelType
 
-from app.features.phonetic_correction.domain.entities import PhoneticCorrectedTranscript
+from app.features.domain_phonetic_correction.domain.entities import DomainPhoneticCorrectedTranscript
 from app.features.contextual_retrieval.domain.interfaces import IContextualRepository, ISLMContextAdapter
 from app.features.contextual_retrieval.domain.entities import ContextualizedTranscript, ContextualizedChunk
 from app.features.contextual_retrieval.utils.chunker import build_rag_chunks
@@ -44,7 +44,7 @@ class ContextualizerAPI:
 
     def execute(
             self,
-            transcript: PhoneticCorrectedTranscript,
+            transcript: DomainPhoneticCorrectedTranscript,
             release_after: bool = True
     ) -> ContextualizedTranscript:
         try:

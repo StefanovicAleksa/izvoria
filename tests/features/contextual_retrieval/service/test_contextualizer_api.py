@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
-from app.features.phonetic_correction.domain.entities import PhoneticCorrectedTranscript
+from app.features.domain_phonetic_correction.domain.entities import DomainPhoneticCorrectedTranscript
 from app.features.sentence_reconstruction.domain.entities import ReconstructedSentence
 from app.features.contextual_retrieval.service.contextualizer_api import ContextualizerAPI
 from app.features.contextual_retrieval.domain.entities import ContextualizedTranscript
@@ -45,7 +45,7 @@ class TestContextualizerAPI:
         mock_existing = ContextualizedTranscript(source_id=source_id, chunks=[])
         mocks["repo"].get_by_source_id.return_value = mock_existing
 
-        dummy_input = PhoneticCorrectedTranscript(source_id=source_id, sentences=[], audit_trail=[])
+        dummy_input = DomainPhoneticCorrectedTranscript(source_id=source_id, sentences=[], audit_trail=[])
         result = api.execute(dummy_input)
 
         assert result == mock_existing
@@ -56,7 +56,7 @@ class TestContextualizerAPI:
         mocks["repo"].get_by_source_id.return_value = None
 
         source_id = uuid.uuid4()
-        dummy_input = PhoneticCorrectedTranscript(source_id=source_id, sentences=[], audit_trail=[])
+        dummy_input = DomainPhoneticCorrectedTranscript(source_id=source_id, sentences=[], audit_trail=[])
 
         api.execute(dummy_input)
 
@@ -73,7 +73,7 @@ class TestContextualizerAPI:
         dummy_sentence = ReconstructedSentence(
             sentence_id=uuid.uuid4(), text="I have angina.", speaker_id="S0", start_sec=0, end_sec=1, words=[]
         )
-        dummy_input = PhoneticCorrectedTranscript(
+        dummy_input = DomainPhoneticCorrectedTranscript(
             source_id=source_id, sentences=[dummy_sentence], audit_trail=[]
         )
 
@@ -108,7 +108,7 @@ class TestContextualizerAPI:
         dummy_sentence = ReconstructedSentence(
             sentence_id=uuid.uuid4(), text="Test.", speaker_id="S0", start_sec=0, end_sec=1, words=[]
         )
-        dummy_input = PhoneticCorrectedTranscript(
+        dummy_input = DomainPhoneticCorrectedTranscript(
             source_id=source_id, sentences=[dummy_sentence], audit_trail=[]
         )
 

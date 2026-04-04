@@ -1,4 +1,4 @@
-# Canvas: main_v21
+# Canvas: main_v22
 # Path: app/main.py
 
 import argparse
@@ -52,9 +52,9 @@ from app.features.sentence_reconstruction.data.repositories import PostgresSente
 from app.features.sentence_reconstruction.data.punctuation_adapter import PunctuationAdapter
 from app.features.sentence_reconstruction.service.reconstruction_api import SentenceReconstructionAPI
 
-from app.features.phonetic_correction.data.repositories import PhoneticRepository
-from app.features.phonetic_correction.data.qwen_adapter import QwenAdapter
-from app.features.phonetic_correction.service.correction_api import PhoneticCorrectionAPI
+from app.features.domain_phonetic_correction.data.repositories import DomainPhoneticRepository
+from app.features.domain_phonetic_correction.data.qwen_adapter import QwenDomainAdapter
+from app.features.domain_phonetic_correction.service.correction_api import DomainPhoneticCorrectionAPI
 
 from app.features.contextual_retrieval.data.repositories import ContextualRepository
 from app.features.contextual_retrieval.data.slm_adapter import SLMContextAdapter
@@ -82,7 +82,7 @@ from app.orchestration.service.phases.domain_adaptation_phase import DomainAdapt
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
 from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
-from app.orchestration.service.phases.phonetic_correction_phase import PhoneticCorrectionPhase
+from app.orchestration.service.phases.domain_phonetic_correction_phase import DomainPhoneticCorrectionPhase
 from app.orchestration.service.phases.contextual_retrieval_phase import ContextualRetrievalPhase
 from app.orchestration.service.phases.visual_cue_detection_phase import VisualCueDetectionPhase
 from app.orchestration.service.phases.frame_extraction_phase import FrameExtractionPhase
@@ -195,19 +195,19 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         required_vram_mb=settings.PUNCTUATION_VRAM_REQUIREMENT_MB
     )
 
-    # 8. Phonetic Correction (Phase 8)
-    phonetic_repo = PhoneticRepository(db_manager)
-    phonetic_adapter = QwenAdapter()
-    phonetic_correction_api = PhoneticCorrectionAPI(
-        repository=phonetic_repo,
+    # 8. Domain Phonetic Correction (Phase 8)
+    domain_phonetic_repo = DomainPhoneticRepository(db_manager)
+    domain_phonetic_adapter = QwenDomainAdapter()
+    domain_phonetic_correction_api = DomainPhoneticCorrectionAPI(
+        repository=domain_phonetic_repo,
         orchestrator=model_orchestrator,
-        patch_adapter=phonetic_adapter
+        patch_adapter=domain_phonetic_adapter
     )
 
-    phonetic_manifest = ModelManifest(
-        model_type=ModelType.ASR_CORRECTION_PHASE_3,
-        model_path=settings.ASR_PHASE_3_MODEL_PATH,
-        required_vram_mb=settings.ASR_PHASE_3_VRAM_REQUIREMENT_MB
+    domain_phonetic_manifest = ModelManifest(
+        model_type=ModelType.DOMAIN_PHONETIC_CORRECTION,
+        model_path=settings.DOMAIN_PHONETIC_CORRECTION_MODEL_PATH,
+        required_vram_mb=settings.DOMAIN_PHONETIC_CORRECTION_VRAM_REQUIREMENT_MB
     )
 
     # 9. Contextual Retrieval (Phase 9 - Llama)
@@ -222,7 +222,6 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
     # 10. Visual Cue Detection (Phase 10 - Qwen)
     cue_detector_adapter = QwenDetectorAdapter()
 
-    # FIX: Correctly instantiate the API with updated kwargs
     visual_cue_api = VisualCueDetectionAPI(
         orchestrator=model_orchestrator,
         adapter=cue_detector_adapter,
@@ -300,21 +299,20 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         punctuation_adapter=punctuation_adapter
     )
 
-    phonetic_correction_phase = PhoneticCorrectionPhase(
+    domain_phonetic_correction_phase = DomainPhoneticCorrectionPhase(
         job_manager=job_manager,
-        correction_api=phonetic_correction_api,
+        correction_api=domain_phonetic_correction_api,
         sentence_repo=sentence_repo,
         domain_repo=domain_repo,
         async_model_service=async_model_service,
-        manifest=phonetic_manifest,
-        adapter=phonetic_adapter
+        manifest=domain_phonetic_manifest,
+        adapter=domain_phonetic_adapter
     )
 
-    # FIX: Use `loader` kwargs and remove dead `manifest` kwargs for Phases 9, 10, 12
     contextual_retrieval_phase = ContextualRetrievalPhase(
         job_manager=job_manager,
         contextualizer_api=contextualizer_api,
-        phonetic_repo=phonetic_repo,
+        phonetic_repo=domain_phonetic_repo,
         async_model_service=async_model_service,
         loader=slm_adapter
     )
@@ -353,7 +351,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         transcribe_phase=transcribe_phase,
         diarize_phase=diarize_phase,
         sentence_reconstruction_phase=sentence_reconstruction_phase,
-        phonetic_correction_phase=phonetic_correction_phase,
+        domain_phonetic_correction_phase=domain_phonetic_correction_phase,
         contextual_retrieval_phase=contextual_retrieval_phase,
         visual_cue_detection_phase=visual_cue_detection_phase,
         frame_extraction_phase=frame_extraction_phase,
@@ -401,13 +399,13 @@ def main() -> None:
         output_dir = target_path.joinpath("onyx_outputs")
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        if PipelinePhase.PHONETIC_CORRECTION in results:
+        if PipelinePhase.DOMAIN_PHONETIC_CORRECTION in results:
             print("\n==================================================")
             print("  WRITING CORRECTED TRANSCRIPTS TO DISK")
             print("==================================================")
 
-            phonetic_repo = PhoneticRepository(db_manager)
-            target_batch = results[PipelinePhase.PHONETIC_CORRECTION]
+            phonetic_repo = DomainPhoneticRepository(db_manager)
+            target_batch = results[PipelinePhase.DOMAIN_PHONETIC_CORRECTION]
 
             for item in target_batch.items:
                 if item.success and item.source_id:

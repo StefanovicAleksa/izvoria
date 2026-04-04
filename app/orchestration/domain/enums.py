@@ -14,7 +14,7 @@ class PipelinePhase(str, Enum):
     DIARIZE = "diarize"
     SENTENCE_RECONSTRUCTION = "sentence_reconstruction"
     INTELLIGENCE_BRIDGE = "intelligence_bridge" # Kept in domain, benched from active pipeline
-    PHONETIC_CORRECTION = "phonetic_correction"
+    DOMAIN_PHONETIC_CORRECTION = "phonetic_correction"
     CONTEXTUAL_RETRIEVAL = "contextual_retrieval" # Phase 9
     VISUAL_CUE_DETECTION = "visual_cue_detection"  # Phase 10
     FRAME_EXTRACTION = "frame_extraction"  # Phase 11

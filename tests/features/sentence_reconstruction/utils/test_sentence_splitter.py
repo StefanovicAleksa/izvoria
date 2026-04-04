@@ -4,7 +4,7 @@
 import uuid
 from app.features.transcription.domain.entities import TranscriptWord
 from app.features.sentence_reconstruction.domain.entities import ReconstructedSentence
-from app.features.phonetic_correction.utils.sentence_splitter import split_massive_sentences
+from app.features.domain_phonetic_correction.utils.sentence_splitter import split_massive_sentences
 
 
 def test_split_massive_sentences_leaves_normal_sentences_alone():

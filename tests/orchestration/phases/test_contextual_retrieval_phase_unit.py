@@ -1,4 +1,4 @@
-# Canvas: test_contextual_retrieval_phase_unit_v3
+# Canvas: test_contextual_retrieval_phase_unit_v4
 # Path: tests/orchestration/phases/test_contextual_retrieval_phase_unit.py
 
 import pytest
@@ -8,9 +8,9 @@ from unittest.mock import Mock, ANY
 
 from app.orchestration.service.phases.contextual_retrieval_phase import ContextualRetrievalPhase
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
-from app.orchestration.domain.entities import PhoneticCorrectionJobResult
+from app.orchestration.domain.entities import DomainPhoneticCorrectionJobResult
 from app.core.model_manager.domain.entities import LoadedModel
-from app.features.phonetic_correction.domain.entities import PhoneticCorrectedTranscript
+from app.features.domain_phonetic_correction.domain.entities import DomainPhoneticCorrectedTranscript
 from app.features.contextual_retrieval.domain.entities import ContextualizedTranscript
 
 
@@ -35,7 +35,6 @@ class TestContextualRetrievalPhaseUnit:
             self, mock_job_manager, mock_contextualizer_api, mock_phonetic_repo,
             mock_async_service, mock_loader
     ):
-        # FIXED: Removed `manifest` and `adapter` overrides, replaced with strict `loader` injection.
         return ContextualRetrievalPhase(
             job_manager=mock_job_manager,
             contextualizer_api=mock_contextualizer_api,
@@ -51,7 +50,7 @@ class TestContextualRetrievalPhaseUnit:
     def test_execute_happy_path(self, phase, mock_async_service, mock_job_manager, mock_phonetic_repo, mock_loader):
         source_id = uuid.uuid4()
         upstream_results = [
-            PhoneticCorrectionJobResult(source_id=source_id, success=True, phonetic_transcript_id=uuid.uuid4())
+            DomainPhoneticCorrectionJobResult(source_id=source_id, success=True, domain_phonetic_transcript_id=uuid.uuid4())
         ]
 
         mock_future = Mock(spec=concurrent.futures.Future)
@@ -59,7 +58,7 @@ class TestContextualRetrievalPhaseUnit:
         mock_loaded_model = Mock(spec=LoadedModel)
         mock_async_service.resolve_preload.return_value = mock_loaded_model
 
-        mock_phonetic_repo.get_by_source_id.return_value = Mock(spec=PhoneticCorrectedTranscript)
+        mock_phonetic_repo.get_by_source_id.return_value = Mock(spec=DomainPhoneticCorrectedTranscript)
 
         mock_contextual_transcript = Mock(spec=ContextualizedTranscript)
         mock_contextual_transcript.id = uuid.uuid4()
@@ -71,13 +70,12 @@ class TestContextualRetrievalPhaseUnit:
         assert result.status == PhaseStatus.COMPLETED
         assert result.successful_count == 1
 
-        mock_async_service.trigger_unload.assert_called_once_with(loaded_model=mock_loaded_model, loader=mock_loader,
-                                                                  flush=True)
+        mock_async_service.trigger_unload.assert_called_once_with(loaded_model=mock_loaded_model, loader=mock_loader, flush=True)
 
     def test_execute_skips_failed_upstream(self, phase):
         phase._preload_future = None
         upstream_results = [
-            PhoneticCorrectionJobResult(source_id=uuid.uuid4(), success=False, error_message="Upstream fail")
+            DomainPhoneticCorrectionJobResult(source_id=uuid.uuid4(), success=False, error_message="Upstream fail")
         ]
         result = phase.execute(upstream_results)
         assert result.status == PhaseStatus.COMPLETED

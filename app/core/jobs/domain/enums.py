@@ -20,7 +20,7 @@ class JobType(str, Enum):
     DIARIZE = "diarize" # speaker diarization
     INTELLIGENCE_BRIDGE = "intelligence_bridge"
     SENTENCE_RECONSTRUCTION = "sentence_reconstruction"
-    PHONETIC_CORRECTION = "phonetic_correction"
+    DOMAIN_PHONETIC_CORRECTION = "phonetic_correction"
     CONTEXTUAL_RETRIEVAL = "contextual_retrieval" # Phase 9
     VISUAL_CUE_DETECTION = "visual_cue_detection" # Phase 10
     FRAME_EXTRACTION = "frame_extraction" # Phase 11

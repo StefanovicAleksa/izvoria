@@ -1,4 +1,4 @@
-# Canvas: batch_media_pipeline_v23
+# Canvas: batch_media_pipeline_v24
 # Path: app/orchestration/service/pipelines/batch_media_pipeline.py
 
 import uuid
@@ -15,7 +15,7 @@ from app.orchestration.domain.entities import (
     TranscribeJobResult,
     DiarizeJobResult,
     SentenceReconstructionJobResult,
-    PhoneticCorrectionJobResult,
+    DomainPhoneticCorrectionJobResult,
     ContextualRetrievalJobResult,
     VisualCueDetectionJobResult,
     FrameExtractionJobResult,
@@ -30,14 +30,13 @@ from app.orchestration.service.phases.domain_adaptation_phase import DomainAdapt
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
 from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
-from app.orchestration.service.phases.phonetic_correction_phase import PhoneticCorrectionPhase
+from app.orchestration.service.phases.domain_phonetic_correction_phase import DomainPhoneticCorrectionPhase
 from app.orchestration.service.phases.contextual_retrieval_phase import ContextualRetrievalPhase
 from app.orchestration.service.phases.visual_cue_detection_phase import VisualCueDetectionPhase
 from app.orchestration.service.phases.frame_extraction_phase import FrameExtractionPhase
 from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysisPhase
 
 logger = logging.getLogger(__name__)
-
 
 class BatchMediaPipeline:
     def __init__(
@@ -50,7 +49,7 @@ class BatchMediaPipeline:
             transcribe_phase: TranscribePhase,
             diarize_phase: DiarizePhase,
             sentence_reconstruction_phase: SentenceReconstructionPhase,
-            phonetic_correction_phase: PhoneticCorrectionPhase,
+            domain_phonetic_correction_phase: DomainPhoneticCorrectionPhase,
             contextual_retrieval_phase: ContextualRetrievalPhase,
             visual_cue_detection_phase: VisualCueDetectionPhase,
             frame_extraction_phase: FrameExtractionPhase,
@@ -64,16 +63,13 @@ class BatchMediaPipeline:
         self._transcribe_phase = transcribe_phase
         self._diarize_phase = diarize_phase
         self._sentence_reconstruction_phase = sentence_reconstruction_phase
-        self._phonetic_correction_phase = phonetic_correction_phase
+        self._domain_phonetic_correction_phase = domain_phonetic_correction_phase
         self._contextual_retrieval_phase = contextual_retrieval_phase
         self._visual_cue_detection_phase = visual_cue_detection_phase
         self._frame_extraction_phase = frame_extraction_phase
         self._visual_analysis_phase = visual_analysis_phase
 
-    # FIXED: Removed unused industry/sub_domains. PhoneticCorrectionPhase reads this natively from DomainRepo.
     def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[PipelinePhase, PhaseBatchResult]:
-        """Executes the full local Onyx pipeline sequentially with strict memory isolation."""
-
         pipeline_results: Dict[PipelinePhase, PhaseBatchResult] = {}
         logger.info(f"========== Starting Onyx Batch Pipeline for [{target_directory}] ==========")
 
@@ -195,19 +191,18 @@ class BatchMediaPipeline:
                 return pipeline_results
 
             # ==========================================
-            # PHASE 8: PHONETIC CORRECTION (GPU BOUND)
+            # PHASE 8: DOMAIN PHONETIC CORRECTION (GPU BOUND)
             # ==========================================
-            self._phonetic_correction_phase.preload_model()
+            self._domain_phonetic_correction_phase.preload_model()
 
-            # FIXED: Execute relying on the phase to naturally fetch Domain info from the DB
-            phonetic_result = self._phonetic_correction_phase.execute(
+            phonetic_result = self._domain_phonetic_correction_phase.execute(
                 reconstruction_results=successful_sentence_items
             )
-            pipeline_results[PipelinePhase.PHONETIC_CORRECTION] = phonetic_result
+            pipeline_results[PipelinePhase.DOMAIN_PHONETIC_CORRECTION] = phonetic_result
 
-            successful_phonetic_items: List[PhoneticCorrectionJobResult] = [
+            successful_phonetic_items: List[DomainPhoneticCorrectionJobResult] = [
                 item for item in phonetic_result.items
-                if isinstance(item, PhoneticCorrectionJobResult) and item.success
+                if isinstance(item, DomainPhoneticCorrectionJobResult) and item.success
             ]
             if not successful_phonetic_items:
                 return pipeline_results
@@ -245,8 +240,6 @@ class BatchMediaPipeline:
             # ==========================================
             # PHASE 11: FRAME EXTRACTION (CPU BOUND)
             # ==========================================
-            # VRAM is completely empty right now, so we spin up the heavy VLM on the GPU
-            # while the CPU thrashes FFmpeg locally.
             self._visual_analysis_phase.preload_model()
 
             extraction_result = self._frame_extraction_phase.execute(successful_cue_items)

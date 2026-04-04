@@ -1,4 +1,4 @@
-# Canvas: contextual_retrieval_phase_v4
+# Canvas: contextual_retrieval_phase_v5
 # Path: app/orchestration/service/phases/contextual_retrieval_phase.py
 
 import logging
@@ -17,23 +17,21 @@ from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.exceptions.base import ModelManagerError
 
 from app.features.contextual_retrieval.service.contextualizer_api import ContextualizerAPI
-from app.features.phonetic_correction.domain.interfaces import IPhoneticRepository
+from app.features.domain_phonetic_correction.domain.interfaces import IDomainPhoneticRepository
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
-from app.orchestration.domain.entities import PhaseBatchResult, PhoneticCorrectionJobResult, \
-    ContextualRetrievalJobResult
+from app.orchestration.domain.entities import PhaseBatchResult, DomainPhoneticCorrectionJobResult, ContextualRetrievalJobResult
 
 logger = logging.getLogger(__name__)
-
 
 class ContextualRetrievalPhase:
     def __init__(
             self,
             job_manager: JobManager,
             contextualizer_api: ContextualizerAPI,
-            phonetic_repo: IPhoneticRepository,
+            phonetic_repo: IDomainPhoneticRepository,
             async_model_service: AsyncModelService,
-            loader: IModelLoader  # FIXED: Inject the loader cleanly to avoid protected member access
+            loader: IModelLoader
     ):
         self._job_manager = job_manager
         self._contextualizer_api = contextualizer_api
@@ -50,13 +48,12 @@ class ContextualRetrievalPhase:
             required_vram_mb=settings.CONTEXTUAL_RETRIEVAL_VRAM_REQUIREMENT_MB
         )
 
-        # FIXED: Properly map kwargs 'manifest' and 'loader'
         self._preload_future = self._async_service.trigger_preload(
             manifest=manifest,
             loader=self._loader
         )
 
-    def execute(self, phonetic_results: List[PhoneticCorrectionJobResult]) -> PhaseBatchResult:
+    def execute(self, phonetic_results: List[DomainPhoneticCorrectionJobResult]) -> PhaseBatchResult:
         results: List[ContextualRetrievalJobResult] = []
         errors: List[str] = []
         success_count = 0
@@ -86,8 +83,7 @@ class ContextualRetrievalPhase:
                 if not transcript:
                     err_msg = f"Cannot apply contextual retrieval: Phonetic Transcript for Source {source_id} missing."
                     logger.error(err_msg)
-                    results.append(
-                        ContextualRetrievalJobResult(source_id=source_id, success=False, error_message=err_msg))
+                    results.append(ContextualRetrievalJobResult(source_id=source_id, success=False, error_message=err_msg))
                     errors.append(err_msg)
                     failed_count += 1
                     continue
@@ -117,15 +113,13 @@ class ContextualRetrievalPhase:
                 except Exception as e:
                     err_msg = str(e)
                     logger.error(f"Job failed for Source {source_id}: {err_msg}")
-                    results.append(
-                        ContextualRetrievalJobResult(source_id=source_id, success=False, error_message=err_msg))
+                    results.append(ContextualRetrievalJobResult(source_id=source_id, success=False, error_message=err_msg))
                     errors.append(f"Failed Contextual Retrieval for Source {source_id}: {err_msg}")
                     failed_count += 1
 
         finally:
             if loaded_model:
                 logger.info("Unloading Contextual Retrieval SLM to free VRAM...")
-                # FIXED: Properly map kwargs 'loaded_model' and 'loader'
                 self._async_service.trigger_unload(
                     loaded_model=loaded_model,
                     loader=self._loader,

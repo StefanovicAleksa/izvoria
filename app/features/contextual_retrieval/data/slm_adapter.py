@@ -1,4 +1,4 @@
-# Canvas: contextual_slm_adapter_v5
+# Canvas: contextual_slm_adapter_v6
 # Path: app/features/contextual_retrieval/data/slm_adapter.py
 
 import os
@@ -31,6 +31,7 @@ class SLMContextAdapter(ISLMContextAdapter):
             model_path=model_path,
             n_gpu_layers=-1,  # Offload all layers to the GPU
             n_ctx=32768,  # Large context window to hold the full document (adjust based on model specs)
+            flash_attn=True,  # CRITICAL FIX: Hardware-accelerated attention prevents OOM on 32k contexts
             verbose=False  # Suppress spammy C++ token generation logs
         )
 

@@ -64,8 +64,8 @@ class Settings(BaseSettings):
     ASR_PHASE_3_VRAM_REQUIREMENT_MB: float = 5000.0
 
     # Phase 8: Phonetic Correction
-    PHONETIC_CORRECTION_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
-    PHONETIC_CORRECTION_VRAM_REQUIREMENT_MB: float = 5000.0
+    DOMAIN_PHONETIC_CORRECTION_MODEL_PATH: str = "models/qwen2.5-3b-instruct-q4_k_m.gguf"
+    DOMAIN_PHONETIC_CORRECTION_VRAM_REQUIREMENT_MB: float = 2500.0
 
     # Phase 9: Contextual Retrieval
     CONTEXTUAL_RETRIEVAL_MODEL_PATH: str = "models/llama-3.2-3b-instruct-q8_0.gguf"
