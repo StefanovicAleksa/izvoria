@@ -1,4 +1,4 @@
-# Canvas: xml_parser_v3
+# Canvas: xml_parser_v4
 # Path: app/features/domain_phonetic_correction/utils/xml_parser.py
 
 import re
@@ -12,31 +12,35 @@ logger = logging.getLogger(__name__)
 
 def parse_xml_patches(raw_llm_output: str) -> List[DomainPhoneticPatch]:
     """
-    Aggressively parses XML-style <patch> tags using Regex.
-    Extracts the <orig> and <corr> strings to feed the AnchorApplicator.
+    Aggressively parses XML-style <patch> tags using a strict Regex Firewall.
+    Tracks identical phantom patches to prevent false-positive warning logs.
     """
-    # THE FIREWALL: By using [^<]*? instead of .*?, we guarantee that nested
-    # or hallucinated XML tags CANNOT be captured inside the text.
+    # The Regex Firewall: [^<]*? ensures nested or corrupted tags are strictly rejected
+    # Added [^>]* to the tags to gracefully allow LLM-hallucinated attributes (e.g. <patch id="1">)
     pattern = re.compile(
-        r'<patch>\s*<orig>([^<]*?)</orig>\s*<corr>([^<]*?)</corr>\s*</patch>',
+        r'<patch[^>]*>\s*<orig[^>]*>([^<]*?)</orig>\s*<corr[^>]*>([^<]*?)</corr>\s*</patch>',
         re.IGNORECASE | re.DOTALL
     )
 
     matches = pattern.finditer(raw_llm_output)
     patches: List[DomainPhoneticPatch] = []
+    identical_skipped = 0
 
     for match in matches:
-        orig_text = match.group(1).strip()
-        corr_text = match.group(2).strip()
+        orig_text = match.group(1).strip().replace('\x00', '')
+        corr_text = match.group(2).strip().replace('\x00', '')
 
-        # Strip null terminators just in case llama.cpp leaks them across the C++ boundary
-        orig_text = orig_text.replace('\x00', '')
-        corr_text = corr_text.replace('\x00', '')
+        if orig_text and corr_text:
+            if orig_text != corr_text:
+                patches.append(DomainPhoneticPatch(original=orig_text, correction=corr_text))
+            else:
+                identical_skipped += 1
 
-        if orig_text and corr_text and orig_text != corr_text:
-            patches.append(DomainPhoneticPatch(original=orig_text, correction=corr_text))
-
+    # Intelligent Logging
     if not patches and "<patch>" in raw_llm_output.lower():
-        logger.warning(f"Found <patch> tags but failed to parse valid orig/corr pairs. LLM output was malformed.")
+        if identical_skipped > 0:
+            logger.debug(f"Ignored {identical_skipped} LLM patches because original and correction were identical.")
+        else:
+            logger.warning("Found <patch> tags but failed to parse valid orig/corr pairs. LLM output was malformed.")
 
     return patches

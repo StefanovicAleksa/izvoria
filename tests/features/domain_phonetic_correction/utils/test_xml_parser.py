@@ -1,4 +1,4 @@
-# Canvas: test_xml_parser_v3
+# Canvas: test_xml_parser_v4
 # Path: tests/features/domain_phonetic_correction/utils/test_xml_parser.py
 
 from app.features.domain_phonetic_correction.utils.xml_parser import parse_xml_patches
@@ -19,7 +19,6 @@ class TestXMLParser:
         assert patches[0].correction == "with acute angina"
 
     def test_parse_blocks_nested_xml_leakage(self):
-        # NEW TEST: Proves the [^<]*? regex firewall stops XML from leaking into the transcript
         malicious_output = """
         <patch>
             <orig>some bad text</orig>
@@ -27,8 +26,31 @@ class TestXMLParser:
         </patch>
         """
         patches = parse_xml_patches(malicious_output)
+        assert len(patches) == 0
 
-        # Because the <corr> tag contains `<` and `>`, the Regex safely refuses to parse it.
+    def test_parse_allows_hallucinated_attributes(self):
+        # NEW TEST: Proves the parser accepts tags even if the LLM adds random attributes
+        raw_output = """
+        <patch id="1">
+            <orig text="eat bit da">eat bit da</orig>
+            <corr format="upper">EBITDA</corr>
+        </patch>
+        """
+        patches = parse_xml_patches(raw_output)
+
+        assert len(patches) == 1
+        assert patches[0].original == "eat bit da"
+        assert patches[0].correction == "EBITDA"
+
+    def test_parse_ignores_identical_phantom_patches(self):
+        # NEW TEST: Proves that if the LLM outputs a patch that doesn't change anything, it gets safely dropped
+        raw_output = """
+        <patch>
+            <orig>no change here</orig>
+            <corr>no change here</corr>
+        </patch>
+        """
+        patches = parse_xml_patches(raw_output)
         assert len(patches) == 0
 
     def test_parse_multiple_patches_with_hallucinated_noise(self):
