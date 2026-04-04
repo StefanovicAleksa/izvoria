@@ -28,6 +28,7 @@ class ModelType(str, Enum):
     ASR_CORRECTION_PHASE_3 = "asr_correction_phase_3"
 
     # Modern Isolated Pipeline
+    HALLUCINATION_SCRUBBER = "hallucination_scrubber"  # Phase 6.5
     DOMAIN_PHONETIC_CORRECTION = "phonetic_correction"  # Phase 8
     CONTEXTUAL_RETRIEVAL = "contextual_retrieval"  # Phase 9
     VISUAL_CUE_DETECTION = "visual_cue_detection"  # Phase 10

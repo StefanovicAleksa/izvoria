@@ -63,6 +63,10 @@ class Settings(BaseSettings):
     ASR_PHASE_3_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
     ASR_PHASE_3_VRAM_REQUIREMENT_MB: float = 5000.0
 
+    # Phase 6.5: Hallucination Scrubber
+    HALLUCINATION_SCRUBBER_MODEL_PATH: str = "models/deberta-v3-base-zeroshot"
+    HALLUCINATION_SCRUBBER_VRAM_REQUIREMENT_MB: float = 800.0
+
     # Phase 8: Phonetic Correction
     DOMAIN_PHONETIC_CORRECTION_MODEL_PATH: str = "models/qwen2.5-3b-instruct-q4_k_m.gguf"
     DOMAIN_PHONETIC_CORRECTION_VRAM_REQUIREMENT_MB: float = 2500.0
