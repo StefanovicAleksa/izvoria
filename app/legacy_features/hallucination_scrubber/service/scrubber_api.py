@@ -15,14 +15,14 @@ from app.features.transcription.domain.entities import TranscriptSegment
 from app.features.domain_adaptation.domain.interfaces import IDomainAdaptationRepository
 from app.features.domain_adaptation.domain.entities import DomainGlossary
 
-from app.features.hallucination_scrubber.domain.interfaces import IZeroShotAdapter, IHallucinationRepository
-from app.features.hallucination_scrubber.domain.entities import (
+from app.legacy_features.hallucination_scrubber.domain.interfaces import IZeroShotAdapter, IHallucinationRepository
+from app.legacy_features.hallucination_scrubber.domain.entities import (
     HallucinationScrubbedTranscript,
     AppliedScrubbingRecord,
     ScrubbingPatch
 )
-from app.features.hallucination_scrubber.utils.error_mapper import map_scrubber_error
-from app.features.hallucination_scrubber.utils.text_segmenter import TextSegmenter
+from app.legacy_features.hallucination_scrubber.utils.error_mapper import map_scrubber_error
+from app.legacy_features.hallucination_scrubber.utils.text_segmenter import TextSegmenter
 
 logger = logging.getLogger(__name__)
 

@@ -7,13 +7,13 @@ from sqlalchemy import select
 
 from app.core.database.service.manager import DatabaseManager
 from app.features.transcription.domain.entities import TranscriptSegment
-from app.features.hallucination_scrubber.domain.interfaces import IHallucinationRepository
-from app.features.hallucination_scrubber.domain.entities import (
+from app.legacy_features.hallucination_scrubber.domain.interfaces import IHallucinationRepository
+from app.legacy_features.hallucination_scrubber.domain.entities import (
     HallucinationScrubbedTranscript,
     AppliedScrubbingRecord
 )
-from app.features.hallucination_scrubber.data.models import HallucinationScrubbedTranscriptModel
-from app.features.hallucination_scrubber.utils.error_mapper import map_scrubber_error
+from app.legacy_features.hallucination_scrubber.data.models import HallucinationScrubbedTranscriptModel
+from app.legacy_features.hallucination_scrubber.utils.error_mapper import map_scrubber_error
 
 
 class HallucinationRepository(IHallucinationRepository):

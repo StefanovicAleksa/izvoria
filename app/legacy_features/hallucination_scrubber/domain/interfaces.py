@@ -7,7 +7,7 @@ from typing import List, Dict, Optional
 
 from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.domain.entities import LoadedModel
-from app.features.hallucination_scrubber.domain.entities import HallucinationScrubbedTranscript
+from app.legacy_features.hallucination_scrubber.domain.entities import HallucinationScrubbedTranscript
 
 
 class IZeroShotAdapter(IModelLoader, ABC):

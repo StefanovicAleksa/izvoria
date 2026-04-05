@@ -6,8 +6,8 @@ import gc
 from typing import List, Dict, Any
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
-from app.features.hallucination_scrubber.domain.interfaces import IZeroShotAdapter
-from app.features.hallucination_scrubber.utils.error_mapper import map_scrubber_error
+from app.legacy_features.hallucination_scrubber.domain.interfaces import IZeroShotAdapter
+from app.legacy_features.hallucination_scrubber.utils.error_mapper import map_scrubber_error
 
 
 class DebertaAdapter(IZeroShotAdapter):

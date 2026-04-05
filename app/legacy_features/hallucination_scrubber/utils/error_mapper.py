@@ -5,7 +5,7 @@ import torch
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.database import exceptions as core_db_exc
-from app.features.hallucination_scrubber import exceptions as exc
+from app.legacy_features.hallucination_scrubber import exceptions as exc
 
 
 def map_scrubber_error(e: Exception, context: str = "") -> exc.HallucinationScrubberError:
