@@ -1,0 +1,23 @@
+{
+  "source_id": "12345678-1234-5678-1234-567812345678",
+  "chunks": [
+    {
+      "chunk_id": "11111111-1111-1111-1111-111111111111",
+      "original_text": "Let's take a look at the patient's chest X-ray on the screen.",
+      "needs_visual": true,
+      "visual_analysis_description": "A medical X-ray showing the human ribcage and lungs."
+    },
+    {
+      "chunk_id": "22222222-2222-2222-2222-222222222222",
+      "original_text": "Our Q3 revenue grew by 25%, as you can see on this financial chart.",
+      "needs_visual": true,
+      "visual_analysis_description": "A brick wall with some graffiti on it in an alleyway."
+    },
+    {
+      "chunk_id": "33333333-3333-3333-3333-333333333333",
+      "original_text": "Thank you all for coming to the meeting today.",
+      "needs_visual": false,
+      "visual_analysis_description": null
+    }
+  ]
+}
