@@ -1,4 +1,4 @@
-# Canvas: batch_media_pipeline_v24
+# Canvas: batch_media_pipeline_v25
 # Path: app/orchestration/service/pipelines/batch_media_pipeline.py
 
 import uuid
@@ -13,6 +13,7 @@ from app.orchestration.domain.entities import (
     AudioExtractionJobResult,
     VadJobResult,
     TranscribeJobResult,
+    HallucinationCorrectionJobResult,
     DiarizeJobResult,
     SentenceReconstructionJobResult,
     DomainPhoneticCorrectionJobResult,
@@ -28,6 +29,7 @@ from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPha
 from app.orchestration.service.phases.vad_phase import VadPhase
 from app.orchestration.service.phases.domain_adaptation_phase import DomainAdaptationPhase
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
+from app.orchestration.service.phases.hallucination_correction_phase import HallucinationCorrectionPhase
 from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
 from app.orchestration.service.phases.domain_phonetic_correction_phase import DomainPhoneticCorrectionPhase
@@ -38,6 +40,7 @@ from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysi
 
 logger = logging.getLogger(__name__)
 
+
 class BatchMediaPipeline:
     def __init__(
             self,
@@ -47,6 +50,7 @@ class BatchMediaPipeline:
             vad_phase: VadPhase,
             domain_adaptation_phase: DomainAdaptationPhase,
             transcribe_phase: TranscribePhase,
+            hallucination_correction_phase: HallucinationCorrectionPhase,
             diarize_phase: DiarizePhase,
             sentence_reconstruction_phase: SentenceReconstructionPhase,
             domain_phonetic_correction_phase: DomainPhoneticCorrectionPhase,
@@ -61,6 +65,7 @@ class BatchMediaPipeline:
         self._vad_phase = vad_phase
         self._domain_adaptation_phase = domain_adaptation_phase
         self._transcribe_phase = transcribe_phase
+        self._hallucination_correction_phase = hallucination_correction_phase
         self._diarize_phase = diarize_phase
         self._sentence_reconstruction_phase = sentence_reconstruction_phase
         self._domain_phonetic_correction_phase = domain_phonetic_correction_phase
@@ -69,7 +74,8 @@ class BatchMediaPipeline:
         self._frame_extraction_phase = frame_extraction_phase
         self._visual_analysis_phase = visual_analysis_phase
 
-    def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[PipelinePhase, PhaseBatchResult]:
+    def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[
+        PipelinePhase, PhaseBatchResult]:
         pipeline_results: Dict[PipelinePhase, PhaseBatchResult] = {}
         logger.info(f"========== Starting Onyx Batch Pipeline for [{target_directory}] ==========")
 
@@ -79,12 +85,9 @@ class BatchMediaPipeline:
             # ==========================================
             scan_result = self._scan_phase.execute(target_directory)
             pipeline_results[PipelinePhase.SCAN] = scan_result
-
             if scan_result.status == PhaseStatus.FAILED:
                 raise WorkflowStateError(f"Pipeline halted: Scan phase failed. Errors: {scan_result.errors}")
-
             if scan_result.successful_count == 0:
-                logger.info("Scan complete but no targets found. Halting pipeline gracefully.")
                 return pipeline_results
 
             # ==========================================
@@ -93,35 +96,29 @@ class BatchMediaPipeline:
             file_paths: List[str] = scan_result.items
             ingest_result = self._ingest_phase.execute(file_paths, source_type)
             pipeline_results[PipelinePhase.INGEST] = ingest_result
-
             if ingest_result.status == PhaseStatus.FAILED:
-                raise WorkflowStateError(f"Pipeline halted: Ingest phase failed entirely. Errors: {ingest_result.errors}")
+                raise WorkflowStateError(
+                    f"Pipeline halted: Ingest phase failed entirely. Errors: {ingest_result.errors}")
 
             video_source_ids: List[uuid.UUID] = [
                 item.source_id for item in ingest_result.items
                 if isinstance(item, IngestJobResult) and item.success and item.source_id
             ]
-
-            if not video_source_ids:
-                return pipeline_results
+            if not video_source_ids: return pipeline_results
 
             # ==========================================
             # PHASE 3: AUDIO EXTRACTION (CPU BOUND)
             # ==========================================
             self._vad_phase.preload_model()
-
             extraction_result = self._extract_audio.execute(video_source_ids)
             pipeline_results[PipelinePhase.AUDIO_EXTRACTION] = extraction_result
-
             if extraction_result.status == PhaseStatus.FAILED:
-                raise WorkflowStateError(f"Pipeline halted: Audio Extraction failed entirely. Errors: {extraction_result.errors}")
+                raise WorkflowStateError(
+                    f"Pipeline halted: Audio Extraction failed. Errors: {extraction_result.errors}")
 
-            successful_extraction_items: List[AudioExtractionJobResult] = [
-                item for item in extraction_result.items
-                if isinstance(item, AudioExtractionJobResult) and item.success
-            ]
-            if not successful_extraction_items:
-                return pipeline_results
+            successful_extraction_items = [item for item in extraction_result.items if
+                                           isinstance(item, AudioExtractionJobResult) and item.success]
+            if not successful_extraction_items: return pipeline_results
 
             # ==========================================
             # PHASE 4: VOICE ACTIVITY DETECTION (GPU BOUND)
@@ -129,21 +126,15 @@ class BatchMediaPipeline:
             vad_result = self._vad_phase.execute(successful_extraction_items)
             pipeline_results[PipelinePhase.VAD] = vad_result
 
-            successful_vad_items: List[VadJobResult] = [
-                item for item in vad_result.items
-                if isinstance(item, VadJobResult) and item.success
-            ]
-            if not successful_vad_items:
-                return pipeline_results
+            successful_vad_items = [item for item in vad_result.items if
+                                    isinstance(item, VadJobResult) and item.success]
+            if not successful_vad_items: return pipeline_results
 
             # ==========================================
             # PHASE 4.5: DOMAIN ADAPTATION (GPU BOUND)
             # ==========================================
             domain_result = self._domain_adaptation_phase.execute(successful_vad_items)
             pipeline_results[PipelinePhase.DOMAIN_ADAPTATION] = domain_result
-
-            if domain_result.status == PhaseStatus.FAILED:
-                logger.warning("Domain Adaptation failed, but pipeline will continue without domain hints.")
 
             # ==========================================
             # PHASE 5: TRANSCRIPTION (GPU BOUND)
@@ -161,11 +152,24 @@ class BatchMediaPipeline:
                 return pipeline_results
 
             # ==========================================
+            # PHASE 5.5: HALLUCINATION CORRECTION (CPU BOUND)
+            # ==========================================
+            correction_result = self._hallucination_correction_phase.execute(successful_transcribe_items)
+            pipeline_results[PipelinePhase.HALLUCINATION_CORRECTION] = correction_result
+
+            successful_correction_items: List[HallucinationCorrectionJobResult] = [
+                item for item in correction_result.items
+                if isinstance(item, HallucinationCorrectionJobResult) and item.success
+            ]
+            if not successful_correction_items:
+                return pipeline_results
+
+            # ==========================================
             # PHASE 6: DIARIZATION (GPU BOUND)
             # ==========================================
             self._diarize_phase.preload_model()
 
-            diarize_result = self._diarize_phase.execute(successful_transcribe_items)
+            diarize_result = self._diarize_phase.execute(successful_correction_items)
             pipeline_results[PipelinePhase.DIARIZE] = diarize_result
 
             successful_diarize_items: List[DiarizeJobResult] = [
@@ -245,18 +249,18 @@ class BatchMediaPipeline:
             extraction_result = self._frame_extraction_phase.execute(successful_cue_items)
             pipeline_results[PipelinePhase.FRAME_EXTRACTION] = extraction_result
 
-            successful_extraction_items: List[FrameExtractionJobResult] = [
+            successful_extraction_items_frames: List[FrameExtractionJobResult] = [
                 item for item in extraction_result.items
                 if isinstance(item, FrameExtractionJobResult) and item.success
             ]
-            if not successful_extraction_items:
+            if not successful_extraction_items_frames:
                 logger.info("No frames extracted; skipping Visual Analysis phase.")
                 return pipeline_results
 
             # ==========================================
             # PHASE 12: VISUAL ANALYSIS (GPU BOUND)
             # ==========================================
-            analysis_result = self._visual_analysis_phase.execute(successful_extraction_items)
+            analysis_result = self._visual_analysis_phase.execute(successful_extraction_items_frames)
             pipeline_results[PipelinePhase.VISUAL_ANALYSIS] = analysis_result
 
             logger.info(f"========== Pipeline Completed for Batch [{target_directory}] ==========")

@@ -1,4 +1,4 @@
-# Canvas: orchestration_enums_v9
+# Canvas: orchestration_enums_v10
 # Path: app/orchestration/domain/enums.py
 
 from enum import Enum
@@ -11,8 +11,9 @@ class PipelinePhase(str, Enum):
     VAD = "vad"
     DOMAIN_ADAPTATION = "domain_adaptation"
     TRANSCRIBE = "transcribe"
+    HALLUCINATION_CORRECTION = "hallucination_correction" # Phase 5.5
     DIARIZE = "diarize"
-    HALLUCINATION_SCRUBBER = "hallucination_scrubber" # Phase 6.5
+    HALLUCINATION_SCRUBBER = "hallucination_scrubber" # Legacy Phase 6.5
     SENTENCE_RECONSTRUCTION = "sentence_reconstruction"
     INTELLIGENCE_BRIDGE = "intelligence_bridge" # Kept in domain, benched from active pipeline
     DOMAIN_PHONETIC_CORRECTION = "phonetic_correction"

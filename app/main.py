@@ -1,4 +1,4 @@
-# Canvas: main_v22
+# Canvas: main_v23
 # Path: app/main.py
 
 import argparse
@@ -44,6 +44,9 @@ from app.features.transcription.data.repositories import TranscriptRepository
 from app.features.transcription.data.faster_whisper_adapter import FasterWhisperAdapter
 from app.features.transcription.service.transcription_api import TranscriptionAPI
 
+# NEW: Hallucination Correction
+from app.features.hallucination_correction.service.correction_api import CorrectionAPI
+
 from app.features.diarization.data.repositories import DiarizationRepository
 from app.features.diarization.data.nemo_adapter import NeMoDiarizationAdapter
 from app.features.diarization.service.diarization_api import DiarizationAPI
@@ -80,6 +83,7 @@ from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPha
 from app.orchestration.service.phases.vad_phase import VadPhase
 from app.orchestration.service.phases.domain_adaptation_phase import DomainAdaptationPhase
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
+from app.orchestration.service.phases.hallucination_correction_phase import HallucinationCorrectionPhase # NEW
 from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
 from app.orchestration.service.phases.domain_phonetic_correction_phase import DomainPhoneticCorrectionPhase
@@ -160,6 +164,12 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         model_type=ModelType.TRANSCRIPTION,
         model_path=settings.WHISPER_MODEL_PATH,
         required_vram_mb=settings.WHISPER_VRAM_REQUIREMENT_MB
+    )
+
+    # 5.5 Hallucination Correction (Zero-VRAM, purely DB/Math)
+    correction_api = CorrectionAPI(
+        transcript_repository=transcript_repo,
+        vad_repository=vad_repo
     )
 
     # 6. Diarization
@@ -281,6 +291,12 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         transcribe_adapter=whisper_adapter
     )
 
+    # NEW: Initialize the Hallucination Correction Phase
+    hallucination_correction_phase = HallucinationCorrectionPhase(
+        job_manager=job_manager,
+        correction_api=correction_api
+    )
+
     diarize_phase = DiarizePhase(
         job_manager=job_manager,
         diarization_api=diarization_api,
@@ -349,6 +365,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         vad_phase=vad_phase,
         domain_adaptation_phase=domain_adaptation_phase,
         transcribe_phase=transcribe_phase,
+        hallucination_correction_phase=hallucination_correction_phase, # NEW
         diarize_phase=diarize_phase,
         sentence_reconstruction_phase=sentence_reconstruction_phase,
         domain_phonetic_correction_phase=domain_phonetic_correction_phase,

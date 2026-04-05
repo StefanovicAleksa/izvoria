@@ -1,4 +1,4 @@
-# Canvas: jobs_enums_v13
+# Canvas: jobs_enums_v14
 # Path: app/core/jobs/domain/enums.py
 
 from enum import Enum
@@ -17,8 +17,9 @@ class JobType(str, Enum):
     VAD = "vad" # voice activity detection
     DOMAIN_ADAPTATION = "domain_adaptation"
     TRANSCRIBE = "transcribe"
+    HALLUCINATION_CORRECTION = "hallucination_correction" # Phase 5.5
     DIARIZE = "diarize" # speaker diarization
-    HALLUCINATION_SCRUBBER = "hallucination_scrubber" # Phase 6.5
+    HALLUCINATION_SCRUBBER = "hallucination_scrubber" # Legacy Phase 6.5
     INTELLIGENCE_BRIDGE = "intelligence_bridge"
     SENTENCE_RECONSTRUCTION = "sentence_reconstruction"
     DOMAIN_PHONETIC_CORRECTION = "phonetic_correction"

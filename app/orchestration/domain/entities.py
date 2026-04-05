@@ -1,4 +1,4 @@
-# Canvas: orchestration_entities_v16
+# Canvas: orchestration_entities_v17
 # Path: app/orchestration/domain/entities.py
 
 import uuid
@@ -47,6 +47,13 @@ class TranscribeJobResult(BaseModel):
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 
+class HallucinationCorrectionJobResult(BaseModel):
+    source_id: uuid.UUID
+    success: bool
+    transcript_id: Optional[uuid.UUID] = None
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
 class DiarizeJobResult(BaseModel):
     source_id: uuid.UUID
     success: bool
@@ -54,7 +61,6 @@ class DiarizeJobResult(BaseModel):
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 
-# ---> NEW <---
 class HallucinationScrubberJobResult(BaseModel):
     source_id: uuid.UUID
     success: bool

@@ -1,4 +1,4 @@
-# Canvas: diarize_phase_v1
+# Canvas: diarize_phase_v2
 # Path: app/orchestration/service/phases/diarize_phase.py
 
 import concurrent.futures
@@ -17,7 +17,7 @@ from app.features.diarization.service.diarization_api import DiarizationAPI
 from app.features.storage.service.storage_api import StorageAPI
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
-from app.orchestration.domain.entities import PhaseBatchResult, TranscribeJobResult, DiarizeJobResult
+from app.orchestration.domain.entities import PhaseBatchResult, HallucinationCorrectionJobResult, DiarizeJobResult
 
 
 class DiarizePhase:
@@ -43,7 +43,7 @@ class DiarizePhase:
         """Triggers the background loading of the Diarization model."""
         self._preload_future = self._async_service.trigger_preload(self._manifest, self._adapter)
 
-    def execute(self, transcribe_results: List[TranscribeJobResult]) -> PhaseBatchResult:
+    def execute(self, correction_results: List[HallucinationCorrectionJobResult]) -> PhaseBatchResult:
         """
         Phase 6: Waits for the NeMo Diarization model to load, then diarizes sequentially.
         """
@@ -65,7 +65,7 @@ class DiarizePhase:
                 )
 
         try:
-            for item in transcribe_results:
+            for item in correction_results:
                 if not item.success or not item.transcript_id:
                     continue
 
@@ -122,7 +122,7 @@ class DiarizePhase:
         return PhaseBatchResult(
             phase=PipelinePhase.DIARIZE,
             status=status,
-            total_processed=len(transcribe_results),
+            total_processed=len(correction_results),
             successful_count=success_count,
             failed_count=failed_count,
             items=results,
