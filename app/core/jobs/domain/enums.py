@@ -27,3 +27,4 @@ class JobType(str, Enum):
     VISUAL_CUE_DETECTION = "visual_cue_detection" # Phase 10
     FRAME_EXTRACTION = "frame_extraction" # Phase 11
     VISUAL_ANALYSIS = "visual_analysis" # Phase 12
+    VISUAL_HALLUCINATION_CORRECTION = "visual_hallucination_correction" # Phase 13

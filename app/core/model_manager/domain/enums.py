@@ -32,3 +32,4 @@ class ModelType(str, Enum):
     DOMAIN_PHONETIC_CORRECTION = "phonetic_correction"  # Phase 8
     CONTEXTUAL_RETRIEVAL = "contextual_retrieval"  # Phase 9
     VISUAL_CUE_DETECTION = "visual_cue_detection"  # Phase 10
+    VISUAL_HALLUCINATION_CORRECTION = "visual_hallucination_correction"

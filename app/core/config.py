@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     VISION_MMPROJ_PATH: str = "models/qwen2-vl-7b/Qwen2-VL-7B-Instruct-vision-encoder.gguf"
     VISION_VRAM_REQUIREMENT_MB: float = 7500.0
 
+    # Phase 13: Visual Hallucination Correction
+    VISUAL_HALLUCINATION_CORRECTION_MODEL_PATH: str = "models/qwen2.5-3b-instruct-q4_k_m.gguf"
+    VISUAL_HALLUCINATION_CORRECTION_VRAM_REQUIREMENT_MB: float = 2500.0
+
     @property
     def DATABASE_URL(self) -> str:
         return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
