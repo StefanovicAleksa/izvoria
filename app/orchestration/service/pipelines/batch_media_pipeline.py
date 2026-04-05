@@ -1,4 +1,4 @@
-# Canvas: batch_media_pipeline_v25
+# Canvas: batch_media_pipeline_v26
 # Path: app/orchestration/service/pipelines/batch_media_pipeline.py
 
 import uuid
@@ -20,6 +20,7 @@ from app.orchestration.domain.entities import (
     ContextualRetrievalJobResult,
     VisualCueDetectionJobResult,
     FrameExtractionJobResult,
+    VisualAnalysisJobResult,
 )
 from app.orchestration.exceptions.workflow import WorkflowStateError, WorkflowExecutionError
 
@@ -37,6 +38,7 @@ from app.orchestration.service.phases.contextual_retrieval_phase import Contextu
 from app.orchestration.service.phases.visual_cue_detection_phase import VisualCueDetectionPhase
 from app.orchestration.service.phases.frame_extraction_phase import FrameExtractionPhase
 from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysisPhase
+from app.orchestration.service.phases.visual_hallucination_correction_phase import VisualHallucinationCorrectionPhase
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +59,8 @@ class BatchMediaPipeline:
             contextual_retrieval_phase: ContextualRetrievalPhase,
             visual_cue_detection_phase: VisualCueDetectionPhase,
             frame_extraction_phase: FrameExtractionPhase,
-            visual_analysis_phase: VisualAnalysisPhase
+            visual_analysis_phase: VisualAnalysisPhase,
+            visual_hallucination_correction_phase: VisualHallucinationCorrectionPhase
     ):
         self._scan_phase = scan_phase
         self._ingest_phase = ingest_phase
@@ -73,6 +76,7 @@ class BatchMediaPipeline:
         self._visual_cue_detection_phase = visual_cue_detection_phase
         self._frame_extraction_phase = frame_extraction_phase
         self._visual_analysis_phase = visual_analysis_phase
+        self._visual_hallucination_correction_phase = visual_hallucination_correction_phase
 
     def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[
         PipelinePhase, PhaseBatchResult]:
@@ -260,8 +264,24 @@ class BatchMediaPipeline:
             # ==========================================
             # PHASE 12: VISUAL ANALYSIS (GPU BOUND)
             # ==========================================
+            self._visual_hallucination_correction_phase.preload_model()
+
             analysis_result = self._visual_analysis_phase.execute(successful_extraction_items_frames)
             pipeline_results[PipelinePhase.VISUAL_ANALYSIS] = analysis_result
+
+            successful_analysis_items: List[VisualAnalysisJobResult] = [
+                item for item in analysis_result.items
+                if isinstance(item, VisualAnalysisJobResult) and item.success
+            ]
+            if not successful_analysis_items:
+                logger.info("No visual analysis completed; skipping Visual Hallucination Correction phase.")
+                return pipeline_results
+
+            # ==========================================
+            # PHASE 13: VISUAL HALLUCINATION CORRECTION (GPU BOUND)
+            # ==========================================
+            hallucination_result = self._visual_hallucination_correction_phase.execute(successful_analysis_items)
+            pipeline_results[PipelinePhase.VISUAL_HALLUCINATION_CORRECTION] = hallucination_result
 
             logger.info(f"========== Pipeline Completed for Batch [{target_directory}] ==========")
             return pipeline_results

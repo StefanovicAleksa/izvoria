@@ -1,4 +1,4 @@
-# Canvas: orchestration_entities_v17
+# Canvas: orchestration_entities_v18
 # Path: app/orchestration/domain/entities.py
 
 import uuid
@@ -114,6 +114,14 @@ class VisualAnalysisJobResult(BaseModel):
     source_id: uuid.UUID
     success: bool
     analyzed_chunks_count: int = 0
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
+# --- NEW: Phase 13 Entity ---
+class VisualHallucinationCorrectionJobResult(BaseModel):
+    source_id: uuid.UUID
+    success: bool
+    evaluated_transcript_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 

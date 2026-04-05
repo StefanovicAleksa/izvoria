@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_integration_v27
+# Canvas: test_batch_media_pipeline_integration_v28
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
 import subprocess
@@ -41,7 +41,7 @@ from app.features.transcription.data.repositories import TranscriptRepository
 from app.features.transcription.service.transcription_api import TranscriptionAPI
 from app.features.transcription.data.faster_whisper_adapter import FasterWhisperAdapter
 
-from app.features.hallucination_correction.service.correction_api import CorrectionAPI # NEW
+from app.features.hallucination_correction.service.correction_api import CorrectionAPI
 
 from app.features.diarization.data.repositories import DiarizationRepository
 from app.features.diarization.service.diarization_api import DiarizationAPI
@@ -72,13 +72,18 @@ from app.features.visual_analysis.data.vlm_adapter import QwenVLMAdapter
 from app.features.visual_analysis.data.repositories import VisualAnalysisRepository
 from app.features.visual_analysis.service.analysis_api import VisualAnalysisAPI
 
+# NEW: Phase 13 Core Integration
+from app.features.visual_hallucination_correction.data.slm_adapter import QwenHallucinationAdapter
+from app.features.visual_hallucination_correction.data.repositories import VisualHallucinationRepository
+from app.features.visual_hallucination_correction.service.correction_api import VisualHallucinationCorrectionAPI
+
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
 from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPhase
 from app.orchestration.service.phases.vad_phase import VadPhase
 from app.orchestration.service.phases.domain_adaptation_phase import DomainAdaptationPhase
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
-from app.orchestration.service.phases.hallucination_correction_phase import HallucinationCorrectionPhase # NEW
+from app.orchestration.service.phases.hallucination_correction_phase import HallucinationCorrectionPhase
 from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
 from app.orchestration.service.phases.domain_phonetic_correction_phase import DomainPhoneticCorrectionPhase
@@ -86,6 +91,8 @@ from app.orchestration.service.phases.contextual_retrieval_phase import Contextu
 from app.orchestration.service.phases.visual_cue_detection_phase import VisualCueDetectionPhase
 from app.orchestration.service.phases.frame_extraction_phase import FrameExtractionPhase
 from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysisPhase
+# NEW: Phase 13 Orchestration Phase
+from app.orchestration.service.phases.visual_hallucination_correction_phase import VisualHallucinationCorrectionPhase
 
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
@@ -190,7 +197,6 @@ class TestBatchMediaPipelineIntegration:
             required_vram_mb=settings.WHISPER_VRAM_REQUIREMENT_MB
         )
 
-        # NEW
         correction_api = CorrectionAPI(
             transcript_repository=transcript_repo,
             vad_repository=vad_repo
@@ -264,6 +270,17 @@ class TestBatchMediaPipelineIntegration:
             storage_api=storage_api
         )
 
+        # NEW Phase 13 Initialization Core
+        visual_hallucination_repo = VisualHallucinationRepository(db_manager)
+        visual_hallucination_adapter = QwenHallucinationAdapter()
+        visual_hallucination_api = VisualHallucinationCorrectionAPI(
+            repository=visual_hallucination_repo,
+            adapter=visual_hallucination_adapter,
+            contextual_repo=contextual_repo,
+            visual_analysis_repo=visual_analysis_repo,
+            orchestrator=orchestrator
+        )
+
         scan_phase = ScanPhase(job_manager, scanner)
         ingest_phase = IngestPhase(job_manager, storage_api)
         extract_audio_phase = ExtractAudioPhase(job_manager, audio_extractor)
@@ -271,7 +288,7 @@ class TestBatchMediaPipelineIntegration:
         domain_adaptation_phase = DomainAdaptationPhase(job_manager, domain_adaptation_api, storage_api, vad_repo)
         transcribe_phase = TranscribePhase(job_manager, transcription_api, storage_api, domain_repo, async_service,
                                            transcribe_manifest, real_transcribe_adapter)
-        hallucination_correction_phase = HallucinationCorrectionPhase(job_manager, correction_api) # NEW
+        hallucination_correction_phase = HallucinationCorrectionPhase(job_manager, correction_api)
         diarize_phase = DiarizePhase(job_manager, diarization_api, storage_api, async_service, diarize_manifest,
                                      real_diarize_adapter)
         sentence_phase = SentenceReconstructionPhase(
@@ -308,6 +325,14 @@ class TestBatchMediaPipelineIntegration:
             loader=vlm_adapter
         )
 
+        # NEW Phase 13 Orchestration Phase
+        visual_hallucination_correction_phase = VisualHallucinationCorrectionPhase(
+            job_manager=job_manager,
+            correction_api=visual_hallucination_api,
+            async_model_service=async_service,
+            loader=visual_hallucination_adapter
+        )
+
         pipeline = BatchMediaPipeline(
             scan_phase=scan_phase,
             ingest_phase=ingest_phase,
@@ -315,14 +340,15 @@ class TestBatchMediaPipelineIntegration:
             vad_phase=vad_phase,
             domain_adaptation_phase=domain_adaptation_phase,
             transcribe_phase=transcribe_phase,
-            hallucination_correction_phase=hallucination_correction_phase, # NEW
+            hallucination_correction_phase=hallucination_correction_phase,
             diarize_phase=diarize_phase,
             sentence_reconstruction_phase=sentence_phase,
             domain_phonetic_correction_phase=domain_phonetic_phase,
             contextual_retrieval_phase=contextual_phase,
             visual_cue_detection_phase=visual_cue_phase,
             frame_extraction_phase=frame_extraction_phase,
-            visual_analysis_phase=visual_analysis_phase
+            visual_analysis_phase=visual_analysis_phase,
+            visual_hallucination_correction_phase=visual_hallucination_correction_phase  # NEW
         )
 
         yield pipeline, storage_api
@@ -337,6 +363,10 @@ class TestBatchMediaPipelineIntegration:
                 f"Integration test skipped due to missing SLM model at: {settings.DOMAIN_CLASSIFIER_MODEL_PATH}")
         if not os.path.exists(settings.VISION_MODEL_PATH):
             pytest.skip(f"Integration test skipped due to missing Vision model at: {settings.VISION_MODEL_PATH}")
+        # NEW: Phase 13 Model Path Check
+        if not os.path.exists(settings.VISUAL_HALLUCINATION_CORRECTION_MODEL_PATH):
+            pytest.skip(
+                f"Integration test skipped due to missing Phase 13 model at: {settings.VISUAL_HALLUCINATION_CORRECTION_MODEL_PATH}")
 
         source_dir = tmp_path / "usb_drive"
         source_dir.mkdir()
@@ -361,7 +391,7 @@ class TestBatchMediaPipelineIntegration:
         assert PipelinePhase.VAD in results
         assert PipelinePhase.DOMAIN_ADAPTATION in results
         assert PipelinePhase.TRANSCRIBE in results
-        assert PipelinePhase.HALLUCINATION_CORRECTION in results # NEW
+        assert PipelinePhase.HALLUCINATION_CORRECTION in results
         assert PipelinePhase.DIARIZE in results
         assert PipelinePhase.SENTENCE_RECONSTRUCTION in results
         assert PipelinePhase.DOMAIN_PHONETIC_CORRECTION in results
@@ -369,6 +399,7 @@ class TestBatchMediaPipelineIntegration:
         assert PipelinePhase.VISUAL_CUE_DETECTION in results
         assert PipelinePhase.FRAME_EXTRACTION in results
         assert PipelinePhase.VISUAL_ANALYSIS in results
+        assert PipelinePhase.VISUAL_HALLUCINATION_CORRECTION in results  # NEW Phase 13 Result
 
         assert results[PipelinePhase.SCAN].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.INGEST].status == PhaseStatus.COMPLETED
@@ -376,7 +407,8 @@ class TestBatchMediaPipelineIntegration:
         assert results[PipelinePhase.VAD].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.DOMAIN_ADAPTATION].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.TRANSCRIBE].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.HALLUCINATION_CORRECTION].status == PhaseStatus.COMPLETED # NEW
+        assert results[PipelinePhase.HALLUCINATION_CORRECTION].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.DIARIZE].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.SENTENCE_RECONSTRUCTION].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.DOMAIN_PHONETIC_CORRECTION].status == PhaseStatus.COMPLETED
+        assert results[PipelinePhase.VISUAL_HALLUCINATION_CORRECTION].status == PhaseStatus.COMPLETED  # NEW

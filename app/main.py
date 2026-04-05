@@ -1,4 +1,4 @@
-# Canvas: main_v23
+# Canvas: main_v26
 # Path: app/main.py
 
 import argparse
@@ -44,7 +44,6 @@ from app.features.transcription.data.repositories import TranscriptRepository
 from app.features.transcription.data.faster_whisper_adapter import FasterWhisperAdapter
 from app.features.transcription.service.transcription_api import TranscriptionAPI
 
-# NEW: Hallucination Correction
 from app.features.hallucination_correction.service.correction_api import CorrectionAPI
 
 from app.features.diarization.data.repositories import DiarizationRepository
@@ -76,6 +75,11 @@ from app.features.visual_analysis.data.vlm_adapter import QwenVLMAdapter
 from app.features.visual_analysis.data.repositories import VisualAnalysisRepository
 from app.features.visual_analysis.service.analysis_api import VisualAnalysisAPI
 
+# New Phase 13 Integration Imports
+from app.features.visual_hallucination_correction.data.slm_adapter import QwenHallucinationAdapter
+from app.features.visual_hallucination_correction.data.repositories import VisualHallucinationRepository
+from app.features.visual_hallucination_correction.service.correction_api import VisualHallucinationCorrectionAPI
+
 from app.orchestration.domain.enums import PipelinePhase
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
@@ -83,7 +87,7 @@ from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPha
 from app.orchestration.service.phases.vad_phase import VadPhase
 from app.orchestration.service.phases.domain_adaptation_phase import DomainAdaptationPhase
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
-from app.orchestration.service.phases.hallucination_correction_phase import HallucinationCorrectionPhase # NEW
+from app.orchestration.service.phases.hallucination_correction_phase import HallucinationCorrectionPhase
 from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
 from app.orchestration.service.phases.domain_phonetic_correction_phase import DomainPhoneticCorrectionPhase
@@ -91,6 +95,7 @@ from app.orchestration.service.phases.contextual_retrieval_phase import Contextu
 from app.orchestration.service.phases.visual_cue_detection_phase import VisualCueDetectionPhase
 from app.orchestration.service.phases.frame_extraction_phase import FrameExtractionPhase
 from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysisPhase
+from app.orchestration.service.phases.visual_hallucination_correction_phase import VisualHallucinationCorrectionPhase
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 
 
@@ -139,7 +144,6 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
     domain_repo = DomainAdaptationRepository(db_manager)
     scout_adapter = ScoutWhisperAdapter()
     llama_adapter = LlamaAdapter()
-
     smart_sampler = SmartSampler(max_speech_per_zone_sec=120.0, min_duration_sec=2.0)
 
     domain_adaptation_api = DomainAdaptationAPI(
@@ -166,7 +170,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         required_vram_mb=settings.WHISPER_VRAM_REQUIREMENT_MB
     )
 
-    # 5.5 Hallucination Correction (Zero-VRAM, purely DB/Math)
+    # 5.5 Hallucination Correction
     correction_api = CorrectionAPI(
         transcript_repository=transcript_repo,
         vad_repository=vad_repo
@@ -190,7 +194,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         required_vram_mb=settings.DIARIZATION_VRAM_REQUIREMENT_MB
     )
 
-    # 7. Sentence Reconstruction (Phase 7)
+    # 7. Sentence Reconstruction
     sentence_repo = PostgresSentenceRepository(db_manager)
     punctuation_adapter = PunctuationAdapter()
     reconstruction_api = SentenceReconstructionAPI(
@@ -205,7 +209,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         required_vram_mb=settings.PUNCTUATION_VRAM_REQUIREMENT_MB
     )
 
-    # 8. Domain Phonetic Correction (Phase 8)
+    # 8. Domain Phonetic Correction
     domain_phonetic_repo = DomainPhoneticRepository(db_manager)
     domain_phonetic_adapter = QwenDomainAdapter()
     domain_phonetic_correction_api = DomainPhoneticCorrectionAPI(
@@ -220,7 +224,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         required_vram_mb=settings.DOMAIN_PHONETIC_CORRECTION_VRAM_REQUIREMENT_MB
     )
 
-    # 9. Contextual Retrieval (Phase 9 - Llama)
+    # 9. Contextual Retrieval
     contextual_repo = ContextualRepository(db_manager)
     slm_adapter = SLMContextAdapter()
     contextualizer_api = ContextualizerAPI(
@@ -229,16 +233,15 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         slm_adapter=slm_adapter
     )
 
-    # 10. Visual Cue Detection (Phase 10 - Qwen)
+    # 10. Visual Cue Detection
     cue_detector_adapter = QwenDetectorAdapter()
-
     visual_cue_api = VisualCueDetectionAPI(
         orchestrator=model_orchestrator,
         adapter=cue_detector_adapter,
         repository=contextual_repo
     )
 
-    # 11. Frame Extraction (Phase 11)
+    # 11. Frame Extraction
     frame_repo = FrameExtractionRepository(db_manager)
     ffmpeg_ext_adapter = FFmpegExtractionAdapter()
     quality_filter = QualityFilter()
@@ -251,13 +254,24 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         deduplicator=deduplicator
     )
 
-    # 12. Visual Analysis (Phase 12)
+    # 12. Visual Analysis
     visual_analysis_repo = VisualAnalysisRepository(db_manager)
     vlm_adapter = QwenVLMAdapter()
     visual_analysis_api = VisualAnalysisAPI(
         repository=visual_analysis_repo,
         vlm_adapter=vlm_adapter,
         storage_api=storage_api
+    )
+
+    # 13. Phase 13: Visual Hallucination Correction
+    visual_hallucination_repo = VisualHallucinationRepository(db_manager)
+    visual_hallucination_adapter = QwenHallucinationAdapter()
+    visual_hallucination_api = VisualHallucinationCorrectionAPI(
+        repository=visual_hallucination_repo,
+        adapter=visual_hallucination_adapter,
+        contextual_repo=contextual_repo,
+        visual_analysis_repo=visual_analysis_repo,
+        orchestrator=model_orchestrator
     )
 
     # --- Orchestration Phases ---
@@ -291,7 +305,6 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         transcribe_adapter=whisper_adapter
     )
 
-    # NEW: Initialize the Hallucination Correction Phase
     hallucination_correction_phase = HallucinationCorrectionPhase(
         job_manager=job_manager,
         correction_api=correction_api
@@ -357,6 +370,14 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         loader=vlm_adapter
     )
 
+    # Phase 13
+    visual_hallucination_correction_phase = VisualHallucinationCorrectionPhase(
+        job_manager=job_manager,
+        correction_api=visual_hallucination_api,
+        async_model_service=async_model_service,
+        loader=visual_hallucination_adapter
+    )
+
     # Pipeline Assembly
     return BatchMediaPipeline(
         scan_phase=scan_phase,
@@ -365,14 +386,15 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         vad_phase=vad_phase,
         domain_adaptation_phase=domain_adaptation_phase,
         transcribe_phase=transcribe_phase,
-        hallucination_correction_phase=hallucination_correction_phase, # NEW
+        hallucination_correction_phase=hallucination_correction_phase,
         diarize_phase=diarize_phase,
         sentence_reconstruction_phase=sentence_reconstruction_phase,
         domain_phonetic_correction_phase=domain_phonetic_correction_phase,
         contextual_retrieval_phase=contextual_retrieval_phase,
         visual_cue_detection_phase=visual_cue_detection_phase,
         frame_extraction_phase=frame_extraction_phase,
-        visual_analysis_phase=visual_analysis_phase
+        visual_analysis_phase=visual_analysis_phase,
+        visual_hallucination_correction_phase=visual_hallucination_correction_phase
     )
 
 
@@ -447,28 +469,52 @@ def main() -> None:
 
         if PipelinePhase.VISUAL_ANALYSIS in results:
             print("\n==================================================")
-            print("  WRITING VISUAL ANALYSIS REPORTS TO DISK")
+            print("  WRITING DETAILED VISUAL ANALYSIS REPORTS")
             print("==================================================")
 
+            visual_analysis_repo = VisualAnalysisRepository(db_manager)
+            contextual_repo = ContextualRepository(db_manager)
             target_batch = results[PipelinePhase.VISUAL_ANALYSIS]
 
             for item in target_batch.items:
                 if item.success and item.source_id:
                     source = storage_repo.get_by_id(item.source_id)
-                    if source:
+                    transcript = contextual_repo.get_by_source_id(item.source_id)
+
+                    if source and transcript:
                         safe_name = Path(source.name).stem
                         out_file = output_dir.joinpath(f"{safe_name}_visual_report.txt")
 
                         try:
-                            formatted_text = f"Visual Analysis Report for {source.name}\n"
-                            formatted_text += "=" * 50 + "\n\n"
-                            formatted_text += f"Analyzed chunks: {item.analyzed_chunks_count}\n"
+                            formatted_text = f"Detailed Visual Evidence Analysis for {source.name}\n"
+                            formatted_text += "=" * 60 + "\n\n"
+
+                            # Correlate contextualized chunks with their specific visual analyses [cite: 546-549, 607, 608]
+                            found_visuals = False
+                            for chunk in transcript.chunks:
+                                if chunk.needs_visual:
+                                    # Fetch analysis from DB for this specific chunk [cite: 528]
+                                    analysis = visual_analysis_repo.get_by_chunk_id(chunk.chunk_id)
+
+                                    if analysis and analysis.analyses:
+                                        found_visuals = True
+                                        time_str = f"[{chunk.start_sec:.2f}s - {chunk.end_sec:.2f}s]"
+                                        formatted_text += f"CHUNK TIMESTAMP: {time_str}\n"
+                                        formatted_text += f"CONTEXT TEXT:   {chunk.original_text}\n"
+
+                                        for idx, frame_eval in enumerate(analysis.analyses):
+                                            formatted_text += f"  - FRAME {idx + 1} VLM DESCRIPTION: {frame_eval.description}\n"
+
+                                        formatted_text += "-" * 40 + "\n"
+
+                            if not found_visuals:
+                                formatted_text += "No relevant visual evidence detected or analyzed in this media file."
 
                             with open(out_file, "w", encoding="utf-8") as f:
                                 f.write(formatted_text)
-                            print(f"  [SUCCESS] Saved Visual Report: {out_file}")
+                            print(f"  [SUCCESS] Saved Detailed Visual Report: {out_file}")
                         except IOError as e:
-                            print(f"  [ERROR] Failed to write {out_file.name}: {e}")
+                            print(f"  [ERROR] Failed to write visual report {out_file.name}: {e}")
 
     except Exception as e:
         print(f"\n[FATAL PIPELINE CRASH] {str(e)}")
