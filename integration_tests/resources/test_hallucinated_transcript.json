@@ -1,0 +1,44 @@
+{
+  "vad_segments": [
+    { "start_sec": 0.0, "end_sec": 5.0, "confidence": 0.99 },
+    { "start_sec": 10.0, "end_sec": 15.0, "confidence": 0.95 }
+  ],
+  "transcript_segments": [
+    {
+      "start_sec": 1.0,
+      "end_sec": 4.0,
+      "text": "This is a completely valid and normal sentence.",
+      "no_speech_prob": 0.01,
+      "avg_logprob": -0.1,
+      "compression_ratio": 1.0,
+      "words": []
+    },
+    {
+      "start_sec": 6.0,
+      "end_sec": 9.0,
+      "text": "I am a hallucination inside a silent gap.",
+      "no_speech_prob": 0.05,
+      "avg_logprob": -0.2,
+      "compression_ratio": 1.0,
+      "words": []
+    },
+    {
+      "start_sec": 10.5,
+      "end_sec": 14.5,
+      "text": "Thank you thank you thank you thank you.",
+      "no_speech_prob": 0.85,
+      "avg_logprob": -1.5,
+      "compression_ratio": 3.1,
+      "words": []
+    },
+    {
+      "start_sec": 11.0,
+      "end_sec": 12.0,
+      "text": "Subtitles by Amara.org",
+      "no_speech_prob": 0.02,
+      "avg_logprob": -0.1,
+      "compression_ratio": 1.0,
+      "words": []
+    }
+  ]
+}

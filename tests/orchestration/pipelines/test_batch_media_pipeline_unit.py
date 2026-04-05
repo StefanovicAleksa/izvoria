@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_unit_v12
+# Canvas: test_batch_media_pipeline_unit_v13
 # Path: tests/orchestration/pipelines/test_batch_media_pipeline_unit.py
 
 import pytest
@@ -14,6 +14,7 @@ from app.orchestration.domain.entities import (
     VadJobResult,
     DomainAdaptationJobResult,
     TranscribeJobResult,
+    HallucinationCorrectionJobResult, # NEW
     DiarizeJobResult,
     SentenceReconstructionJobResult,
     DomainPhoneticCorrectionJobResult,
@@ -38,6 +39,8 @@ class TestBatchMediaPipelineUnit:
     @pytest.fixture
     def mock_transcribe(self): return Mock()
     @pytest.fixture
+    def mock_hallucination_correction(self): return Mock() # NEW
+    @pytest.fixture
     def mock_diarize(self): return Mock()
     @pytest.fixture
     def mock_sentence(self): return Mock()
@@ -53,7 +56,7 @@ class TestBatchMediaPipelineUnit:
     def mock_visual_analysis(self): return Mock()
 
     @pytest.fixture
-    def pipeline(self, mock_scan, mock_ingest, mock_extract, mock_vad, mock_domain_adaptation, mock_transcribe, mock_diarize, mock_sentence, mock_phonetic, mock_contextual, mock_visual_cue, mock_frame_extraction, mock_visual_analysis):
+    def pipeline(self, mock_scan, mock_ingest, mock_extract, mock_vad, mock_domain_adaptation, mock_transcribe, mock_hallucination_correction, mock_diarize, mock_sentence, mock_phonetic, mock_contextual, mock_visual_cue, mock_frame_extraction, mock_visual_analysis):
         return BatchMediaPipeline(
             scan_phase=mock_scan,
             ingest_phase=mock_ingest,
@@ -61,6 +64,7 @@ class TestBatchMediaPipelineUnit:
             vad_phase=mock_vad,
             domain_adaptation_phase=mock_domain_adaptation,
             transcribe_phase=mock_transcribe,
+            hallucination_correction_phase=mock_hallucination_correction, # NEW
             diarize_phase=mock_diarize,
             sentence_reconstruction_phase=mock_sentence,
             domain_phonetic_correction_phase=mock_phonetic,
@@ -70,7 +74,7 @@ class TestBatchMediaPipelineUnit:
             visual_analysis_phase=mock_visual_analysis
         )
 
-    def test_pipeline_happy_path(self, pipeline, mock_scan, mock_ingest, mock_extract, mock_vad, mock_domain_adaptation, mock_transcribe, mock_diarize, mock_sentence, mock_phonetic, mock_contextual, mock_visual_cue, mock_frame_extraction, mock_visual_analysis):
+    def test_pipeline_happy_path(self, pipeline, mock_scan, mock_ingest, mock_extract, mock_vad, mock_domain_adaptation, mock_transcribe, mock_hallucination_correction, mock_diarize, mock_sentence, mock_phonetic, mock_contextual, mock_visual_cue, mock_frame_extraction, mock_visual_analysis):
         target_dir = "/dummy/path"
         source_id = uuid.uuid4()
 
@@ -80,6 +84,7 @@ class TestBatchMediaPipelineUnit:
         mock_vad.execute.return_value = PhaseBatchResult(phase=PipelinePhase.VAD, status=PhaseStatus.COMPLETED, items=[VadJobResult(source_id=source_id, success=True)])
         mock_domain_adaptation.execute.return_value = PhaseBatchResult(phase=PipelinePhase.DOMAIN_ADAPTATION, status=PhaseStatus.COMPLETED, items=[DomainAdaptationJobResult(source_id=source_id, success=True)])
         mock_transcribe.execute.return_value = PhaseBatchResult(phase=PipelinePhase.TRANSCRIBE, status=PhaseStatus.COMPLETED, items=[TranscribeJobResult(source_id=source_id, success=True)])
+        mock_hallucination_correction.execute.return_value = PhaseBatchResult(phase=PipelinePhase.HALLUCINATION_CORRECTION, status=PhaseStatus.COMPLETED, items=[HallucinationCorrectionJobResult(source_id=source_id, success=True, transcript_id=uuid.uuid4())]) # NEW
         mock_diarize.execute.return_value = PhaseBatchResult(phase=PipelinePhase.DIARIZE, status=PhaseStatus.COMPLETED, items=[DiarizeJobResult(source_id=source_id, success=True)])
         mock_sentence.execute.return_value = PhaseBatchResult(phase=PipelinePhase.SENTENCE_RECONSTRUCTION, status=PhaseStatus.COMPLETED, items=[SentenceReconstructionJobResult(source_id=source_id, success=True, reconstructed_transcript_id=uuid.uuid4())])
         mock_phonetic.execute.return_value = PhaseBatchResult(phase=PipelinePhase.DOMAIN_PHONETIC_CORRECTION, status=PhaseStatus.COMPLETED, items=[DomainPhoneticCorrectionJobResult(source_id=source_id, success=True, domain_phonetic_transcript_id=uuid.uuid4())])
@@ -90,6 +95,7 @@ class TestBatchMediaPipelineUnit:
 
         results = pipeline.process_directory(target_dir, SourceType.VIDEO)
 
-        assert len(results) == 13
+        assert len(results) == 14 # 13 -> 14 phases now
         mock_phonetic.preload_model.assert_called_once()
         assert PipelinePhase.VISUAL_ANALYSIS in results
+        assert PipelinePhase.HALLUCINATION_CORRECTION in results

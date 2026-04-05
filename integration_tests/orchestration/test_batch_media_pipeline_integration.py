@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_integration_v26
+# Canvas: test_batch_media_pipeline_integration_v27
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
 import subprocess
@@ -41,6 +41,8 @@ from app.features.transcription.data.repositories import TranscriptRepository
 from app.features.transcription.service.transcription_api import TranscriptionAPI
 from app.features.transcription.data.faster_whisper_adapter import FasterWhisperAdapter
 
+from app.features.hallucination_correction.service.correction_api import CorrectionAPI # NEW
+
 from app.features.diarization.data.repositories import DiarizationRepository
 from app.features.diarization.service.diarization_api import DiarizationAPI
 from app.features.diarization.data.nemo_adapter import NeMoDiarizationAdapter
@@ -76,6 +78,7 @@ from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPha
 from app.orchestration.service.phases.vad_phase import VadPhase
 from app.orchestration.service.phases.domain_adaptation_phase import DomainAdaptationPhase
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
+from app.orchestration.service.phases.hallucination_correction_phase import HallucinationCorrectionPhase # NEW
 from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
 from app.orchestration.service.phases.domain_phonetic_correction_phase import DomainPhoneticCorrectionPhase
@@ -187,6 +190,12 @@ class TestBatchMediaPipelineIntegration:
             required_vram_mb=settings.WHISPER_VRAM_REQUIREMENT_MB
         )
 
+        # NEW
+        correction_api = CorrectionAPI(
+            transcript_repository=transcript_repo,
+            vad_repository=vad_repo
+        )
+
         diarize_repo = DiarizationRepository(db_manager)
         real_diarize_adapter = NeMoDiarizationAdapter()
         diarization_api = DiarizationAPI(diarize_repo, vad_repo, transcription_api, storage_api, orchestrator,
@@ -262,6 +271,7 @@ class TestBatchMediaPipelineIntegration:
         domain_adaptation_phase = DomainAdaptationPhase(job_manager, domain_adaptation_api, storage_api, vad_repo)
         transcribe_phase = TranscribePhase(job_manager, transcription_api, storage_api, domain_repo, async_service,
                                            transcribe_manifest, real_transcribe_adapter)
+        hallucination_correction_phase = HallucinationCorrectionPhase(job_manager, correction_api) # NEW
         diarize_phase = DiarizePhase(job_manager, diarization_api, storage_api, async_service, diarize_manifest,
                                      real_diarize_adapter)
         sentence_phase = SentenceReconstructionPhase(
@@ -305,6 +315,7 @@ class TestBatchMediaPipelineIntegration:
             vad_phase=vad_phase,
             domain_adaptation_phase=domain_adaptation_phase,
             transcribe_phase=transcribe_phase,
+            hallucination_correction_phase=hallucination_correction_phase, # NEW
             diarize_phase=diarize_phase,
             sentence_reconstruction_phase=sentence_phase,
             domain_phonetic_correction_phase=domain_phonetic_phase,
@@ -350,6 +361,7 @@ class TestBatchMediaPipelineIntegration:
         assert PipelinePhase.VAD in results
         assert PipelinePhase.DOMAIN_ADAPTATION in results
         assert PipelinePhase.TRANSCRIBE in results
+        assert PipelinePhase.HALLUCINATION_CORRECTION in results # NEW
         assert PipelinePhase.DIARIZE in results
         assert PipelinePhase.SENTENCE_RECONSTRUCTION in results
         assert PipelinePhase.DOMAIN_PHONETIC_CORRECTION in results
@@ -364,6 +376,7 @@ class TestBatchMediaPipelineIntegration:
         assert results[PipelinePhase.VAD].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.DOMAIN_ADAPTATION].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.TRANSCRIBE].status == PhaseStatus.COMPLETED
+        assert results[PipelinePhase.HALLUCINATION_CORRECTION].status == PhaseStatus.COMPLETED # NEW
         assert results[PipelinePhase.DIARIZE].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.SENTENCE_RECONSTRUCTION].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.DOMAIN_PHONETIC_CORRECTION].status == PhaseStatus.COMPLETED
