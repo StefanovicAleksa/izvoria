@@ -1,4 +1,4 @@
-# Canvas: faster_whisper_adapter_v18
+# Canvas: faster_whisper_adapter_v19
 # Path: app/features/transcription/data/faster_whisper_adapter.py
 
 import os
@@ -141,7 +141,11 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
                             end_sec=m_seg.start_sec + segment.end,
                             text=segment.text.strip(),
                             speaker_id="Unknown",
-                            words=domain_words
+                            words=domain_words,
+                            # NEW: Extracted metadata for the Scrubber
+                            no_speech_prob=getattr(segment, "no_speech_prob", None),
+                            avg_logprob=getattr(segment, "avg_logprob", None),
+                            compression_ratio=getattr(segment, "compression_ratio", None)
                         )
                     )
 

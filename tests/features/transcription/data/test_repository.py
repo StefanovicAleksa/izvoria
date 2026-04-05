@@ -1,4 +1,4 @@
-# Canvas: test_transcription_repo_v3
+# Canvas: test_transcription_repo_v4
 # Path: tests/features/transcription/test_repository.py
 
 import uuid
@@ -22,14 +22,24 @@ class TestTranscriptRepository:
 
     @pytest.fixture
     def sample_transcript(self):
-        # NEW: Inject word-level data to ensure JSONB handles nested arrays correctly
+        # NEW: Inject word-level data and metadata to ensure JSONB handles nested arrays/optionals correctly
         words = [
             TranscriptWord(start_sec=1.0, end_sec=1.5, word="Test", probability=0.98),
             TranscriptWord(start_sec=1.5, end_sec=2.0, word="Segment", probability=0.95)
         ]
         return Transcript(
             source_id=uuid.uuid4(),
-            segments=[TranscriptSegment(start_sec=1.0, end_sec=2.0, text="Test Segment", words=words)]
+            segments=[
+                TranscriptSegment(
+                    start_sec=1.0,
+                    end_sec=2.0,
+                    text="Test Segment",
+                    words=words,
+                    no_speech_prob=0.85,
+                    avg_logprob=-1.2,
+                    compression_ratio=2.5
+                )
+            ]
         )
 
     def test_save_success(self, mock_db_manager, sample_transcript):
@@ -64,10 +74,15 @@ class TestTranscriptRepository:
         assert len(result.segments) == 1
         assert result.segments[0].text == "Test Segment"
 
-        # Ensure the nested JSONB word array was perfectly restored to Pydantic objects
+        # Ensure the nested JSONB word array was perfectly restored to Pydantic objects [cite: 1274]
         assert len(result.segments[0].words) == 2
         assert result.segments[0].words[0].word == "Test"
         assert result.segments[0].words[0].probability == 0.98
+
+        # Verify new metadata fields survived serialization
+        assert result.segments[0].no_speech_prob == 0.85
+        assert result.segments[0].avg_logprob == -1.2
+        assert result.segments[0].compression_ratio == 2.5
 
     def test_update_success(self, mock_db_manager, sample_transcript):
         manager, session = mock_db_manager

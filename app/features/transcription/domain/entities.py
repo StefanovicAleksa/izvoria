@@ -1,4 +1,4 @@
-# Canvas: transcription_entities_v2
+# Canvas: transcription_entities_v3
 # Path: app/features/transcription/domain/entities.py
 
 import uuid
@@ -33,6 +33,11 @@ class TranscriptSegment(BaseModel):
 
     # Optional field for future-proofing when we add the Diarization feature
     speaker_id: Optional[str] = None
+
+    # NEW: Whisper Engine Metadata for Zero-VRAM Hallucination Scrubbing
+    no_speech_prob: Optional[float] = None
+    avg_logprob: Optional[float] = None
+    compression_ratio: Optional[float] = None
 
     model_config = ConfigDict(frozen=True)
 

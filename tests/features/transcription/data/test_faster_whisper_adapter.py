@@ -1,4 +1,4 @@
-# Canvas: test_faster_whisper_adapter_v5
+# Canvas: test_faster_whisper_adapter_v6
 # Path: tests/features/transcription/data/test_faster_whisper_adapter.py
 
 import uuid
@@ -49,10 +49,10 @@ class TestFasterWhisperAdapter:
         vad_map = VadMap(
             source_id=uuid.uuid4(),
             segments=[
-                # 0.1 second segment (1600 samples) -> Under 6400 limit, should be skipped
+                # 0.1 second segment (1600 samples) -> Under 6400 limit, should be skipped [cite: 1267]
                 VadSegment(start_sec=0.0, end_sec=0.1, confidence=0.9),
 
-                # 0.5 second segment (8000 samples) -> Over 6400 limit, should be processed
+                # 0.5 second segment (8000 samples) -> Over 6400 limit, should be processed [cite: 1268]
                 VadSegment(start_sec=1.0, end_sec=1.5, confidence=0.9)
             ]
         )
@@ -71,3 +71,44 @@ class TestFasterWhisperAdapter:
 
         # The whisper model should have only been called ONCE for the 0.5s segment
         assert mock_whisper_instance.transcribe.call_count == 1
+
+    @patch("app.features.transcription.data.faster_whisper_adapter.torchaudio")
+    def test_transcribe_extracts_metadata(self, mock_torchaudio, manifest):
+        """Verifies that the adapter pulls hallucination metadata from the Whisper engine output."""
+        sample_rate = 16000
+        dummy_waveform = torch.zeros(1, sample_rate * 2)
+        mock_torchaudio.load.return_value = (dummy_waveform, sample_rate)
+
+        mock_whisper_instance = MagicMock()
+        loaded_model = LoadedModel(manifest=manifest, model_instance=mock_whisper_instance)
+
+        vad_map = VadMap(
+            source_id=uuid.uuid4(),
+            segments=[VadSegment(start_sec=0.0, end_sec=1.5, confidence=0.9)]
+        )
+
+        # Mock a raw Whisper Segment object with metadata
+        mock_raw_segment = MagicMock()
+        mock_raw_segment.start = 0.0
+        mock_raw_segment.end = 1.0
+        mock_raw_segment.text = "Hello world"
+        mock_raw_segment.words = []
+        mock_raw_segment.no_speech_prob = 0.95
+        mock_raw_segment.avg_logprob = -2.0
+        mock_raw_segment.compression_ratio = 3.1
+
+        mock_whisper_instance.transcribe.return_value = ([mock_raw_segment], MagicMock())
+
+        adapter = FasterWhisperAdapter()
+        segments_out = adapter.transcribe(
+            model=loaded_model,
+            audio_path="/mock/path.wav",
+            vad_map=vad_map,
+            language="en"
+        )
+
+        # Assert metadata was mapped to the Domain object successfully
+        assert len(segments_out) == 1
+        assert segments_out[0].no_speech_prob == 0.95
+        assert segments_out[0].avg_logprob == -2.0
+        assert segments_out[0].compression_ratio == 3.1
