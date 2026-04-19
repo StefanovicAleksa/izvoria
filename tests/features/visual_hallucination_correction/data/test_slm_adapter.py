@@ -1,4 +1,4 @@
-# Canvas: test_hallucination_slm_adapter_v1
+# Canvas: test_hallucination_slm_adapter_v2
 # Path: tests/features/visual_hallucination_correction/data/test_slm_adapter.py
 
 import pytest
@@ -48,7 +48,7 @@ class TestQwenHallucinationAdapter:
         assert audit.is_visual_accepted is False
         assert audit.discard_reason == "Irrelevant background of a brick wall."
 
-        # Verify JSON mode was enforced
+        # Verify JSON object mode was enforced
         call_kwargs = mock_llm.create_chat_completion.call_args[1]
         assert call_kwargs["response_format"]["type"] == "json_object"
 
@@ -66,6 +66,29 @@ class TestQwenHallucinationAdapter:
 
         assert audit.is_visual_accepted is True
         assert audit.discard_reason is None
+
+    def test_evaluate_visual_match_salvages_conversational_filler(self, manifest: ModelManifest) -> None:
+        """
+        NEW: Verifies the regex safely extracts the JSON payload even if the SLM ignores
+        the system prompt and generates conversational filler around the JSON.
+        """
+        adapter = QwenHallucinationAdapter()
+        mock_llm = MagicMock()
+
+        # Malformed payload with conversational wrapper
+        json_payload = 'Here is the analysis:\n{"is_match": false, "discard_reason": "Totally wrong."}\nHope this helps!'
+        mock_llm.create_chat_completion.return_value = {
+            "choices": [{"message": {"content": json_payload}}]
+        }
+        loaded_model = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        chunk_id = uuid.uuid4()
+        audit = adapter.evaluate_visual_match(loaded_model, chunk_id, "text", "description")
+
+        # Assertion ensures the Regex fallback successfully bypassed the JSONDecodeError
+        assert audit.chunk_id == chunk_id
+        assert audit.is_visual_accepted is False
+        assert audit.discard_reason == "Totally wrong."
 
     @patch("app.features.visual_hallucination_correction.data.slm_adapter.gc.collect")
     def test_unload_explicitly_closes_c_bindings(self, mock_gc: MagicMock, manifest: ModelManifest) -> None:

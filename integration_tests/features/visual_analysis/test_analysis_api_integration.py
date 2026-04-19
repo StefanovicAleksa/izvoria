@@ -1,4 +1,4 @@
-# Canvas: test_visual_analysis_integration_v3
+# Canvas: test_visual_analysis_integration_v4
 # Path: integration_tests/features/visual_analysis/test_analysis_api_integration.py
 
 import os
@@ -31,7 +31,8 @@ from app.features.visual_analysis.domain.entities import ChunkVisualAnalysis
 class TestVisualAnalysisAPIIntegration:
     """
     STRICT NO-MOCKS INTEGRATION TEST.
-    Requires: Live PostgreSQL, NVIDIA GPU, and LLaVA 1.5 7B GGUF.
+    Requires: Live PostgreSQL, NVIDIA GPU, and Qwen2-VL 7B GGUF.
+    FIXED: Updated to test native Qwen multimodal routing instead of LLaVA.
     """
 
     @pytest.fixture(scope="module", autouse=True)
@@ -119,22 +120,19 @@ class TestVisualAnalysisAPIIntegration:
             ]
         )
 
-        # 3. Setup the Orchestrator and Manifest [cite: 73, 94]
+        # 3. Setup the Orchestrator and Manifest
         manifest = ModelManifest(
-            model_type=ModelType.VISION,  # [cite: 74]
+            model_type=ModelType.VISION,
             model_path=settings.VISION_MODEL_PATH,
             required_vram_mb=settings.VISION_VRAM_REQUIREMENT_MB
         )
 
-        # FIX: Move orchestrator outside try block to resolve "might be referenced before assignment"
-        # FIX: Ensure PyTorchVramMonitor is correctly utilized [cite: 63]
         vram_monitor = PyTorchVramMonitor()
         orchestrator = ModelManagerOrchestrator(vram_monitor)
         loaded_model = None
 
         try:
-            print("\n[DEBUG] Loading LLaVA 1.5 7B into VRAM... This will take a few seconds.")
-            # This uses the underlying QwenVLMAdapter we built
+            print("\n[DEBUG] Loading Qwen2-VL 7B into VRAM... This will take a few seconds.")
             loaded_model = orchestrator.acquire_model(manifest, live_api._vlm_adapter)
 
             # 4. Execute the actual pipeline orchestration
@@ -152,7 +150,7 @@ class TestVisualAnalysisAPIIntegration:
             assert len(visual_analysis.analyses) == 1
 
             description = visual_analysis.analyses[0].description
-            print(f"\n[DEBUG] LLaVA Generated Description:\n{description}")
+            print(f"\n[DEBUG] Qwen-VL Generated Description:\n{description}")
 
             # Ensure the model actually generated text
             assert len(description) > 5
@@ -161,7 +159,7 @@ class TestVisualAnalysisAPIIntegration:
             description_lower = description.lower()
             has_medical_context = any(
                 word in description_lower for word in ["x-ray", "xray", "chest", "scan", "lung", "doctor", "pointing"])
-            assert has_medical_context is True, f"LLaVA failed to identify medical context. Output: {description}"
+            assert has_medical_context is True, f"Qwen-VL failed to identify medical context. Output: {description}"
 
             # 7. Verify Database Persistence
             db_record = live_api._repo.get_by_chunk_id(chunk_id)
@@ -170,6 +168,5 @@ class TestVisualAnalysisAPIIntegration:
             assert db_record.analyses[0].description == description
 
         finally:
-            # Now safely accessible regardless of where the error occurred
             if loaded_model:
                 orchestrator.release_model(loaded_model, live_api._vlm_adapter, flush=True)

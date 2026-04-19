@@ -1,4 +1,4 @@
-# Canvas: visual_analysis_vlm_adapter_v7
+# Canvas: visual_analysis_vlm_adapter_v8
 # Path: app/features/visual_analysis/data/vlm_adapter.py
 
 import os
@@ -17,33 +17,30 @@ from app.features.visual_analysis.utils.error_mapper import map_visual_analysis_
 class QwenVLMAdapter(IVisualLanguageModelAdapter):
     """
     Dedicated Adapter for Qwen 2.5 VL via llama.cpp.
-    Strictly isolated from the legacy LLaVA handler to prevent mmproj conflicts.
+    FIXED: Removed the incompatible LLaVA 1.5 Chat Handler to prevent C++ Segfaults.
     """
 
     @staticmethod
     def _get_qwen_model(model_path: str, mmproj_path: str) -> Any:
-        """FACTORY METHOD & LAZY IMPORT
-        Prevents llama-cpp-python from injecting its C-extensions into the global namespace
-        during App Startup, which causes CUDA symbol collisions with PyTorch.
-        """
         from llama_cpp import Llama
-        from llama_cpp.llama_chat_format import Llava15ChatHandler
 
-        chat_handler = Llava15ChatHandler(clip_model_path=mmproj_path, verbose=True)
-
+        # We pass the clip_model_path directly to the constructor.
+        # Modern llama.cpp detects the architecture and uses the correct internal multimodal logic.
         return Llama(
             model_path=model_path,
-            chat_handler=chat_handler,  # type: ignore  # Mismatch in llama-cpp-python stubs
-            n_ctx=8192,  # High context for images
+            # chat_format="chatml", # Uncomment if your specific GGUF requires explicit ChatML format
+            clip_model_path=mmproj_path,
+            n_ctx=8192,
             n_gpu_layers=-1,
             flash_attn=True,
-            verbose=False  # Suppress spammy C++ token generation logs
+            verbose=False
         )
 
     def load(self, manifest: ModelManifest) -> LoadedModel:
         try:
             if not os.path.exists(manifest.model_path):
                 raise FileNotFoundError(f"VLM base model file missing: {manifest.model_path}")
+
             if not os.path.exists(settings.VISION_MMPROJ_PATH):
                 raise FileNotFoundError(f"VLM MMProj file missing: {settings.VISION_MMPROJ_PATH}")
 
@@ -54,7 +51,6 @@ class QwenVLMAdapter(IVisualLanguageModelAdapter):
 
     def unload(self, model: LoadedModel) -> bool:
         try:
-            # FIX: Explicitly close the C++ object before deletion
             if hasattr(model, "model_instance") and model.model_instance is not None:
                 if hasattr(model.model_instance, "close"):
                     model.model_instance.close()
@@ -75,20 +71,17 @@ class QwenVLMAdapter(IVisualLanguageModelAdapter):
         try:
             llm: Any = model.model_instance
 
-            # 1. Ensure image exists and encode to Base64
             if not image_path.exists():
                 raise FileNotFoundError(f"Extracted frame missing from disk: {image_path}")
 
             with open(image_path, "rb") as img_file:
                 b64_image = base64.b64encode(img_file.read()).decode("utf-8")
 
-            # 2. Format the user text prompt
             user_text = VLM_USER_PROMPT_TEMPLATE.format(
                 context_string=context_string,
                 original_text=original_text
             )
 
-            # 3. Construct the Multimodal Chat Payload
             messages = [
                 {"role": "system", "content": VLM_SYSTEM_PROMPT},
                 {
@@ -100,15 +93,12 @@ class QwenVLMAdapter(IVisualLanguageModelAdapter):
                 }
             ]
 
-            # 4. Execute Inference
             response = llm.create_chat_completion(
                 messages=messages,
                 max_tokens=256,
                 temperature=0.1
             )
-            output_text = response['choices'][0]['message']['content'].strip()
-
-            return output_text
+            return response['choices'][0]['message']['content'].strip()
 
         except Exception as e:
             raise map_visual_analysis_error(e, context=f"Qwen-VL Frame Analysis on {image_path.name}") from e

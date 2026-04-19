@@ -1,4 +1,4 @@
-# Canvas: orchestrator_v4
+# Canvas: orchestrator_v5
 # Path: app/core/model_manager/service/orchestrator.py
 
 import uuid
@@ -17,65 +17,66 @@ logger = logging.getLogger(__name__)
 
 
 class ModelManagerOrchestrator:
-    """
-    The Active VRAM Air Traffic Controller.
-    Centralizes deep memory management to prevent Segfaults during backend engine swaps.
-    """
-
     VRAM_SAFETY_BUFFER_MB = 500.0
 
     def __init__(self, vram_monitor: IVramMonitor):
         self._monitor = vram_monitor
         self._active_models: Dict[uuid.UUID, LoadedModel] = {}
-        self._active_loaders: Dict[uuid.UUID, IModelLoader] = {}  # FIX: Track active loaders
+        self._active_loaders: Dict[uuid.UUID, IModelLoader] = {}
         self._historical_backpacks: Dict[str, float] = {}
         self._lock = threading.RLock()
 
-    def acquire_model(self, manifest: ModelManifest, loader: IModelLoader) -> LoadedModel:
-        """
-        Validates available VRAM dynamically and safely loads a model onto the GPU.
-        Triggers a deep flush pre-emptively to defragment memory before allocation.
-        """
+    def acquire_model(self, manifest: ModelManifest, loader: IModelLoader, wait_for_clear: bool = False) -> LoadedModel:
+        # 1. Idempotency Check (Unprotected read is safe here for quick exit)
+        for active_model in self._active_models.values():
+            if active_model.manifest.model_path == manifest.model_path:
+                return active_model
+
+        # 2. Prevent Race Conditions: Background preloads must wait for active inference to finish
+        if wait_for_clear:
+            logger.info(f"Background preloader parking politely until active models clear VRAM...")
+            while self._active_models:
+                time.sleep(0.1)
+
         with self._lock:
-            # 1. Idempotency Check
+            # Double check idempotency after acquiring lock
             for active_model in self._active_models.values():
                 if active_model.manifest.model_path == manifest.model_path:
                     return active_model
 
-            # 2. Swap logic: If VRAM is occupied, release existing models
+            # 3. Swap logic: If VRAM is occupied (and we are on the main thread), release existing models
             if self._active_models:
                 logger.info("Swapping models. Releasing current residents...")
                 active_ids = list(self._active_models.keys())
                 for mid in active_ids:
-                    # FIX: Retrieve the correct original loader for the active model
                     correct_loader = self._active_loaders.get(mid)
                     if correct_loader:
                         self.release_model(self._active_models[mid], correct_loader, flush=False)
 
-            # 3. PRE-EMPTIVE DEEP FLUSH
+            # 4. PRE-EMPTIVE DEEP FLUSH
             self._monitor.flush_memory()
             time.sleep(0.1)
 
-            # 4. Calculate dynamic requirement
+            # 5. Calculate dynamic requirement
             actual_size_mb = self._get_actual_size_mb(manifest.model_path, manifest.required_vram_mb)
             learned_backpack = self._historical_backpacks.get(manifest.model_path, 0.0)
             required_vram = actual_size_mb + learned_backpack + self.VRAM_SAFETY_BUFFER_MB
 
             status = self._monitor.get_vram_status()
 
-            # 5. Admission Control
+            # 6. Admission Control
             if status.free_vram_mb < required_vram:
                 raise exc.OutOfVramError(
                     f"Insufficient VRAM for {manifest.model_type.value}.\n"
                     f"Needs: {required_vram:.1f}MB | Free: {status.free_vram_mb:.1f}MB"
                 )
 
-            # 6. Safe to load
+            # 7. Safe to load
             try:
                 logger.info(f"Loading {manifest.model_type.value}: {manifest.model_path}")
                 loaded_model = loader.load(manifest)
                 self._active_models[loaded_model.id] = loaded_model
-                self._active_loaders[loaded_model.id] = loader  # FIX: Map loader to ID
+                self._active_loaders[loaded_model.id] = loader
 
                 self._monitor.reset_peak_stats()
                 return loaded_model
@@ -85,7 +86,6 @@ class ModelManagerOrchestrator:
                 raise map_model_manager_error(e) from e
 
     def release_model(self, loaded_model: LoadedModel, loader: IModelLoader, flush: bool = True) -> None:
-        """Explicitly unloads a model and flushes VRAM if requested."""
         with self._lock:
             if loaded_model.id not in self._active_models:
                 return
@@ -94,7 +94,6 @@ class ModelManagerOrchestrator:
                 loader.unload(loaded_model)
                 del self._active_models[loaded_model.id]
 
-                # FIX: Clean up the tracked loader
                 if loaded_model.id in self._active_loaders:
                     del self._active_loaders[loaded_model.id]
 
@@ -108,15 +107,9 @@ class ModelManagerOrchestrator:
                 raise map_model_manager_error(e) from e
 
     def release_all(self, loaders_map: Dict[uuid.UUID, IModelLoader]) -> None:
-        """
-        Emergency flush.
-        Iterates through all active models and unloads them,
-        followed by a single deep VRAM flush.
-        """
         with self._lock:
             active_ids = list(self._active_models.keys())
             for model_id in active_ids:
-                # FIX: Check internal loaders first, fallback to parameter mapping
                 correct_loader = self._active_loaders.get(model_id) or loaders_map.get(model_id)
                 if correct_loader:
                     self.release_model(self._active_models[model_id], correct_loader, flush=False)
@@ -126,7 +119,6 @@ class ModelManagerOrchestrator:
             logger.info("Emergency release_all completed. VRAM is clear.")
 
     def _get_actual_size_mb(self, model_path: str, fallback_mb: float) -> float:
-        """Determines the exact weight size on disk."""
         try:
             path = Path(model_path)
             if not path.exists():
@@ -139,7 +131,6 @@ class ModelManagerOrchestrator:
             return fallback_mb
 
     def record_telemetry(self) -> None:
-        """Polls the monitor to learn high-water mark activation spikes."""
         try:
             current_alloc, peak_alloc = self._monitor.get_pytorch_memory_stats()
             backpack_mb = peak_alloc - current_alloc
