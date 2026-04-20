@@ -1,4 +1,4 @@
-# Canvas: main_v26
+# Canvas: main_v27
 # Path: app/main.py
 
 import argparse
@@ -75,10 +75,15 @@ from app.features.visual_analysis.data.vlm_adapter import QwenVLMAdapter
 from app.features.visual_analysis.data.repositories import VisualAnalysisRepository
 from app.features.visual_analysis.service.analysis_api import VisualAnalysisAPI
 
-# New Phase 13 Integration Imports
+# Phase 13 Integration Imports
 from app.features.visual_hallucination_correction.data.slm_adapter import QwenHallucinationAdapter
 from app.features.visual_hallucination_correction.data.repositories import VisualHallucinationRepository
 from app.features.visual_hallucination_correction.service.correction_api import VisualHallucinationCorrectionAPI
+
+# Phase 14 Integration Imports
+from app.features.visual_context_synthesis.data.slm_adapter import VisualSLMAdapter
+from app.features.visual_context_synthesis.data.repositories import VisualSynthesisRepository
+from app.features.visual_context_synthesis.service.synthesis_api import VisualSynthesisAPI
 
 from app.orchestration.domain.enums import PipelinePhase
 from app.orchestration.service.phases.scan_phase import ScanPhase
@@ -96,6 +101,7 @@ from app.orchestration.service.phases.visual_cue_detection_phase import VisualCu
 from app.orchestration.service.phases.frame_extraction_phase import FrameExtractionPhase
 from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysisPhase
 from app.orchestration.service.phases.visual_hallucination_correction_phase import VisualHallucinationCorrectionPhase
+from app.orchestration.service.phases.visual_context_synthesis_phase import VisualContextSynthesisPhase
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 
 
@@ -263,7 +269,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         storage_api=storage_api
     )
 
-    # 13. Phase 13: Visual Hallucination Correction
+    # 13. Visual Hallucination Correction
     visual_hallucination_repo = VisualHallucinationRepository(db_manager)
     visual_hallucination_adapter = QwenHallucinationAdapter()
     visual_hallucination_api = VisualHallucinationCorrectionAPI(
@@ -272,6 +278,17 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         contextual_repo=contextual_repo,
         visual_analysis_repo=visual_analysis_repo,
         orchestrator=model_orchestrator
+    )
+
+    # 14. Phase 14: Visual Context Synthesis
+    visual_synthesis_repo = VisualSynthesisRepository(db_manager)
+    visual_synthesis_adapter = VisualSLMAdapter()
+    visual_synthesis_api = VisualSynthesisAPI(
+        repository=visual_synthesis_repo,
+        orchestrator=model_orchestrator,
+        slm_adapter=visual_synthesis_adapter,
+        visual_analysis_repo=visual_analysis_repo,
+        hallucination_repo=visual_hallucination_repo
     )
 
     # --- Orchestration Phases ---
@@ -370,12 +387,20 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         loader=vlm_adapter
     )
 
-    # Phase 13
     visual_hallucination_correction_phase = VisualHallucinationCorrectionPhase(
         job_manager=job_manager,
         correction_api=visual_hallucination_api,
         async_model_service=async_model_service,
         loader=visual_hallucination_adapter
+    )
+
+    # Phase 14 Phase setup
+    visual_context_synthesis_phase = VisualContextSynthesisPhase(
+        job_manager=job_manager,
+        synthesis_api=visual_synthesis_api,
+        contextual_repo=contextual_repo,
+        async_model_service=async_model_service,
+        loader=visual_synthesis_adapter
     )
 
     # Pipeline Assembly
@@ -394,7 +419,8 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         visual_cue_detection_phase=visual_cue_detection_phase,
         frame_extraction_phase=frame_extraction_phase,
         visual_analysis_phase=visual_analysis_phase,
-        visual_hallucination_correction_phase=visual_hallucination_correction_phase
+        visual_hallucination_correction_phase=visual_hallucination_correction_phase,
+        visual_context_synthesis_phase=visual_context_synthesis_phase
     )
 
 
@@ -489,11 +515,9 @@ def main() -> None:
                             formatted_text = f"Detailed Visual Evidence Analysis for {source.name}\n"
                             formatted_text += "=" * 60 + "\n\n"
 
-                            # Correlate contextualized chunks with their specific visual analyses [cite: 546-549, 607, 608]
                             found_visuals = False
                             for chunk in transcript.chunks:
                                 if chunk.needs_visual:
-                                    # Fetch analysis from DB for this specific chunk [cite: 528]
                                     analysis = visual_analysis_repo.get_by_chunk_id(chunk.chunk_id)
 
                                     if analysis and analysis.analyses:
@@ -515,6 +539,44 @@ def main() -> None:
                             print(f"  [SUCCESS] Saved Detailed Visual Report: {out_file}")
                         except IOError as e:
                             print(f"  [ERROR] Failed to write visual report {out_file.name}: {e}")
+
+        # --- Phase 14 Visual Context Synthesis Report Generation ---
+        if PipelinePhase.VISUAL_CONTEXT_SYNTHESIS in results:
+            print("\n==================================================")
+            print("  WRITING FINAL VISUAL CONTEXT NARRATIVE TO DISK")
+            print("==================================================")
+
+            visual_synthesis_repo = VisualSynthesisRepository(db_manager)
+            target_batch = results[PipelinePhase.VISUAL_CONTEXT_SYNTHESIS]
+
+            for item in target_batch.items:
+                if item.success and item.source_id:
+                    source = storage_repo.get_by_id(item.source_id)
+                    timeline = visual_synthesis_repo.get_by_source_id(item.source_id)
+
+                    if source and timeline:
+                        safe_name = Path(source.name).stem
+                        out_file = output_dir.joinpath(f"{safe_name}_visual_narrative.txt")
+
+                        try:
+                            formatted_text = f"Final Visual Context Narrative for {source.name}\n"
+                            formatted_text += "=" * 60 + "\n\n"
+
+                            found_narratives = False
+                            for chunk in timeline.visual_chunks:
+                                if chunk.visual_context_string:
+                                    found_narratives = True
+                                    formatted_text += f"Synthesized Narrative: {chunk.visual_context_string}\n"
+                                    formatted_text += "-" * 40 + "\n"
+
+                            if not found_narratives:
+                                formatted_text += "No final visual narratives synthesized for this media file."
+
+                            with open(out_file, "w", encoding="utf-8") as f:
+                                f.write(formatted_text)
+                            print(f"  [SUCCESS] Saved Final Visual Narrative: {out_file}")
+                        except IOError as e:
+                            print(f"  [ERROR] Failed to write visual narrative {out_file.name}: {e}")
 
     except Exception as e:
         print(f"\n[FATAL PIPELINE CRASH] {str(e)}")

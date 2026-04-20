@@ -1,4 +1,4 @@
-# Canvas: orchestration_entities_v18
+# Canvas: orchestration_entities_v19
 # Path: app/orchestration/domain/entities.py
 
 import uuid
@@ -117,11 +117,17 @@ class VisualAnalysisJobResult(BaseModel):
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 
-# --- NEW: Phase 13 Entity ---
 class VisualHallucinationCorrectionJobResult(BaseModel):
     source_id: uuid.UUID
     success: bool
     evaluated_transcript_id: Optional[uuid.UUID] = None
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
+class VisualContextSynthesisJobResult(BaseModel):
+    source_id: uuid.UUID
+    success: bool
+    visual_timeline_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 

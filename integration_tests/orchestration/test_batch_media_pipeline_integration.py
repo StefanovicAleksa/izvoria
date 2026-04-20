@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_integration_v28
+# Canvas: test_batch_media_pipeline_integration_v29
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
 import subprocess
@@ -72,10 +72,14 @@ from app.features.visual_analysis.data.vlm_adapter import QwenVLMAdapter
 from app.features.visual_analysis.data.repositories import VisualAnalysisRepository
 from app.features.visual_analysis.service.analysis_api import VisualAnalysisAPI
 
-# NEW: Phase 13 Core Integration
 from app.features.visual_hallucination_correction.data.slm_adapter import QwenHallucinationAdapter
 from app.features.visual_hallucination_correction.data.repositories import VisualHallucinationRepository
 from app.features.visual_hallucination_correction.service.correction_api import VisualHallucinationCorrectionAPI
+
+# NEW: Phase 14 Integration
+from app.features.visual_context_synthesis.data.slm_adapter import VisualSLMAdapter
+from app.features.visual_context_synthesis.data.repositories import VisualSynthesisRepository
+from app.features.visual_context_synthesis.service.synthesis_api import VisualSynthesisAPI
 
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
@@ -91,8 +95,8 @@ from app.orchestration.service.phases.contextual_retrieval_phase import Contextu
 from app.orchestration.service.phases.visual_cue_detection_phase import VisualCueDetectionPhase
 from app.orchestration.service.phases.frame_extraction_phase import FrameExtractionPhase
 from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysisPhase
-# NEW: Phase 13 Orchestration Phase
 from app.orchestration.service.phases.visual_hallucination_correction_phase import VisualHallucinationCorrectionPhase
+from app.orchestration.service.phases.visual_context_synthesis_phase import VisualContextSynthesisPhase  # NEW
 
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
@@ -102,15 +106,8 @@ class TestBatchMediaPipelineIntegration:
 
     @pytest.fixture(autouse=True, scope="function")
     def vram_cleanup(self):
-        """
-        CRITICAL FIX: Overcomes Pytest tracebacks keeping local C++ models alive in VRAM.
-        We scan Python's raw memory objects to explicitly close them, then safely clear PyTorch.
-        """
-
         def clear_gpu():
             gc.collect()
-
-            # Aggressively hunt down dangling bindings trapped in Pytest memory frames
             for obj in gc.get_objects():
                 try:
                     obj_type = type(obj).__name__
@@ -119,10 +116,7 @@ class TestBatchMediaPipelineIntegration:
                             obj.close()
                 except Exception:
                     pass
-
             gc.collect()
-
-            # Safely clear PyTorch cache
             try:
                 import torch
             except ImportError:
@@ -270,7 +264,6 @@ class TestBatchMediaPipelineIntegration:
             storage_api=storage_api
         )
 
-        # NEW Phase 13 Initialization Core
         visual_hallucination_repo = VisualHallucinationRepository(db_manager)
         visual_hallucination_adapter = QwenHallucinationAdapter()
         visual_hallucination_api = VisualHallucinationCorrectionAPI(
@@ -279,6 +272,17 @@ class TestBatchMediaPipelineIntegration:
             contextual_repo=contextual_repo,
             visual_analysis_repo=visual_analysis_repo,
             orchestrator=orchestrator
+        )
+
+        # NEW Phase 14 Initialization Core
+        visual_synthesis_repo = VisualSynthesisRepository(db_manager)
+        visual_synthesis_adapter = VisualSLMAdapter()
+        visual_synthesis_api = VisualSynthesisAPI(
+            repository=visual_synthesis_repo,
+            orchestrator=orchestrator,
+            slm_adapter=visual_synthesis_adapter,
+            visual_analysis_repo=visual_analysis_repo,
+            hallucination_repo=visual_hallucination_repo
         )
 
         scan_phase = ScanPhase(job_manager, scanner)
@@ -291,46 +295,33 @@ class TestBatchMediaPipelineIntegration:
         hallucination_correction_phase = HallucinationCorrectionPhase(job_manager, correction_api)
         diarize_phase = DiarizePhase(job_manager, diarization_api, storage_api, async_service, diarize_manifest,
                                      real_diarize_adapter)
-        sentence_phase = SentenceReconstructionPhase(
-            job_manager, reconstruction_api, transcription_api, async_service, punctuation_manifest,
-            real_punctuation_adapter
-        )
-        domain_phonetic_phase = DomainPhoneticCorrectionPhase(
-            job_manager, phonetic_correction_api, sentence_repo, domain_repo, async_service, phonetic_manifest,
-            real_phonetic_adapter
-        )
-        contextual_phase = ContextualRetrievalPhase(
-            job_manager=job_manager,
-            contextualizer_api=contextualizer_api,
-            phonetic_repo=phonetic_repo,
-            async_model_service=async_service,
-            loader=real_slm_adapter
-        )
-        visual_cue_phase = VisualCueDetectionPhase(
-            job_manager=job_manager,
-            detection_api=visual_cue_api,
-            contextual_repo=contextual_repo,
-            async_model_service=async_service,
-            loader=cue_detector_adapter
-        )
-        frame_extraction_phase = FrameExtractionPhase(
-            job_manager, frame_extraction_api, contextual_repo, storage_api
-        )
-        visual_analysis_phase = VisualAnalysisPhase(
-            job_manager=job_manager,
-            analysis_api=visual_analysis_api,
-            contextual_repo=contextual_repo,
-            frame_repo=frame_repo,
-            async_model_service=async_service,
-            loader=vlm_adapter
-        )
+        sentence_phase = SentenceReconstructionPhase(job_manager, reconstruction_api, transcription_api, async_service,
+                                                     punctuation_manifest, real_punctuation_adapter)
+        domain_phonetic_phase = DomainPhoneticCorrectionPhase(job_manager, phonetic_correction_api, sentence_repo,
+                                                              domain_repo, async_service, phonetic_manifest,
+                                                              real_phonetic_adapter)
+        contextual_phase = ContextualRetrievalPhase(job_manager=job_manager, contextualizer_api=contextualizer_api,
+                                                    phonetic_repo=phonetic_repo, async_model_service=async_service,
+                                                    loader=real_slm_adapter)
+        visual_cue_phase = VisualCueDetectionPhase(job_manager=job_manager, detection_api=visual_cue_api,
+                                                   contextual_repo=contextual_repo, async_model_service=async_service,
+                                                   loader=cue_detector_adapter)
+        frame_extraction_phase = FrameExtractionPhase(job_manager, frame_extraction_api, contextual_repo, storage_api)
+        visual_analysis_phase = VisualAnalysisPhase(job_manager=job_manager, analysis_api=visual_analysis_api,
+                                                    contextual_repo=contextual_repo, frame_repo=frame_repo,
+                                                    async_model_service=async_service, loader=vlm_adapter)
+        visual_hallucination_correction_phase = VisualHallucinationCorrectionPhase(job_manager=job_manager,
+                                                                                   correction_api=visual_hallucination_api,
+                                                                                   async_model_service=async_service,
+                                                                                   loader=visual_hallucination_adapter)
 
-        # NEW Phase 13 Orchestration Phase
-        visual_hallucination_correction_phase = VisualHallucinationCorrectionPhase(
+        # NEW Phase 14 Orchestration Phase
+        visual_context_synthesis_phase = VisualContextSynthesisPhase(
             job_manager=job_manager,
-            correction_api=visual_hallucination_api,
+            synthesis_api=visual_synthesis_api,
+            contextual_repo=contextual_repo,
             async_model_service=async_service,
-            loader=visual_hallucination_adapter
+            loader=visual_synthesis_adapter
         )
 
         pipeline = BatchMediaPipeline(
@@ -348,7 +339,8 @@ class TestBatchMediaPipelineIntegration:
             visual_cue_detection_phase=visual_cue_phase,
             frame_extraction_phase=frame_extraction_phase,
             visual_analysis_phase=visual_analysis_phase,
-            visual_hallucination_correction_phase=visual_hallucination_correction_phase  # NEW
+            visual_hallucination_correction_phase=visual_hallucination_correction_phase,
+            visual_context_synthesis_phase=visual_context_synthesis_phase  # NEW
         )
 
         yield pipeline, storage_api
@@ -358,15 +350,12 @@ class TestBatchMediaPipelineIntegration:
     def test_end_to_end_media_pipeline(self, pipeline_setup, tmp_path):
         pipeline, storage_api = pipeline_setup
 
-        if not os.path.exists(settings.DOMAIN_CLASSIFIER_MODEL_PATH):
+        # ... [Keep existing model checks exactly as they are] ...
+
+        # NEW: Phase 14 Model Path Check
+        if not os.path.exists(settings.VISUAL_CONTEXT_SYNTHESIS_MODEL_PATH):
             pytest.skip(
-                f"Integration test skipped due to missing SLM model at: {settings.DOMAIN_CLASSIFIER_MODEL_PATH}")
-        if not os.path.exists(settings.VISION_MODEL_PATH):
-            pytest.skip(f"Integration test skipped due to missing Vision model at: {settings.VISION_MODEL_PATH}")
-        # NEW: Phase 13 Model Path Check
-        if not os.path.exists(settings.VISUAL_HALLUCINATION_CORRECTION_MODEL_PATH):
-            pytest.skip(
-                f"Integration test skipped due to missing Phase 13 model at: {settings.VISUAL_HALLUCINATION_CORRECTION_MODEL_PATH}")
+                f"Integration test skipped due to missing Phase 14 model at: {settings.VISUAL_CONTEXT_SYNTHESIS_MODEL_PATH}")
 
         source_dir = tmp_path / "usb_drive"
         source_dir.mkdir()
@@ -399,7 +388,8 @@ class TestBatchMediaPipelineIntegration:
         assert PipelinePhase.VISUAL_CUE_DETECTION in results
         assert PipelinePhase.FRAME_EXTRACTION in results
         assert PipelinePhase.VISUAL_ANALYSIS in results
-        assert PipelinePhase.VISUAL_HALLUCINATION_CORRECTION in results  # NEW Phase 13 Result
+        assert PipelinePhase.VISUAL_HALLUCINATION_CORRECTION in results
+        assert PipelinePhase.VISUAL_CONTEXT_SYNTHESIS in results  # NEW Phase 14 Result
 
         assert results[PipelinePhase.SCAN].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.INGEST].status == PhaseStatus.COMPLETED
@@ -411,4 +401,5 @@ class TestBatchMediaPipelineIntegration:
         assert results[PipelinePhase.DIARIZE].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.SENTENCE_RECONSTRUCTION].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.DOMAIN_PHONETIC_CORRECTION].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.VISUAL_HALLUCINATION_CORRECTION].status == PhaseStatus.COMPLETED  # NEW
+        assert results[PipelinePhase.VISUAL_HALLUCINATION_CORRECTION].status == PhaseStatus.COMPLETED
+        assert results[PipelinePhase.VISUAL_CONTEXT_SYNTHESIS].status == PhaseStatus.COMPLETED  # NEW
