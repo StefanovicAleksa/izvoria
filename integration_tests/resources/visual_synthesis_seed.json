@@ -1,0 +1,66 @@
+{
+  "contextualized_transcript": {
+    "chunks": [
+      {
+        "chunk_id": "11111111-1111-1111-1111-111111111111",
+        "chunk_index": 1,
+        "original_text": "As we can see, the Bund is currently experiencing a massive sudden spike up to the 160.84 level.",
+        "context_string": "[CONTEXT: The speaker is analyzing a financial chart regarding the Bund market.]",
+        "needs_visual": true
+      },
+      {
+        "chunk_id": "22222222-2222-2222-2222-222222222222",
+        "chunk_index": 2,
+        "original_text": "And that concludes our financial analysis for today.",
+        "context_string": "[CONTEXT: The speaker is wrapping up the presentation.]",
+        "needs_visual": true
+      }
+    ]
+  },
+  "chunk_visual_analyses": [
+    {
+      "chunk_id": "11111111-1111-1111-1111-111111111111",
+      "analyses": [
+        {
+          "frame_id": "f1111111-1111-1111-1111-111111111111",
+          "timestamp_sec": 10.5,
+          "description": "A line chart showing a sudden spike."
+        },
+        {
+          "frame_id": "f2222222-1111-1111-1111-111111111111",
+          "timestamp_sec": 11.5,
+          "description": "A line chart depicting a sudden spike."
+        },
+        {
+          "frame_id": "f3333333-1111-1111-1111-111111111111",
+          "timestamp_sec": 20.0,
+          "description": "The speaker pointing at the chart on the screen."
+        }
+      ]
+    },
+    {
+      "chunk_id": "22222222-2222-2222-2222-222222222222",
+      "analyses": [
+        {
+          "frame_id": "f4444444-2222-2222-2222-222222222222",
+          "timestamp_sec": 35.0,
+          "description": "A man drinking a cup of coffee."
+        }
+      ]
+    }
+  ],
+  "visual_hallucination_evaluation": {
+    "audits": [
+      {
+        "chunk_id": "11111111-1111-1111-1111-111111111111",
+        "is_visual_accepted": true,
+        "discard_reason": null
+      },
+      {
+        "chunk_id": "22222222-2222-2222-2222-222222222222",
+        "is_visual_accepted": false,
+        "discard_reason": "The text discusses wrapping up financial analysis, but the visual shows a man drinking coffee, which is irrelevant."
+      }
+    ]
+  }
+}
