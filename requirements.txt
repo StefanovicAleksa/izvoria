@@ -32,8 +32,9 @@ opencv-python-headless>=4.9.0.80
 transformers>=4.40.0
 accelerate>=0.28.0
 
-# --- Sentence Reconstruction (Phase 7) ---
+# --- NLP & Text Processing ---
 wtpsplit>=1.2.0
+nltk>=3.8.1
 
 # --- Contextual Retrieval (Phase 8) ---
 huggingface_hub>=0.23.0

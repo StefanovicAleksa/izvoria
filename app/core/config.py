@@ -88,6 +88,10 @@ class Settings(BaseSettings):
     VISUAL_HALLUCINATION_CORRECTION_MODEL_PATH: str = "models/qwen2.5-3b-instruct-q4_k_m.gguf"
     VISUAL_HALLUCINATION_CORRECTION_VRAM_REQUIREMENT_MB: float = 2500.0
 
+    # Phase 14: Visual Context Synthesis ---
+    VISUAL_CONTEXT_SYNTHESIS_MODEL_PATH: str = "models/llama-3.2-3b-instruct-q8_0.gguf"
+    VISUAL_CONTEXT_SYNTHESIS_VRAM_REQUIREMENT_MB: float = 3500.0
+
     @property
     def DATABASE_URL(self) -> str:
         return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"

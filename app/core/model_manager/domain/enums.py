@@ -33,3 +33,4 @@ class ModelType(str, Enum):
     CONTEXTUAL_RETRIEVAL = "contextual_retrieval"  # Phase 9
     VISUAL_CUE_DETECTION = "visual_cue_detection"  # Phase 10
     VISUAL_HALLUCINATION_CORRECTION = "visual_hallucination_correction"
+    VISUAL_CONTEXT_SYNTHESIS = "visual_context_synthesis"
