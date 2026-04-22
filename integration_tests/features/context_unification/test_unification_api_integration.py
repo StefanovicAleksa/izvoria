@@ -1,8 +1,9 @@
-# Canvas: test_context_unification_api_integration_v1
+# Canvas: test_context_unification_api_integration_v2
 # Path: integration_tests/features/context_unification/test_unification_api_integration.py
 
 import uuid
 import pytest
+from typing import Generator
 from sqlalchemy import text as sa_text
 
 from app.core.database.data.engine import Base
@@ -12,7 +13,8 @@ from app.features.contextual_retrieval.data.repositories import ContextualReposi
 from app.features.contextual_retrieval.domain.entities import ContextualizedTranscript, ContextualizedChunk
 
 from app.features.visual_context_synthesis.data.repositories import VisualSynthesisRepository
-from app.features.visual_context_synthesis.domain.entities import VisualTimeline, VisualTimelineChunk, VisualContextFrame
+from app.features.visual_context_synthesis.domain.entities import VisualTimeline, VisualTimelineChunk, \
+    VisualContextFrame
 
 from app.features.context_unification.data.repositories import ContextUnificationRepository
 from app.features.context_unification.service.unification_api import UnificationAPI
@@ -23,10 +25,8 @@ from app.features.context_unification.domain.entities import UnifiedTranscript
 class TestContextUnificationAPIIntegration:
     """
     STRICT NO-MOCKS INTEGRATION TEST.
-    Tests the purely deterministic Phase 15 Context Unification pipeline:
-      1. Fetching Phase 9 and Phase 14 Data via real PostgreSQL Repositories.
-      2. Deterministic Template Fusion.
-      3. JSONB Database Persistence in the `unified_transcripts` table.
+    Tests the purely deterministic Phase 15 Context Unification pipeline.
+    Cleans up its entire database footprint to prevent test pollution.
     """
 
     @pytest.fixture(scope="module", autouse=True)
@@ -36,7 +36,7 @@ class TestContextUnificationAPIIntegration:
         yield
 
     @pytest.fixture
-    def isolated_setup(self) -> uuid.UUID:
+    def isolated_setup(self) -> Generator[uuid.UUID, None, None]:
         source_id = uuid.uuid4()
         with db_manager.session() as session:
             session.execute(sa_text(
@@ -49,7 +49,17 @@ class TestContextUnificationAPIIntegration:
                 "ALTER TABLE contextualized_transcripts DROP CONSTRAINT IF EXISTS contextualized_transcripts_source_id_fkey;"
             ))
             session.commit()
-        return source_id
+
+        # Yield allows the test to execute using this source_id
+        yield source_id
+
+        # STRICT TEARDOWN: Wipe all data inserted by this test to prevent test pollution downstream
+        with db_manager.session() as session:
+            session.execute(sa_text("DELETE FROM unified_transcripts WHERE source_id = :sid"), {"sid": source_id})
+            session.execute(sa_text("DELETE FROM rag_visual_timelines WHERE source_id = :sid"), {"sid": source_id})
+            session.execute(sa_text("DELETE FROM contextualized_transcripts WHERE source_id = :sid"),
+                            {"sid": source_id})
+            session.commit()
 
     @pytest.fixture
     def seed_data(self, isolated_setup):

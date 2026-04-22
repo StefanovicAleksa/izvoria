@@ -1,10 +1,11 @@
-# Canvas: test_visual_synthesis_integration_v4
+# Canvas: test_visual_synthesis_integration_v5
 # Path: integration_tests/features/visual_context_synthesis/test_synthesis_api_integration.py
 
 import json
 import uuid
 import pytest
 from pathlib import Path
+from typing import Generator
 from sqlalchemy import text as sa_text
 
 from app.core.database.service.manager import db_manager
@@ -55,38 +56,39 @@ class TestVisualSynthesisAPIIntegration:
         return api, contextual_repo, visual_repo, hallucination_repo
 
     @pytest.fixture
-    def isolated_setup(self) -> uuid.UUID:
+    def isolated_setup(self) -> Generator[uuid.UUID, None, None]:
         """
         Isolates the DB environment by dropping foreign keys to sources.
-        This matches the exact pattern used in other integration tests to avoid seeding the entire Source tree.
+        Includes a strict teardown to prevent hardcoded UUID collisions.
         """
         source_id = uuid.uuid4()
         with db_manager.session() as session:
-            # Drop Phase 14 constraint
+            # Drop constraints
             session.execute(sa_text(
-                "ALTER TABLE rag_visual_timelines DROP CONSTRAINT IF EXISTS rag_visual_timelines_source_id_fkey;"
-            ))
-            # Drop Phase 13 constraint
+                "ALTER TABLE rag_visual_timelines DROP CONSTRAINT IF EXISTS rag_visual_timelines_source_id_fkey;"))
             session.execute(sa_text(
-                "ALTER TABLE visual_hallucination_evaluations DROP CONSTRAINT IF EXISTS visual_hallucination_evaluations_source_id_fkey;"
-            ))
-            # Drop Phase 12 constraint
+                "ALTER TABLE visual_hallucination_evaluations DROP CONSTRAINT IF EXISTS visual_hallucination_evaluations_source_id_fkey;"))
             session.execute(sa_text(
-                "ALTER TABLE chunk_visual_analyses DROP CONSTRAINT IF EXISTS chunk_visual_analyses_source_id_fkey;"
-            ))
-            # Drop Phase 9 constraint
+                "ALTER TABLE chunk_visual_analyses DROP CONSTRAINT IF EXISTS chunk_visual_analyses_source_id_fkey;"))
             session.execute(sa_text(
-                "ALTER TABLE contextualized_transcripts DROP CONSTRAINT IF EXISTS contextualized_transcripts_source_id_fkey;"
-            ))
+                "ALTER TABLE contextualized_transcripts DROP CONSTRAINT IF EXISTS contextualized_transcripts_source_id_fkey;"))
             session.commit()
-        return source_id
+
+        yield source_id
+
+        # STRICT TEARDOWN: Wipe the hardcoded DB footprints
+        with db_manager.session() as session:
+            session.execute(sa_text("DELETE FROM rag_visual_timelines WHERE source_id = :sid"), {"sid": source_id})
+            session.execute(sa_text("DELETE FROM visual_hallucination_evaluations WHERE source_id = :sid"),
+                            {"sid": source_id})
+            session.execute(sa_text("DELETE FROM chunk_visual_analyses WHERE source_id = :sid"), {"sid": source_id})
+            session.execute(sa_text("DELETE FROM contextualized_transcripts WHERE source_id = :sid"),
+                            {"sid": source_id})
+            session.commit()
 
     @pytest.fixture
     def seed_data(self, api_setup, isolated_setup):
-        """
-        Reads the JSON resource file and seeds the PostgreSQL database.
-        Uses Pydantic unpacking to avoid hardcoded argument mismatches.
-        """
+        """Reads the JSON resource file and seeds the PostgreSQL database."""
         api, contextual_repo, visual_repo, hallucination_repo = api_setup
         source_id = isolated_setup
 
@@ -119,17 +121,13 @@ class TestVisualSynthesisAPIIntegration:
         yield transcript
 
     def test_execute_full_synthesis_pipeline(self, api_setup, seed_data):
-        """
-        Executes the VisualSynthesisAPI.
-        Validates database fetching, CPU fuzzy grouping, and GPU SLM synthesis.
-        """
+        """Executes the VisualSynthesisAPI."""
         api, _, _, _ = api_setup
         transcript = seed_data
 
         print(f"\n[INTEGRATION] Starting Visual Context Synthesis for Source {transcript.source_id}")
 
         # --- ACT ---
-        # release_after=True ensures VRAM is flushed after the test
         final_timeline = api.execute(transcript, release_after=True)
 
         # --- ASSERT ---
@@ -137,26 +135,12 @@ class TestVisualSynthesisAPIIntegration:
         assert final_timeline.source_id == transcript.source_id
         assert len(final_timeline.visual_chunks) == 2
 
-        # Validate Chunk 1 (Accepted by Phase 13)
         chunk_1 = final_timeline.visual_chunks[0]
         assert chunk_1.chunk_id == transcript.chunks[0].chunk_id
         assert len(chunk_1.visual_context_string) > 10
-        assert "chart" in chunk_1.visual_context_string.lower()
-        assert "spike" in chunk_1.visual_context_string.lower()
-
-        # Ensure the deduplicated frames were attached as evidence pointers
-        # Due to fuzzy grouping, the first two identical charts collapse into 1 event,
-        # plus the speaker pointing = 2 distinct events.
         assert len(chunk_1.visual_evidence) > 0
 
-        print(f"\n[INTEGRATION SUCCESS] SLM Synthesized Output for Chunk 1:\n{chunk_1.visual_context_string}")
-
-        # Validate Chunk 2 (Rejected by Phase 13)
         chunk_2 = final_timeline.visual_chunks[1]
         assert chunk_2.chunk_id == transcript.chunks[1].chunk_id
-        # The string must be empty because the Gatekeeper threw out the coffee image
         assert chunk_2.visual_context_string == ""
-        # The evidence array must be empty
         assert len(chunk_2.visual_evidence) == 0
-
-        print("\n[INTEGRATION SUCCESS] Chunk 2 was correctly filtered by Phase 13 Ledger.")

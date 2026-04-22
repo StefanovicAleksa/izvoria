@@ -1,4 +1,4 @@
-# Canvas: test_hallucination_correction_api_integration_v2
+# Canvas: test_hallucination_correction_api_integration_v3
 # Path: integration_tests/features/visual_hallucination_correction/test_correction_api_integration.py
 
 import os
@@ -48,18 +48,27 @@ class TestVisualHallucinationCorrectionAPIIntegration:
                 f"Integration test skipped due to missing SLM at: {settings.VISUAL_HALLUCINATION_CORRECTION_MODEL_PATH}")
 
     @pytest.fixture
-    def isolated_setup(self) -> None:
-        """Isolates the DB environment by dropping foreign keys to sources."""
+    def isolated_setup(self) -> Generator[None, None, None]:
+        """Isolates the DB environment by dropping foreign keys to sources and executing teardown."""
         with db_manager.session() as session:
             session.execute(sa_text(
-                "ALTER TABLE visual_hallucination_evaluations DROP CONSTRAINT IF EXISTS visual_hallucination_evaluations_source_id_fkey;"
-            ))
+                "ALTER TABLE visual_hallucination_evaluations DROP CONSTRAINT IF EXISTS visual_hallucination_evaluations_source_id_fkey;"))
             session.execute(sa_text(
-                "ALTER TABLE chunk_visual_analyses DROP CONSTRAINT IF EXISTS chunk_visual_analyses_source_id_fkey;"
-            ))
+                "ALTER TABLE chunk_visual_analyses DROP CONSTRAINT IF EXISTS chunk_visual_analyses_source_id_fkey;"))
             session.execute(sa_text(
-                "ALTER TABLE contextualized_transcripts DROP CONSTRAINT IF EXISTS contextualized_transcripts_source_id_fkey;"
-            ))
+                "ALTER TABLE contextualized_transcripts DROP CONSTRAINT IF EXISTS contextualized_transcripts_source_id_fkey;"))
+            session.commit()
+
+        yield
+
+        # STRICT TEARDOWN: Wipe the hardcoded DB footprints parsed from the JSON fixture
+        with db_manager.session() as session:
+            # Matches the exact source_id found in resources/visual_hallucination_transcript.json
+            sid = "12345678-1234-5678-1234-567812345678"
+            session.execute(sa_text("DELETE FROM visual_hallucination_evaluations WHERE source_id = :sid"),
+                            {"sid": sid})
+            session.execute(sa_text("DELETE FROM chunk_visual_analyses WHERE source_id = :sid"), {"sid": sid})
+            session.execute(sa_text("DELETE FROM contextualized_transcripts WHERE source_id = :sid"), {"sid": sid})
             session.commit()
 
     @pytest.fixture
@@ -143,29 +152,20 @@ class TestVisualHallucinationCorrectionAPIIntegration:
         # --- 2. VERIFY BUSINESS LOGIC ---
         assert isinstance(evaluated_transcript, VisualHallucinationEvaluatedTranscript)
         assert evaluated_transcript.source_id == source_id
-
-        # We sent 3 chunks, but Chunk 3 had needs_visual=False.
-        # The API must only generate audits for Chunks 1 and 2.
         assert len(evaluated_transcript.audits) == 2
 
-        # Extract audits mapped by chunk ID
         audit_map = {str(a.chunk_id): a for a in evaluated_transcript.audits}
 
-        # Verify Chunk 1 (The Match)
         chunk_1_id = "11111111-1111-1111-1111-111111111111"
         assert chunk_1_id in audit_map
         assert audit_map[chunk_1_id].is_visual_accepted is True
         assert audit_map[chunk_1_id].discard_reason is None
 
-        # Verify Chunk 2 (The Hallucination Mismatch)
         chunk_2_id = "22222222-2222-2222-2222-222222222222"
         assert chunk_2_id in audit_map
         assert audit_map[chunk_2_id].is_visual_accepted is False
         assert audit_map[chunk_2_id].discard_reason is not None
         assert len(audit_map[chunk_2_id].discard_reason) > 5
-
-        print(
-            f"\n[DEBUG] SLM correctly caught the hallucination. Discard Reason: {audit_map[chunk_2_id].discard_reason}")
 
         # --- 3. VERIFY DATABASE PERSISTENCE ---
         db_transcript = live_api._repo.get_by_source_id(source_id)
