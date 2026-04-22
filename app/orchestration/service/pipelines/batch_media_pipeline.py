@@ -1,4 +1,4 @@
-# Canvas: batch_media_pipeline_v27
+# Canvas: batch_media_pipeline_v28
 # Path: app/orchestration/service/pipelines/batch_media_pipeline.py
 
 import uuid
@@ -41,6 +41,7 @@ from app.orchestration.service.phases.frame_extraction_phase import FrameExtract
 from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysisPhase
 from app.orchestration.service.phases.visual_hallucination_correction_phase import VisualHallucinationCorrectionPhase
 from app.orchestration.service.phases.visual_context_synthesis_phase import VisualContextSynthesisPhase
+from app.orchestration.service.phases.context_unification_phase import ContextUnificationPhase
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,8 @@ class BatchMediaPipeline:
             frame_extraction_phase: FrameExtractionPhase,
             visual_analysis_phase: VisualAnalysisPhase,
             visual_hallucination_correction_phase: VisualHallucinationCorrectionPhase,
-            visual_context_synthesis_phase: VisualContextSynthesisPhase
+            visual_context_synthesis_phase: VisualContextSynthesisPhase,
+            context_unification_phase: ContextUnificationPhase
     ):
         self._scan_phase = scan_phase
         self._ingest_phase = ingest_phase
@@ -81,9 +83,9 @@ class BatchMediaPipeline:
         self._visual_analysis_phase = visual_analysis_phase
         self._visual_hallucination_correction_phase = visual_hallucination_correction_phase
         self._visual_context_synthesis_phase = visual_context_synthesis_phase
+        self._context_unification_phase = context_unification_phase
 
-    def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[
-        PipelinePhase, PhaseBatchResult]:
+    def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[PipelinePhase, PhaseBatchResult]:
         pipeline_results: Dict[PipelinePhase, PhaseBatchResult] = {}
         logger.info(f"========== Starting Onyx Batch Pipeline for [{target_directory}] ==========")
 
@@ -235,10 +237,10 @@ class BatchMediaPipeline:
                 return pipeline_results
 
             # ==========================================
-            # PHASE 10: VISUAL CUE DETECTION (GPU BOUND)
+            # CONDITIONAL VISUAL PIPELINE (PHASES 10-14)
+            # These cascade downward, skipping if visual data is absent.
             # ==========================================
             self._visual_cue_detection_phase.preload_model()
-
             visual_cue_result = self._visual_cue_detection_phase.execute(successful_contextual_items)
             pipeline_results[PipelinePhase.VISUAL_CUE_DETECTION] = visual_cue_result
 
@@ -246,62 +248,52 @@ class BatchMediaPipeline:
                 item for item in visual_cue_result.items
                 if isinstance(item, VisualCueDetectionJobResult) and item.success
             ]
-            if not successful_cue_items:
-                return pipeline_results
+
+            if successful_cue_items:
+                # PHASE 11: FRAME EXTRACTION (CPU BOUND)
+                self._visual_analysis_phase.preload_model()
+                extraction_result = self._frame_extraction_phase.execute(successful_cue_items)
+                pipeline_results[PipelinePhase.FRAME_EXTRACTION] = extraction_result
+
+                successful_extraction_items_frames: List[FrameExtractionJobResult] = [
+                    item for item in extraction_result.items
+                    if isinstance(item, FrameExtractionJobResult) and item.success
+                ]
+
+                if successful_extraction_items_frames:
+                    # PHASE 12: VISUAL ANALYSIS (GPU BOUND)
+                    self._visual_hallucination_correction_phase.preload_model()
+                    analysis_result = self._visual_analysis_phase.execute(successful_extraction_items_frames)
+                    pipeline_results[PipelinePhase.VISUAL_ANALYSIS] = analysis_result
+
+                    successful_analysis_items: List[VisualAnalysisJobResult] = [
+                        item for item in analysis_result.items
+                        if isinstance(item, VisualAnalysisJobResult) and item.success
+                    ]
+
+                    if successful_analysis_items:
+                        # PHASE 13: VISUAL HALLUCINATION CORRECTION (GPU BOUND)
+                        self._visual_context_synthesis_phase.preload_model()
+                        hallucination_result = self._visual_hallucination_correction_phase.execute(successful_analysis_items)
+                        pipeline_results[PipelinePhase.VISUAL_HALLUCINATION_CORRECTION] = hallucination_result
+
+                        successful_hallucination_items: List[VisualHallucinationCorrectionJobResult] = [
+                            item for item in hallucination_result.items
+                            if isinstance(item, VisualHallucinationCorrectionJobResult) and item.success
+                        ]
+
+                        if successful_hallucination_items:
+                            # PHASE 14: VISUAL CONTEXT SYNTHESIS (GPU BOUND)
+                            synthesis_result = self._visual_context_synthesis_phase.execute(successful_hallucination_items)
+                            pipeline_results[PipelinePhase.VISUAL_CONTEXT_SYNTHESIS] = synthesis_result
 
             # ==========================================
-            # PHASE 11: FRAME EXTRACTION (CPU BOUND)
+            # PHASE 15: CONTEXT UNIFICATION (CPU BOUND / NO-VRAM)
             # ==========================================
-            self._visual_analysis_phase.preload_model()
-
-            extraction_result = self._frame_extraction_phase.execute(successful_cue_items)
-            pipeline_results[PipelinePhase.FRAME_EXTRACTION] = extraction_result
-
-            successful_extraction_items_frames: List[FrameExtractionJobResult] = [
-                item for item in extraction_result.items
-                if isinstance(item, FrameExtractionJobResult) and item.success
-            ]
-            if not successful_extraction_items_frames:
-                logger.info("No frames extracted; skipping Visual Analysis phase.")
-                return pipeline_results
-
-            # ==========================================
-            # PHASE 12: VISUAL ANALYSIS (GPU BOUND)
-            # ==========================================
-            self._visual_hallucination_correction_phase.preload_model()
-
-            analysis_result = self._visual_analysis_phase.execute(successful_extraction_items_frames)
-            pipeline_results[PipelinePhase.VISUAL_ANALYSIS] = analysis_result
-
-            successful_analysis_items: List[VisualAnalysisJobResult] = [
-                item for item in analysis_result.items
-                if isinstance(item, VisualAnalysisJobResult) and item.success
-            ]
-            if not successful_analysis_items:
-                logger.info("No visual analysis completed; skipping Visual Hallucination Correction phase.")
-                return pipeline_results
-
-            # ==========================================
-            # PHASE 13: VISUAL HALLUCINATION CORRECTION (GPU BOUND)
-            # ==========================================
-            self._visual_context_synthesis_phase.preload_model()
-
-            hallucination_result = self._visual_hallucination_correction_phase.execute(successful_analysis_items)
-            pipeline_results[PipelinePhase.VISUAL_HALLUCINATION_CORRECTION] = hallucination_result
-
-            successful_hallucination_items: List[VisualHallucinationCorrectionJobResult] = [
-                item for item in hallucination_result.items
-                if isinstance(item, VisualHallucinationCorrectionJobResult) and item.success
-            ]
-            if not successful_hallucination_items:
-                logger.info("No successful visual hallucination corrections; skipping Visual Synthesis phase.")
-                return pipeline_results
-
-            # ==========================================
-            # PHASE 14: VISUAL CONTEXT SYNTHESIS (GPU BOUND)
-            # ==========================================
-            synthesis_result = self._visual_context_synthesis_phase.execute(successful_hallucination_items)
-            pipeline_results[PipelinePhase.VISUAL_CONTEXT_SYNTHESIS] = synthesis_result
+            # We explicitly pass the Phase 9 successful_contextual_items.
+            # This guarantees that even audio-only files (which safely bypassed 10-14) get correctly unified for RAG!
+            unification_result = self._context_unification_phase.execute(successful_contextual_items)
+            pipeline_results[PipelinePhase.CONTEXT_UNIFICATION] = unification_result
 
             logger.info(f"========== Pipeline Completed for Batch [{target_directory}] ==========")
             return pipeline_results

@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_integration_v29
+# Canvas: test_batch_media_pipeline_integration_v30
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
 import subprocess
@@ -76,10 +76,13 @@ from app.features.visual_hallucination_correction.data.slm_adapter import QwenHa
 from app.features.visual_hallucination_correction.data.repositories import VisualHallucinationRepository
 from app.features.visual_hallucination_correction.service.correction_api import VisualHallucinationCorrectionAPI
 
-# NEW: Phase 14 Integration
 from app.features.visual_context_synthesis.data.slm_adapter import VisualSLMAdapter
 from app.features.visual_context_synthesis.data.repositories import VisualSynthesisRepository
 from app.features.visual_context_synthesis.service.synthesis_api import VisualSynthesisAPI
+
+# NEW: Phase 15 Integration
+from app.features.context_unification.data.repositories import ContextUnificationRepository
+from app.features.context_unification.service.unification_api import UnificationAPI
 
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
@@ -96,7 +99,8 @@ from app.orchestration.service.phases.visual_cue_detection_phase import VisualCu
 from app.orchestration.service.phases.frame_extraction_phase import FrameExtractionPhase
 from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysisPhase
 from app.orchestration.service.phases.visual_hallucination_correction_phase import VisualHallucinationCorrectionPhase
-from app.orchestration.service.phases.visual_context_synthesis_phase import VisualContextSynthesisPhase  # NEW
+from app.orchestration.service.phases.visual_context_synthesis_phase import VisualContextSynthesisPhase
+from app.orchestration.service.phases.context_unification_phase import ContextUnificationPhase  # NEW
 
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
@@ -274,7 +278,6 @@ class TestBatchMediaPipelineIntegration:
             orchestrator=orchestrator
         )
 
-        # NEW Phase 14 Initialization Core
         visual_synthesis_repo = VisualSynthesisRepository(db_manager)
         visual_synthesis_adapter = VisualSLMAdapter()
         visual_synthesis_api = VisualSynthesisAPI(
@@ -284,6 +287,10 @@ class TestBatchMediaPipelineIntegration:
             visual_analysis_repo=visual_analysis_repo,
             hallucination_repo=visual_hallucination_repo
         )
+
+        # NEW Phase 15 Initialization Core
+        context_unification_repo = ContextUnificationRepository(db_manager)
+        unification_api = UnificationAPI(repository=context_unification_repo)
 
         scan_phase = ScanPhase(job_manager, scanner)
         ingest_phase = IngestPhase(job_manager, storage_api)
@@ -315,13 +322,20 @@ class TestBatchMediaPipelineIntegration:
                                                                                    async_model_service=async_service,
                                                                                    loader=visual_hallucination_adapter)
 
-        # NEW Phase 14 Orchestration Phase
         visual_context_synthesis_phase = VisualContextSynthesisPhase(
             job_manager=job_manager,
             synthesis_api=visual_synthesis_api,
             contextual_repo=contextual_repo,
             async_model_service=async_service,
             loader=visual_synthesis_adapter
+        )
+
+        # NEW Phase 15 Orchestration Phase
+        context_unification_phase = ContextUnificationPhase(
+            job_manager=job_manager,
+            unification_api=unification_api,
+            contextual_repo=contextual_repo,
+            visual_synthesis_repo=visual_synthesis_repo
         )
 
         pipeline = BatchMediaPipeline(
@@ -340,7 +354,8 @@ class TestBatchMediaPipelineIntegration:
             frame_extraction_phase=frame_extraction_phase,
             visual_analysis_phase=visual_analysis_phase,
             visual_hallucination_correction_phase=visual_hallucination_correction_phase,
-            visual_context_synthesis_phase=visual_context_synthesis_phase  # NEW
+            visual_context_synthesis_phase=visual_context_synthesis_phase,
+            context_unification_phase=context_unification_phase  # NEW
         )
 
         yield pipeline, storage_api
@@ -350,9 +365,6 @@ class TestBatchMediaPipelineIntegration:
     def test_end_to_end_media_pipeline(self, pipeline_setup, tmp_path):
         pipeline, storage_api = pipeline_setup
 
-        # ... [Keep existing model checks exactly as they are] ...
-
-        # NEW: Phase 14 Model Path Check
         if not os.path.exists(settings.VISUAL_CONTEXT_SYNTHESIS_MODEL_PATH):
             pytest.skip(
                 f"Integration test skipped due to missing Phase 14 model at: {settings.VISUAL_CONTEXT_SYNTHESIS_MODEL_PATH}")
@@ -389,7 +401,8 @@ class TestBatchMediaPipelineIntegration:
         assert PipelinePhase.FRAME_EXTRACTION in results
         assert PipelinePhase.VISUAL_ANALYSIS in results
         assert PipelinePhase.VISUAL_HALLUCINATION_CORRECTION in results
-        assert PipelinePhase.VISUAL_CONTEXT_SYNTHESIS in results  # NEW Phase 14 Result
+        assert PipelinePhase.VISUAL_CONTEXT_SYNTHESIS in results
+        assert PipelinePhase.CONTEXT_UNIFICATION in results  # NEW Phase 15 Result
 
         assert results[PipelinePhase.SCAN].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.INGEST].status == PhaseStatus.COMPLETED
@@ -402,4 +415,5 @@ class TestBatchMediaPipelineIntegration:
         assert results[PipelinePhase.SENTENCE_RECONSTRUCTION].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.DOMAIN_PHONETIC_CORRECTION].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.VISUAL_HALLUCINATION_CORRECTION].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.VISUAL_CONTEXT_SYNTHESIS].status == PhaseStatus.COMPLETED  # NEW
+        assert results[PipelinePhase.VISUAL_CONTEXT_SYNTHESIS].status == PhaseStatus.COMPLETED
+        assert results[PipelinePhase.CONTEXT_UNIFICATION].status == PhaseStatus.COMPLETED  # NEW

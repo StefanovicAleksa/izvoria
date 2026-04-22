@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_unit_v15
+# Canvas: test_batch_media_pipeline_unit_v16
 # Path: tests/orchestration/pipelines/test_batch_media_pipeline_unit.py
 
 import pytest
@@ -23,7 +23,8 @@ from app.orchestration.domain.entities import (
     FrameExtractionJobResult,
     VisualAnalysisJobResult,
     VisualHallucinationCorrectionJobResult,
-    VisualContextSynthesisJobResult  # NEW
+    VisualContextSynthesisJobResult,
+    ContextUnificationJobResult  # NEW
 )
 from app.features.storage.domain.entities import SourceType
 
@@ -75,7 +76,10 @@ class TestBatchMediaPipelineUnit:
     def mock_visual_hallucination_correction(self): return Mock()
 
     @pytest.fixture
-    def mock_visual_context_synthesis(self): return Mock()  # NEW: Phase 14 Mock
+    def mock_visual_context_synthesis(self): return Mock()
+
+    @pytest.fixture
+    def mock_context_unification(self): return Mock()  # NEW: Phase 15 Mock
 
     @pytest.fixture
     def pipeline(self,
@@ -83,7 +87,8 @@ class TestBatchMediaPipelineUnit:
                  mock_domain_adaptation, mock_transcribe, mock_hallucination_correction,
                  mock_diarize, mock_sentence, mock_phonetic, mock_contextual,
                  mock_visual_cue, mock_frame_extraction, mock_visual_analysis,
-                 mock_visual_hallucination_correction, mock_visual_context_synthesis):
+                 mock_visual_hallucination_correction, mock_visual_context_synthesis,
+                 mock_context_unification):
         return BatchMediaPipeline(
             scan_phase=mock_scan,
             ingest_phase=mock_ingest,
@@ -100,18 +105,20 @@ class TestBatchMediaPipelineUnit:
             frame_extraction_phase=mock_frame_extraction,
             visual_analysis_phase=mock_visual_analysis,
             visual_hallucination_correction_phase=mock_visual_hallucination_correction,
-            visual_context_synthesis_phase=mock_visual_context_synthesis  # NEW: Phase 14 Injection
+            visual_context_synthesis_phase=mock_visual_context_synthesis,
+            context_unification_phase=mock_context_unification  # NEW
         )
 
     def test_pipeline_happy_path(self, pipeline, mock_scan, mock_ingest, mock_extract, mock_vad,
                                  mock_domain_adaptation, mock_transcribe, mock_hallucination_correction,
                                  mock_diarize, mock_sentence, mock_phonetic, mock_contextual,
                                  mock_visual_cue, mock_frame_extraction, mock_visual_analysis,
-                                 mock_visual_hallucination_correction, mock_visual_context_synthesis):
+                                 mock_visual_hallucination_correction, mock_visual_context_synthesis,
+                                 mock_context_unification):
         target_dir = "/dummy/path"
         source_id = uuid.uuid4()
 
-        # Mock all 16 responses
+        # Mock all 17 responses
         mock_scan.execute.return_value = PhaseBatchResult(phase=PipelinePhase.SCAN, status=PhaseStatus.COMPLETED,
                                                           successful_count=1, items=["/dummy/path/vid.mp4"])
         mock_ingest.execute.return_value = PhaseBatchResult(phase=PipelinePhase.INGEST, status=PhaseStatus.COMPLETED,
@@ -158,18 +165,19 @@ class TestBatchMediaPipelineUnit:
             phase=PipelinePhase.VISUAL_HALLUCINATION_CORRECTION, status=PhaseStatus.COMPLETED, items=[
                 VisualHallucinationCorrectionJobResult(source_id=source_id, success=True,
                                                        evaluated_transcript_id=uuid.uuid4())])
-
-        # NEW: Phase 14 Mock Response
         mock_visual_context_synthesis.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.VISUAL_CONTEXT_SYNTHESIS,
+            phase=PipelinePhase.VISUAL_CONTEXT_SYNTHESIS, status=PhaseStatus.COMPLETED,
+            items=[VisualContextSynthesisJobResult(source_id=source_id, success=True, visual_timeline_id=uuid.uuid4())])
+
+        # NEW: Phase 15 Mock Response
+        mock_context_unification.execute.return_value = PhaseBatchResult(
+            phase=PipelinePhase.CONTEXT_UNIFICATION,
             status=PhaseStatus.COMPLETED,
-            items=[VisualContextSynthesisJobResult(source_id=source_id, success=True, visual_timeline_id=uuid.uuid4())]
+            items=[ContextUnificationJobResult(source_id=source_id, success=True, unified_transcript_id=uuid.uuid4())]
         )
 
         results = pipeline.process_directory(target_dir, SourceType.VIDEO)
 
-        assert len(results) == 16  # Updated count for 16 phases
-        mock_phonetic.preload_model.assert_called_once()
-        assert PipelinePhase.VISUAL_HALLUCINATION_CORRECTION in results
-        assert PipelinePhase.VISUAL_CONTEXT_SYNTHESIS in results  # NEW Assertion
-        mock_visual_context_synthesis.execute.assert_called_once()
+        assert len(results) == 17  # Updated count for 17 phases
+        assert PipelinePhase.CONTEXT_UNIFICATION in results
+        mock_context_unification.execute.assert_called_once()

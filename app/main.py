@@ -1,4 +1,4 @@
-# Canvas: main_v27
+# Canvas: main_v28
 # Path: app/main.py
 
 import argparse
@@ -85,6 +85,10 @@ from app.features.visual_context_synthesis.data.slm_adapter import VisualSLMAdap
 from app.features.visual_context_synthesis.data.repositories import VisualSynthesisRepository
 from app.features.visual_context_synthesis.service.synthesis_api import VisualSynthesisAPI
 
+# Phase 15 Integration Imports
+from app.features.context_unification.data.repositories import ContextUnificationRepository
+from app.features.context_unification.service.unification_api import UnificationAPI
+
 from app.orchestration.domain.enums import PipelinePhase
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
@@ -102,6 +106,7 @@ from app.orchestration.service.phases.frame_extraction_phase import FrameExtract
 from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysisPhase
 from app.orchestration.service.phases.visual_hallucination_correction_phase import VisualHallucinationCorrectionPhase
 from app.orchestration.service.phases.visual_context_synthesis_phase import VisualContextSynthesisPhase
+from app.orchestration.service.phases.context_unification_phase import ContextUnificationPhase
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 
 
@@ -291,6 +296,10 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         hallucination_repo=visual_hallucination_repo
     )
 
+    # 15. Context Unification
+    context_unification_repo = ContextUnificationRepository(db_manager)
+    unification_api = UnificationAPI(repository=context_unification_repo)
+
     # --- Orchestration Phases ---
     scan_phase = ScanPhase(job_manager, scanner)
     ingest_phase = IngestPhase(job_manager, storage_api)
@@ -394,13 +403,19 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         loader=visual_hallucination_adapter
     )
 
-    # Phase 14 Phase setup
     visual_context_synthesis_phase = VisualContextSynthesisPhase(
         job_manager=job_manager,
         synthesis_api=visual_synthesis_api,
         contextual_repo=contextual_repo,
         async_model_service=async_model_service,
         loader=visual_synthesis_adapter
+    )
+
+    context_unification_phase = ContextUnificationPhase(
+        job_manager=job_manager,
+        unification_api=unification_api,
+        contextual_repo=contextual_repo,
+        visual_synthesis_repo=visual_synthesis_repo
     )
 
     # Pipeline Assembly
@@ -420,7 +435,8 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         frame_extraction_phase=frame_extraction_phase,
         visual_analysis_phase=visual_analysis_phase,
         visual_hallucination_correction_phase=visual_hallucination_correction_phase,
-        visual_context_synthesis_phase=visual_context_synthesis_phase
+        visual_context_synthesis_phase=visual_context_synthesis_phase,
+        context_unification_phase=context_unification_phase
     )
 
 
@@ -577,6 +593,41 @@ def main() -> None:
                             print(f"  [SUCCESS] Saved Final Visual Narrative: {out_file}")
                         except IOError as e:
                             print(f"  [ERROR] Failed to write visual narrative {out_file.name}: {e}")
+
+        # --- Phase 15 Context Unification Report Generation ---
+        if PipelinePhase.CONTEXT_UNIFICATION in results:
+            print("\n==================================================")
+            print("  WRITING UNIFIED RAG DOCUMENTS TO DISK")
+            print("==================================================")
+
+            context_unification_repo = ContextUnificationRepository(db_manager)
+            target_batch = results[PipelinePhase.CONTEXT_UNIFICATION]
+
+            for item in target_batch.items:
+                if item.success and item.source_id:
+                    source = storage_repo.get_by_id(item.source_id)
+                    unified_transcript = context_unification_repo.get_by_source_id(item.source_id)
+
+                    if source and unified_transcript:
+                        safe_name = Path(source.name).stem
+                        out_file = output_dir.joinpath(f"{safe_name}_unified_rag_document.txt")
+
+                        try:
+                            formatted_text = f"Final RAG Unified Document for {source.name}\n"
+                            formatted_text += "=" * 60 + "\n\n"
+
+                            for chunk in unified_transcript.chunks:
+                                formatted_text += f"[Chunk {chunk.chunk_id}]\n"
+                                formatted_text += f"Time: {chunk.start_sec:.2f}s - {chunk.end_sec:.2f}s\n"
+                                formatted_text += f"Frames: {[str(f.frame_id) for f in chunk.visual_evidence]}\n"
+                                formatted_text += "-" * 40 + "\n"
+                                formatted_text += f"{chunk.text_payload}\n\n"
+
+                            with open(out_file, "w", encoding="utf-8") as f:
+                                f.write(formatted_text)
+                            print(f"  [SUCCESS] Saved Unified Document: {out_file}")
+                        except IOError as e:
+                            print(f"  [ERROR] Failed to write unified doc {out_file.name}: {e}")
 
     except Exception as e:
         print(f"\n[FATAL PIPELINE CRASH] {str(e)}")

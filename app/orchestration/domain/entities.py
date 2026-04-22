@@ -1,4 +1,4 @@
-# Canvas: orchestration_entities_v19
+# Canvas: orchestration_entities_v20
 # Path: app/orchestration/domain/entities.py
 
 import uuid
@@ -128,6 +128,13 @@ class VisualContextSynthesisJobResult(BaseModel):
     source_id: uuid.UUID
     success: bool
     visual_timeline_id: Optional[uuid.UUID] = None
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
+class ContextUnificationJobResult(BaseModel):
+    source_id: uuid.UUID
+    success: bool
+    unified_transcript_id: Optional[uuid.UUID] = None
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 
