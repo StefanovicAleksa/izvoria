@@ -1,3 +1,6 @@
+# Canvas: conftest_v3
+# Path: tests/conftest.py
+
 import pytest
 import time
 from contextlib import contextmanager
@@ -18,7 +21,8 @@ def setup_test_database():
     """
     1. Waits for the Database to become responsive.
     2. Forcefully drops the public schema to bypass Foreign Key deadlocks.
-    3. Creates all tables (schema) required for the integration tests.
+    3. Re-enables pgvector extension.
+    4. Creates all tables (schema) required for the integration tests.
     """
     real_engine = core_db_manager._engine_wrapper._engine  # noqa
 
@@ -34,10 +38,13 @@ def setup_test_database():
                 pytest.fail("Could not connect to the Test Database. Is Docker running?")
             time.sleep(1)
 
-    # B. WIPE THE STALE SCHEMA COMPLETELY
+    # B. WIPE THE STALE SCHEMA COMPLETELY & ENABLE VECTOR
     with real_engine.begin() as conn:
         conn.execute(text("DROP SCHEMA public CASCADE;"))
         conn.execute(text("CREATE SCHEMA public;"))
+
+        # CRITICAL ADDITION: Re-enable pgvector after wiping the schema
+        conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
 
     # C. CREATE ALL TABLES WITH THE NEW SCHEMA
     Base.metadata.create_all(bind=real_engine)
