@@ -92,6 +92,10 @@ class Settings(BaseSettings):
     VISUAL_CONTEXT_SYNTHESIS_MODEL_PATH: str = "models/llama-3.2-3b-instruct-q8_0.gguf"
     VISUAL_CONTEXT_SYNTHESIS_VRAM_REQUIREMENT_MB: float = 3500.0
 
+    # Phase 16: RAG Contextual Indexing ---
+    RAG_EMBEDDING_MODEL_PATH: str = "models/bge-m3"
+    RAG_EMBEDDING_VRAM_REQUIREMENT_MB: float = 2500.0
+
     @property
     def DATABASE_URL(self) -> str:
         return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"

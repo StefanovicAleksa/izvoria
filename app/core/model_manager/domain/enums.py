@@ -34,3 +34,4 @@ class ModelType(str, Enum):
     VISUAL_CUE_DETECTION = "visual_cue_detection"  # Phase 10
     VISUAL_HALLUCINATION_CORRECTION = "visual_hallucination_correction"
     VISUAL_CONTEXT_SYNTHESIS = "visual_context_synthesis"
+    RAG_EMBEDDING = "rag_embedding"  # Phase 16
