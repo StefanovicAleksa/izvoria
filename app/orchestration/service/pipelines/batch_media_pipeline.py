@@ -1,4 +1,4 @@
-# Canvas: batch_media_pipeline_v28
+# Canvas: batch_media_pipeline_v29
 # Path: app/orchestration/service/pipelines/batch_media_pipeline.py
 
 import uuid
@@ -22,6 +22,7 @@ from app.orchestration.domain.entities import (
     FrameExtractionJobResult,
     VisualAnalysisJobResult,
     VisualHallucinationCorrectionJobResult,
+    ContextUnificationJobResult,
 )
 from app.orchestration.exceptions.workflow import WorkflowStateError, WorkflowExecutionError
 
@@ -42,6 +43,7 @@ from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysi
 from app.orchestration.service.phases.visual_hallucination_correction_phase import VisualHallucinationCorrectionPhase
 from app.orchestration.service.phases.visual_context_synthesis_phase import VisualContextSynthesisPhase
 from app.orchestration.service.phases.context_unification_phase import ContextUnificationPhase
+from app.orchestration.service.phases.rag_indexing_phase import RagIndexingPhase
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +67,8 @@ class BatchMediaPipeline:
             visual_analysis_phase: VisualAnalysisPhase,
             visual_hallucination_correction_phase: VisualHallucinationCorrectionPhase,
             visual_context_synthesis_phase: VisualContextSynthesisPhase,
-            context_unification_phase: ContextUnificationPhase
+            context_unification_phase: ContextUnificationPhase,
+            rag_indexing_phase: RagIndexingPhase
     ):
         self._scan_phase = scan_phase
         self._ingest_phase = ingest_phase
@@ -84,8 +87,10 @@ class BatchMediaPipeline:
         self._visual_hallucination_correction_phase = visual_hallucination_correction_phase
         self._visual_context_synthesis_phase = visual_context_synthesis_phase
         self._context_unification_phase = context_unification_phase
+        self._rag_indexing_phase = rag_indexing_phase
 
-    def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[PipelinePhase, PhaseBatchResult]:
+    def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[
+        PipelinePhase, PhaseBatchResult]:
         pipeline_results: Dict[PipelinePhase, PhaseBatchResult] = {}
         logger.info(f"========== Starting Onyx Batch Pipeline for [{target_directory}] ==========")
 
@@ -238,7 +243,6 @@ class BatchMediaPipeline:
 
             # ==========================================
             # CONDITIONAL VISUAL PIPELINE (PHASES 10-14)
-            # These cascade downward, skipping if visual data is absent.
             # ==========================================
             self._visual_cue_detection_phase.preload_model()
             visual_cue_result = self._visual_cue_detection_phase.execute(successful_contextual_items)
@@ -274,7 +278,8 @@ class BatchMediaPipeline:
                     if successful_analysis_items:
                         # PHASE 13: VISUAL HALLUCINATION CORRECTION (GPU BOUND)
                         self._visual_context_synthesis_phase.preload_model()
-                        hallucination_result = self._visual_hallucination_correction_phase.execute(successful_analysis_items)
+                        hallucination_result = self._visual_hallucination_correction_phase.execute(
+                            successful_analysis_items)
                         pipeline_results[PipelinePhase.VISUAL_HALLUCINATION_CORRECTION] = hallucination_result
 
                         successful_hallucination_items: List[VisualHallucinationCorrectionJobResult] = [
@@ -284,16 +289,30 @@ class BatchMediaPipeline:
 
                         if successful_hallucination_items:
                             # PHASE 14: VISUAL CONTEXT SYNTHESIS (GPU BOUND)
-                            synthesis_result = self._visual_context_synthesis_phase.execute(successful_hallucination_items)
+                            synthesis_result = self._visual_context_synthesis_phase.execute(
+                                successful_hallucination_items)
                             pipeline_results[PipelinePhase.VISUAL_CONTEXT_SYNTHESIS] = synthesis_result
 
             # ==========================================
             # PHASE 15: CONTEXT UNIFICATION (CPU BOUND / NO-VRAM)
             # ==========================================
-            # We explicitly pass the Phase 9 successful_contextual_items.
-            # This guarantees that even audio-only files (which safely bypassed 10-14) get correctly unified for RAG!
+            self._rag_indexing_phase.preload_model()  # Trigger the background load of BGE-M3
+
             unification_result = self._context_unification_phase.execute(successful_contextual_items)
             pipeline_results[PipelinePhase.CONTEXT_UNIFICATION] = unification_result
+
+            successful_unification_items: List[ContextUnificationJobResult] = [
+                item for item in unification_result.items
+                if isinstance(item, ContextUnificationJobResult) and item.success
+            ]
+            if not successful_unification_items:
+                return pipeline_results
+
+            # ==========================================
+            # PHASE 16: RAG VECTOR INDEXING (GPU BOUND)
+            # ==========================================
+            rag_indexing_result = self._rag_indexing_phase.execute(successful_unification_items)
+            pipeline_results[PipelinePhase.RAG_INDEXING] = rag_indexing_result
 
             logger.info(f"========== Pipeline Completed for Batch [{target_directory}] ==========")
             return pipeline_results

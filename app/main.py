@@ -1,4 +1,4 @@
-# Canvas: main_v28
+# Canvas: main_v29
 # Path: app/main.py
 
 import argparse
@@ -89,6 +89,12 @@ from app.features.visual_context_synthesis.service.synthesis_api import VisualSy
 from app.features.context_unification.data.repositories import ContextUnificationRepository
 from app.features.context_unification.service.unification_api import UnificationAPI
 
+# Phase 16 Integration Imports
+from app.features.rag_storage.data.postgres_dense_repo import PostgresDenseRepository
+from app.features.rag_storage.data.bm25_repo import LocalBM25Repository
+from app.features.rag_storage.data.hf_embedder import HuggingFaceEmbeddingAdapter
+from app.features.rag_storage.service.storage_api import RAGStorageService
+
 from app.orchestration.domain.enums import PipelinePhase
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
@@ -107,6 +113,7 @@ from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysi
 from app.orchestration.service.phases.visual_hallucination_correction_phase import VisualHallucinationCorrectionPhase
 from app.orchestration.service.phases.visual_context_synthesis_phase import VisualContextSynthesisPhase
 from app.orchestration.service.phases.context_unification_phase import ContextUnificationPhase
+from app.orchestration.service.phases.rag_indexing_phase import RagIndexingPhase
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 
 
@@ -300,6 +307,17 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
     context_unification_repo = ContextUnificationRepository(db_manager)
     unification_api = UnificationAPI(repository=context_unification_repo)
 
+    # 16. RAG Indexing
+    dense_repo = PostgresDenseRepository()
+    sparse_repo = LocalBM25Repository()
+    hf_embedder = HuggingFaceEmbeddingAdapter()
+    rag_storage_service = RAGStorageService(
+        dense_repo=dense_repo,
+        sparse_repo=sparse_repo,
+        orchestrator=model_orchestrator,
+        embedder=hf_embedder
+    )
+
     # --- Orchestration Phases ---
     scan_phase = ScanPhase(job_manager, scanner)
     ingest_phase = IngestPhase(job_manager, storage_api)
@@ -418,6 +436,14 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         visual_synthesis_repo=visual_synthesis_repo
     )
 
+    rag_indexing_phase = RagIndexingPhase(
+        job_manager=job_manager,
+        rag_storage_service=rag_storage_service,
+        unified_repo=context_unification_repo,
+        async_model_service=async_model_service,
+        loader=hf_embedder
+    )
+
     # Pipeline Assembly
     return BatchMediaPipeline(
         scan_phase=scan_phase,
@@ -436,7 +462,8 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         visual_analysis_phase=visual_analysis_phase,
         visual_hallucination_correction_phase=visual_hallucination_correction_phase,
         visual_context_synthesis_phase=visual_context_synthesis_phase,
-        context_unification_phase=context_unification_phase
+        context_unification_phase=context_unification_phase,
+        rag_indexing_phase=rag_indexing_phase
     )
 
 
@@ -475,6 +502,7 @@ def main() -> None:
                 for err in batch_result.errors:
                     print(f"    - {err}")
 
+        # Post-Pipeline processing and reporting
         storage_repo = StorageRepository(db_manager)
 
         output_dir = target_path.joinpath("onyx_outputs")
@@ -556,7 +584,6 @@ def main() -> None:
                         except IOError as e:
                             print(f"  [ERROR] Failed to write visual report {out_file.name}: {e}")
 
-        # --- Phase 14 Visual Context Synthesis Report Generation ---
         if PipelinePhase.VISUAL_CONTEXT_SYNTHESIS in results:
             print("\n==================================================")
             print("  WRITING FINAL VISUAL CONTEXT NARRATIVE TO DISK")
@@ -594,7 +621,6 @@ def main() -> None:
                         except IOError as e:
                             print(f"  [ERROR] Failed to write visual narrative {out_file.name}: {e}")
 
-        # --- Phase 15 Context Unification Report Generation ---
         if PipelinePhase.CONTEXT_UNIFICATION in results:
             print("\n==================================================")
             print("  WRITING UNIFIED RAG DOCUMENTS TO DISK")
@@ -628,6 +654,21 @@ def main() -> None:
                             print(f"  [SUCCESS] Saved Unified Document: {out_file}")
                         except IOError as e:
                             print(f"  [ERROR] Failed to write unified doc {out_file.name}: {e}")
+
+        # --- Phase 16 Storage Report ---
+        if PipelinePhase.RAG_INDEXING in results:
+            print("\n==================================================")
+            print("  VECTOR DATABASE STORAGE REPORT")
+            print("==================================================")
+
+            target_batch = results[PipelinePhase.RAG_INDEXING]
+            for item in target_batch.items:
+                if item.success and item.source_id:
+                    source = storage_repo.get_by_id(item.source_id)
+                    if source:
+                        print(f"  [SUCCESS] Source: {source.name}")
+                        print(f"            - Dense Vectors (pgvector): {item.dense_vectors_saved}")
+                        print(f"            - Sparse Index (BM25): {item.sparse_vectors_saved}")
 
     except Exception as e:
         print(f"\n[FATAL PIPELINE CRASH] {str(e)}")

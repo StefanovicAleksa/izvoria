@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_unit_v16
+# Canvas: test_batch_media_pipeline_unit_v17
 # Path: tests/orchestration/pipelines/test_batch_media_pipeline_unit.py
 
 import pytest
@@ -24,7 +24,8 @@ from app.orchestration.domain.entities import (
     VisualAnalysisJobResult,
     VisualHallucinationCorrectionJobResult,
     VisualContextSynthesisJobResult,
-    ContextUnificationJobResult  # NEW
+    ContextUnificationJobResult,
+    RagIndexingJobResult  # NEW
 )
 from app.features.storage.domain.entities import SourceType
 
@@ -79,7 +80,10 @@ class TestBatchMediaPipelineUnit:
     def mock_visual_context_synthesis(self): return Mock()
 
     @pytest.fixture
-    def mock_context_unification(self): return Mock()  # NEW: Phase 15 Mock
+    def mock_context_unification(self): return Mock()
+
+    @pytest.fixture
+    def mock_rag_indexing(self): return Mock()  # NEW: Phase 16 Mock
 
     @pytest.fixture
     def pipeline(self,
@@ -88,7 +92,7 @@ class TestBatchMediaPipelineUnit:
                  mock_diarize, mock_sentence, mock_phonetic, mock_contextual,
                  mock_visual_cue, mock_frame_extraction, mock_visual_analysis,
                  mock_visual_hallucination_correction, mock_visual_context_synthesis,
-                 mock_context_unification):
+                 mock_context_unification, mock_rag_indexing):
         return BatchMediaPipeline(
             scan_phase=mock_scan,
             ingest_phase=mock_ingest,
@@ -106,7 +110,8 @@ class TestBatchMediaPipelineUnit:
             visual_analysis_phase=mock_visual_analysis,
             visual_hallucination_correction_phase=mock_visual_hallucination_correction,
             visual_context_synthesis_phase=mock_visual_context_synthesis,
-            context_unification_phase=mock_context_unification  # NEW
+            context_unification_phase=mock_context_unification,
+            rag_indexing_phase=mock_rag_indexing  # NEW
         )
 
     def test_pipeline_happy_path(self, pipeline, mock_scan, mock_ingest, mock_extract, mock_vad,
@@ -114,11 +119,11 @@ class TestBatchMediaPipelineUnit:
                                  mock_diarize, mock_sentence, mock_phonetic, mock_contextual,
                                  mock_visual_cue, mock_frame_extraction, mock_visual_analysis,
                                  mock_visual_hallucination_correction, mock_visual_context_synthesis,
-                                 mock_context_unification):
+                                 mock_context_unification, mock_rag_indexing):
         target_dir = "/dummy/path"
         source_id = uuid.uuid4()
 
-        # Mock all 17 responses
+        # Mock all 18 responses
         mock_scan.execute.return_value = PhaseBatchResult(phase=PipelinePhase.SCAN, status=PhaseStatus.COMPLETED,
                                                           successful_count=1, items=["/dummy/path/vid.mp4"])
         mock_ingest.execute.return_value = PhaseBatchResult(phase=PipelinePhase.INGEST, status=PhaseStatus.COMPLETED,
@@ -168,16 +173,21 @@ class TestBatchMediaPipelineUnit:
         mock_visual_context_synthesis.execute.return_value = PhaseBatchResult(
             phase=PipelinePhase.VISUAL_CONTEXT_SYNTHESIS, status=PhaseStatus.COMPLETED,
             items=[VisualContextSynthesisJobResult(source_id=source_id, success=True, visual_timeline_id=uuid.uuid4())])
-
-        # NEW: Phase 15 Mock Response
         mock_context_unification.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.CONTEXT_UNIFICATION,
-            status=PhaseStatus.COMPLETED,
+            phase=PipelinePhase.CONTEXT_UNIFICATION, status=PhaseStatus.COMPLETED,
             items=[ContextUnificationJobResult(source_id=source_id, success=True, unified_transcript_id=uuid.uuid4())]
+        )
+
+        # NEW: Phase 16 Mock Response
+        mock_rag_indexing.execute.return_value = PhaseBatchResult(
+            phase=PipelinePhase.RAG_INDEXING,
+            status=PhaseStatus.COMPLETED,
+            items=[
+                RagIndexingJobResult(source_id=source_id, success=True, dense_vectors_saved=5, sparse_vectors_saved=5)]
         )
 
         results = pipeline.process_directory(target_dir, SourceType.VIDEO)
 
-        assert len(results) == 17  # Updated count for 17 phases
-        assert PipelinePhase.CONTEXT_UNIFICATION in results
-        mock_context_unification.execute.assert_called_once()
+        assert len(results) == 18  # Updated count for 18 phases
+        assert PipelinePhase.RAG_INDEXING in results
+        mock_rag_indexing.execute.assert_called_once()

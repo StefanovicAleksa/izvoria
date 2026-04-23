@@ -1,4 +1,4 @@
-# Canvas: orchestration_entities_v20
+# Canvas: orchestration_entities_v21
 # Path: app/orchestration/domain/entities.py
 
 import uuid
@@ -135,6 +135,14 @@ class ContextUnificationJobResult(BaseModel):
     source_id: uuid.UUID
     success: bool
     unified_transcript_id: Optional[uuid.UUID] = None
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
+class RagIndexingJobResult(BaseModel):
+    source_id: uuid.UUID
+    success: bool
+    dense_vectors_saved: int = 0
+    sparse_vectors_saved: int = 0
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 

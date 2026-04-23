@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_integration_v30
+# Canvas: test_batch_media_pipeline_integration_v31
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
 import subprocess
@@ -80,9 +80,14 @@ from app.features.visual_context_synthesis.data.slm_adapter import VisualSLMAdap
 from app.features.visual_context_synthesis.data.repositories import VisualSynthesisRepository
 from app.features.visual_context_synthesis.service.synthesis_api import VisualSynthesisAPI
 
-# NEW: Phase 15 Integration
 from app.features.context_unification.data.repositories import ContextUnificationRepository
 from app.features.context_unification.service.unification_api import UnificationAPI
+
+# NEW: Phase 16 Integration Imports
+from app.features.rag_storage.data.postgres_dense_repo import PostgresDenseRepository
+from app.features.rag_storage.data.bm25_repo import LocalBM25Repository
+from app.features.rag_storage.data.hf_embedder import HuggingFaceEmbeddingAdapter
+from app.features.rag_storage.service.storage_api import RAGStorageService
 
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
@@ -100,7 +105,8 @@ from app.orchestration.service.phases.frame_extraction_phase import FrameExtract
 from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysisPhase
 from app.orchestration.service.phases.visual_hallucination_correction_phase import VisualHallucinationCorrectionPhase
 from app.orchestration.service.phases.visual_context_synthesis_phase import VisualContextSynthesisPhase
-from app.orchestration.service.phases.context_unification_phase import ContextUnificationPhase  # NEW
+from app.orchestration.service.phases.context_unification_phase import ContextUnificationPhase
+from app.orchestration.service.phases.rag_indexing_phase import RagIndexingPhase  # NEW
 
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
@@ -115,7 +121,7 @@ class TestBatchMediaPipelineIntegration:
             for obj in gc.get_objects():
                 try:
                     obj_type = type(obj).__name__
-                    if obj_type in ["Llama", "WhisperModel", "Qwen2VLForConditionalGeneration"]:
+                    if obj_type in ["Llama", "WhisperModel", "Qwen2VLForConditionalGeneration", "SentenceTransformer"]:
                         if hasattr(obj, "close"):
                             obj.close()
                 except Exception:
@@ -288,9 +294,19 @@ class TestBatchMediaPipelineIntegration:
             hallucination_repo=visual_hallucination_repo
         )
 
-        # NEW Phase 15 Initialization Core
         context_unification_repo = ContextUnificationRepository(db_manager)
         unification_api = UnificationAPI(repository=context_unification_repo)
+
+        # NEW Phase 16 Initialization Core
+        dense_repo = PostgresDenseRepository()
+        sparse_repo = LocalBM25Repository()
+        hf_embedder = HuggingFaceEmbeddingAdapter()
+        rag_storage_service = RAGStorageService(
+            dense_repo=dense_repo,
+            sparse_repo=sparse_repo,
+            orchestrator=orchestrator,
+            embedder=hf_embedder
+        )
 
         scan_phase = ScanPhase(job_manager, scanner)
         ingest_phase = IngestPhase(job_manager, storage_api)
@@ -330,12 +346,20 @@ class TestBatchMediaPipelineIntegration:
             loader=visual_synthesis_adapter
         )
 
-        # NEW Phase 15 Orchestration Phase
         context_unification_phase = ContextUnificationPhase(
             job_manager=job_manager,
             unification_api=unification_api,
             contextual_repo=contextual_repo,
             visual_synthesis_repo=visual_synthesis_repo
+        )
+
+        # NEW Phase 16 Orchestration Phase
+        rag_indexing_phase = RagIndexingPhase(
+            job_manager=job_manager,
+            rag_storage_service=rag_storage_service,
+            unified_repo=context_unification_repo,
+            async_model_service=async_service,
+            loader=hf_embedder
         )
 
         pipeline = BatchMediaPipeline(
@@ -355,7 +379,8 @@ class TestBatchMediaPipelineIntegration:
             visual_analysis_phase=visual_analysis_phase,
             visual_hallucination_correction_phase=visual_hallucination_correction_phase,
             visual_context_synthesis_phase=visual_context_synthesis_phase,
-            context_unification_phase=context_unification_phase  # NEW
+            context_unification_phase=context_unification_phase,
+            rag_indexing_phase=rag_indexing_phase  # NEW
         )
 
         yield pipeline, storage_api
@@ -365,9 +390,9 @@ class TestBatchMediaPipelineIntegration:
     def test_end_to_end_media_pipeline(self, pipeline_setup, tmp_path):
         pipeline, storage_api = pipeline_setup
 
-        if not os.path.exists(settings.VISUAL_CONTEXT_SYNTHESIS_MODEL_PATH):
+        if not os.path.exists(settings.RAG_EMBEDDING_MODEL_PATH):
             pytest.skip(
-                f"Integration test skipped due to missing Phase 14 model at: {settings.VISUAL_CONTEXT_SYNTHESIS_MODEL_PATH}")
+                f"Integration test skipped due to missing Phase 16 Embedding model at: {settings.RAG_EMBEDDING_MODEL_PATH}")
 
         source_dir = tmp_path / "usb_drive"
         source_dir.mkdir()
@@ -402,7 +427,8 @@ class TestBatchMediaPipelineIntegration:
         assert PipelinePhase.VISUAL_ANALYSIS in results
         assert PipelinePhase.VISUAL_HALLUCINATION_CORRECTION in results
         assert PipelinePhase.VISUAL_CONTEXT_SYNTHESIS in results
-        assert PipelinePhase.CONTEXT_UNIFICATION in results  # NEW Phase 15 Result
+        assert PipelinePhase.CONTEXT_UNIFICATION in results
+        assert PipelinePhase.RAG_INDEXING in results  # NEW Phase 16 Result
 
         assert results[PipelinePhase.SCAN].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.INGEST].status == PhaseStatus.COMPLETED
@@ -416,4 +442,5 @@ class TestBatchMediaPipelineIntegration:
         assert results[PipelinePhase.DOMAIN_PHONETIC_CORRECTION].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.VISUAL_HALLUCINATION_CORRECTION].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.VISUAL_CONTEXT_SYNTHESIS].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.CONTEXT_UNIFICATION].status == PhaseStatus.COMPLETED  # NEW
+        assert results[PipelinePhase.CONTEXT_UNIFICATION].status == PhaseStatus.COMPLETED
+        assert results[PipelinePhase.RAG_INDEXING].status == PhaseStatus.COMPLETED  # NEW
