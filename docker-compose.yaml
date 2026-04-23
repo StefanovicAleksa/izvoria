@@ -1,6 +1,9 @@
+# Canvas: docker-compose_v4
+# Path: docker-compose.yaml
+
 services:
   db:
-    image: postgres:15-alpine
+    image: pgvector/pgvector:pg15
     container_name: onyx_postgres_v2
     restart: unless-stopped
     environment:
@@ -11,6 +14,8 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data_v2:/var/lib/postgresql/data
+      # FIXED: Pointing to the scripts directory
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
