@@ -1,4 +1,4 @@
-# Canvas: test_postgres_dense_repo_v3
+# Canvas: test_postgres_dense_repo_v4
 # Path: tests/features/rag_storage/data/test_postgres_dense_repo.py
 
 import uuid
@@ -50,4 +50,3 @@ class TestPostgresDenseRepository:
         repo.delete_by_source_id(uuid.uuid4())
 
         session_mock.execute.assert_called_once()
-        session_mock.commit.assert_called_once()

@@ -1,4 +1,4 @@
-# Canvas: rag_storage_postgres_repo_v1
+# Canvas: rag_storage_postgres_repo_v2
 # Path: app/features/rag_storage/data/postgres_dense_repo.py
 
 import logging
@@ -49,7 +49,7 @@ class PostgresDenseRepository(IDenseRepository):
                     vector_models.append(model)
 
                 session.bulk_save_objects(vector_models)
-                session.commit()
+                # FIXED: Removed manual session.commit(). The db_manager context manager handles it.
 
                 logger.info(f"Successfully saved {len(vector_models)} dense vectors for source {source_id}.")
                 return len(vector_models)
@@ -62,7 +62,7 @@ class PostgresDenseRepository(IDenseRepository):
             with db_manager.session() as session:
                 stmt = delete(VectorChunkModel).where(VectorChunkModel.source_id == source_id)
                 result = session.execute(stmt)
-                session.commit()
+                # FIXED: Removed manual session.commit(). The db_manager context manager handles it.
 
                 if result.rowcount > 0:
                     logger.info(f"Cleared {result.rowcount} existing vectors for source {source_id}.")
