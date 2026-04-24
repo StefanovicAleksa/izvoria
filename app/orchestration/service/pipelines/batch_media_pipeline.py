@@ -1,4 +1,4 @@
-# Canvas: batch_media_pipeline_v31
+# Canvas: batch_media_pipeline_v32
 # Path: app/orchestration/service/pipelines/batch_media_pipeline.py
 
 import uuid
@@ -24,7 +24,6 @@ from app.orchestration.domain.entities import (
     VisualAnalysisJobResult,
     VisualHallucinationCorrectionJobResult,
     ContextUnificationJobResult,
-    # REMOVED: ClipExtractionJobResult, RagIndexingJobResult (Unused)
 )
 from app.orchestration.exceptions.workflow import WorkflowStateError, WorkflowExecutionError
 
@@ -120,7 +119,6 @@ class BatchMediaPipeline:
                 raise WorkflowStateError(
                     f"Pipeline halted: Ingest phase failed entirely. Errors: {ingest_result.errors}")
 
-            # FIX: Explicit loop with is not None check to satisfy strict static typing
             video_source_ids: List[uuid.UUID] = []
             for item in ingest_result.items:
                 if isinstance(item, IngestJobResult) and item.success and item.source_id is not None:
@@ -285,7 +283,7 @@ class BatchMediaPipeline:
             # ==========================================
             # PHASE 15.5 & 16: PARALLEL EXECUTION (CPU + GPU)
             # ==========================================
-            logger.info("Dispatching Phase 15.5 (Clip Extraction) and Phase 16 (RAG Indexing) concurrently...")
+            logger.info("Dispatching Phase 15.5 (Clip Extraction) and Phase 16 (Hybrid RAG Indexing) concurrently...")
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 # Dispatch the GPU-bound Vector Embedding

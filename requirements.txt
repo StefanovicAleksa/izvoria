@@ -52,4 +52,3 @@ SPARQLWrapper>=2.0.0
 
 # --- RAG Storage & Indexing (Phase 16) ---
 sentence-transformers>=2.7.0
-rank-bm25>=0.2.2

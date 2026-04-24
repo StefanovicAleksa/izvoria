@@ -1,4 +1,4 @@
-# Canvas: main_v30
+# Canvas: main_v32
 # Path: app/main.py
 
 import argparse
@@ -95,8 +95,7 @@ from app.features.clip_extractor.data.repositories import VideoClipRepository
 from app.features.clip_extractor.service.extractor_api import ClipExtractorAPI
 
 # Phase 16 Integration Imports
-from app.features.rag_storage.data.postgres_dense_repo import PostgresDenseRepository
-from app.features.rag_storage.data.bm25_repo import LocalBM25Repository
+from app.features.rag_storage.data.postgres_rag_repo import PostgresRagRepository
 from app.features.rag_storage.data.hf_embedder import HuggingFaceEmbeddingAdapter
 from app.features.rag_storage.service.storage_api import RAGStorageService
 
@@ -323,12 +322,10 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
     )
 
     # 16. RAG Indexing
-    dense_repo = PostgresDenseRepository()
-    sparse_repo = LocalBM25Repository()
+    rag_repo = PostgresRagRepository()
     hf_embedder = HuggingFaceEmbeddingAdapter()
     rag_storage_service = RAGStorageService(
-        dense_repo=dense_repo,
-        sparse_repo=sparse_repo,
+        rag_repo=rag_repo,
         orchestrator=model_orchestrator,
         embedder=hf_embedder
     )
@@ -668,8 +665,6 @@ def main() -> None:
                                 formatted_text += f"[Chunk {chunk.chunk_id}]\n"
                                 formatted_text += f"Time: {chunk.start_sec:.2f}s - {chunk.end_sec:.2f}s\n"
 
-                                # FIX: Renamed 'f' to 'evidence' to stop IDE from confusing it with the file handle
-                                # Also added getattr fallback in case it's a standard File entity instead of a Frame entity
                                 frame_ids = [str(getattr(evidence, "frame_id", getattr(evidence, "id", "N/A"))) for
                                              evidence in chunk.visual_evidence]
                                 formatted_text += f"Frames: {frame_ids}\n"
@@ -677,7 +672,6 @@ def main() -> None:
                                 formatted_text += "-" * 40 + "\n"
                                 formatted_text += f"{chunk.text_payload}\n\n"
 
-                            # The file handle 'f' that was confusing the linter
                             with open(out_file, "w", encoding="utf-8") as f:
                                 f.write(formatted_text)
                             print(f"  [SUCCESS] Saved Unified Document: {out_file}")
@@ -709,8 +703,7 @@ def main() -> None:
                     source = storage_repo.get_by_id(item.source_id)
                     if source:
                         print(f"  [SUCCESS] Source: {source.name}")
-                        print(f"            - Dense Vectors (pgvector): {item.dense_vectors_saved}")
-                        print(f"            - Sparse Index (BM25): {item.sparse_vectors_saved}")
+                        print(f"            - Hybrid RAG Chunks (Vector + FTS): {item.dense_vectors_saved}")
 
     except Exception as e:
         print(f"\n[FATAL PIPELINE CRASH] {str(e)}")

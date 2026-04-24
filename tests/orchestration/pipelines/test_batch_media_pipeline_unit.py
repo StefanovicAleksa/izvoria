@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_unit_v18
+# Canvas: test_batch_media_pipeline_unit_v19
 # Path: tests/orchestration/pipelines/test_batch_media_pipeline_unit.py
 
 import pytest
@@ -25,7 +25,7 @@ from app.orchestration.domain.entities import (
     VisualHallucinationCorrectionJobResult,
     VisualContextSynthesisJobResult,
     ContextUnificationJobResult,
-    ClipExtractionJobResult,  # NEW
+    ClipExtractionJobResult,
     RagIndexingJobResult
 )
 from app.features.storage.domain.entities import SourceType
@@ -84,7 +84,7 @@ class TestBatchMediaPipelineUnit:
     def mock_context_unification(self): return Mock()
 
     @pytest.fixture
-    def mock_clip_extraction(self): return Mock()  # NEW
+    def mock_clip_extraction(self): return Mock()
 
     @pytest.fixture
     def mock_rag_indexing(self): return Mock()
@@ -115,7 +115,7 @@ class TestBatchMediaPipelineUnit:
             visual_hallucination_correction_phase=mock_visual_hallucination_correction,
             visual_context_synthesis_phase=mock_visual_context_synthesis,
             context_unification_phase=mock_context_unification,
-            clip_extraction_phase=mock_clip_extraction,  # NEW
+            clip_extraction_phase=mock_clip_extraction,
             rag_indexing_phase=mock_rag_indexing
         )
 
@@ -182,7 +182,6 @@ class TestBatchMediaPipelineUnit:
                                                                          status=PhaseStatus.COMPLETED, items=[
                 ContextUnificationJobResult(source_id=source_id, success=True, unified_transcript_id=uuid.uuid4())])
 
-        # NEW: Phase 15.5 Mock Response
         mock_clip_extraction.execute.return_value = PhaseBatchResult(
             phase=PipelinePhase.CLIP_EXTRACTION,
             status=PhaseStatus.COMPLETED,
@@ -198,9 +197,8 @@ class TestBatchMediaPipelineUnit:
 
         results = pipeline.process_directory(target_dir, SourceType.VIDEO)
 
-        assert len(results) == 19  # Updated count for 19 phases
+        assert len(results) == 19  # All 19 phases
 
-        # Ensure the concurrent phases both completed
         assert PipelinePhase.CLIP_EXTRACTION in results
         assert PipelinePhase.RAG_INDEXING in results
 

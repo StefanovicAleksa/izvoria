@@ -1,4 +1,4 @@
-# Canvas: conftest_v3
+# Canvas: conftest_v4
 # Path: tests/conftest.py
 
 import pytest
@@ -14,6 +14,7 @@ from app.core.database.data.engine import Base
 # Import models so SQLAlchemy "sees" them for create_all()
 from app.features.storage.data.models import SourceModel, FileModel  # noqa
 from app.core.jobs.data.models import JobModel  # noqa
+from app.features.rag_storage.data.models import VectorChunkModel # noqa
 
 
 @pytest.fixture(scope="session", autouse=True)

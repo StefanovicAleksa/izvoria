@@ -1,5 +1,8 @@
-# filename: orchestration_service_phases_ingest_phase_v1.py
+# Canvas: ingest_phase_v2
+# Path: app/orchestration/service/phases/ingest_phase.py
+
 from typing import List
+from pathlib import Path
 
 from app.core.jobs.service.manager import JobManager
 from app.core.jobs.domain.entities import JobRequest
@@ -11,6 +14,8 @@ from app.features.storage.domain.entities import SourceType
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import PhaseBatchResult, IngestJobResult
 
+# Define the strict video-only filter
+VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.mov', '.avi', '.webm'}
 
 class IngestPhase:
     def __init__(self, job_manager: JobManager, storage_api: StorageAPI):
@@ -19,8 +24,8 @@ class IngestPhase:
 
     def execute(self, file_paths: List[str], source_type: SourceType) -> PhaseBatchResult:
         """
-        Phase 2: Ingests a batch of raw file paths into the storage system.
-        Catches item-level failures so the batch can continue processing.
+        Phase 2: Ingests a batch of raw file paths.
+        Strictly filters for Video files if source_type is VIDEO.
         """
         results: List[IngestJobResult] = []
         errors: List[str] = []
@@ -28,13 +33,19 @@ class IngestPhase:
         failed_count = 0
 
         for path in file_paths:
+            # --- NEW FILTER LOGIC ---
+            file_path_obj = Path(path)
+            if source_type == SourceType.VIDEO:
+                if file_path_obj.suffix.lower() not in VIDEO_EXTENSIONS:
+                    # Silently ignore non-video files like .pdf or .txt
+                    continue
+
             request = JobRequest(
                 job_type=JobType.FILE_INGEST,
                 input_params={"file_path": path, "source_type": source_type.value}
             )
 
             try:
-                # Execute via JobManager to track PENDING -> PROCESSING -> COMPLETED/FAILED
                 source = self._job_manager.run_job(
                     request,
                     self._storage.ingest_local_file,
@@ -51,8 +62,6 @@ class IngestPhase:
                 success_count += 1
 
             except Exception as e:
-                # The JobManager already marked this job as FAILED in the DB.
-                # We catch it here to prevent the Phase loop from crashing.
                 err_msg = str(e)
                 result = IngestJobResult(
                     file_path=path,
@@ -63,20 +72,16 @@ class IngestPhase:
                 errors.append(f"Failed to ingest {path}: {err_msg}")
                 failed_count += 1
 
-        # Determine overall phase status
-        if failed_count == 0 and success_count > 0:
-            status = PhaseStatus.COMPLETED
-        elif success_count == 0 and failed_count > 0:
+        status = PhaseStatus.COMPLETED
+        if success_count == 0 and failed_count > 0:
             status = PhaseStatus.FAILED
         elif success_count > 0 and failed_count > 0:
             status = PhaseStatus.PARTIAL_SUCCESS
-        else:
-            status = PhaseStatus.COMPLETED  # Empty batch handled gracefully
 
         return PhaseBatchResult(
             phase=PipelinePhase.INGEST,
             status=status,
-            total_processed=len(file_paths),
+            total_processed=len(results),
             successful_count=success_count,
             failed_count=failed_count,
             items=results,

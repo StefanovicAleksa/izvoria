@@ -1,4 +1,4 @@
-# Canvas: rag_indexing_phase_v1
+# Canvas: rag_indexing_phase_v2
 # Path: app/orchestration/service/phases/rag_indexing_phase.py
 
 import logging
@@ -96,7 +96,7 @@ class RagIndexingPhase:
                 )
 
                 try:
-                    logger.info(f"Processing RAG Indexing for Source: {source_id}")
+                    logger.info(f"Processing RAG Indexing (Hybrid Vector + FTS) for Source: {source_id}")
 
                     # release_after=False keeps it in VRAM for the batch loop. We unload in finally block.
                     ingestion_result = self._job_manager.run_job(

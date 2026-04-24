@@ -1,4 +1,4 @@
-# Canvas: test_storage_api_v2
+# Canvas: test_storage_api_v3
 # Path: tests/features/rag_storage/service/test_storage_api.py
 
 import pytest
@@ -14,8 +14,7 @@ class TestRAGStorageService:
     @pytest.fixture
     def mocks(self):
         return {
-            "dense_repo": MagicMock(),
-            "sparse_repo": MagicMock(),
+            "rag_repo": MagicMock(),
             "embedder": MagicMock(),
             "orchestrator": MagicMock()
         }
@@ -23,9 +22,8 @@ class TestRAGStorageService:
     @pytest.fixture
     def service(self, mocks):
         return RAGStorageService(
-            dense_repo=mocks["dense_repo"],
-            sparse_repo=mocks["sparse_repo"],
-            orchestrator=mocks["orchestrator"],  # Injected orchestrator
+            rag_repo=mocks["rag_repo"],
+            orchestrator=mocks["orchestrator"],
             embedder=mocks["embedder"]
         )
 
@@ -39,21 +37,20 @@ class TestRAGStorageService:
         mocks["orchestrator"].acquire_model.return_value = mock_loaded_model
 
         mocks["embedder"].embed_batch.return_value = [[0.1, 0.2]]
-        mocks["dense_repo"].save_dense_vectors.return_value = 1
-        mocks["sparse_repo"].save_sparse_index.return_value = 1
+        mocks["rag_repo"].save_rag_chunks.return_value = 1
 
         result = service.index_transcript(source_id, transcript)
 
         assert result.success is True
 
-        # Verify Idempotency check ran
-        mocks["dense_repo"].delete_by_source_id.assert_called_once_with(source_id)
+        # Verify single atomic delete ran
+        mocks["rag_repo"].delete_by_source_id.assert_called_once_with(source_id)
 
         # Verify Payload Normalization reached the embedder
-        normalized_texts = mocks["embedder"].embed_batch.call_args[0][1]  # Second arg now
+        normalized_texts = mocks["embedder"].embed_batch.call_args[0][1]
         assert normalized_texts[0] == "Test string"
 
-        # Verify Orchestrator Lifecycle (The new standard)
+        # Verify Orchestrator Lifecycle
         mocks["orchestrator"].acquire_model.assert_called_once()
         mocks["orchestrator"].release_model.assert_called_once_with(
             mock_loaded_model, mocks["embedder"], flush=True
@@ -69,7 +66,6 @@ class TestRAGStorageService:
         mocks["orchestrator"].acquire_model.assert_not_called()
 
     def test_index_transcript_guarantees_vram_release_on_error(self, service, mocks):
-        """Verifies that the release_model is called even if inference crashes."""
         source_id = uuid.uuid4()
         chunk = UnifiedChunk(chunk_id=uuid.uuid4(), start_sec=0, end_sec=1, text_payload="Crash text")
         transcript = UnifiedTranscript(source_id=source_id, chunks=[chunk])
@@ -77,12 +73,9 @@ class TestRAGStorageService:
         mock_loaded_model = MagicMock(spec=LoadedModel)
         mocks["orchestrator"].acquire_model.return_value = mock_loaded_model
 
-        # Simulate a crash during embedding
         mocks["embedder"].embed_batch.side_effect = Exception("Inference Error")
 
         result = service.index_transcript(source_id, transcript)
 
         assert result.success is False
-
-        # PROOF OF SAFETY: Orchestrator MUST release the model
         mocks["orchestrator"].release_model.assert_called_once()

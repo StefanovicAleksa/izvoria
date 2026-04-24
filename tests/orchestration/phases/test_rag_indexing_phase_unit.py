@@ -1,4 +1,4 @@
-# Canvas: test_rag_indexing_phase_unit_v1
+# Canvas: test_rag_indexing_phase_unit_v2
 # Path: tests/orchestration/phases/test_rag_indexing_phase_unit.py
 
 import pytest
@@ -54,7 +54,7 @@ class TestRagIndexingPhaseUnit:
         mock_async_service.trigger_preload.assert_called_once()
 
     def test_execute_success_flow(self, phase, mock_job_manager, mock_async_service, mock_unified_repo):
-        """Verifies the happy path processes correctly and clears VRAM."""
+        """Verifies the happy path processes correctly, registers hybrid indexing metrics, and clears VRAM."""
         source_id = uuid.uuid4()
         prev_results = [ContextUnificationJobResult(source_id=source_id, success=True)]
 
@@ -68,7 +68,7 @@ class TestRagIndexingPhaseUnit:
         # Mock Transcript Retrieval
         mock_unified_repo.get_by_source_id.return_value = Mock(spec=UnifiedTranscript)
 
-        # Mock Job Manager execution
+        # Mock Job Manager execution (Now atomic: dense and sparse counts should match)
         mock_ingestion_result = IngestionResult(
             success=True,
             telemetry=IndexingTelemetry(
@@ -96,6 +96,7 @@ class TestRagIndexingPhaseUnit:
 
         assert isinstance(result.items[0], RagIndexingJobResult)
         assert result.items[0].dense_vectors_saved == 5
+        assert result.items[0].sparse_vectors_saved == 5  # FTS Index saved synchronously
 
         # Verify GPU lifecycle is handled
         mock_async_service.resolve_preload.assert_called_once_with(mock_future)

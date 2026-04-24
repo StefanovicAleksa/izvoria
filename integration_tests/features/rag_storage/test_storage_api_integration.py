@@ -1,8 +1,5 @@
+# Canvas: test_storage_api_integration_v2
 # Path: integration_tests/features/rag_storage/test_storage_api_integration.py
-
-# dont remove
-import torch
-import torchaudio
 
 import os
 import uuid
@@ -16,8 +13,7 @@ from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 
 from app.features.context_unification.domain.entities import UnifiedTranscript, UnifiedChunk
-from app.features.rag_storage.data.postgres_dense_repo import PostgresDenseRepository
-from app.features.rag_storage.data.bm25_repo import LocalBM25Repository
+from app.features.rag_storage.data.postgres_rag_repo import PostgresRagRepository
 from app.features.rag_storage.data.hf_embedder import HuggingFaceEmbeddingAdapter
 from app.features.rag_storage.service.storage_api import RAGStorageService
 
@@ -51,16 +47,14 @@ class TestRAGStorageAPIIntegration:
 
     @pytest.fixture
     def live_api(self) -> RAGStorageService:
-        dense_repo = PostgresDenseRepository()
-        sparse_repo = LocalBM25Repository()
+        rag_repo = PostgresRagRepository()
         embedder = HuggingFaceEmbeddingAdapter()
 
         vram_monitor = PyTorchVramMonitor()
         orchestrator = ModelManagerOrchestrator(vram_monitor)
 
         return RAGStorageService(
-            dense_repo=dense_repo,
-            sparse_repo=sparse_repo,
+            rag_repo=rag_repo,
             orchestrator=orchestrator,
             embedder=embedder
         )
@@ -89,22 +83,22 @@ class TestRAGStorageAPIIntegration:
         # Verify Business Logic
         assert result.success is True
         assert result.telemetry.dense_vectors_saved == 2
-        assert result.telemetry.sparse_vectors_saved == 2
+        assert result.telemetry.sparse_vectors_saved == 2  # This now tracks the atomic FTS insert
 
-        # Verify BM25 Physical File Persistence
-        bm25_file = os.path.join(os.getcwd(), "data", "bm25_indexes", f"{source_id}.pkl")
-        assert os.path.exists(bm25_file)
-
-        # Verify PostgreSQL Dense Vector Persistence
+        # Verify PostgreSQL Dense Vector AND Sparse FTS Persistence
         with db_manager.session() as session:
             rows = session.execute(
-                sa_text("SELECT chunk_id, embedding FROM vector_chunks WHERE source_id = :sid"),
+                sa_text("SELECT chunk_id, embedding, fts_document FROM vector_chunks WHERE source_id = :sid"),
                 {"sid": str(source_id)}
             ).fetchall()
 
             assert len(rows) == 2
+
+            # 1. Verify embedding vector is generated
             assert rows[0][1] is not None
 
-        # Teardown
-        if os.path.exists(bm25_file):
-            os.remove(bm25_file)
+            # 2. Verify Postgres computed the tsvector correctly
+            assert rows[0][2] is not None
+            tsvector_str = str(rows[0][2])
+            assert "migrain" in tsvector_str  # Postgres stems 'migraines' to 'migrain'
+            assert "patient" in tsvector_str

@@ -1,5 +1,5 @@
-# Canvas: rag_storage_postgres_repo_v2
-# Path: app/features/rag_storage/data/postgres_dense_repo.py
+# Canvas: rag_storage_postgres_repo_v3
+# Path: app/features/rag_storage/data/postgres_rag_repo.py
 
 import logging
 from typing import List
@@ -7,7 +7,7 @@ from uuid import UUID
 from sqlalchemy import delete
 
 from app.core.database.service.manager import db_manager
-from app.features.rag_storage.domain.interfaces import IDenseRepository
+from app.features.rag_storage.domain.interfaces import IRagRepository
 from app.features.context_unification.domain.entities import UnifiedChunk
 from app.features.rag_storage.data.models import VectorChunkModel
 from app.features.rag_storage.utils.error_mapper import map_storage_error
@@ -15,12 +15,13 @@ from app.features.rag_storage.utils.error_mapper import map_storage_error
 logger = logging.getLogger(__name__)
 
 
-class PostgresDenseRepository(IDenseRepository):
+class PostgresRagRepository(IRagRepository):
     """
-    Concrete implementation of IDenseRepository using PostgreSQL and pgvector.
+    Unified implementation of IRagRepository.
+    Leverages PostgreSQL for both pgvector (Dense) and TSVECTOR FTS (Sparse) indexing.
     """
 
-    def save_dense_vectors(
+    def save_rag_chunks(
             self,
             source_id: UUID,
             chunks: List[UnifiedChunk],
@@ -34,10 +35,8 @@ class PostgresDenseRepository(IDenseRepository):
 
         try:
             with db_manager.session() as session:
-                # Prepare bulk insert objects
                 vector_models = []
                 for chunk, embedding in zip(chunks, embeddings):
-                    # We assume chunk.text_payload holds the fully unified string
                     model = VectorChunkModel(
                         source_id=source_id,
                         chunk_id=chunk.chunk_id,
@@ -48,23 +47,24 @@ class PostgresDenseRepository(IDenseRepository):
                     )
                     vector_models.append(model)
 
+                # bulk_save_objects safely ignores the Computed fts_document column
+                # and lets Postgres generate it upon insertion.
                 session.bulk_save_objects(vector_models)
-                # FIXED: Removed manual session.commit(). The db_manager context manager handles it.
 
-                logger.info(f"Successfully saved {len(vector_models)} dense vectors for source {source_id}.")
+                logger.info(f"Successfully saved {len(vector_models)} hybrid chunks for source {source_id}.")
                 return len(vector_models)
 
         except Exception as e:
-            raise map_storage_error(e, context=f"Saving dense vectors for source {source_id}")
+            raise map_storage_error(e, context=f"Saving hybrid RAG chunks for source {source_id}")
 
     def delete_by_source_id(self, source_id: UUID) -> None:
         try:
             with db_manager.session() as session:
+                # This single delete now removes the vectors AND the full-text search index
                 stmt = delete(VectorChunkModel).where(VectorChunkModel.source_id == source_id)
                 result = session.execute(stmt)
-                # FIXED: Removed manual session.commit(). The db_manager context manager handles it.
 
                 if result.rowcount > 0:
-                    logger.info(f"Cleared {result.rowcount} existing vectors for source {source_id}.")
+                    logger.info(f"Cleared {result.rowcount} existing RAG chunks for source {source_id}.")
         except Exception as e:
-            raise map_storage_error(e, context=f"Clearing vectors for source {source_id}")
+            raise map_storage_error(e, context=f"Clearing RAG chunks for source {source_id}")
