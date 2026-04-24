@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_unit_v17
+# Canvas: test_batch_media_pipeline_unit_v18
 # Path: tests/orchestration/pipelines/test_batch_media_pipeline_unit.py
 
 import pytest
@@ -25,7 +25,8 @@ from app.orchestration.domain.entities import (
     VisualHallucinationCorrectionJobResult,
     VisualContextSynthesisJobResult,
     ContextUnificationJobResult,
-    RagIndexingJobResult  # NEW
+    ClipExtractionJobResult,  # NEW
+    RagIndexingJobResult
 )
 from app.features.storage.domain.entities import SourceType
 
@@ -83,7 +84,10 @@ class TestBatchMediaPipelineUnit:
     def mock_context_unification(self): return Mock()
 
     @pytest.fixture
-    def mock_rag_indexing(self): return Mock()  # NEW: Phase 16 Mock
+    def mock_clip_extraction(self): return Mock()  # NEW
+
+    @pytest.fixture
+    def mock_rag_indexing(self): return Mock()
 
     @pytest.fixture
     def pipeline(self,
@@ -92,7 +96,7 @@ class TestBatchMediaPipelineUnit:
                  mock_diarize, mock_sentence, mock_phonetic, mock_contextual,
                  mock_visual_cue, mock_frame_extraction, mock_visual_analysis,
                  mock_visual_hallucination_correction, mock_visual_context_synthesis,
-                 mock_context_unification, mock_rag_indexing):
+                 mock_context_unification, mock_clip_extraction, mock_rag_indexing):
         return BatchMediaPipeline(
             scan_phase=mock_scan,
             ingest_phase=mock_ingest,
@@ -111,7 +115,8 @@ class TestBatchMediaPipelineUnit:
             visual_hallucination_correction_phase=mock_visual_hallucination_correction,
             visual_context_synthesis_phase=mock_visual_context_synthesis,
             context_unification_phase=mock_context_unification,
-            rag_indexing_phase=mock_rag_indexing  # NEW
+            clip_extraction_phase=mock_clip_extraction,  # NEW
+            rag_indexing_phase=mock_rag_indexing
         )
 
     def test_pipeline_happy_path(self, pipeline, mock_scan, mock_ingest, mock_extract, mock_vad,
@@ -119,11 +124,11 @@ class TestBatchMediaPipelineUnit:
                                  mock_diarize, mock_sentence, mock_phonetic, mock_contextual,
                                  mock_visual_cue, mock_frame_extraction, mock_visual_analysis,
                                  mock_visual_hallucination_correction, mock_visual_context_synthesis,
-                                 mock_context_unification, mock_rag_indexing):
+                                 mock_context_unification, mock_clip_extraction, mock_rag_indexing):
         target_dir = "/dummy/path"
         source_id = uuid.uuid4()
 
-        # Mock all 18 responses
+        # Mock all 19 responses
         mock_scan.execute.return_value = PhaseBatchResult(phase=PipelinePhase.SCAN, status=PhaseStatus.COMPLETED,
                                                           successful_count=1, items=["/dummy/path/vid.mp4"])
         mock_ingest.execute.return_value = PhaseBatchResult(phase=PipelinePhase.INGEST, status=PhaseStatus.COMPLETED,
@@ -173,12 +178,17 @@ class TestBatchMediaPipelineUnit:
         mock_visual_context_synthesis.execute.return_value = PhaseBatchResult(
             phase=PipelinePhase.VISUAL_CONTEXT_SYNTHESIS, status=PhaseStatus.COMPLETED,
             items=[VisualContextSynthesisJobResult(source_id=source_id, success=True, visual_timeline_id=uuid.uuid4())])
-        mock_context_unification.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.CONTEXT_UNIFICATION, status=PhaseStatus.COMPLETED,
-            items=[ContextUnificationJobResult(source_id=source_id, success=True, unified_transcript_id=uuid.uuid4())]
+        mock_context_unification.execute.return_value = PhaseBatchResult(phase=PipelinePhase.CONTEXT_UNIFICATION,
+                                                                         status=PhaseStatus.COMPLETED, items=[
+                ContextUnificationJobResult(source_id=source_id, success=True, unified_transcript_id=uuid.uuid4())])
+
+        # NEW: Phase 15.5 Mock Response
+        mock_clip_extraction.execute.return_value = PhaseBatchResult(
+            phase=PipelinePhase.CLIP_EXTRACTION,
+            status=PhaseStatus.COMPLETED,
+            items=[ClipExtractionJobResult(source_id=source_id, success=True, extracted_clips_count=2)]
         )
 
-        # NEW: Phase 16 Mock Response
         mock_rag_indexing.execute.return_value = PhaseBatchResult(
             phase=PipelinePhase.RAG_INDEXING,
             status=PhaseStatus.COMPLETED,
@@ -188,6 +198,11 @@ class TestBatchMediaPipelineUnit:
 
         results = pipeline.process_directory(target_dir, SourceType.VIDEO)
 
-        assert len(results) == 18  # Updated count for 18 phases
+        assert len(results) == 19  # Updated count for 19 phases
+
+        # Ensure the concurrent phases both completed
+        assert PipelinePhase.CLIP_EXTRACTION in results
         assert PipelinePhase.RAG_INDEXING in results
+
+        mock_clip_extraction.execute.assert_called_once()
         mock_rag_indexing.execute.assert_called_once()

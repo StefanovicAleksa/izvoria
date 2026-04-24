@@ -24,6 +24,7 @@ class PipelinePhase(str, Enum):
     VISUAL_HALLUCINATION_CORRECTION = "visual_hallucination_correction" # Phase 13
     VISUAL_CONTEXT_SYNTHESIS = "visual_context_synthesis" # Phase 14
     CONTEXT_UNIFICATION = "context_unification"  # Phase 15
+    CLIP_EXTRACTION = "clip_extraction"  # Phase 15.5
     RAG_INDEXING = "rag_indexing"  # Phase 16
 
 class PhaseStatus(str, Enum):

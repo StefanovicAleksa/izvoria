@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_integration_v31
+# Canvas: test_batch_media_pipeline_integration_v32
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
 import subprocess
@@ -83,7 +83,11 @@ from app.features.visual_context_synthesis.service.synthesis_api import VisualSy
 from app.features.context_unification.data.repositories import ContextUnificationRepository
 from app.features.context_unification.service.unification_api import UnificationAPI
 
-# NEW: Phase 16 Integration Imports
+# NEW: Clip Extraction Imports
+from app.features.clip_extractor.data.ffmpeg_video_adapter import FFmpegVideoAdapter
+from app.features.clip_extractor.data.repositories import VideoClipRepository
+from app.features.clip_extractor.service.extractor_api import ClipExtractorAPI
+
 from app.features.rag_storage.data.postgres_dense_repo import PostgresDenseRepository
 from app.features.rag_storage.data.bm25_repo import LocalBM25Repository
 from app.features.rag_storage.data.hf_embedder import HuggingFaceEmbeddingAdapter
@@ -106,7 +110,8 @@ from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysi
 from app.orchestration.service.phases.visual_hallucination_correction_phase import VisualHallucinationCorrectionPhase
 from app.orchestration.service.phases.visual_context_synthesis_phase import VisualContextSynthesisPhase
 from app.orchestration.service.phases.context_unification_phase import ContextUnificationPhase
-from app.orchestration.service.phases.rag_indexing_phase import RagIndexingPhase  # NEW
+from app.orchestration.service.phases.clip_extraction_phase import ClipExtractionPhase # NEW
+from app.orchestration.service.phases.rag_indexing_phase import RagIndexingPhase
 
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
@@ -297,7 +302,15 @@ class TestBatchMediaPipelineIntegration:
         context_unification_repo = ContextUnificationRepository(db_manager)
         unification_api = UnificationAPI(repository=context_unification_repo)
 
-        # NEW Phase 16 Initialization Core
+        # NEW: Phase 15.5 Initialization Core
+        clip_repo = VideoClipRepository(db_manager)
+        ffmpeg_video_adapter = FFmpegVideoAdapter(timeout_seconds=60)
+        clip_extractor_api = ClipExtractorAPI(
+            ffmpeg_adapter=ffmpeg_video_adapter,
+            repository=clip_repo,
+            storage_api=storage_api
+        )
+
         dense_repo = PostgresDenseRepository()
         sparse_repo = LocalBM25Repository()
         hf_embedder = HuggingFaceEmbeddingAdapter()
@@ -353,7 +366,13 @@ class TestBatchMediaPipelineIntegration:
             visual_synthesis_repo=visual_synthesis_repo
         )
 
-        # NEW Phase 16 Orchestration Phase
+        # NEW Phase 15.5
+        clip_extraction_phase = ClipExtractionPhase(
+            job_manager=job_manager,
+            extractor_api=clip_extractor_api,
+            unified_repo=context_unification_repo
+        )
+
         rag_indexing_phase = RagIndexingPhase(
             job_manager=job_manager,
             rag_storage_service=rag_storage_service,
@@ -380,7 +399,8 @@ class TestBatchMediaPipelineIntegration:
             visual_hallucination_correction_phase=visual_hallucination_correction_phase,
             visual_context_synthesis_phase=visual_context_synthesis_phase,
             context_unification_phase=context_unification_phase,
-            rag_indexing_phase=rag_indexing_phase  # NEW
+            clip_extraction_phase=clip_extraction_phase, # NEW
+            rag_indexing_phase=rag_indexing_phase
         )
 
         yield pipeline, storage_api
@@ -428,7 +448,8 @@ class TestBatchMediaPipelineIntegration:
         assert PipelinePhase.VISUAL_HALLUCINATION_CORRECTION in results
         assert PipelinePhase.VISUAL_CONTEXT_SYNTHESIS in results
         assert PipelinePhase.CONTEXT_UNIFICATION in results
-        assert PipelinePhase.RAG_INDEXING in results  # NEW Phase 16 Result
+        assert PipelinePhase.CLIP_EXTRACTION in results # NEW
+        assert PipelinePhase.RAG_INDEXING in results
 
         assert results[PipelinePhase.SCAN].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.INGEST].status == PhaseStatus.COMPLETED
@@ -443,4 +464,5 @@ class TestBatchMediaPipelineIntegration:
         assert results[PipelinePhase.VISUAL_HALLUCINATION_CORRECTION].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.VISUAL_CONTEXT_SYNTHESIS].status == PhaseStatus.COMPLETED
         assert results[PipelinePhase.CONTEXT_UNIFICATION].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.RAG_INDEXING].status == PhaseStatus.COMPLETED  # NEW
+        assert results[PipelinePhase.CLIP_EXTRACTION].status == PhaseStatus.COMPLETED # NEW
+        assert results[PipelinePhase.RAG_INDEXING].status == PhaseStatus.COMPLETED

@@ -20,7 +20,7 @@ class JobType(str, Enum):
     HALLUCINATION_CORRECTION = "hallucination_correction" # Phase 5.5
     DIARIZE = "diarize" # speaker diarization
     HALLUCINATION_SCRUBBER = "hallucination_scrubber" # Legacy Phase 6.5
-    INTELLIGENCE_BRIDGE = "intelligence_bridge"
+    INTELLIGENCE_BRIDGE = "intelligence_bridge" # Legacy
     SENTENCE_RECONSTRUCTION = "sentence_reconstruction"
     DOMAIN_PHONETIC_CORRECTION = "phonetic_correction"
     CONTEXTUAL_RETRIEVAL = "contextual_retrieval" # Phase 9
@@ -30,4 +30,5 @@ class JobType(str, Enum):
     VISUAL_HALLUCINATION_CORRECTION = "visual_hallucination_correction" # Phase 13
     VISUAL_CONTEXT_SYNTHESIS = "visual_context_synthesis" # Phase 14
     CONTEXT_UNIFICATION = "context_unification"  # Phase 15
+    CLIP_EXTRACTION = "clip_extraction"  # Phase 15.5
     RAG_INDEXING = "rag_indexing"  # Phase 16

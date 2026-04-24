@@ -1,4 +1,4 @@
-# Canvas: main_v29
+# Canvas: main_v30
 # Path: app/main.py
 
 import argparse
@@ -89,6 +89,11 @@ from app.features.visual_context_synthesis.service.synthesis_api import VisualSy
 from app.features.context_unification.data.repositories import ContextUnificationRepository
 from app.features.context_unification.service.unification_api import UnificationAPI
 
+# Phase 15.5 Integration Imports
+from app.features.clip_extractor.data.ffmpeg_video_adapter import FFmpegVideoAdapter
+from app.features.clip_extractor.data.repositories import VideoClipRepository
+from app.features.clip_extractor.service.extractor_api import ClipExtractorAPI
+
 # Phase 16 Integration Imports
 from app.features.rag_storage.data.postgres_dense_repo import PostgresDenseRepository
 from app.features.rag_storage.data.bm25_repo import LocalBM25Repository
@@ -113,6 +118,7 @@ from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysi
 from app.orchestration.service.phases.visual_hallucination_correction_phase import VisualHallucinationCorrectionPhase
 from app.orchestration.service.phases.visual_context_synthesis_phase import VisualContextSynthesisPhase
 from app.orchestration.service.phases.context_unification_phase import ContextUnificationPhase
+from app.orchestration.service.phases.clip_extraction_phase import ClipExtractionPhase
 from app.orchestration.service.phases.rag_indexing_phase import RagIndexingPhase
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 
@@ -307,6 +313,15 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
     context_unification_repo = ContextUnificationRepository(db_manager)
     unification_api = UnificationAPI(repository=context_unification_repo)
 
+    # 15.5 Clip Extraction
+    clip_repo = VideoClipRepository(db_manager)
+    ffmpeg_video_adapter = FFmpegVideoAdapter(timeout_seconds=300)
+    clip_extractor_api = ClipExtractorAPI(
+        ffmpeg_adapter=ffmpeg_video_adapter,
+        repository=clip_repo,
+        storage_api=storage_api
+    )
+
     # 16. RAG Indexing
     dense_repo = PostgresDenseRepository()
     sparse_repo = LocalBM25Repository()
@@ -436,6 +451,12 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         visual_synthesis_repo=visual_synthesis_repo
     )
 
+    clip_extraction_phase = ClipExtractionPhase(
+        job_manager=job_manager,
+        extractor_api=clip_extractor_api,
+        unified_repo=context_unification_repo
+    )
+
     rag_indexing_phase = RagIndexingPhase(
         job_manager=job_manager,
         rag_storage_service=rag_storage_service,
@@ -463,6 +484,7 @@ def get_orchestration_pipeline() -> BatchMediaPipeline:
         visual_hallucination_correction_phase=visual_hallucination_correction_phase,
         visual_context_synthesis_phase=visual_context_synthesis_phase,
         context_unification_phase=context_unification_phase,
+        clip_extraction_phase=clip_extraction_phase,
         rag_indexing_phase=rag_indexing_phase
     )
 
@@ -645,15 +667,35 @@ def main() -> None:
                             for chunk in unified_transcript.chunks:
                                 formatted_text += f"[Chunk {chunk.chunk_id}]\n"
                                 formatted_text += f"Time: {chunk.start_sec:.2f}s - {chunk.end_sec:.2f}s\n"
-                                formatted_text += f"Frames: {[str(f.frame_id) for f in chunk.visual_evidence]}\n"
+
+                                # FIX: Renamed 'f' to 'evidence' to stop IDE from confusing it with the file handle
+                                # Also added getattr fallback in case it's a standard File entity instead of a Frame entity
+                                frame_ids = [str(getattr(evidence, "frame_id", getattr(evidence, "id", "N/A"))) for
+                                             evidence in chunk.visual_evidence]
+                                formatted_text += f"Frames: {frame_ids}\n"
+
                                 formatted_text += "-" * 40 + "\n"
                                 formatted_text += f"{chunk.text_payload}\n\n"
 
+                            # The file handle 'f' that was confusing the linter
                             with open(out_file, "w", encoding="utf-8") as f:
                                 f.write(formatted_text)
                             print(f"  [SUCCESS] Saved Unified Document: {out_file}")
                         except IOError as e:
                             print(f"  [ERROR] Failed to write unified doc {out_file.name}: {e}")
+
+        if PipelinePhase.CLIP_EXTRACTION in results:
+            print("\n==================================================")
+            print("  CLIP EXTRACTION REPORT")
+            print("==================================================")
+            target_batch = results[PipelinePhase.CLIP_EXTRACTION]
+            for item in target_batch.items:
+                if getattr(item, "success", False) and getattr(item, "source_id", None):
+                    source = storage_repo.get_by_id(item.source_id)
+                    name = source.name if source else str(item.source_id)
+                    print(f"  [SUCCESS] {name} -> {item.extracted_clips_count} video clips extracted")
+                elif not getattr(item, "success", True):
+                    print(f"  [FAILED] {item.source_id}: {getattr(item, 'error_message', 'Unknown error')}")
 
         # --- Phase 16 Storage Report ---
         if PipelinePhase.RAG_INDEXING in results:

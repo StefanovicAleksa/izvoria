@@ -1,4 +1,4 @@
-# Canvas: orchestration_entities_v21
+# Canvas: orchestration_entities_v22
 # Path: app/orchestration/domain/entities.py
 
 import uuid
@@ -135,6 +135,13 @@ class ContextUnificationJobResult(BaseModel):
     source_id: uuid.UUID
     success: bool
     unified_transcript_id: Optional[uuid.UUID] = None
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
+class ClipExtractionJobResult(BaseModel):
+    source_id: uuid.UUID
+    success: bool
+    extracted_clips_count: int = 0
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 

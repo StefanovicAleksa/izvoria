@@ -1,8 +1,9 @@
-# Canvas: batch_media_pipeline_v29
+# Canvas: batch_media_pipeline_v31
 # Path: app/orchestration/service/pipelines/batch_media_pipeline.py
 
 import uuid
 import logging
+import concurrent.futures
 from typing import Dict, List
 
 from app.features.storage.domain.entities import SourceType
@@ -23,6 +24,7 @@ from app.orchestration.domain.entities import (
     VisualAnalysisJobResult,
     VisualHallucinationCorrectionJobResult,
     ContextUnificationJobResult,
+    # REMOVED: ClipExtractionJobResult, RagIndexingJobResult (Unused)
 )
 from app.orchestration.exceptions.workflow import WorkflowStateError, WorkflowExecutionError
 
@@ -43,6 +45,7 @@ from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysi
 from app.orchestration.service.phases.visual_hallucination_correction_phase import VisualHallucinationCorrectionPhase
 from app.orchestration.service.phases.visual_context_synthesis_phase import VisualContextSynthesisPhase
 from app.orchestration.service.phases.context_unification_phase import ContextUnificationPhase
+from app.orchestration.service.phases.clip_extraction_phase import ClipExtractionPhase
 from app.orchestration.service.phases.rag_indexing_phase import RagIndexingPhase
 
 logger = logging.getLogger(__name__)
@@ -68,6 +71,7 @@ class BatchMediaPipeline:
             visual_hallucination_correction_phase: VisualHallucinationCorrectionPhase,
             visual_context_synthesis_phase: VisualContextSynthesisPhase,
             context_unification_phase: ContextUnificationPhase,
+            clip_extraction_phase: ClipExtractionPhase,
             rag_indexing_phase: RagIndexingPhase
     ):
         self._scan_phase = scan_phase
@@ -87,6 +91,7 @@ class BatchMediaPipeline:
         self._visual_hallucination_correction_phase = visual_hallucination_correction_phase
         self._visual_context_synthesis_phase = visual_context_synthesis_phase
         self._context_unification_phase = context_unification_phase
+        self._clip_extraction_phase = clip_extraction_phase
         self._rag_indexing_phase = rag_indexing_phase
 
     def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[
@@ -115,10 +120,12 @@ class BatchMediaPipeline:
                 raise WorkflowStateError(
                     f"Pipeline halted: Ingest phase failed entirely. Errors: {ingest_result.errors}")
 
-            video_source_ids: List[uuid.UUID] = [
-                item.source_id for item in ingest_result.items
-                if isinstance(item, IngestJobResult) and item.success and item.source_id
-            ]
+            # FIX: Explicit loop with is not None check to satisfy strict static typing
+            video_source_ids: List[uuid.UUID] = []
+            for item in ingest_result.items:
+                if isinstance(item, IngestJobResult) and item.success and item.source_id is not None:
+                    video_source_ids.append(item.source_id)
+
             if not video_source_ids: return pipeline_results
 
             # ==========================================
@@ -155,16 +162,12 @@ class BatchMediaPipeline:
             # PHASE 5: TRANSCRIPTION (GPU BOUND)
             # ==========================================
             self._transcribe_phase.preload_model()
-
             transcribe_result = self._transcribe_phase.execute(successful_vad_items)
             pipeline_results[PipelinePhase.TRANSCRIBE] = transcribe_result
 
-            successful_transcribe_items: List[TranscribeJobResult] = [
-                item for item in transcribe_result.items
-                if isinstance(item, TranscribeJobResult) and item.success
-            ]
-            if not successful_transcribe_items:
-                return pipeline_results
+            successful_transcribe_items = [item for item in transcribe_result.items if
+                                           isinstance(item, TranscribeJobResult) and item.success]
+            if not successful_transcribe_items: return pipeline_results
 
             # ==========================================
             # PHASE 5.5: HALLUCINATION CORRECTION (CPU BOUND)
@@ -172,74 +175,54 @@ class BatchMediaPipeline:
             correction_result = self._hallucination_correction_phase.execute(successful_transcribe_items)
             pipeline_results[PipelinePhase.HALLUCINATION_CORRECTION] = correction_result
 
-            successful_correction_items: List[HallucinationCorrectionJobResult] = [
-                item for item in correction_result.items
-                if isinstance(item, HallucinationCorrectionJobResult) and item.success
-            ]
-            if not successful_correction_items:
-                return pipeline_results
+            successful_correction_items = [item for item in correction_result.items if
+                                           isinstance(item, HallucinationCorrectionJobResult) and item.success]
+            if not successful_correction_items: return pipeline_results
 
             # ==========================================
             # PHASE 6: DIARIZATION (GPU BOUND)
             # ==========================================
             self._diarize_phase.preload_model()
-
             diarize_result = self._diarize_phase.execute(successful_correction_items)
             pipeline_results[PipelinePhase.DIARIZE] = diarize_result
 
-            successful_diarize_items: List[DiarizeJobResult] = [
-                item for item in diarize_result.items
-                if isinstance(item, DiarizeJobResult) and item.success
-            ]
-            if not successful_diarize_items:
-                return pipeline_results
+            successful_diarize_items = [item for item in diarize_result.items if
+                                        isinstance(item, DiarizeJobResult) and item.success]
+            if not successful_diarize_items: return pipeline_results
 
             # ==========================================
             # PHASE 7: SENTENCE RECONSTRUCTION (GPU BOUND)
             # ==========================================
             self._sentence_reconstruction_phase.preload_model()
-
             sentence_result = self._sentence_reconstruction_phase.execute(successful_diarize_items)
             pipeline_results[PipelinePhase.SENTENCE_RECONSTRUCTION] = sentence_result
 
-            successful_sentence_items: List[SentenceReconstructionJobResult] = [
-                item for item in sentence_result.items
-                if isinstance(item, SentenceReconstructionJobResult) and item.success
-            ]
-            if not successful_sentence_items:
-                return pipeline_results
+            successful_sentence_items = [item for item in sentence_result.items if
+                                         isinstance(item, SentenceReconstructionJobResult) and item.success]
+            if not successful_sentence_items: return pipeline_results
 
             # ==========================================
             # PHASE 8: DOMAIN PHONETIC CORRECTION (GPU BOUND)
             # ==========================================
             self._domain_phonetic_correction_phase.preload_model()
-
             phonetic_result = self._domain_phonetic_correction_phase.execute(
-                reconstruction_results=successful_sentence_items
-            )
+                reconstruction_results=successful_sentence_items)
             pipeline_results[PipelinePhase.DOMAIN_PHONETIC_CORRECTION] = phonetic_result
 
-            successful_phonetic_items: List[DomainPhoneticCorrectionJobResult] = [
-                item for item in phonetic_result.items
-                if isinstance(item, DomainPhoneticCorrectionJobResult) and item.success
-            ]
-            if not successful_phonetic_items:
-                return pipeline_results
+            successful_phonetic_items = [item for item in phonetic_result.items if
+                                         isinstance(item, DomainPhoneticCorrectionJobResult) and item.success]
+            if not successful_phonetic_items: return pipeline_results
 
             # ==========================================
             # PHASE 9: CONTEXTUAL RETRIEVAL (GPU BOUND)
             # ==========================================
             self._contextual_retrieval_phase.preload_model()
-
             contextual_result = self._contextual_retrieval_phase.execute(successful_phonetic_items)
             pipeline_results[PipelinePhase.CONTEXTUAL_RETRIEVAL] = contextual_result
 
-            successful_contextual_items: List[ContextualRetrievalJobResult] = [
-                item for item in contextual_result.items
-                if isinstance(item, ContextualRetrievalJobResult) and item.success
-            ]
-            if not successful_contextual_items:
-                return pipeline_results
+            successful_contextual_items = [item for item in contextual_result.items if
+                                           isinstance(item, ContextualRetrievalJobResult) and item.success]
+            if not successful_contextual_items: return pipeline_results
 
             # ==========================================
             # CONDITIONAL VISUAL PIPELINE (PHASES 10-14)
@@ -248,10 +231,8 @@ class BatchMediaPipeline:
             visual_cue_result = self._visual_cue_detection_phase.execute(successful_contextual_items)
             pipeline_results[PipelinePhase.VISUAL_CUE_DETECTION] = visual_cue_result
 
-            successful_cue_items: List[VisualCueDetectionJobResult] = [
-                item for item in visual_cue_result.items
-                if isinstance(item, VisualCueDetectionJobResult) and item.success
-            ]
+            successful_cue_items = [item for item in visual_cue_result.items if
+                                    isinstance(item, VisualCueDetectionJobResult) and item.success]
 
             if successful_cue_items:
                 # PHASE 11: FRAME EXTRACTION (CPU BOUND)
@@ -259,10 +240,8 @@ class BatchMediaPipeline:
                 extraction_result = self._frame_extraction_phase.execute(successful_cue_items)
                 pipeline_results[PipelinePhase.FRAME_EXTRACTION] = extraction_result
 
-                successful_extraction_items_frames: List[FrameExtractionJobResult] = [
-                    item for item in extraction_result.items
-                    if isinstance(item, FrameExtractionJobResult) and item.success
-                ]
+                successful_extraction_items_frames = [item for item in extraction_result.items if
+                                                      isinstance(item, FrameExtractionJobResult) and item.success]
 
                 if successful_extraction_items_frames:
                     # PHASE 12: VISUAL ANALYSIS (GPU BOUND)
@@ -270,10 +249,8 @@ class BatchMediaPipeline:
                     analysis_result = self._visual_analysis_phase.execute(successful_extraction_items_frames)
                     pipeline_results[PipelinePhase.VISUAL_ANALYSIS] = analysis_result
 
-                    successful_analysis_items: List[VisualAnalysisJobResult] = [
-                        item for item in analysis_result.items
-                        if isinstance(item, VisualAnalysisJobResult) and item.success
-                    ]
+                    successful_analysis_items = [item for item in analysis_result.items if
+                                                 isinstance(item, VisualAnalysisJobResult) and item.success]
 
                     if successful_analysis_items:
                         # PHASE 13: VISUAL HALLUCINATION CORRECTION (GPU BOUND)
@@ -282,10 +259,9 @@ class BatchMediaPipeline:
                             successful_analysis_items)
                         pipeline_results[PipelinePhase.VISUAL_HALLUCINATION_CORRECTION] = hallucination_result
 
-                        successful_hallucination_items: List[VisualHallucinationCorrectionJobResult] = [
-                            item for item in hallucination_result.items
-                            if isinstance(item, VisualHallucinationCorrectionJobResult) and item.success
-                        ]
+                        successful_hallucination_items = [item for item in hallucination_result.items if
+                                                          isinstance(item,
+                                                                     VisualHallucinationCorrectionJobResult) and item.success]
 
                         if successful_hallucination_items:
                             # PHASE 14: VISUAL CONTEXT SYNTHESIS (GPU BOUND)
@@ -296,23 +272,34 @@ class BatchMediaPipeline:
             # ==========================================
             # PHASE 15: CONTEXT UNIFICATION (CPU BOUND / NO-VRAM)
             # ==========================================
-            self._rag_indexing_phase.preload_model()  # Trigger the background load of BGE-M3
+            self._rag_indexing_phase.preload_model()
 
             unification_result = self._context_unification_phase.execute(successful_contextual_items)
             pipeline_results[PipelinePhase.CONTEXT_UNIFICATION] = unification_result
 
-            successful_unification_items: List[ContextUnificationJobResult] = [
-                item for item in unification_result.items
-                if isinstance(item, ContextUnificationJobResult) and item.success
-            ]
+            successful_unification_items = [item for item in unification_result.items if
+                                            isinstance(item, ContextUnificationJobResult) and item.success]
             if not successful_unification_items:
                 return pipeline_results
 
             # ==========================================
-            # PHASE 16: RAG VECTOR INDEXING (GPU BOUND)
+            # PHASE 15.5 & 16: PARALLEL EXECUTION (CPU + GPU)
             # ==========================================
-            rag_indexing_result = self._rag_indexing_phase.execute(successful_unification_items)
+            logger.info("Dispatching Phase 15.5 (Clip Extraction) and Phase 16 (RAG Indexing) concurrently...")
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                # Dispatch the GPU-bound Vector Embedding
+                future_rag = executor.submit(self._rag_indexing_phase.execute, successful_unification_items)
+
+                # Dispatch the CPU-bound FFmpeg Slicing
+                future_clip = executor.submit(self._clip_extraction_phase.execute, successful_unification_items)
+
+                # Wait for both branches to complete
+                rag_indexing_result = future_rag.result()
+                clip_extraction_result = future_clip.result()
+
             pipeline_results[PipelinePhase.RAG_INDEXING] = rag_indexing_result
+            pipeline_results[PipelinePhase.CLIP_EXTRACTION] = clip_extraction_result
 
             logger.info(f"========== Pipeline Completed for Batch [{target_directory}] ==========")
             return pipeline_results
