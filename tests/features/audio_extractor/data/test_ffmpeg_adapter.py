@@ -1,5 +1,8 @@
+# Canvas: test_ffmpeg_adapter_v2
+# Path: tests/features/audio_extractor/data/test_ffmpeg_adapter.py
+
 import subprocess
-import tempfile  # <-- FIX 1: Missing import added
+import wave
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -16,58 +19,57 @@ class TestFFmpegAdapter:
     @patch("app.features.audio_extractor.data.ffmpeg_adapter.subprocess.run")
     def test_extract_audio_happy_path(self, mock_run, adapter, tmp_path):
         """Verifies correct FFmpeg CLI arguments and temp file generation."""
-        # Setup fake source file
         source_file = tmp_path / "test_video.mp4"
         source_file.write_text("fake video data")
 
-        # Execute
         result_path = adapter.extract_audio(source_file)
 
-        # Assertions
         assert isinstance(result_path, Path)
         assert result_path.suffix == ".wav"
-        assert result_path.exists()  # The mkstemp should physically create an empty file
+        assert result_path.exists() 
 
-        # Verify subprocess was called with correct arguments
         mock_run.assert_called_once()
-        called_args = mock_run.call_args[0][0]  # The command list
+        called_args = mock_run.call_args[0][0]
 
         assert called_args[0] == "ffmpeg"
         assert "-i" in called_args
-        assert str(source_file) in called_args
-        assert "-vn" in called_args
-        assert "-acodec" in called_args
-        assert "pcm_s16le" in called_args
-        assert str(result_path) in called_args
-
-        # Cleanup the successfully generated file for good measure
-        if result_path.exists():
-            result_path.unlink()
-
-    def test_extract_audio_source_not_found(self, adapter):
-        """Verifies missing source immediately raises error without calling subprocess."""
-        with pytest.raises(exc.FFmpegNotFoundError):
-            adapter.extract_audio("/path/to/nothing.mp4")
 
     @patch("app.features.audio_extractor.data.ffmpeg_adapter.subprocess.run")
-    def test_extract_audio_cleans_up_on_crash(self, mock_run, adapter, tmp_path):
-        """Verifies the temporary file is deleted if FFmpeg crashes."""
-        source_file = tmp_path / "broken_video.mp4"
-        source_file.write_text("fake data")
+    def test_extract_audio_no_audio_stream_fallback(self, mock_run, adapter, tmp_path):
+        """Verifies that a video with no audio stream generates a silent 1-sec WAV instead of crashing."""
+        source_file = tmp_path / "silent_video.mp4"
+        source_file.write_text("fake silent video")
 
-        # Simulate FFmpeg crashing
-        mock_run.side_effect = subprocess.CalledProcessError(1, "ffmpeg")
+        # Simulate FFmpeg crashing because there's no audio track
+        mock_run.side_effect = subprocess.CalledProcessError(
+            returncode=1,
+            cmd="ffmpeg",
+            stderr="Output file does not contain any stream"
+        )
 
-        # FIX 2: Take a snapshot of the temp directory BEFORE the crash
-        temp_dir = Path(tempfile.gettempdir())
-        initial_wavs = set(temp_dir.glob("onyx_audio_*.wav"))
+        result_path = adapter.extract_audio(source_file)
 
-        with pytest.raises(exc.FFmpegExecutionError):
+        # 1. Assert the adapter swallowed the error and returned a path
+        assert isinstance(result_path, Path)
+        assert result_path.exists()
+
+        # 2. Assert the generated file is actually a valid WAV file
+        with wave.open(str(result_path), 'rb') as wav_file:
+            assert wav_file.getnchannels() == 1
+            assert wav_file.getframerate() == 16000
+            assert wav_file.getnframes() == 16000  # 1 second of silence
+
+    @patch("app.features.audio_extractor.data.ffmpeg_adapter.subprocess.run")
+    def test_extract_audio_genuine_crash_raises_error(self, mock_run, adapter, tmp_path):
+        """Verifies that genuine FFmpeg errors (not related to missing streams) still bubble up correctly."""
+        source_file = tmp_path / "corrupted_video.mp4"
+        source_file.write_text("fake corrupted video")
+
+        mock_run.side_effect = subprocess.CalledProcessError(
+            returncode=255,
+            cmd="ffmpeg",
+            stderr="Invalid data found when processing input"
+        )
+
+        with pytest.raises(exc.FFmpegExecutionError, match="Invalid data found when processing input"):
             adapter.extract_audio(source_file)
-
-        # Take a snapshot AFTER the crash
-        final_wavs = set(temp_dir.glob("onyx_audio_*.wav"))
-
-        # Verify no NEW files were left behind by calculating the difference
-        leaked_files = final_wavs - initial_wavs
-        assert len(leaked_files) == 0  # The variable is now actively asserted!

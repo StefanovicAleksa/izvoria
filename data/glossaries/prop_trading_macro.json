@@ -21,20 +21,29 @@
                 "Open Interest", "Cost of Carry", "Depth of Market", "Iceberg Order",
                 "Stacked Imbalances", "Trapped Traders", "VPOC", "Value Area High",
                 "Value Area Low", "Time Price Opportunity", "Exhaustion",
-                "Delta Divergence", "Cumulative Delta", "VWAP", "TPO"
+                "Delta Divergence", "Cumulative Delta", "VWAP", "TPO",
+                "Jigsaw Trading", "Price Ladder Environment"
+            ]
+        },
+        "EVENT_TRADING_METHODOLOGY": {
+            "anchor_words": ["Release", "Event", "Preparation", "Execution", "Debrief", "Replay", "News Feed"],
+            "terms": [
+                "Refinitiv XENITH", "Jigsaw Replay Account", "Replay Skill Development Drills",
+                "Central Bank Preparation", "Central Bank Execution", "Central Bank Debrief",
+                "Structural Completion", "Continuation", "Cheat Sheet", "Release Video",
+                "Instrument Download"
             ]
         },
         "FEDERAL_RESERVE": {
-            "anchor_words": ["Federal Reserve", "Powell", "Yellen", "Bernanke", "Dot Plot", "Beige Book"],
+            "anchor_words": ["FED", "Powell", "FOMC", "Treasuries", "Yellen"],
             "terms": [
-                "Jerome Powell", "Ben Bernanke", "Janet Yellen", "Kevin Warsh", "John Williams",
-                "Philip Jefferson", "Christopher Waller", "Michelle Bowman", "Lisa Cook",
-                "Michael Barr", "Austan Goolsbee", "Lorie Logan", "Neel Kashkari",
-                "Fed Funds Rate", "Reverse Repo", "SEP", "RRP"
+                "Jerome Powell", "Janet Yellen", "Ben Bernanke", "Alan Greenspan",
+                "Federal Funds Rate", "Dot Plot", "Beige Book", "Discount Window",
+                "Open Market Operations"
             ]
         },
         "EUROPEAN_CENTRAL_BANK": {
-            "anchor_words": ["ECB", "Lagarde", "Draghi", "Eurozone", "Frankfurt", "Bunds"],
+            "anchor_words": ["ECB", "Lagarde", "Frankfurt", "Bunds"],
             "terms": [
                 "Christine Lagarde", "Mario Draghi", "Jean-Claude Trichet", "Luis de Guindos",
                 "Philip Lane", "Isabel Schnabel", "Joachim Nagel", "Francois Villeroy de Galhau",
@@ -59,9 +68,8 @@
         "BANK_OF_JAPAN": {
             "anchor_words": ["BOJ", "Bank of Japan", "Ueda", "Kuroda", "Yen", "JGBs"],
             "terms": [
-                "Kazuo Ueda", "Haruhiko Kuroda", "Masaaki Shirakawa", "Shinichi Uchida",
-                "Ryozo Himino", "Hajime Takata", "Naoki Tamura", "Negative Interest Rate Policy",
-                "Yield Curve Control", "YCC"
+                "Kazuo Ueda", "Haruhiko Kuroda", "Masaaki Shirakawa", "Yield Curve Control",
+                "QQE", "Negative Interest Rate Policy"
             ]
         }
     }
