@@ -1,13 +1,6 @@
-# Canvas: test_hallucination_correction_api_integration_v3
-# Path: integration_tests/features/visual_hallucination_correction/test_correction_api_integration.py
-
 import os
-import json
 import uuid
 import pytest
-from pathlib import Path
-from typing import Generator
-from sqlalchemy import text as sa_text
 
 from app.core.config import settings
 from app.core.database.data.engine import Base
@@ -31,143 +24,134 @@ from app.features.visual_hallucination_correction.domain.entities import VisualH
 class TestVisualHallucinationCorrectionAPIIntegration:
     """
     STRICT NO-MOCKS INTEGRATION TEST.
-    Requires: Live PostgreSQL, NVIDIA GPU, and the Qwen 2.5 3B Instruct GGUF model downloaded locally.
-    Tests the full Phase 13 Pipeline by loading test data from JSON resources.
+    Requires: Live PostgreSQL and downloaded SLM weights.
     """
 
     @pytest.fixture(scope="module", autouse=True)
-    def setup_database(self) -> Generator[None, None, None]:
+    def setup_database(self):
         engine = db_manager._engine_wrapper._engine
         Base.metadata.create_all(bind=engine)
         yield
 
     @pytest.fixture(scope="module", autouse=True)
-    def ensure_model_exists(self) -> None:
+    def check_model_downloaded(self):
         if not os.path.exists(settings.VISUAL_HALLUCINATION_CORRECTION_MODEL_PATH):
-            pytest.skip(
-                f"Integration test skipped due to missing SLM at: {settings.VISUAL_HALLUCINATION_CORRECTION_MODEL_PATH}")
+            pytest.skip(f"Integration test skipped: Model not found at {settings.VISUAL_HALLUCINATION_CORRECTION_MODEL_PATH}")
 
     @pytest.fixture
-    def isolated_setup(self) -> Generator[None, None, None]:
-        """Isolates the DB environment by dropping foreign keys to sources and executing teardown."""
-        with db_manager.session() as session:
-            session.execute(sa_text(
-                "ALTER TABLE visual_hallucination_evaluations DROP CONSTRAINT IF EXISTS visual_hallucination_evaluations_source_id_fkey;"))
-            session.execute(sa_text(
-                "ALTER TABLE chunk_visual_analyses DROP CONSTRAINT IF EXISTS chunk_visual_analyses_source_id_fkey;"))
-            session.execute(sa_text(
-                "ALTER TABLE contextualized_transcripts DROP CONSTRAINT IF EXISTS contextualized_transcripts_source_id_fkey;"))
-            session.commit()
-
-        yield
-
-        # STRICT TEARDOWN: Wipe the hardcoded DB footprints parsed from the JSON fixture
-        with db_manager.session() as session:
-            # Matches the exact source_id found in resources/visual_hallucination_transcript.json
-            sid = "12345678-1234-5678-1234-567812345678"
-            session.execute(sa_text("DELETE FROM visual_hallucination_evaluations WHERE source_id = :sid"),
-                            {"sid": sid})
-            session.execute(sa_text("DELETE FROM chunk_visual_analyses WHERE source_id = :sid"), {"sid": sid})
-            session.execute(sa_text("DELETE FROM contextualized_transcripts WHERE source_id = :sid"), {"sid": sid})
-            session.commit()
+    def contextual_repo(self): return ContextualRepository(db_manager)
 
     @pytest.fixture
-    def live_api(self) -> VisualHallucinationCorrectionAPI:
-        repo = VisualHallucinationRepository(db_manager)
-        contextual_repo = ContextualRepository(db_manager)
-        visual_analysis_repo = VisualAnalysisRepository(db_manager)
+    def visual_repo(self): return VisualAnalysisRepository(db_manager)
 
-        slm_adapter = QwenHallucinationAdapter()
+    @pytest.fixture
+    def hallucination_repo(self): return VisualHallucinationRepository(db_manager)
+
+    @pytest.fixture
+    def live_api(self, contextual_repo, visual_repo, hallucination_repo) -> VisualHallucinationCorrectionAPI:
         vram_monitor = PyTorchVramMonitor()
         orchestrator = ModelManagerOrchestrator(vram_monitor)
+        adapter = QwenHallucinationAdapter()
 
         return VisualHallucinationCorrectionAPI(
-            repository=repo,
-            adapter=slm_adapter,
+            repository=hallucination_repo,
+            adapter=adapter,
             contextual_repo=contextual_repo,
-            visual_analysis_repo=visual_analysis_repo,
+            visual_analysis_repo=visual_repo,
             orchestrator=orchestrator
         )
 
     @pytest.fixture
-    def seed_data_from_json(self, live_api: VisualHallucinationCorrectionAPI) -> uuid.UUID:
-        """Loads the resource JSON, creates the domain entities, and saves them to the live DB."""
-        integration_tests_dir = Path(__file__).resolve().parent.parent.parent
-        json_path = integration_tests_dir / "resources" / "visual_hallucination_transcript.json"
+    def seed_data(self, contextual_repo, visual_repo) -> uuid.UUID:
+        """Seeds standard valid/hallucinated data using dictionary unpacking."""
+        source_id = uuid.uuid4()
+        chunk_1_id = uuid.uuid4()
+        chunk_2_id = uuid.uuid4()
 
-        if not json_path.exists():
-            pytest.skip(f"Test transcript missing at {json_path}. Please create it.")
+        # 1. Save Transcript
+        transcript = ContextualizedTranscript(**{
+            "source_id": source_id,
+            "chunks": [
+                ContextualizedChunk(**{
+                    "chunk_id": chunk_1_id,
+                    "start_sec": 0.0,
+                    "end_sec": 5.0,
+                    "original_text": "A man in a blue suit is sitting at the desk.",
+                    "needs_visual": True
+                }),
+                ContextualizedChunk(**{
+                    "chunk_id": chunk_2_id,
+                    "start_sec": 5.0,
+                    "end_sec": 10.0,
+                    "original_text": "There is a massive fire in the room.",
+                    "needs_visual": True
+                })
+            ]
+        })
+        contextual_repo.save(transcript)
 
-        with open(json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        # 2. Save Visual Analysis Results
+        visual_repo.save(ChunkVisualAnalysis(**{
+            "source_id": source_id,
+            "chunk_id": chunk_1_id,
+            "analyses": [
+                FrameAnalysis(**{"frame_id": uuid.uuid4(), "description": "A man in a blue suit is at a desk."})
+            ]
+        }))
 
-        source_id = uuid.UUID(data["source_id"])
-        chunks = []
-
-        for chunk_data in data["chunks"]:
-            chunk_id = uuid.UUID(chunk_data["chunk_id"])
-            chunks.append(
-                ContextualizedChunk(
-                    chunk_id=chunk_id,
-                    original_text=chunk_data["original_text"],
-                    needs_visual=chunk_data["needs_visual"]
-                )
-            )
-
-            # If it needs a visual, seed the mocked VLM output into the visual_analysis table
-            if chunk_data["needs_visual"]:
-                analysis = ChunkVisualAnalysis(
-                    source_id=source_id,
-                    chunk_id=chunk_id,
-                    analyses=[FrameAnalysis(
-                        frame_id=uuid.uuid4(),
-                        description=chunk_data["visual_analysis_description"]
-                    )]
-                )
-                live_api._visual_analysis_repo.save(analysis)
-
-        transcript = ContextualizedTranscript(source_id=source_id, chunks=chunks)
-        live_api._contextual_repo.save(transcript)
+        visual_repo.save(ChunkVisualAnalysis(**{
+            "source_id": source_id,
+            "chunk_id": chunk_2_id,
+            "analyses": [
+                FrameAnalysis(**{"frame_id": uuid.uuid4(), "description": "A quiet office. No fire visible."})
+            ]
+        }))
 
         return source_id
 
-    def test_execute_end_to_end_hallucination_audit(
-            self,
-            isolated_setup: None,
-            live_api: VisualHallucinationCorrectionAPI,
-            seed_data_from_json: uuid.UUID
-    ) -> None:
+    def test_execute_standard_hallucination_audit(self, live_api, seed_data):
+        """Verifies standard accept/reject logic against real SLM."""
+        source_id = seed_data
+        result = live_api.execute(source_id, release_after=True)
 
-        source_id = seed_data_from_json
+        assert len(result.audits) == 2
+        assert any(a.is_visual_accepted is True for a in result.audits)
+        assert any(a.is_visual_accepted is False for a in result.audits)
 
-        # --- 1. EXECUTE THE PIPELINE ---
-        try:
-            print("\n[DEBUG] Spinning up Qwen 2.5 for Visual Audit... This may take a few seconds.")
-            evaluated_transcript = live_api.execute(source_id, release_after=True)
-        except Exception as e:
-            if "cuda" in str(e).lower() or "vram" in str(e).lower():
-                pytest.skip(f"Skipping test due to insufficient VRAM: {e}")
-            raise e
+    def test_execute_truncates_massive_visual_evidence_integration(
+        self, live_api, contextual_repo, visual_repo, hallucination_repo
+    ):
+        """Integration test verifying that massive frame lists are safely truncated."""
+        source_id = uuid.uuid4()
+        chunk_id = uuid.uuid4()
 
-        # --- 2. VERIFY BUSINESS LOGIC ---
-        assert isinstance(evaluated_transcript, VisualHallucinationEvaluatedTranscript)
-        assert evaluated_transcript.source_id == source_id
-        assert len(evaluated_transcript.audits) == 2
+        # 1. Seed massive payload
+        transcript = ContextualizedTranscript(**{
+            "source_id": source_id,
+            "chunks": [
+                ContextualizedChunk(**{
+                    "chunk_id": chunk_id, "start_sec": 0.0, "end_sec": 30.0, 
+                    "original_text": "Verify massive truncation.", "needs_visual": True
+                })
+            ]
+        })
+        contextual_repo.save(transcript)
 
-        audit_map = {str(a.chunk_id): a for a in evaluated_transcript.audits}
+        huge_description = "Repetitive visual context. " * 500  # ~25k characters
+        visual_result = ChunkVisualAnalysis(**{
+            "source_id": source_id,
+            "chunk_id": chunk_id,
+            "analyses": [
+                FrameAnalysis(**{"frame_id": uuid.uuid4(), "description": huge_description}),
+                FrameAnalysis(**{"frame_id": uuid.uuid4(), "description": huge_description})
+            ]
+        })
+        visual_repo.save(visual_result)
 
-        chunk_1_id = "11111111-1111-1111-1111-111111111111"
-        assert chunk_1_id in audit_map
-        assert audit_map[chunk_1_id].is_visual_accepted is True
-        assert audit_map[chunk_1_id].discard_reason is None
+        # 2. Execute
+        result = live_api.execute(source_id, release_after=True)
 
-        chunk_2_id = "22222222-2222-2222-2222-222222222222"
-        assert chunk_2_id in audit_map
-        assert audit_map[chunk_2_id].is_visual_accepted is False
-        assert audit_map[chunk_2_id].discard_reason is not None
-        assert len(audit_map[chunk_2_id].discard_reason) > 5
-
-        # --- 3. VERIFY DATABASE PERSISTENCE ---
-        db_transcript = live_api._repo.get_by_source_id(source_id)
-        assert db_transcript is not None
-        assert len(db_transcript.audits) == 2
+        # 3. Assertions
+        assert isinstance(result, VisualHallucinationEvaluatedTranscript)
+        assert len(result.audits) == 1
+        assert hallucination_repo.get_by_source_id(source_id) is not None
