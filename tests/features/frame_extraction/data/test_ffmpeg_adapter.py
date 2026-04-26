@@ -1,65 +1,64 @@
-# Canvas: test_ffmpeg_extraction_adapter_v2
+# Canvas: test_frame_ffmpeg_adapter_v2
 # Path: tests/features/frame_extraction/data/test_ffmpeg_adapter.py
 
 import pytest
 import subprocess
-from pathlib import Path
 from unittest.mock import patch
 
-from app.features.contextual_retrieval.domain.entities import ContextualizedChunk
 from app.features.frame_extraction.data.ffmpeg_adapter import FFmpegExtractionAdapter
-from app.features.frame_extraction import exceptions as exc
 
 
 class TestFFmpegExtractionAdapter:
     @pytest.fixture
     def adapter(self):
-        # Initialized with our new max_dimension parameter
-        return FFmpegExtractionAdapter(timeout_seconds=60, max_dimension=1024)
-
-    @pytest.fixture
-    def sample_chunk(self):
-        # 2 second chunk from 10.0 to 12.0
-        return ContextualizedChunk(start_sec=10.0, end_sec=12.0)
+        return FFmpegExtractionAdapter()
 
     @patch("app.features.frame_extraction.data.ffmpeg_adapter.subprocess.run")
-    @patch("pathlib.Path.exists", return_value=True)
-    @patch("pathlib.Path.glob")
-    def test_extract_raw_frames_happy_path(self, mock_glob, mock_exists, mock_run, adapter, sample_chunk):
-        # Simulate FFmpeg creating 2 frames
-        mock_glob.return_value = [Path("frame_0001.jpg"), Path("frame_0002.jpg")]
+    def test_extract_frame_success_with_corruption_flags(self, mock_run, adapter):
+        """Verifies that the adapter executes FFmpeg with the correct resilience flags."""
+        # Setup mock to simulate a successful extraction
+        mock_run.return_value = subprocess.CompletedProcess(args=[], returncode=0)
 
-        result = adapter.extract_raw_frames("video.mp4", "/tmp/out", sample_chunk, fps=1)
+        result = adapter.extract_frame("corrupted_video.mp4", 10.5, "output.jpg")
 
-        assert len(result) == 2
-        # Verify timestamp mapping calculation (starts at 10.0)
-        assert result[0][0] == 10.0
-        assert result[1][0] == 11.0
-
-        # Verify FFmpeg fast-seek command structure
+        # Assertions
+        assert result is True
         mock_run.assert_called_once()
-        cmd = mock_run.call_args[0][0]
 
-        assert "-ss" in cmd
-        assert "-t" in cmd
-        assert "10.0" in cmd  # Start time
-        assert "2.0" in cmd  # Duration
+        cmd_args = mock_run.call_args[0][0]
 
-        # Verify the new video filter string includes both fps and the downscale logic
-        vf_index = cmd.index("-vf")
-        vf_string = cmd[vf_index + 1]
+        # Verify the new corruption resilience flags are enforced
+        assert "-err_detect" in cmd_args
+        assert "ignore_err" in cmd_args
+        assert "-fflags" in cmd_args
+        assert "+discardcorrupt" in cmd_args
 
-        assert "fps=1" in vf_string
-        assert "scale='min(1024,iw)':'min(1024,ih)'" in vf_string
-        assert "force_original_aspect_ratio=decrease" in vf_string
+        # Verify standard parameters
+        assert "-ss" in cmd_args
+        assert "10.5" in cmd_args
+        assert "corrupted_video.mp4" in cmd_args
+        assert "output.jpg" in cmd_args
+        assert "-vframes" in cmd_args
+        assert "1" in cmd_args
 
-    def test_extract_raw_frames_missing_video(self, adapter, sample_chunk):
-        with pytest.raises(exc.FFmpegProcessError):
-            adapter.extract_raw_frames("nonexistent.mp4", "/tmp/out", sample_chunk)
+    @patch("app.features.frame_extraction.data.ffmpeg_adapter.subprocess.run")
+    def test_extract_frame_handles_called_process_error(self, mock_run, adapter):
+        """Verifies that unrecoverable FFmpeg errors return False safely."""
+        mock_run.side_effect = subprocess.CalledProcessError(
+            returncode=1,
+            cmd="ffmpeg",
+            stderr="Fatal unrecoverable error"
+        )
 
-    @patch("app.features.frame_extraction.data.ffmpeg_adapter.subprocess.run",
-           side_effect=subprocess.TimeoutExpired(cmd="ffmpeg", timeout=60))
-    @patch("pathlib.Path.exists", return_value=True)
-    def test_extract_raw_frames_timeout(self, mock_exists, mock_run, adapter, sample_chunk):
-        with pytest.raises(exc.FFmpegProcessError):
-            adapter.extract_raw_frames("video.mp4", "/tmp/out", sample_chunk)
+        result = adapter.extract_frame("video.mp4", 15.0, "output.jpg")
+
+        assert result is False
+
+    @patch("app.features.frame_extraction.data.ffmpeg_adapter.subprocess.run")
+    def test_extract_frame_handles_timeout(self, mock_run, adapter):
+        """Verifies that hanging FFmpeg processes return False safely."""
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="ffmpeg", timeout=30)
+
+        result = adapter.extract_frame("video.mp4", 20.0, "output.jpg")
+
+        assert result is False

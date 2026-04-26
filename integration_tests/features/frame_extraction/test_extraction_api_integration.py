@@ -1,4 +1,4 @@
-# Canvas: test_extraction_api_integration_v2
+# Canvas: test_extraction_api_integration_v8
 # Path: integration_tests/features/frame_extraction/test_extraction_api_integration.py
 
 import os
@@ -37,125 +37,107 @@ class TestExtractionAPIIntegration:
 
     @pytest.fixture(autouse=True)
     def check_ffmpeg_installed(self):
-        """Skip these integration tests if FFmpeg is not installed on the host machine."""
         try:
-            subprocess.run(
-                 ["ffmpeg", "-version"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                check=False
-            )
+            subprocess.run(["ffmpeg", "-version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
         except FileNotFoundError:
-            pytest.skip("FFmpeg is not installed on this system. Skipping real integration test.")
+            pytest.skip("FFmpeg is not installed on this system.")
 
     @pytest.fixture
-    def api_setup(self, db_manager, tmp_path):
-        """Wires up the REAL Storage Vault, REAL Extractors, REAL CPU Filters, and REAL Database."""
-        # 1. Setup Storage Vault
-        storage_repo = StorageRepository(db_manager)
-        storage_api = StorageAPI(storage_repo)
-        storage_api.file_manager.base_path = tmp_path / "vault"
-        storage_api.file_manager.base_path.mkdir(parents=True, exist_ok=True)
+    def storage_api(self, tmp_path):
+        repo = StorageRepository(global_db_manager)
+        api = StorageAPI(repo)
+        api.file_manager.base_path = tmp_path / "test_vault"
+        api.file_manager.base_path.mkdir(parents=True, exist_ok=True)
+        return api
 
-        # 2. Setup Frame Extraction Dependencies
-        extraction_repo = FrameExtractionRepository(db_manager)
-        ffmpeg_adapter = FFmpegExtractionAdapter(timeout_seconds=60)
+    @pytest.fixture
+    def extraction_api(self, storage_api):
+        ffmpeg_adapter = FFmpegExtractionAdapter()
+        repo = FrameExtractionRepository(global_db_manager)
+        quality_filter = QualityFilter()
+        deduplicator = FrameDeduplicator()
 
-        # Using a safer blur threshold for compressed synthetic video
-        quality_filter = QualityFilter(blur_threshold=50.0)
-        deduplicator = FrameDeduplicator(hamming_threshold=5)
-
-        # 3. Build Orchestrating Service
-        extraction_api = FrameExtractionAPI(
-            repository=extraction_repo,
+        # noinspection PyTypeChecker
+        return FrameExtractionAPI(
+            repository=repo,
             ffmpeg_adapter=ffmpeg_adapter,
             storage_api=storage_api,
             quality_filter=quality_filter,
             deduplicator=deduplicator
         )
 
-        return extraction_api, storage_api
-
     @staticmethod
-    def generate_synthetic_video(output_path: Path) -> None:
-        """
-        Generates a 5-second video with a ticking timestamp and scrolling color bars.
-        This guarantees sharp edges (passes Quality Filter) and changing pixels (passes Deduplicator).
-        """
-        command: list[str] = [
-            "ffmpeg", "-y",
-            "-f", "lavfi",
-            "-i", "testsrc=duration=5:size=320x240:rate=30",
-            "-c:v", "libx264",
-            os.fspath(output_path)
+    def generate_real_dummy_video(output_path: Path):
+        """Generates a real 5-second video file using FFmpeg for testing."""
+        cmd = [
+            "ffmpeg", "-y", "-f", "lavfi",
+            "-i", "testsrc=duration=5:size=320x240:rate=1",
+            "-c:v", "libx264", str(output_path)
         ]
-        subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
 
-    def test_end_to_end_chunk_extraction_batch(self, api_setup, tmp_path):
+    def test_end_to_end_chunk_extraction_batch(self, storage_api, extraction_api, tmp_path):
         """
-        Scenario:
-        1. A REAL dummy video is generated and ingested into the REAL Storage Vault.
-        2. A ContextualizedChunk is simulated for [1.0s -> 4.0s].
-        3. Extractor API is called with the batch processor.
-        4. Frames pass through REAL OpenCV Blur Detection and pHash Deduplication.
-        5. Surviving frames are vaulted, and JSONB mapping is saved to Postgres.
-        6. Idempotency is verified by running the batch processor again.
+        Tests the entire extraction flow:
+        1. Ingesting a real video.
+        2. Extracting frames for a specific chunk.
+        3. Saving frames to the vault and PostgreSQL.
+        4. Verifying idempotency on repeat runs.
         """
-        extraction_api, storage_api = api_setup
-
         # ---------------------------------------------------------
-        # PHASE 1: PREPARATION & INGESTION
+        # PHASE 1: SETUP REAL VIDEO AND MOCK CHUNK
         # ---------------------------------------------------------
-        source_dir = tmp_path / "usb_drive"
+        source_dir = tmp_path / "inputs"
         source_dir.mkdir()
-        source_file = source_dir / "synthetic_test.mp4"
-        self.generate_synthetic_video(source_file)
+        source_file = source_dir / "real_test_video.mp4"
+        self.generate_real_dummy_video(source_file)
 
         video_source = storage_api.ingest_local_file(
             file_path=os.fspath(source_file),
             source_type=SourceType.VIDEO,
-            name="Extraction Integration Test"
+            name="Frame Extraction Test Video"
         )
 
-        # Create the simulated logical text chunk targeting the middle 3 seconds
         test_chunk = ContextualizedChunk(
             chunk_id=uuid.uuid4(),
             start_sec=1.0,
             end_sec=4.0,
-            original_text="The speaker points to the ticking clock.",
-            context_string="A demonstration of time passing."
+            original_text="This is a test chunk.",
+            needs_visual=True
         )
 
         # ---------------------------------------------------------
-        # PHASE 2: FIRST EXTRACTION (Heavy Lifting, Multi-Threaded)
+        # PHASE 2: FIRST EXTRACTION RUN
         # ---------------------------------------------------------
-        extraction_records = extraction_api.process_chunks_batch(
+        assert video_source.file is not None  # Explicit assert for strict typing
+
+        extraction_records_1 = extraction_api.process_chunks_batch(
             source_id=video_source.id,
             video_path=video_source.file.file_path,
             chunks=[test_chunk]
         )
-        extraction_record_1 = extraction_records[0]
 
-        # Assertions
+        assert len(extraction_records_1) == 1
+        extraction_record_1 = extraction_records_1[0]
+
         assert isinstance(extraction_record_1, ExtractedChunkFrames)
         assert extraction_record_1.source_id == video_source.id
         assert extraction_record_1.chunk_id == test_chunk.chunk_id
 
-        # At 1 fps for 3 seconds (1.0 to 4.0), we expect exactly 3 frames
         assert len(extraction_record_1.frames) == 3
 
-        # Verify timestamps map accurately to the chunk bounds
         assert extraction_record_1.frames[0].timestamp_sec == 1.0
         assert extraction_record_1.frames[1].timestamp_sec == 2.0
         assert extraction_record_1.frames[2].timestamp_sec == 3.0
 
-        # Verify the physical JPEGs are securely in the Vault
         vault_jpgs_1 = list(storage_api.file_manager.base_path.rglob("*.jpg"))
         assert len(vault_jpgs_1) == 3
 
         # ---------------------------------------------------------
         # PHASE 3: IDEMPOTENCY CHECK
         # ---------------------------------------------------------
+        assert video_source.file is not None
+
         extraction_records_2 = extraction_api.process_chunks_batch(
             source_id=video_source.id,
             video_path=video_source.file.file_path,
@@ -163,9 +145,7 @@ class TestExtractionAPIIntegration:
         )
         extraction_record_2 = extraction_records_2[0]
 
-        # Verify the exact same DB record was returned instantly
         assert extraction_record_1.id == extraction_record_2.id
 
-        # Verify FFmpeg was bypassed (no duplicate junk frames in the vault)
         vault_jpgs_2 = list(storage_api.file_manager.base_path.rglob("*.jpg"))
         assert len(vault_jpgs_2) == 3
