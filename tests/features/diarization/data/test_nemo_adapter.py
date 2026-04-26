@@ -1,4 +1,4 @@
-# Canvas: test_diarization_adapter_v9
+# Canvas: test_diarization_adapter_v10
 # Path: tests/features/diarization/test_nemo_adapter.py
 
 import uuid
@@ -42,13 +42,17 @@ class TestNeMoDiarizationAdapter:
         loaded_model = LoadedModel(manifest=manifest, model_instance="/fake/path/titanet.nemo")
         assert adapter.unload(loaded_model) is True
 
+    @patch("app.features.diarization.data.nemo_adapter.torch.cuda.empty_cache")
+    @patch("app.features.diarization.data.nemo_adapter.torch.cuda.is_available")
+    @patch("app.features.diarization.data.nemo_adapter.gc.collect")
     @patch("torchaudio.load")
     @patch.object(NeMoDiarizationAdapter, '_get_diarizer')
     @patch("app.features.diarization.data.nemo_adapter.Path.exists")
     @patch("builtins.open")
     @patch("tempfile.TemporaryDirectory")
     def test_generate_diarization_map_pure_mock(
-            self, mock_temp_dir, mock_file_open, mock_path_exists, mock_get_diarizer, mock_ta_load, adapter, manifest
+            self, mock_temp_dir, mock_file_open, mock_path_exists, mock_get_diarizer, mock_ta_load,
+            mock_gc, mock_cuda_avail, mock_empty_cache, adapter, manifest
     ):
         """
         Tests the file I/O operations and RTTM parsing completely isolated
@@ -57,6 +61,9 @@ class TestNeMoDiarizationAdapter:
         source_id = uuid.uuid4()
         loaded_model = LoadedModel(manifest=manifest, model_instance="/fake/path/titanet.nemo")
         vad_map = VadMap(source_id=source_id, segments=[VadSegment(start_sec=1.0, end_sec=5.0, confidence=0.99)])
+
+        # Mock VRAM availability
+        mock_cuda_avail.return_value = True
 
         # Mock Torchaudio so it doesn't try to read the fake file (Simulates Mono 16kHz)
         mock_ta_load.return_value = (torch.zeros(1, 16000), 16000)
@@ -85,7 +92,13 @@ class TestNeMoDiarizationAdapter:
         # Execute
         result = adapter.generate_diarization_map(loaded_model, "/fake/audio.wav", vad_map, source_id)
 
-        # --- NEW ASSERTION: Enforce the 2-Scale VRAM Fix ---
+        # --- ASSERTION: Verify Pre-emptive VRAM flush was executed ---
+        mock_gc.assert_called_once()
+        mock_cuda_avail.assert_called_once()
+        mock_empty_cache.assert_called_once()
+        # -------------------------------------------------------------
+
+        # --- ASSERTION: Enforce the 2-Scale VRAM Fix ---
         cfg_passed_to_nemo = mock_get_diarizer.call_args[0][0]
         embedding_params = cfg_passed_to_nemo.diarizer.speaker_embeddings.parameters
 
@@ -106,6 +119,9 @@ class TestNeMoDiarizationAdapter:
         mock_diarizer_instance.diarize.assert_called_once()
         assert mock_file_open.call_count == 3
 
+    @patch("app.features.diarization.data.nemo_adapter.torch.cuda.empty_cache")
+    @patch("app.features.diarization.data.nemo_adapter.torch.cuda.is_available")
+    @patch("app.features.diarization.data.nemo_adapter.gc.collect")
     @patch("torchaudio.save")
     @patch("torchaudio.load")
     @patch.object(NeMoDiarizationAdapter, '_get_diarizer')
@@ -114,7 +130,7 @@ class TestNeMoDiarizationAdapter:
     @patch("tempfile.TemporaryDirectory")
     def test_generate_diarization_map_converts_stereo_to_mono(
             self, mock_temp_dir, mock_file_open, mock_path_exists, mock_get_diarizer, mock_ta_load, mock_ta_save,
-            adapter, manifest
+            mock_gc, mock_cuda_avail, mock_empty_cache, adapter, manifest
     ):
         source_id = uuid.uuid4()
         loaded_model = LoadedModel(manifest=manifest, model_instance="/fake/path/titanet.nemo")
@@ -149,12 +165,16 @@ class TestNeMoDiarizationAdapter:
         assert len(result.segments) == 1
         assert result.segments[0].speaker_id == "Speaker_1"
 
+    @patch("app.features.diarization.data.nemo_adapter.torch.cuda.empty_cache")
+    @patch("app.features.diarization.data.nemo_adapter.torch.cuda.is_available")
+    @patch("app.features.diarization.data.nemo_adapter.gc.collect")
     @patch("torchaudio.load")
     @patch.object(NeMoDiarizationAdapter, '_get_diarizer')
     @patch("builtins.open")
     @patch("tempfile.TemporaryDirectory")
     def test_generate_diarization_map_fallback_on_expected_clustering_error(
-            self, mock_temp_dir, mock_file_open, mock_get_diarizer, mock_ta_load, adapter, manifest
+            self, mock_temp_dir, mock_file_open, mock_get_diarizer, mock_ta_load,
+            mock_gc, mock_cuda_avail, mock_empty_cache, adapter, manifest
     ):
         source_id = uuid.uuid4()
         loaded_model = LoadedModel(manifest=manifest, model_instance="/fake/path/titanet.nemo")
@@ -180,12 +200,16 @@ class TestNeMoDiarizationAdapter:
 
         assert mock_file_open.call_count == 2
 
+    @patch("app.features.diarization.data.nemo_adapter.torch.cuda.empty_cache")
+    @patch("app.features.diarization.data.nemo_adapter.torch.cuda.is_available")
+    @patch("app.features.diarization.data.nemo_adapter.gc.collect")
     @patch("torchaudio.load")
     @patch.object(NeMoDiarizationAdapter, '_get_diarizer')
     @patch("builtins.open")
     @patch("tempfile.TemporaryDirectory")
     def test_generate_diarization_map_bubbles_critical_system_errors(
-            self, mock_temp_dir, mock_file_open, mock_get_diarizer, mock_ta_load, adapter, manifest
+            self, mock_temp_dir, mock_file_open, mock_get_diarizer, mock_ta_load,
+            mock_gc, mock_cuda_avail, mock_empty_cache, adapter, manifest
     ):
         source_id = uuid.uuid4()
         loaded_model = LoadedModel(manifest=manifest, model_instance="/fake/path/titanet.nemo")
@@ -206,13 +230,17 @@ class TestNeMoDiarizationAdapter:
 
         assert "CUDA out of memory" in str(exc_info.value)
 
+    @patch("app.features.diarization.data.nemo_adapter.torch.cuda.empty_cache")
+    @patch("app.features.diarization.data.nemo_adapter.torch.cuda.is_available")
+    @patch("app.features.diarization.data.nemo_adapter.gc.collect")
     @patch("torchaudio.load")
     @patch.object(NeMoDiarizationAdapter, '_get_diarizer')
     @patch("app.features.diarization.data.nemo_adapter.Path.exists")
     @patch("builtins.open")
     @patch("tempfile.TemporaryDirectory")
     def test_generate_diarization_map_fallback_on_missing_rttm(
-            self, mock_temp_dir, mock_file_open, mock_path_exists, mock_get_diarizer, mock_ta_load, adapter, manifest
+            self, mock_temp_dir, mock_file_open, mock_path_exists, mock_get_diarizer, mock_ta_load,
+            mock_gc, mock_cuda_avail, mock_empty_cache, adapter, manifest
     ):
         source_id = uuid.uuid4()
         loaded_model = LoadedModel(manifest=manifest, model_instance="/fake/path/titanet.nemo")

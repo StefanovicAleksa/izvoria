@@ -1,7 +1,8 @@
-# Canvas: nemo_diarization_adapter_v7
+# Canvas: nemo_diarization_adapter_v8
 # Path: app/features/diarization/data/nemo_adapter.py
 
 import os
+import gc
 import json
 import tempfile
 import uuid
@@ -54,6 +55,16 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
             source_id: uuid.UUID
     ) -> DiarizationMap:
         try:
+            # ==========================================================
+            # FIX 2: Pre-emptive VRAM Defragmentation
+            # ==========================================================
+            # By Phase 6, Whisper and Domain Adaptation have fragmented the
+            # PyTorch CUDA allocator. We force a deep clean right before TitaNet.
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            # ==========================================================
+
             audio_path_obj = Path(audio_path).resolve()
             audio_id = audio_path_obj.stem
 
@@ -137,7 +148,7 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                             "model_path": model.model_instance,
                             "parameters": {
                                 # ==========================================================
-                                # CRITICAL FIX: The 2-Scale VRAM Compromise
+                                # The 2-Scale VRAM Compromise
                                 # ==========================================================
                                 # Drastically reduces O(N^2) Spectral Clustering Matrix Size
                                 # while retaining the 0.5s window for rapid legal objections.
@@ -172,8 +183,7 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                     is_clustering_fault = "linalg" in err_str or "singular matrix" in err_str or "converge" in err_str
 
                     if is_math_error or is_clustering_fault:
-                        print(
-                            f"[DIARIZATION FALLBACK] Spectral Clustering failed (likely a monologue). Applying fallback. Details: {fallback_err}")
+                        print(f"[DIARIZATION FALLBACK] Spectral Clustering failed (likely a monologue). Applying fallback. Details: {fallback_err}")
                         fallback_segments = [
                             DiarizationSegment(
                                 start_sec=seg.start_sec,
