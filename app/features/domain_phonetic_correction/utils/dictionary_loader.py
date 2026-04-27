@@ -1,13 +1,14 @@
-# Canvas: dictionary_loader_v2
-# Path: app/features/phonetic_correction/utils/dictionary_loader.py
+# File: app/features/domain_phonetic_correction/utils/dictionary_loader.py
+# Canvas: dictionary_loader_v5
+# Path: app/features/domain_phonetic_correction/utils/dictionary_loader.py
 
 import json
 import logging
-from pathlib import Path
+from pathlib import Path  # CRITICAL: Keep this import for unit test patching
 from typing import List
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
-
 
 class DictionaryLoader:
     """
@@ -21,8 +22,8 @@ class DictionaryLoader:
         Reads the master glossary and returns a bulleted string of valid terminology.
         Aggregates terms from multiple sub-domains if provided.
         """
-        root_dir = Path(__file__).resolve().parent.parent.parent.parent.parent
-        glossary_path = root_dir / "data" / "glossaries" / f"{industry.lower()}.json"
+        # Centralized path resolution
+        glossary_path = settings.GLOSSARY_DIR / f"{industry.lower()}.json"
 
         if not glossary_path.exists():
             logger.warning(f"Master domain glossary not found at {glossary_path}.")
@@ -35,18 +36,22 @@ class DictionaryLoader:
             # 1. Grab the base industry terms
             terms = manifest_data.get("base_terms", [])
 
-            # 2. Iterate through the new sub_domains list and aggregate all anchors/terms
+            # 2. Aggregate sub-domain terms
             manifest_sub_domains = manifest_data.get("sub_domains", {})
 
             for sub_domain in sub_domains:
                 if sub_domain in manifest_sub_domains:
-                    terms.extend(manifest_sub_domains[sub_domain].get("anchor_words", []))
-                    terms.extend(manifest_sub_domains[sub_domain].get("terms", []))
+                    data = manifest_sub_domains[sub_domain]
+                    if isinstance(data, dict):
+                        terms.extend(data.get("anchor_words", []))
+                        terms.extend(data.get("terms", []))
+                    else:
+                        terms.extend(data)
 
             if not terms:
                 return ""
 
-            # Deduplicate, sort, and format into a clean string list for the LLM
+            # Deduplicate and sort
             unique_terms = sorted(list(set(terms)))
             return "\n".join([f"- {term.strip()}" for term in unique_terms])
 

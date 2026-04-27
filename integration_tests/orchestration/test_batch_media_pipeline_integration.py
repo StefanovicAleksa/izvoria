@@ -1,4 +1,4 @@
-# Canvas: test_batch_media_pipeline_integration_v33
+# Canvas: test_batch_media_pipeline_integration_v37
 # Path: integration_tests/orchestration/test_batch_media_pipeline_integration.py
 
 import subprocess
@@ -6,6 +6,8 @@ import pytest
 import shutil
 import os
 import gc
+import json
+import typing
 from pathlib import Path
 
 from app.core.config import settings
@@ -25,7 +27,7 @@ from app.features.scanner.service.scanner import FileScanner
 
 from app.features.audio_extractor.service.extractor_api import AudioExtractorAPI
 from app.features.audio_extractor.data.repositories import AudioExtractionRepository
-from app.features.audio_extractor.data.ffmpeg_adapter import FFmpegAdapter
+from app.features.audio_extractor.data.ffmpeg_adapter import FFmpegAdapter as AudioFFmpegAdapter
 
 from app.features.vad.data.repositories import VadRepository
 from app.features.vad.service.vad_api import VadAPI
@@ -62,7 +64,7 @@ from app.features.contextual_retrieval.service.contextualizer_api import Context
 from app.features.visual_cue_detection.data.qwen_detector_adapter import QwenDetectorAdapter
 from app.features.visual_cue_detection.service.detection_api import VisualCueDetectionAPI
 
-from app.features.frame_extraction.data.ffmpeg_adapter import FFmpegExtractionAdapter
+from app.features.frame_extraction.data.ffmpeg_adapter import FFmpegExtractionAdapter as FrameFFmpegAdapter
 from app.features.frame_extraction.data.repositories import FrameExtractionRepository
 from app.features.frame_extraction.service.extraction_api import FrameExtractionAPI
 from app.features.frame_extraction.utils.quality_filter import QualityFilter
@@ -83,11 +85,10 @@ from app.features.visual_context_synthesis.service.synthesis_api import VisualSy
 from app.features.context_unification.data.repositories import ContextUnificationRepository
 from app.features.context_unification.service.unification_api import UnificationAPI
 
-from app.features.clip_extractor.data.ffmpeg_video_adapter import FFmpegVideoAdapter
+from app.features.clip_extractor.data.ffmpeg_video_adapter import FFmpegVideoAdapter as ClipFFmpegAdapter
 from app.features.clip_extractor.data.repositories import VideoClipRepository
 from app.features.clip_extractor.service.extractor_api import ClipExtractorAPI
 
-# UPDATED: Unified RAG Repository Imports
 from app.features.rag_storage.data.postgres_rag_repo import PostgresRagRepository
 from app.features.rag_storage.data.hf_embedder import HuggingFaceEmbeddingAdapter
 from app.features.rag_storage.service.storage_api import RAGStorageService
@@ -117,6 +118,23 @@ from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 
 
 class TestBatchMediaPipelineIntegration:
+
+    @pytest.fixture(autouse=True)
+    def seed_glossary(self):
+        """Seeds a mock glossary to ensure Phase 5 (Domain Adaptation) passes."""
+        settings.GLOSSARY_DIR.mkdir(parents=True, exist_ok=True)
+        glossary_file = settings.GLOSSARY_DIR / "general.json"
+
+        if not glossary_file.exists():
+            mock_data = {
+                "base_terms": ["Onyx", "AI"],
+                "sub_domains": {
+                    "legal": {"anchor_words": ["affidavit", "plaintiff"], "terms": ["litigation"]},
+                    "medical": {"anchor_words": ["diagnosis", "cardiology"], "terms": ["prognosis"]}
+                }
+            }
+            with open(glossary_file, 'w') as f:
+                json.dump(mock_data, f)
 
     @pytest.fixture(autouse=True, scope="function")
     def vram_cleanup(self):
@@ -163,7 +181,7 @@ class TestBatchMediaPipelineIntegration:
         scanner = FileScanner()
 
         audio_repo = AudioExtractionRepository(db_manager)
-        ffmpeg_audio_adapter = FFmpegAdapter(timeout_seconds=300)
+        ffmpeg_audio_adapter = AudioFFmpegAdapter(timeout_seconds=300)
         audio_extractor = AudioExtractorAPI(
             ffmpeg_adapter=ffmpeg_audio_adapter,
             repository=audio_repo,
@@ -259,12 +277,16 @@ class TestBatchMediaPipelineIntegration:
         )
 
         frame_repo = FrameExtractionRepository(db_manager)
-        ffmpeg_ext_adapter = FFmpegExtractionAdapter()
+        ffmpeg_ext_adapter = FrameFFmpegAdapter()
         quality_filter = QualityFilter()
         deduplicator = FrameDeduplicator()
+
+        # FIX: We use 'typing.cast' + PyCharm suppression to satisfy strict type checkers
+        # for our structural typing (duck typing) implementation.
+        # noinspection PyTypeChecker
         frame_extraction_api = FrameExtractionAPI(
             repository=frame_repo,
-            ffmpeg_adapter=ffmpeg_ext_adapter,
+            ffmpeg_adapter=typing.cast('typing.Any', ffmpeg_ext_adapter),  # type: ignore
             storage_api=storage_api,
             quality_filter=quality_filter,
             deduplicator=deduplicator
@@ -302,14 +324,13 @@ class TestBatchMediaPipelineIntegration:
         unification_api = UnificationAPI(repository=context_unification_repo)
 
         clip_repo = VideoClipRepository(db_manager)
-        ffmpeg_video_adapter = FFmpegVideoAdapter(timeout_seconds=60)
+        ffmpeg_video_adapter = ClipFFmpegAdapter(timeout_seconds=60)
         clip_extractor_api = ClipExtractorAPI(
             ffmpeg_adapter=ffmpeg_video_adapter,
             repository=clip_repo,
             storage_api=storage_api
         )
 
-        # UPDATED: Phase 16 Initialization Core
         rag_repo = PostgresRagRepository()
         hf_embedder = HuggingFaceEmbeddingAdapter()
         rag_storage_service = RAGStorageService(
@@ -427,38 +448,19 @@ class TestBatchMediaPipelineIntegration:
                 pytest.skip(f"Skipping test due to insufficient VRAM: {e}")
             raise e
 
-        assert PipelinePhase.SCAN in results
-        assert PipelinePhase.INGEST in results
-        assert PipelinePhase.AUDIO_EXTRACTION in results
-        assert PipelinePhase.VAD in results
-        assert PipelinePhase.DOMAIN_ADAPTATION in results
-        assert PipelinePhase.TRANSCRIBE in results
-        assert PipelinePhase.HALLUCINATION_CORRECTION in results
-        assert PipelinePhase.DIARIZE in results
-        assert PipelinePhase.SENTENCE_RECONSTRUCTION in results
-        assert PipelinePhase.DOMAIN_PHONETIC_CORRECTION in results
-        assert PipelinePhase.CONTEXTUAL_RETRIEVAL in results
-        assert PipelinePhase.VISUAL_CUE_DETECTION in results
-        assert PipelinePhase.FRAME_EXTRACTION in results
-        assert PipelinePhase.VISUAL_ANALYSIS in results
-        assert PipelinePhase.VISUAL_HALLUCINATION_CORRECTION in results
-        assert PipelinePhase.VISUAL_CONTEXT_SYNTHESIS in results
-        assert PipelinePhase.CONTEXT_UNIFICATION in results
-        assert PipelinePhase.CLIP_EXTRACTION in results
-        assert PipelinePhase.RAG_INDEXING in results
+        # Assert Pipeline Presence
+        expected_phases = [
+            PipelinePhase.SCAN, PipelinePhase.INGEST, PipelinePhase.AUDIO_EXTRACTION,
+            PipelinePhase.VAD, PipelinePhase.DOMAIN_ADAPTATION, PipelinePhase.TRANSCRIBE,
+            PipelinePhase.HALLUCINATION_CORRECTION, PipelinePhase.DIARIZE,
+            PipelinePhase.SENTENCE_RECONSTRUCTION, PipelinePhase.DOMAIN_PHONETIC_CORRECTION,
+            PipelinePhase.CONTEXTUAL_RETRIEVAL, PipelinePhase.VISUAL_CUE_DETECTION,
+            PipelinePhase.FRAME_EXTRACTION, PipelinePhase.VISUAL_ANALYSIS,
+            PipelinePhase.VISUAL_HALLUCINATION_CORRECTION, PipelinePhase.VISUAL_CONTEXT_SYNTHESIS,
+            PipelinePhase.CONTEXT_UNIFICATION, PipelinePhase.CLIP_EXTRACTION,
+            PipelinePhase.RAG_INDEXING
+        ]
 
-        assert results[PipelinePhase.SCAN].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.INGEST].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.AUDIO_EXTRACTION].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.VAD].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.DOMAIN_ADAPTATION].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.TRANSCRIBE].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.HALLUCINATION_CORRECTION].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.DIARIZE].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.SENTENCE_RECONSTRUCTION].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.DOMAIN_PHONETIC_CORRECTION].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.VISUAL_HALLUCINATION_CORRECTION].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.VISUAL_CONTEXT_SYNTHESIS].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.CONTEXT_UNIFICATION].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.CLIP_EXTRACTION].status == PhaseStatus.COMPLETED
-        assert results[PipelinePhase.RAG_INDEXING].status == PhaseStatus.COMPLETED
+        for phase in expected_phases:
+            assert phase in results
+            assert results[phase].status == PhaseStatus.COMPLETED

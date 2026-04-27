@@ -78,3 +78,8 @@ Thumbs.db
 combine_files_git.sh
 
 *jpg
+
+.env.prod
+.env.test
+
+input_video

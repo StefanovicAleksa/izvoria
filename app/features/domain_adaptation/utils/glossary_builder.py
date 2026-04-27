@@ -1,13 +1,15 @@
-# Canvas: domain_adaptation_glossary_builder_v2
-# Path: app/features/domain_adaptation/utils/glossary_builder.py
+# File: app/features/domain_adaptation/utils/glossary_builder.py
+# Canvas: glossary_builder_v3
 
 import json
-from pathlib import Path
+import logging
 from typing import List, Tuple
 
+from app.core.config import settings
 from app.features.domain_adaptation.exceptions.process import GlossaryManifestError
 from app.features.domain_adaptation.data.prompts import INITIAL_PROMPT_TEMPLATE
 
+logger = logging.getLogger(__name__)
 
 class GlossaryBuilder:
     """
@@ -45,7 +47,6 @@ class GlossaryBuilder:
         hotword_string = cls._format_hotwords(safe_anchors)
 
         # 4. Build Payload B: Initial Prompt (from imported template)
-        # Fallback to "General" if the array is empty to prevent weird grammar
         domain_names = ", ".join([d.replace("_", " ").title() for d in predicted_domains]) or "General"
 
         initial_prompt = INITIAL_PROMPT_TEMPLATE.format(
@@ -66,10 +67,13 @@ class GlossaryBuilder:
     @staticmethod
     def _load_master_glossary(industry: str) -> dict:
         file_name = f"{industry.lower()}.json"
-        root_dir = Path(__file__).resolve().parent.parent.parent.parent.parent
-        glossary_path = root_dir / "data" / "glossaries" / file_name
+        # FIX: Use centralized settings instead of brittle parent crawling
+        glossary_path = settings.GLOSSARY_DIR / file_name
 
         if not glossary_path.exists():
+            if industry.upper() == "GENERAL":
+                logger.warning(f"Master glossary missing at {glossary_path}. Using empty fallback.")
+                return {"base_terms": [], "sub_domains": {}}
             raise GlossaryManifestError(f"Master domain glossary not found at {glossary_path}.")
 
         try:

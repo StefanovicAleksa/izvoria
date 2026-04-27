@@ -1,26 +1,35 @@
-# Canvas: docker-compose_v4
 # Path: docker-compose.yaml
-
 services:
-  db:
+  # DEV DB (Port 5432)
+  db_dev:
     image: pgvector/pgvector:pg15
-    container_name: onyx_postgres_v2
+    container_name: onyx_postgres_dev
     restart: unless-stopped
     environment:
-      - POSTGRES_USER=${POSTGRES_USER}
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_USER=aleksa
+      - POSTGRES_PASSWORD=Onyx16
+      - POSTGRES_DB=onyx_dev_db
     ports:
-      - "${POSTGRES_PORT:-5432}:5432"
+      - "5432:5432"
     volumes:
-      - postgres_data_v2:/var/lib/postgresql/data
-      # FIXED: Pointing to the scripts directory
+      - postgres_dev_data:/var/lib/postgresql/data
       - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
-      interval: 5s
-      timeout: 5s
-      retries: 5
+
+  # TEST DB (Port 5433)
+  db_test:
+    image: pgvector/pgvector:pg15
+    container_name: onyx_postgres_test
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=onyx_test_db
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_test_data:/var/lib/postgresql/data
+      - ./scripts/init.sql:/docker-entrypoint-initdb.d/init.sql
 
 volumes:
-  postgres_data_v2:
+  postgres_dev_data:
+  postgres_test_data:
