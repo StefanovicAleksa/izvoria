@@ -1,13 +1,23 @@
-# Canvas: conftest_v4
-# Path: tests/conftest.py
+# Path: integration_tests/conftest.py
 
+import os
 import pytest
+import shutil
 import time
+from pathlib import Path
 from contextlib import contextmanager
 from sqlalchemy import text
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.exc import OperationalError
 
+# ==========================================
+# CRITICAL: ENVIRONMENT DECOUPLING
+# ==========================================
+# Force the application into 'test' mode BEFORE any app modules are imported.
+# This guarantees config.py evaluates ENV="test" on startup.
+os.environ["ENV"] = "test"
+
+from app.core.config import settings
 from app.core.database.service.manager import db_manager as core_db_manager
 from app.core.database.data.engine import Base
 
@@ -24,6 +34,7 @@ def setup_test_database():
     2. Forcefully drops the public schema to bypass Foreign Key deadlocks.
     3. Re-enables pgvector extension.
     4. Creates all tables (schema) required for the integration tests.
+    5. Seeds dummy glossaries for domain adaptation tests.
     """
     real_engine = core_db_manager._engine_wrapper._engine  # noqa
 
@@ -49,6 +60,16 @@ def setup_test_database():
 
     # C. CREATE ALL TABLES WITH THE NEW SCHEMA
     Base.metadata.create_all(bind=real_engine)
+
+    # D. SEED MOCK GLOSSARIES FROM TEST RESOURCES
+    # Copies your dummy json files so the tests don't crash looking for them
+    source_glossaries = settings.BASE_DIR / "integration_tests" / "resources"
+    test_glossaries = settings.GLOSSARY_DIR
+    test_glossaries.mkdir(parents=True, exist_ok=True)
+
+    if source_glossaries.exists():
+        for item in source_glossaries.glob("*.json"):
+            shutil.copy2(item, test_glossaries / item.name)
 
     yield
 

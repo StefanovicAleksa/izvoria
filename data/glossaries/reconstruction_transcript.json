@@ -1,0 +1,41 @@
+{
+  "source_id": "550e8400-e29b-41d4-a716-446655440000",
+  "segments": [
+    {
+      "start_sec": 1.0,
+      "end_sec": 2.5,
+      "text": "okay let us begin",
+      "speaker_id": "Speaker_0"
+    },
+    {
+      "start_sec": 2.5,
+      "end_sec": 5.0,
+      "text": "the deposition of mr smith",
+      "speaker_id": "Speaker_0"
+    },
+    {
+      "start_sec": 6.0,
+      "end_sec": 7.5,
+      "text": "could you please state your name",
+      "speaker_id": "Speaker_0"
+    },
+    {
+      "start_sec": 7.5,
+      "end_sec": 8.0,
+      "text": "for the record",
+      "speaker_id": "Speaker_0"
+    },
+    {
+      "start_sec": 9.0,
+      "end_sec": 10.0,
+      "text": "yes my name is",
+      "speaker_id": "Speaker_1"
+    },
+    {
+      "start_sec": 10.0,
+      "end_sec": 12.5,
+      "text": "john arthur smith",
+      "speaker_id": "Speaker_1"
+    }
+  ]
+}

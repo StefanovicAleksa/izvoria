@@ -3,16 +3,23 @@
 
 import os
 from pathlib import Path
-from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+APP_ENV = os.environ.get("ENV", "development")
+
+if APP_ENV == "test":
+    ENV_FILE = ".env.test"
+elif APP_ENV == "production":
+    ENV_FILE = ".env.prod"
+else:
+    ENV_FILE = ".env"
 
 class Settings(BaseSettings):
     # ==========================================
     # ENVIRONMENT SETTINGS
     # ==========================================
     # Options: development, test, production
-    ENV: str = "development"
+    ENV: str = APP_ENV
 
     # Project Root: app/core/config.py -> parent(core) -> parent(app) -> parent(root)
     BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
@@ -119,7 +126,7 @@ class Settings(BaseSettings):
     RAG_RRF_K_CONSTANT: int = 60
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=ENV_FILE,
         env_ignore_empty=True,
         extra="ignore"
     )

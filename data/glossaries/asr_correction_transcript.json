@@ -1,0 +1,29 @@
+{
+  "source_id": "99999999-9999-9999-9999-999999999999",
+  "sentences": [
+    {
+      "sentence_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "text": "The patient presented with severe chest pain, and I ordered an e k g.",
+      "speaker_id": "Speaker_1",
+      "start_sec": 0.0,
+      "end_sec": 4.5,
+      "segments": []
+    },
+    {
+      "sentence_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      "text": "We will prescribe fifty milligrams of a mox a cillin, um, twice daily.",
+      "speaker_id": "Speaker_1",
+      "start_sec": 4.5,
+      "end_sec": 9.0,
+      "segments": []
+    },
+    {
+      "sentence_id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "text": "The patient also has a history of, uh, chronic a f i b.",
+      "speaker_id": "Speaker_1",
+      "start_sec": 9.0,
+      "end_sec": 13.5,
+      "segments": []
+    }
+  ]
+}
