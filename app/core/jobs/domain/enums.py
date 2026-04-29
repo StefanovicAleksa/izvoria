@@ -32,3 +32,4 @@ class JobType(str, Enum):
     CONTEXT_UNIFICATION = "context_unification"  # Phase 15
     CLIP_EXTRACTION = "clip_extraction"  # Phase 15.5
     RAG_INDEXING = "rag_indexing"  # Phase 16
+    RETRIEVAL_SCRUBBING = "retrieval_scrubbing"
