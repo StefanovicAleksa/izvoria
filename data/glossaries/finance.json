@@ -1,0 +1,33 @@
+{
+  "base_terms": [
+    "EBITDA",
+    "CapEx",
+    "amortization"
+  ],
+  "sub_domains": {
+    "OPTIONS_TRADING": {
+      "anchor_words": [
+        "strike",
+        "theta",
+        "gamma",
+        "call option",
+        "put option"
+      ]
+    },
+    "M_AND_A": {
+      "anchor_words": [
+        "merger",
+        "acquisition",
+        "hostile takeover",
+        "synergy"
+      ]
+    },
+    "UK_MARKETS": {
+      "anchor_words": [
+        "Gilts",
+        "LSE",
+        "FTSE"
+      ]
+    }
+  }
+}
