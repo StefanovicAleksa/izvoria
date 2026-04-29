@@ -27,6 +27,10 @@ class PipelinePhase(str, Enum):
     CLIP_EXTRACTION = "clip_extraction"  # Phase 15.5
     RAG_INDEXING = "rag_indexing"  # Phase 16
 
+    # NEW: Live Inference Retrieval Phases
+    RAG_RETRIEVAL = "rag_retrieval"
+    RETRIEVAL_SCRUBBING = "retrieval_scrubbing"
+
 class PhaseStatus(str, Enum):
     """The execution status of an entire batch phase."""
     PENDING = "pending"

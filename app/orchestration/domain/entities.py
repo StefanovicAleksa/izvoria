@@ -1,4 +1,4 @@
-# Canvas: orchestration_entities_v22
+# Canvas: orchestration_entities_v23
 # Path: app/orchestration/domain/entities.py
 
 import uuid
@@ -150,6 +150,20 @@ class RagIndexingJobResult(BaseModel):
     success: bool
     dense_vectors_saved: int = 0
     sparse_vectors_saved: int = 0
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
+class RagRetrievalJobResult(BaseModel):
+    search_id: uuid.UUID
+    success: bool
+    retrieved_chunks_count: int = 0
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
+class RetrievalScrubbingJobResult(BaseModel):
+    search_id: uuid.UUID
+    success: bool
+    surviving_chunks_count: int = 0
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 
