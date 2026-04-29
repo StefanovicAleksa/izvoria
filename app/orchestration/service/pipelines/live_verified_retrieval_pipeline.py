@@ -1,4 +1,4 @@
-# Canvas: live_verified_retrieval_pipeline_v2
+# Canvas: live_verified_retrieval_pipeline_v3
 # Path: app/orchestration/service/pipelines/live_verified_retrieval_pipeline.py
 
 import logging
@@ -31,6 +31,11 @@ class LiveVerifiedRetrievalPipeline:
         self._retrieval_phase = retrieval_phase
         self._scrubber_phase = scrubber_phase
 
+    def preload_models(self) -> None:
+        """Public method to safely trigger the preloads for its sub-phases."""
+        self._retrieval_phase.preload_model()
+        self._scrubber_phase.preload_model()
+
     def execute_verified_search(self, search_id: uuid.UUID, query: SearchQuery) -> SearchResult:
         logger.info(f"========== Starting Live Verified Retrieval Pipeline for Search [{search_id}] ==========")
 
@@ -39,8 +44,7 @@ class LiveVerifiedRetrievalPipeline:
             # PHASE 1: RAG RETRIEVAL (EMBEDDING)
             # ==========================================
             # Preload Embedder + Scrubber concurrently to minimize VRAM swap time
-            self._retrieval_phase.preload_model()
-            self._scrubber_phase.preload_model()
+            self.preload_models()
 
             queries: List[Tuple[uuid.UUID, SearchQuery]] = [(search_id, query)]
             retrieval_phase_result = self._retrieval_phase.execute(queries)

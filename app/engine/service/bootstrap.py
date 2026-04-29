@@ -1,6 +1,3 @@
-# Canvas: engine_bootstrap_v1
-# Path: app/engine/service/bootstrap.py
-
 import logging
 import typing
 
@@ -91,6 +88,9 @@ from app.features.rag_retrieval.data.embedding_adapter import HuggingFacePromptA
 from app.features.rag_retrieval.data.postgres_search_repo import PostgresSearchRepository
 from app.features.rag_retrieval.service.retrieval_api import RetrievalAPI
 
+from app.features.retrieval_hallucination_scrubber.data.slm_adapter import QwenRetrievalScrubberAdapter
+from app.features.retrieval_hallucination_scrubber.service.scrubber_api import RetrievalScrubberAPI
+
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
 from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPhase
@@ -110,9 +110,13 @@ from app.orchestration.service.phases.visual_context_synthesis_phase import Visu
 from app.orchestration.service.phases.context_unification_phase import ContextUnificationPhase
 from app.orchestration.service.phases.clip_extraction_phase import ClipExtractionPhase
 from app.orchestration.service.phases.rag_indexing_phase import RagIndexingPhase
+from app.orchestration.service.phases.rag_retrieval_phase import RagRetrievalPhase
+from app.orchestration.service.phases.retrieval_scrubber_phase import RetrievalScrubberPhase
 
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.service.pipelines.batch_audio_pipeline import BatchAudioPipeline
+from app.orchestration.service.pipelines.live_retrieval_pipeline import LiveRetrievalPipeline
+from app.orchestration.service.pipelines.live_verified_retrieval_pipeline import LiveVerifiedRetrievalPipeline
 
 from app.engine.domain.interfaces import IOnyxEngine
 from app.engine.service.onyx_engine import OnyxEngine
@@ -184,8 +188,7 @@ class OnyxBootstrapper:
         reconstruction_api = SentenceReconstructionAPI(sentence_repo, orchestrator, real_punctuation_adapter)
         punctuation_path = getattr(settings, "PUNCTUATION_MODEL_PATH", "models/fullstop-punctuation-multilingual-base")
         punctuation_manifest = ModelManifest(model_type=ModelType.SENTENCE_RECONSTRUCTION, model_path=punctuation_path,
-                                             required_vram_mb=getattr(settings, "PUNCTUATION_VRAM_REQUIREMENT_MB",
-                                                                      500.0))
+                                             required_vram_mb=getattr(settings, "PUNCTUATION_VRAM_REQUIREMENT_MB", 500.0))
 
         phonetic_repo = DomainPhoneticRepository(db_manager)
         real_phonetic_adapter = QwenDomainAdapter()
@@ -246,13 +249,15 @@ class OnyxBootstrapper:
         hf_embedder = HuggingFaceEmbeddingAdapter()
         rag_storage_service = RAGStorageService(rag_repo=rag_repo, orchestrator=orchestrator, embedder=hf_embedder)
 
-        # --- Feature: RAG Retrieval ---
+        # --- Feature: Live Inference (RAG & Scrubber) ---
         search_repo = PostgresSearchRepository()
         prompt_adapter = HuggingFacePromptAdapter()
-        retrieval_api = RetrievalAPI(orchestrator=orchestrator, embedding_adapter=prompt_adapter,
-                                     search_repo=search_repo)
+        retrieval_api = RetrievalAPI(orchestrator=orchestrator, embedding_adapter=prompt_adapter, search_repo=search_repo)
 
-        # --- Orchestration: Common Phases ---
+        scrubber_adapter = QwenRetrievalScrubberAdapter()
+        scrubber_api = RetrievalScrubberAPI(adapter=scrubber_adapter, orchestrator=orchestrator)
+
+        # --- Orchestration: Common Batch Phases ---
         scan_phase = ScanPhase(job_manager, scanner)
         ingest_phase = IngestPhase(job_manager, storage_api)
         extract_audio_phase = ExtractAudioPhase(job_manager, audio_extractor)
@@ -272,7 +277,7 @@ class OnyxBootstrapper:
                                                     phonetic_repo=phonetic_repo, async_model_service=async_service,
                                                     loader=real_slm_adapter)
 
-        # --- Orchestration: Visual Phases ---
+        # --- Orchestration: Visual Batch Phases ---
         visual_cue_phase = VisualCueDetectionPhase(job_manager=job_manager, detection_api=visual_cue_api,
                                                    contextual_repo=contextual_repo, async_model_service=async_service,
                                                    loader=cue_detector_adapter)
@@ -290,7 +295,7 @@ class OnyxBootstrapper:
                                                                      async_model_service=async_service,
                                                                      loader=visual_synthesis_adapter)
 
-        # --- Orchestration: Final Phases ---
+        # --- Orchestration: Final Batch Phases ---
         context_unification_phase = ContextUnificationPhase(job_manager=job_manager, unification_api=unification_api,
                                                             contextual_repo=contextual_repo,
                                                             visual_synthesis_repo=visual_synthesis_repo)
@@ -300,51 +305,43 @@ class OnyxBootstrapper:
                                               unified_repo=context_unification_repo, async_model_service=async_service,
                                               loader=hf_embedder)
 
+        # --- Orchestration: Live Inference Phases ---
+        rag_retrieval_phase = RagRetrievalPhase(job_manager, retrieval_api, async_service, prompt_adapter)
+        retrieval_scrubber_phase = RetrievalScrubberPhase(job_manager, scrubber_api, async_service, scrubber_adapter)
+
         # --- Orchestration: Pipelines ---
         media_pipeline = BatchMediaPipeline(
-            scan_phase=scan_phase,
-            ingest_phase=ingest_phase,
-            extract_audio_phase=extract_audio_phase,
-            vad_phase=vad_phase,
-            domain_adaptation_phase=domain_adaptation_phase,
-            transcribe_phase=transcribe_phase,
-            hallucination_correction_phase=hallucination_correction_phase,
-            diarize_phase=diarize_phase,
-            sentence_reconstruction_phase=sentence_phase,
-            domain_phonetic_correction_phase=domain_phonetic_phase,
-            contextual_retrieval_phase=contextual_phase,
-            visual_cue_detection_phase=visual_cue_phase,
-            frame_extraction_phase=frame_extraction_phase,
-            visual_analysis_phase=visual_analysis_phase,
+            scan_phase=scan_phase, ingest_phase=ingest_phase, extract_audio_phase=extract_audio_phase,
+            vad_phase=vad_phase, domain_adaptation_phase=domain_adaptation_phase, transcribe_phase=transcribe_phase,
+            hallucination_correction_phase=hallucination_correction_phase, diarize_phase=diarize_phase,
+            sentence_reconstruction_phase=sentence_phase, domain_phonetic_correction_phase=domain_phonetic_phase,
+            contextual_retrieval_phase=contextual_phase, visual_cue_detection_phase=visual_cue_phase,
+            frame_extraction_phase=frame_extraction_phase, visual_analysis_phase=visual_analysis_phase,
             visual_hallucination_correction_phase=visual_hallucination_correction_phase,
             visual_context_synthesis_phase=visual_context_synthesis_phase,
-            context_unification_phase=context_unification_phase,
-            clip_extraction_phase=clip_extraction_phase,
+            context_unification_phase=context_unification_phase, clip_extraction_phase=clip_extraction_phase,
             rag_indexing_phase=rag_indexing_phase
         )
 
         audio_pipeline = BatchAudioPipeline(
-            scan_phase=scan_phase,
-            ingest_phase=ingest_phase,
-            vad_phase=vad_phase,
-            domain_adaptation_phase=domain_adaptation_phase,
-            transcribe_phase=transcribe_phase,
-            hallucination_correction_phase=hallucination_correction_phase,
-            diarize_phase=diarize_phase,
-            sentence_reconstruction_phase=sentence_phase,
-            domain_phonetic_correction_phase=domain_phonetic_phase,
-            contextual_retrieval_phase=contextual_phase,
-            context_unification_phase=context_unification_phase,
-            rag_indexing_phase=rag_indexing_phase,
-            storage_api=storage_api
+            scan_phase=scan_phase, ingest_phase=ingest_phase, vad_phase=vad_phase,
+            domain_adaptation_phase=domain_adaptation_phase, transcribe_phase=transcribe_phase,
+            hallucination_correction_phase=hallucination_correction_phase, diarize_phase=diarize_phase,
+            sentence_reconstruction_phase=sentence_phase, domain_phonetic_correction_phase=domain_phonetic_phase,
+            contextual_retrieval_phase=contextual_phase, context_unification_phase=context_unification_phase,
+            rag_indexing_phase=rag_indexing_phase, storage_api=storage_api
         )
+
+        live_pipeline = LiveRetrievalPipeline(retrieval_phase=rag_retrieval_phase)
+        live_verified_pipeline = LiveVerifiedRetrievalPipeline(retrieval_phase=rag_retrieval_phase, scrubber_phase=retrieval_scrubber_phase)
 
         # --- Final Engine Assembly ---
         engine = OnyxEngine(
             async_model_service=async_service,
             media_pipeline=media_pipeline,
             audio_pipeline=audio_pipeline,
-            retrieval_api=retrieval_api,
+            live_pipeline=live_pipeline,
+            live_verified_pipeline=live_verified_pipeline,
             storage_api=storage_api
         )
 

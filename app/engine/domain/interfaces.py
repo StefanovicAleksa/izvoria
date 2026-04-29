@@ -1,4 +1,4 @@
-# Canvas: engine_interfaces_v1
+# Canvas: engine_interfaces_v2
 # Path: app/engine/domain/interfaces.py
 
 from abc import ABC, abstractmethod
@@ -27,17 +27,39 @@ class IOnyxEngine(ABC):
         pass
 
     @abstractmethod
-    def ingest(self, target_path: str) -> IngestionReport:
+    def ingest_videos(self, target_path: str) -> IngestionReport:
         """
-        Scans a path and automatically routes files (audio/video) to the correct pipelines.
-        BLOCKING CALL: Returns when the entire directory is processed.
+        Runs the full Batch Media Pipeline (Audio + Vision) on a directory.
+        Clears VRAM before starting, and preloads search models when finished.
         """
         pass
 
     @abstractmethod
-    def search(self, query: SearchQuery) -> SearchResult:
+    def ingest_audios(self, target_path: str) -> IngestionReport:
         """
-        Executes a RAG hybrid search against the Onyx Vault, returning contextual chunks
-        and pointers to the physical media clips.
+        Runs the Batch Audio Pipeline on a directory, bypassing visual processing.
+        Clears VRAM before starting, and preloads search models when finished.
+        """
+        pass
+
+    @abstractmethod
+    def search_standard(self, query: SearchQuery) -> SearchResult:
+        """
+        Executes a fast, standard RAG hybrid search against the Onyx Vault.
+        """
+        pass
+
+    @abstractmethod
+    def search_verified(self, query: SearchQuery) -> SearchResult:
+        """
+        Executes a high-precision RAG search followed immediately by an SLM
+        hallucination scrubber to drop irrelevant context in VRAM.
+        """
+        pass
+
+    @abstractmethod
+    def interactive_cli(self) -> None:
+        """
+        Launches an interactive command-line interface for operating the appliance.
         """
         pass
