@@ -38,3 +38,4 @@ class JobType(str, Enum):
     # NEW: Added both Live Inference Job Types
     RAG_RETRIEVAL = "rag_retrieval"
     RETRIEVAL_SCRUBBING = "retrieval_scrubbing"
+    QA_GENERATION = "qa_generation"

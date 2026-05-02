@@ -36,3 +36,5 @@ class ModelType(str, Enum):
     VISUAL_CONTEXT_SYNTHESIS = "visual_context_synthesis"
     RAG_EMBEDDING = "rag_embedding"  # Phase 16
     RETRIEVAL_SCRUBBER = "retrieval_scrubber"
+
+    QA_GENERATION = "qa_generation"

@@ -30,6 +30,7 @@ class PipelinePhase(str, Enum):
     # NEW: Live Inference Retrieval Phases
     RAG_RETRIEVAL = "rag_retrieval"
     RETRIEVAL_SCRUBBING = "retrieval_scrubbing"
+    QA_GENERATION = "qa_generation"
 
 class PhaseStatus(str, Enum):
     """The execution status of an entire batch phase."""

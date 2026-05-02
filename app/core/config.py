@@ -128,6 +128,9 @@ class Settings(BaseSettings):
     RETRIEVAL_SCRUBBER_MODEL_PATH: str = "models/qwen2.5-3b-instruct-q4_k_m.gguf"
     RETRIEVAL_SCRUBBER_VRAM_REQUIREMENT_MB: float = 2500.0
 
+    QA_GENERATION_MODEL_PATH: str = "models/google_gemma-4-E4B-it-Q4_K_M.gguf"
+    QA_GENERATION_VRAM_REQUIREMENT_MB: float = 4500.0
+
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,
         env_ignore_empty=True,
