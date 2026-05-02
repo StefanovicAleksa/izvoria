@@ -1,4 +1,4 @@
-# Canvas: orchestration_entities_v23
+# Canvas: orchestration_entities_v24
 # Path: app/orchestration/domain/entities.py
 
 import uuid
@@ -164,6 +164,15 @@ class RetrievalScrubbingJobResult(BaseModel):
     search_id: uuid.UUID
     success: bool
     surviving_chunks_count: int = 0
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
+# NEW: State tracker for the Chat Generation
+class QAGenerationJobResult(BaseModel):
+    search_id: uuid.UUID
+    success: bool
+    generated_answer_preview: Optional[str] = None
+    citations_count: int = 0
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 

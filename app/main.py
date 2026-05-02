@@ -1,4 +1,4 @@
-# Canvas: main_v6
+# Canvas: main_v7
 # Path: app/main.py
 
 import os
@@ -76,9 +76,10 @@ def main():
             print("  2. Ingest Folders [Audio Pipeline - FAST]")
             print("  3. Standard Search [Fast RAG]")
             print("  4. Verified Search [SLM Hallucination Scrubber]")
-            print("  5. Shutdown Appliance")
+            print("  5. Chat with Data [RAG -> LLM Synthesis]")
+            print("  6. Shutdown Appliance")
 
-            choice = input("\n[Select Option 1-5] > ").strip()
+            choice = input("\n[Select Option 1-6] > ").strip()
 
             try:
                 if choice == '1':
@@ -110,7 +111,20 @@ def main():
                         results = engine.search_verified(query)
                         print_search_results(results, "VERIFIED RETRIEVAL")
 
-                elif choice == '5' or choice.lower() in ['exit', 'quit']:
+                elif choice == '5':
+                    prompt = input("[Enter your question] > ").strip()
+                    if prompt:
+                        print("\n[SYSTEM] Running RAG + QA Generation Pipeline...")
+                        query = SearchQuery(prompt=prompt, limit=5)
+                        response = engine.chat(query)
+
+                        print(f"\n[ONYX AI]\n{response.generated_answer}")
+                        print(f"\n[CITATIONS USED: {len(response.citations)}]")
+                        for i, cit in enumerate(response.citations, 1):
+                            path = getattr(cit, 'physical_path', 'No physical file resolved')
+                            print(f"  {i}. {path} (Doc {cit.doc_id})")
+
+                elif choice == '6' or choice.lower() in ['exit', 'quit']:
                     print("\n[SYSTEM] Initiating graceful shutdown sequence...")
                     break
 

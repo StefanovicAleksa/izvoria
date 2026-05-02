@@ -1,4 +1,4 @@
-# Canvas: test_onyx_engine_integration_v7
+# Canvas: test_onyx_engine_integration_v8
 # Path: integration_tests/engine/test_onyx_engine_integration.py
 
 import os
@@ -35,9 +35,10 @@ class TestOnyxEngineIntegration:
         Builds the real engine using the Bootstrapper, starts it,
         and ensures it cleanly shuts down after the test.
         """
-        if not os.path.exists(settings.RAG_EMBEDDING_MODEL_PATH) or not os.path.exists(
-                settings.RETRIEVAL_SCRUBBER_MODEL_PATH):
-            pytest.skip("Integration test skipped due to missing RAG or Scrubber model.")
+        if not os.path.exists(settings.RAG_EMBEDDING_MODEL_PATH) or \
+                not os.path.exists(settings.RETRIEVAL_SCRUBBER_MODEL_PATH) or \
+                not os.path.exists(settings.QA_GENERATION_MODEL_PATH):
+            pytest.skip("Integration test skipped due to missing RAG, Scrubber, or QA model.")
 
         os.environ["DATA_DIR"] = str(tmp_path / "onyx_data")
 
@@ -62,7 +63,8 @@ class TestOnyxEngineIntegration:
     def test_engine_full_lifecycle(self, active_engine, tmp_path):
         """
         Tests the full Appliance lifecycle without a single mock:
-        Boot -> Scan -> Route to Video Pipeline -> Extract Clips -> Verify VRAM Hand-offs -> Search -> Teardown.
+        Boot -> Scan -> Route to Video Pipeline -> Extract Clips ->
+        Verify VRAM Hand-offs -> Search -> Chat -> Teardown.
         """
         source_dir = tmp_path / "usb_drive"
         source_dir.mkdir()
@@ -104,5 +106,20 @@ class TestOnyxEngineIntegration:
         first_result = search_result.results[0]
         physical_path = getattr(first_result, 'physical_path', None)
 
-        assert isinstance(physical_path, str), "Engine failed to resolve the physical path string."
+        assert isinstance(physical_path, str), "Engine failed to resolve the physical path string for Search."
         assert physical_path.endswith(".mp4")
+
+        # 3. Run Chat / QA Generation
+        chat_query = SearchQuery(prompt="test", limit=1)
+        chat_result = active_engine.chat(chat_query)
+
+        assert chat_result.query == "test"
+        assert chat_result.generated_answer is not None
+        assert chat_result.inference_time_ms > 0
+
+        # Verify citation path resolution (if citations exist for this test)
+        if chat_result.citations:
+            first_citation = chat_result.citations[0]
+            cit_physical_path = getattr(first_citation, 'physical_path', None)
+            assert isinstance(cit_physical_path, str), "Engine failed to resolve physical path for Citation."
+            assert cit_physical_path.endswith(".mp4")

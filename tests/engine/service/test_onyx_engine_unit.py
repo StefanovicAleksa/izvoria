@@ -1,3 +1,6 @@
+# Canvas: test_onyx_engine_unit_v5
+# Path: tests/engine/service/test_onyx_engine_unit.py
+
 import pytest
 import uuid
 from unittest.mock import Mock, patch
@@ -7,6 +10,7 @@ from app.engine.domain.enums import EngineState
 from app.engine.domain.entities import IngestionReport
 from app.engine.exceptions.lifecycle import EngineOfflineError
 from app.features.rag_retrieval.domain.entities import SearchQuery
+from app.features.qa_generation.domain.entities import QAResponse, QACitation
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import PhaseBatchResult
 from app.features.storage.domain.entities import Source, SourceType
@@ -29,16 +33,21 @@ class TestOnyxEngineUnit:
     def mock_live_verified_pipeline(self): return Mock()
 
     @pytest.fixture
+    def mock_live_qa_pipeline(self): return Mock()
+
+    @pytest.fixture
     def mock_storage_api(self): return Mock()
 
     @pytest.fixture
-    def engine(self, mock_async_service, mock_media_pipeline, mock_audio_pipeline, mock_live_pipeline, mock_live_verified_pipeline, mock_storage_api):
+    def engine(self, mock_async_service, mock_media_pipeline, mock_audio_pipeline, mock_live_pipeline,
+               mock_live_verified_pipeline, mock_live_qa_pipeline, mock_storage_api):
         return OnyxEngine(
             async_model_service=mock_async_service,
             media_pipeline=mock_media_pipeline,
             audio_pipeline=mock_audio_pipeline,
             live_pipeline=mock_live_pipeline,
             live_verified_pipeline=mock_live_verified_pipeline,
+            live_qa_pipeline=mock_live_qa_pipeline,
             storage_api=mock_storage_api
         )
 
@@ -157,3 +166,44 @@ class TestOnyxEngineUnit:
 
         assert len(result.results) == 1
         assert getattr(result.results[0], 'physical_path') == "/vault/audio_source.wav"
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_chat_resolves_citation_paths(self, _, engine, mock_live_qa_pipeline, mock_storage_api):
+        engine.start()
+
+        # Instantiate with valid schema properties only (empty string for path)
+        real_citation = QACitation(
+            doc_id="[Doc 1]",
+            chunk_id=uuid.uuid4(),
+            start_sec=0.0,
+            end_sec=5.0,
+            physical_path=""
+        )
+
+        # Inject source_id dynamically so the Engine's getattr logic can map it to storage
+        mock_source_id = uuid.uuid4()
+        object.__setattr__(real_citation, 'source_id', mock_source_id)
+
+        mock_qa_response = QAResponse(
+            query="test",
+            generated_answer="This is a test answer.",
+            citations=[real_citation],
+            inference_time_ms=100
+        )
+
+        mock_live_qa_pipeline.execute_chat.return_value = mock_qa_response
+
+        mock_source = Source(
+            id=mock_source_id,
+            name="video",
+            source_type=SourceType.VIDEO,
+            content_hash="hash",
+            file_id=uuid.uuid4()
+        )
+        mock_source.file = Mock(file_path="/vault/video_clip.mp4")
+        mock_storage_api.get_source.return_value = mock_source
+
+        result = engine.chat(SearchQuery(prompt="test"))
+
+        assert len(result.citations) == 1
+        assert getattr(result.citations[0], 'physical_path') == "/vault/video_clip.mp4"

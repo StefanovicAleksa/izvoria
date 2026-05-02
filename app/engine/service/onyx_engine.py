@@ -1,3 +1,6 @@
+# Canvas: onyx_engine_v4
+# Path: app/engine/service/onyx_engine.py
+
 import logging
 import threading
 import time
@@ -20,11 +23,13 @@ from app.engine.utils.error_mapper import map_engine_error
 from app.features.storage.service.storage_api import StorageAPI
 from app.features.storage.domain.entities import SourceType
 from app.features.rag_retrieval.domain.entities import SearchQuery, SearchResult
+from app.features.qa_generation.domain.entities import QAResponse
 
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.service.pipelines.batch_audio_pipeline import BatchAudioPipeline
 from app.orchestration.service.pipelines.live_retrieval_pipeline import LiveRetrievalPipeline
 from app.orchestration.service.pipelines.live_verified_retrieval_pipeline import LiveVerifiedRetrievalPipeline
+from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import PhaseBatchResult
 
@@ -44,6 +49,7 @@ class OnyxEngine(IOnyxEngine):
             audio_pipeline: BatchAudioPipeline,
             live_pipeline: LiveRetrievalPipeline,
             live_verified_pipeline: LiveVerifiedRetrievalPipeline,
+            live_qa_pipeline: LiveQAPipeline,
             storage_api: StorageAPI
     ):
         self._async_service = async_model_service
@@ -51,6 +57,7 @@ class OnyxEngine(IOnyxEngine):
         self._audio_pipeline = audio_pipeline
         self._live_pipeline = live_pipeline
         self._live_verified_pipeline = live_verified_pipeline
+        self._live_qa_pipeline = live_qa_pipeline
         self._storage_api = storage_api
 
         self._state = EngineState.OFFLINE
@@ -208,6 +215,16 @@ class OnyxEngine(IOnyxEngine):
         except Exception as e:
             raise map_engine_error(e, context=f"Verified Search [{query.prompt}]")
 
+    def chat(self, query: SearchQuery) -> QAResponse:
+        self._enforce_online_state()
+        try:
+            search_id = uuid.uuid4()
+            result = self._live_qa_pipeline.execute_chat(search_id, query)
+            self._resolve_citation_paths(result)
+            return result
+        except Exception as e:
+            raise map_engine_error(e, context=f"Chat QA Generation [{query.prompt}]")
+
     def _enforce_online_state(self) -> None:
         with self._state_lock:
             if self._state == EngineState.OFFLINE:
@@ -216,6 +233,7 @@ class OnyxEngine(IOnyxEngine):
                 raise EngineBusyError("Hardware is locked for batch ingestion. Inference paused.")
 
     def _resolve_physical_paths(self, search_result: SearchResult) -> None:
+        """Hydrates chunks with physical file paths before sending to the UI."""
         for chunk in search_result.results:
             try:
                 if chunk.extracted_file_id:
@@ -227,6 +245,25 @@ class OnyxEngine(IOnyxEngine):
                         object.__setattr__(chunk, 'physical_path', str(source.file.file_path))
             except Exception as e:
                 logger.warning(f"Failed to resolve physical path for chunk {chunk.chunk_id}: {e}")
+
+    def _resolve_citation_paths(self, response: QAResponse) -> None:
+        """Hydrates citation evidence with physical file paths before sending to the UI."""
+        for citation in response.citations:
+            try:
+                physical_path = getattr(citation, 'physical_path', None)
+                source_id_raw = getattr(citation, 'source_id', None)
+
+                if not physical_path and source_id_raw:
+                    # Convert to strict UUID to satisfy type checker
+                    valid_source_id = source_id_raw if isinstance(source_id_raw, uuid.UUID) else uuid.UUID(
+                        str(source_id_raw))
+                    source = self._storage_api.get_source(valid_source_id)
+
+                    if source and source.file:
+                        object.__setattr__(citation, 'physical_path', str(source.file.file_path))
+            except Exception as e:
+                chunk_id = getattr(citation, 'chunk_id', 'Unknown')
+                logger.warning(f"Failed to resolve physical path for citation {chunk_id}: {e}")
 
     # ==========================================
     # UTILITIES & CLI
@@ -279,9 +316,10 @@ class OnyxEngine(IOnyxEngine):
             print("2. File Ingestion [Audio Pipeline]")
             print("3. Fast Retrieval [Standard RAG]")
             print("4. Context-Aware Retrieval [Verified SLM Scrubber]")
-            print("5. Shutdown Engine")
+            print("5. Chat with Data [RAG -> LLM Synthesis]")
+            print("6. Shutdown Engine")
 
-            choice = input("\nChoice (1-5): ").strip()
+            choice = input("\nChoice (1-6): ").strip()
 
             try:
                 if choice == "1":
@@ -313,6 +351,14 @@ class OnyxEngine(IOnyxEngine):
                             f"\n--- Verified Result {idx} ---\nPath: {getattr(chunk, 'physical_path', 'Unknown')}\nContent: {chunk.text_payload}")
                     input("\nPress Enter...")
                 elif choice == "5":
+                    prompt = input("Enter your question: ").strip()
+                    response = self.chat(SearchQuery(prompt=prompt, limit=5))
+                    print(f"\n--- Onyx AI ---\n{response.generated_answer}")
+                    print(f"\n[Citations Used: {len(response.citations)}]")
+                    for idx, citation in enumerate(response.citations, 1):
+                        print(f"  {idx}. {getattr(citation, 'physical_path', 'Unknown')} (Doc ID: {citation.doc_id})")
+                    input("\nPress Enter...")
+                elif choice == "6":
                     self.stop()
                     sys.exit(0)
             except Exception as e:

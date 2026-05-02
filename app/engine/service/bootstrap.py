@@ -1,3 +1,6 @@
+# Canvas: engine_bootstrap_v2
+# Path: app/engine/service/bootstrap.py
+
 import logging
 import typing
 
@@ -91,6 +94,9 @@ from app.features.rag_retrieval.service.retrieval_api import RetrievalAPI
 from app.features.retrieval_hallucination_scrubber.data.slm_adapter import QwenRetrievalScrubberAdapter
 from app.features.retrieval_hallucination_scrubber.service.scrubber_api import RetrievalScrubberAPI
 
+from app.features.qa_generation.data.gemma_adapter import GemmaGenerationAdapter
+from app.features.qa_generation.service.generation_api import QAGenerationAPI
+
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
 from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPhase
@@ -112,11 +118,13 @@ from app.orchestration.service.phases.clip_extraction_phase import ClipExtractio
 from app.orchestration.service.phases.rag_indexing_phase import RagIndexingPhase
 from app.orchestration.service.phases.rag_retrieval_phase import RagRetrievalPhase
 from app.orchestration.service.phases.retrieval_scrubber_phase import RetrievalScrubberPhase
+from app.orchestration.service.phases.qa_generation_phase import QAGenerationPhase
 
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.service.pipelines.batch_audio_pipeline import BatchAudioPipeline
 from app.orchestration.service.pipelines.live_retrieval_pipeline import LiveRetrievalPipeline
 from app.orchestration.service.pipelines.live_verified_retrieval_pipeline import LiveVerifiedRetrievalPipeline
+from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
 
 from app.engine.domain.interfaces import IOnyxEngine
 from app.engine.service.onyx_engine import OnyxEngine
@@ -188,7 +196,8 @@ class OnyxBootstrapper:
         reconstruction_api = SentenceReconstructionAPI(sentence_repo, orchestrator, real_punctuation_adapter)
         punctuation_path = getattr(settings, "PUNCTUATION_MODEL_PATH", "models/fullstop-punctuation-multilingual-base")
         punctuation_manifest = ModelManifest(model_type=ModelType.SENTENCE_RECONSTRUCTION, model_path=punctuation_path,
-                                             required_vram_mb=getattr(settings, "PUNCTUATION_VRAM_REQUIREMENT_MB", 500.0))
+                                             required_vram_mb=getattr(settings, "PUNCTUATION_VRAM_REQUIREMENT_MB",
+                                                                      500.0))
 
         phonetic_repo = DomainPhoneticRepository(db_manager)
         real_phonetic_adapter = QwenDomainAdapter()
@@ -249,13 +258,17 @@ class OnyxBootstrapper:
         hf_embedder = HuggingFaceEmbeddingAdapter()
         rag_storage_service = RAGStorageService(rag_repo=rag_repo, orchestrator=orchestrator, embedder=hf_embedder)
 
-        # --- Feature: Live Inference (RAG & Scrubber) ---
+        # --- Feature: Live Inference (RAG & Scrubber & QA Generation) ---
         search_repo = PostgresSearchRepository()
         prompt_adapter = HuggingFacePromptAdapter()
-        retrieval_api = RetrievalAPI(orchestrator=orchestrator, embedding_adapter=prompt_adapter, search_repo=search_repo)
+        retrieval_api = RetrievalAPI(orchestrator=orchestrator, embedding_adapter=prompt_adapter,
+                                     search_repo=search_repo)
 
         scrubber_adapter = QwenRetrievalScrubberAdapter()
         scrubber_api = RetrievalScrubberAPI(adapter=scrubber_adapter, orchestrator=orchestrator)
+
+        qa_adapter = GemmaGenerationAdapter()
+        qa_api = QAGenerationAPI(adapter=qa_adapter, orchestrator=orchestrator)
 
         # --- Orchestration: Common Batch Phases ---
         scan_phase = ScanPhase(job_manager, scanner)
@@ -308,6 +321,7 @@ class OnyxBootstrapper:
         # --- Orchestration: Live Inference Phases ---
         rag_retrieval_phase = RagRetrievalPhase(job_manager, retrieval_api, async_service, prompt_adapter)
         retrieval_scrubber_phase = RetrievalScrubberPhase(job_manager, scrubber_api, async_service, scrubber_adapter)
+        qa_generation_phase = QAGenerationPhase(job_manager, qa_api, async_service, qa_adapter)
 
         # --- Orchestration: Pipelines ---
         media_pipeline = BatchMediaPipeline(
@@ -333,7 +347,10 @@ class OnyxBootstrapper:
         )
 
         live_pipeline = LiveRetrievalPipeline(retrieval_phase=rag_retrieval_phase)
-        live_verified_pipeline = LiveVerifiedRetrievalPipeline(retrieval_phase=rag_retrieval_phase, scrubber_phase=retrieval_scrubber_phase)
+        live_verified_pipeline = LiveVerifiedRetrievalPipeline(retrieval_phase=rag_retrieval_phase,
+                                                               scrubber_phase=retrieval_scrubber_phase)
+        live_qa_pipeline = LiveQAPipeline(retrieval_phase=rag_retrieval_phase, scrubber_phase=retrieval_scrubber_phase,
+                                          qa_generation_phase=qa_generation_phase)
 
         # --- Final Engine Assembly ---
         engine = OnyxEngine(
@@ -342,6 +359,7 @@ class OnyxBootstrapper:
             audio_pipeline=audio_pipeline,
             live_pipeline=live_pipeline,
             live_verified_pipeline=live_verified_pipeline,
+            live_qa_pipeline=live_qa_pipeline,
             storage_api=storage_api
         )
 

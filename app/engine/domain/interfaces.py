@@ -1,4 +1,4 @@
-# Canvas: engine_interfaces_v2
+# Canvas: engine_interfaces_v3
 # Path: app/engine/domain/interfaces.py
 
 from abc import ABC, abstractmethod
@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from app.engine.domain.enums import EngineState
 from app.engine.domain.entities import IngestionReport
 from app.features.rag_retrieval.domain.entities import SearchQuery, SearchResult
+from app.features.qa_generation.domain.entities import QAResponse
 
 class IOnyxEngine(ABC):
     """
@@ -54,6 +55,14 @@ class IOnyxEngine(ABC):
         """
         Executes a high-precision RAG search followed immediately by an SLM
         hallucination scrubber to drop irrelevant context in VRAM.
+        """
+        pass
+
+    @abstractmethod
+    def chat(self, query: SearchQuery) -> QAResponse:
+        """
+        Executes an end-to-end Chat pipeline:
+        Hybrid Search -> SLM Semantic Scrubbing -> LLM Final Generation.
         """
         pass
 

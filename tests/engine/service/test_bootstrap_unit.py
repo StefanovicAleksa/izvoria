@@ -1,4 +1,4 @@
-# Canvas: test_bootstrap_unit_v2
+# Canvas: test_bootstrap_unit_v3
 # Path: tests/engine/service/test_bootstrap_unit.py
 
 import pytest
@@ -28,3 +28,4 @@ class TestOnyxBootstrapperUnit:
         assert engine._audio_pipeline is not None
         assert engine._live_pipeline is not None
         assert engine._live_verified_pipeline is not None
+        assert engine._live_qa_pipeline is not None
