@@ -1,11 +1,14 @@
-# Canvas: background_worker_v4
+# Canvas: background_worker_v5
 # Path: app/core/model_manager/utils/background_worker.py
 import concurrent.futures
+import logging
 import threading
 
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.interfaces import IModelLoader
+
+logger = logging.getLogger(__name__)
 
 
 class BackgroundModelWorker:
@@ -42,6 +45,28 @@ class BackgroundModelWorker:
             return True
 
         return self._executor.submit(_unload_task)
+
+    def discard_preload(self, future: concurrent.futures.Future, loader: IModelLoader) -> None:
+        """
+        Abandons a preload nobody is going to resolve (e.g. the pipeline halted early).
+        A queued task is cancelled outright; a running or finished one has its model
+        released as soon as the load completes, so it can never stay resident.
+        """
+        if future.cancel():
+            return
+
+        def _release_when_loaded(done: concurrent.futures.Future) -> None:
+            if done.cancelled() or done.exception() is not None:
+                return
+            try:
+                self._orchestrator.release_model(done.result(), loader, flush=True)
+            except Exception as e:
+                logger.error(f"Failed to release discarded preload: {e}")
+
+        future.add_done_callback(_release_when_loaded)
+
+    def release_all(self) -> None:
+        self._orchestrator.release_all({})
 
     def shutdown(self, wait: bool = True):
         self._telemetry_stop_event.set()

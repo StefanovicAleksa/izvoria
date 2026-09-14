@@ -1,4 +1,4 @@
-# filename: storage_interfaces_v3.py
+# filename: storage_interfaces_v4.py
 # path: app/features/storage/domain/interfaces.py
 from abc import ABC, abstractmethod
 from typing import List, Optional
@@ -25,6 +25,11 @@ class IStorageRepository(ABC):
     @abstractmethod
     def get_file_by_id(self, file_id: uuid.UUID) -> Optional[File]:
         """Fetches a standalone physical file record."""
+        pass
+
+    @abstractmethod
+    def delete_file(self, file_id: uuid.UUID) -> Optional[File]:
+        """Deletes a standalone physical file record. Returns the deleted record, or None if absent."""
         pass
 
     @abstractmethod

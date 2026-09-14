@@ -203,3 +203,23 @@ class TestStorageAPI:
 
         with pytest.raises(StorageError, match="DB Crashed"):
             api.ingest_local_file("video.mp4", SourceType.VIDEO)
+
+    def test_delete_raw_file_removes_record_and_physical_file(self, api):
+        repo_mock = cast(Mock, api.repository)
+        fm_mock = cast(Mock, api.file_manager)
+        file_id = uuid.uuid4()
+        deleted = File(id=file_id, file_path="/mock/vault/clip.mp4", file_name="clip.mp4", file_size_bytes=10)
+        repo_mock.delete_file.return_value = deleted
+
+        assert api.delete_raw_file(file_id) is True
+
+        repo_mock.delete_file.assert_called_once_with(file_id)
+        fm_mock.delete.assert_called_once_with("/mock/vault/clip.mp4")
+
+    def test_delete_raw_file_missing_record_is_noop(self, api):
+        repo_mock = cast(Mock, api.repository)
+        fm_mock = cast(Mock, api.file_manager)
+        repo_mock.delete_file.return_value = None
+
+        assert api.delete_raw_file(uuid.uuid4()) is False
+        fm_mock.delete.assert_not_called()

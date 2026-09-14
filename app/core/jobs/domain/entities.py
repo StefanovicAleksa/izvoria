@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional, Dict, Any
-from pydantic import BaseModel, Field, ConfigDict, computed_field
+from pydantic import AliasChoices, BaseModel, Field, ConfigDict, computed_field, field_validator
 
 from app.core.jobs.domain.enums import JobStatus, JobType
 
@@ -34,7 +34,11 @@ class Job(BaseModel):
 
     # Payloads
     input_params: Dict[str, Any] = Field(default_factory=dict)
-    output_result: Dict[str, Any] = Field(default_factory=dict)
+    # Persisted in the `output_params` column of the jobs table
+    output_result: Dict[str, Any] = Field(
+        default_factory=dict,
+        validation_alias=AliasChoices("output_params", "output_result")
+    )
 
     # Error Details
     error_message: Optional[str] = None
@@ -46,6 +50,12 @@ class Job(BaseModel):
     completed_at: Optional[datetime] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+    @field_validator("output_result", mode="before")
+    @classmethod
+    def _default_missing_output(cls, value: Any) -> Any:
+        # A freshly created row has no output yet (the column only has a server default)
+        return {} if value is None else value
 
     @computed_field
     @property

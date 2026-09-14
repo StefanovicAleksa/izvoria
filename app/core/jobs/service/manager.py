@@ -8,6 +8,8 @@ from app.core.jobs.domain.entities import Job, JobRequest
 from app.core.jobs.domain.interfaces import IJobRepository
 from app.core.jobs.exceptions.execution import JobExecutionFailed
 
+_JSON_SCALARS = (str, int, float, bool, type(None))
+
 
 class JobManager:
     def __init__(self, repository: IJobRepository):
@@ -30,8 +32,8 @@ class JobManager:
             # 3. Execute the actual feature logic (e.g., Scanner, Ingest, Transcribe)
             result = target_func(*args, **kwargs)
 
-            # 4. Format the output (Database expects a dictionary for JSONB)
-            output_data = result if isinstance(result, dict) else {"result": str(result)}
+            # 4. Format the output (Database expects a JSON-safe dictionary for JSONB)
+            output_data = self._summarize_output(result)
 
             # 5. Finalize as Success
             self._repo.finish_job(job.id, output_data)
@@ -48,6 +50,26 @@ class JobManager:
             # 7. Bubble up the original exception
             # (so the Orchestrator can catch ScannerError, StorageError, etc.)
             raise e
+
+    @staticmethod
+    def _summarize_output(result: Any) -> dict:
+        """
+        Builds a compact, JSON-safe record of a job's result.
+        Dict results keep their scalar entries (keys starting with "_" carry transient in-memory
+        payloads and are dropped); anything else is reduced to its type and id, so whole
+        transcripts are never serialized into the jobs table.
+        """
+        if isinstance(result, dict):
+            return {
+                str(key): value for key, value in result.items()
+                if not str(key).startswith("_") and isinstance(value, _JSON_SCALARS)
+            }
+
+        summary = {"result_type": type(result).__name__}
+        result_id = getattr(result, "id", None)
+        if result_id is not None:
+            summary["result_id"] = str(result_id)
+        return summary
 
     def cancel_job(self, job_id: uuid.UUID) -> Job:
         """Manually aborts a job."""

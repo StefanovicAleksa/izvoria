@@ -53,6 +53,12 @@ class VisualContextSynthesisPhase:
             loader=self._loader
         )
 
+    def discard_preload(self) -> None:
+        """Releases a preload that execute() never resolved (e.g. the pipeline halted early)."""
+        if self._preload_future:
+            future, self._preload_future = self._preload_future, None
+            self._async_service.discard_preload(future, self._loader)
+
     def execute(self, hallucination_results: List[VisualHallucinationCorrectionJobResult]) -> PhaseBatchResult:
         logger.info(f"Executing Visual Context Synthesis Phase for {len(hallucination_results)} transcripts...")
         results: List[VisualContextSynthesisJobResult] = []
@@ -62,8 +68,9 @@ class VisualContextSynthesisPhase:
         loaded_model: Optional[LoadedModel] = None
 
         if self._preload_future:
+            future, self._preload_future = self._preload_future, None
             try:
-                loaded_model = self._async_service.resolve_preload(self._preload_future)
+                loaded_model = self._async_service.resolve_preload(future)
                 logger.info("Successfully resolved preloaded Visual Context Synthesis SLM.")
             except ModelManagerError as e:
                 logger.error(f"Failed to load Visual Synthesis SLM: {e}")

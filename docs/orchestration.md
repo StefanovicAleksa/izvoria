@@ -6,7 +6,7 @@ The composition layer between individual features and the top-level `OnyxEngine`
 
 ## Phases (`service/phases/`)
 
-One `Phase` class per pipeline stage — each wraps a feature's `service/*_api.py` call with `JobManager.run_job(...)` and, for GPU-bound stages, a `preload_model()` method that fires an async preload via `AsyncModelService`/`BackgroundModelWorker`, resolved later inside `execute()`, then explicitly unloaded (`trigger_unload(..., flush=True)`) in a `finally` block. This preload-ahead pattern overlaps the next model's load with the current phase's I/O-bound work.
+One `Phase` class per pipeline stage — each wraps a feature's `service/*_api.py` call with `JobManager.run_job(...)` and, for GPU-bound stages, a `preload_model()` method that fires an async preload via `AsyncModelService`/`BackgroundModelWorker`, resolved later inside `execute()`, then explicitly unloaded (`trigger_unload(..., flush=True)`) in a `finally` block. This preload-ahead pattern overlaps the next model's load with the current phase's I/O-bound work. A phase clears its future as soon as it resolves it, and exposes `discard_preload()` for a preload it never resolved.
 
 | # | Phase file | Class | What it wraps |
 |---|---|---|---|
@@ -42,6 +42,8 @@ One `Phase` class per pipeline stage — each wraps a feature's `service/*_api.p
 - **`LiveRetrievalPipeline`** (`live_retrieval_pipeline.py`) — query-time fast path: embed the query, run hybrid search, return results. No SLM verification.
 - **`LiveVerifiedRetrievalPipeline`** (`live_verified_retrieval_pipeline.py`) — `LiveRetrievalPipeline` plus a pass through the SLM hallucination scrubber for higher-precision "verified search."
 - **`LiveQAPipeline`** (`live_qa_pipeline.py`) — the full "chat with your data" chain: retrieval → SLM scrubber → LLM QA generation. Preloads all three models concurrently ahead of executing each stage, then hands off VRAM by unloading before the next stage's model loads.
+
+Every pipeline calls `discard_preload()` on each of its GPU phases in a `finally`, so a preload triggered for a stage that never ran (early return, halted visual branch, failed retrieval) is cancelled or released instead of staying resident and blocking the next acquire.
 
 All pipelines raise `WorkflowStateError` for state problems and wrap unexpected exceptions as `WorkflowExecutionError`; they short-circuit (returning whatever `pipeline_results` has accumulated so far) as soon as a stage yields zero successful items, rather than crashing — so a mostly-empty result dict is a valid, non-exceptional outcome callers must check for, not necessarily a bug.
 

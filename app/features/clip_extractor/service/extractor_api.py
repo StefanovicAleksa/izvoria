@@ -1,4 +1,4 @@
-# Canvas: clip_extractor_api_v1
+# Canvas: clip_extractor_api_v2
 # Path: app/features/clip_extractor/service/extractor_api.py
 
 import uuid
@@ -106,4 +106,14 @@ class ClipExtractorAPI:
             return new_video_clips
 
         except Exception as e:
+            # Clips vaulted earlier in this run have no DB rows yet. Remove them, otherwise they
+            # become orphaned files and the idempotency check re-extracts them on the next run.
+            self._discard_vaulted_clips(new_video_clips)
             raise map_clip_extractor_error(e, context=f"ClipExtractorAPI for Source {source_id}") from e
+
+    def _discard_vaulted_clips(self, clips: List[VideoClip]) -> None:
+        for clip in clips:
+            try:
+                self._storage.delete_raw_file(clip.extracted_file_id)
+            except Exception as cleanup_err:
+                logger.error(f"Failed to remove orphaned clip file {clip.extracted_file_id}: {cleanup_err}")

@@ -195,6 +195,7 @@ class TestNeMoDiarizationAdapter:
         assert result.source_id == source_id
         assert len(result.segments) == 1
         assert result.segments[0].speaker_id == "Speaker_0"
+        assert result.fallback_applied is True
         assert result.segments[0].start_sec == 1.0
         assert result.segments[0].end_sec == 5.0
 
@@ -262,6 +263,7 @@ class TestNeMoDiarizationAdapter:
         assert result.source_id == source_id
         assert len(result.segments) == 1
         assert result.segments[0].speaker_id == "Speaker_0"
+        assert result.fallback_applied is True
         assert result.segments[0].start_sec == 2.0
         assert result.segments[0].end_sec == 4.0
 

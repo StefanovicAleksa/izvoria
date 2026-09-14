@@ -1,4 +1,4 @@
-# Canvas: rag_storage_interfaces_v2
+# Canvas: rag_storage_interfaces_v3
 # Path: app/features/rag_storage/domain/interfaces.py
 
 from abc import ABC, abstractmethod
@@ -18,8 +18,12 @@ class IEmbeddingAdapter(IModelLoader, ABC):
 
 class IRagRepository(ABC):
     @abstractmethod
-    def save_rag_chunks(self, source_id: UUID, chunks: List[UnifiedChunk], embeddings: List[List[float]]) -> int:
-        """Saves both the dense vector embedding and the sparse FTS index atomically."""
+    def replace_rag_chunks(self, source_id: UUID, chunks: List[UnifiedChunk], embeddings: List[List[float]]) -> int:
+        """
+        Replaces every chunk of a source in a single transaction: the old dense + sparse rows
+        are deleted and the new ones inserted atomically, so a failure never leaves a source
+        half-indexed or empty.
+        """
         pass
 
     @abstractmethod

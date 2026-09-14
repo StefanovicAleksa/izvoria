@@ -23,6 +23,18 @@ class LiveRetrievalPipeline:
     def __init__(self, retrieval_phase: RagRetrievalPhase):
         self._retrieval_phase = retrieval_phase
 
+    def _discard_pending_preloads(self) -> None:
+        """
+        Guarantees no background preload outlives this run. Phases clear their own future
+        once resolved, so this only touches preloads for phases that never executed
+        (early return, halted branch, or an exception).
+        """
+        for phase in (self._retrieval_phase,):
+            try:
+                phase.discard_preload()
+            except Exception as e:
+                logger.error(f"Failed to discard pending preload for {type(phase).__name__}: {e}")
+
     def execute_search(self, search_id: uuid.UUID, query: SearchQuery) -> SearchResult:
         logger.info(f"========== Starting Live Retrieval Pipeline for Search [{search_id}] ==========")
 
@@ -51,3 +63,5 @@ class LiveRetrievalPipeline:
         except Exception as e:
             logger.error(f"Critical Pipeline Crash: {e}")
             raise WorkflowExecutionError(f"Critical Pipeline Crash: {str(e)}", original_exception=e) from e
+        finally:
+            self._discard_pending_preloads()

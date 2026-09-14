@@ -127,3 +127,25 @@ class TestRagIndexingPhaseUnit:
 
         result = phase.execute([])
         assert result.status == PhaseStatus.FAILED
+
+    def test_execute_clears_resolved_preload_future(self, phase, mock_async_service, mock_unified_repo):
+        phase._preload_future = Mock()
+        mock_async_service.resolve_preload.return_value = Mock(spec=LoadedModel)
+
+        phase.execute([])
+
+        assert phase._preload_future is None
+
+    def test_discard_preload_hands_unresolved_future_to_async_service(self, phase, mock_async_service):
+        mock_future = Mock()
+        phase._preload_future = mock_future
+
+        phase.discard_preload()
+
+        mock_async_service.discard_preload.assert_called_once_with(mock_future, phase._loader)
+        assert phase._preload_future is None
+
+    def test_discard_preload_is_noop_without_future(self, phase, mock_async_service):
+        phase.discard_preload()
+
+        mock_async_service.discard_preload.assert_not_called()

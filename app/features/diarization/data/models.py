@@ -4,7 +4,7 @@
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import Column, DateTime, ForeignKey
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 
 from app.core.database.data.engine import Base
@@ -24,5 +24,8 @@ class DiarizationMapModel(Base):
 
     # The actual virtual map: [{"start_sec": 1.5, "end_sec": 4.2, "speaker_id": "Speaker_0"}, ...]
     segments = Column(JSONB, nullable=False)
+
+    # True when clustering failed and a single-speaker fallback map was stored
+    fallback_applied = Column(Boolean, nullable=False, default=False)
 
     created_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)

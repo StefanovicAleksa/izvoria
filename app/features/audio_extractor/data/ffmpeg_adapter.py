@@ -1,4 +1,4 @@
-# Canvas: audio_ffmpeg_adapter_v2
+# Canvas: audio_ffmpeg_adapter_v3
 # Path: app/features/audio_extractor/data/ffmpeg_adapter.py
 
 import os
@@ -22,7 +22,8 @@ class FFmpegAdapter(IFFmpegAdapter):
     def extract_audio(self, source_path: str | Path) -> Path:
         """
         Executes FFmpeg to extract audio, managing the temporary OS file securely.
-        If the video lacks an audio stream, generates a silent track as a fallback.
+        If the media genuinely has no audio stream (verified with ffprobe), generates a
+        silent track as a fallback. Every other FFmpeg failure raises.
         """
         src = Path(source_path).resolve()
 
@@ -48,7 +49,15 @@ class FFmpegAdapter(IFFmpegAdapter):
         ]
 
         try:
-            # 2. Execute extraction
+            # 2. Only a media file that truly has no audio stream gets a silent track.
+            # Matching FFmpeg stderr text (e.g. "Invalid argument") also swallowed real failures,
+            # which silently indexed a video with an empty transcript.
+            if self._count_audio_streams(src) == 0:
+                logger.warning(f"Media {src.name} has no audio stream. Generating silent track to preserve pipeline integrity.")
+                self._generate_silent_wav(temp_path)
+                return temp_path
+
+            # 3. Execute extraction
             subprocess.run(
                 command,
                 stdout=subprocess.PIPE,
@@ -59,20 +68,6 @@ class FFmpegAdapter(IFFmpegAdapter):
             )
             return temp_path
 
-        except subprocess.CalledProcessError as e:
-            # FIX 1: Handle videos with no audio tracks gracefully
-            if "does not contain any stream" in e.stderr or "Invalid argument" in e.stderr:
-                logger.warning(f"Video {src.name} lacks an audio stream. Generating silent track to preserve pipeline integrity.")
-                self._generate_silent_wav(temp_path)
-                return temp_path
-            else:
-                if temp_path.exists():
-                    try:
-                        temp_path.unlink()
-                    except OSError:
-                        pass
-                raise map_ffmpeg_error(e) from e
-
         except Exception as e:
             if temp_path.exists():
                 try:
@@ -80,6 +75,24 @@ class FFmpegAdapter(IFFmpegAdapter):
                 except OSError:
                     pass
             raise map_ffmpeg_error(e) from e
+
+    def _count_audio_streams(self, src: Path) -> int:
+        result = subprocess.run(
+            [
+                "ffprobe",
+                "-v", "error",
+                "-select_streams", "a",
+                "-show_entries", "stream=index",
+                "-of", "csv=p=0",
+                os.fspath(src)
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=True,
+            timeout=self._timeout
+        )
+        return len([line for line in (result.stdout or "").splitlines() if line.strip()])
 
     def _generate_silent_wav(self, output_path: Path) -> None:
         """Generates a 1-second silent WAV file (16kHz, Mono, 16-bit PCM)."""

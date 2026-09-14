@@ -42,6 +42,12 @@ class VadPhase:
         """Triggers the background loading of the VAD model."""
         self._preload_future = self._async_service.trigger_preload(self._manifest, self._adapter)
 
+    def discard_preload(self) -> None:
+        """Releases a preload that execute() never resolved (e.g. the pipeline halted early)."""
+        if self._preload_future:
+            future, self._preload_future = self._preload_future, None
+            self._async_service.discard_preload(future, self._adapter)
+
     def execute(self, extraction_results: List[AudioExtractionJobResult]) -> PhaseBatchResult:
         """
         Phase 4: Waits for the background model to load, then processes VAD sequentially.
@@ -54,9 +60,10 @@ class VadPhase:
 
         # 1. Wait for the background GPU loading to finish
         if self._preload_future:
+            future, self._preload_future = self._preload_future, None
             try:
                 # This will instantly return if the load finished during Phase 3
-                loaded_model = self._async_service.resolve_preload(self._preload_future)
+                loaded_model = self._async_service.resolve_preload(future)
             except ModelManagerError as e:
                 # Catch specific domain errors like OutOfVramError or ModelLoadError
                 return PhaseBatchResult(

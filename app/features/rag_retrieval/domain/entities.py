@@ -8,14 +8,16 @@ from pydantic import BaseModel, Field, ConfigDict
 
 class SearchQuery(BaseModel):
     """Represents the incoming search request from the user/UI."""
-    prompt: str = Field(..., description="The raw text query from the user.")
+    prompt: str = Field(..., min_length=1, description="The raw text query from the user.")
     limit: int = Field(default=5, ge=1, le=20, description="Maximum number of results to return.")
 
     # Optional filters to restrict search to a specific case/patient (Source)
     source_id_filter: Optional[uuid.UUID] = Field(default=None,
                                                   description="Optional: Restrict search to a specific source.")
 
-    model_config = ConfigDict(frozen=True)
+    # Whitespace is stripped before min_length is checked, so blank prompts are rejected
+    # here instead of failing deep inside the embedder with a model already loaded.
+    model_config = ConfigDict(frozen=True, str_strip_whitespace=True)
 
 
 class RetrievedChunk(BaseModel):

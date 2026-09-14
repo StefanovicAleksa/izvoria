@@ -1,4 +1,4 @@
-# Canvas: rag_storage_postgres_repo_v3
+# Canvas: rag_storage_postgres_repo_v4
 # Path: app/features/rag_storage/data/postgres_rag_repo.py
 
 import logging
@@ -21,23 +21,24 @@ class PostgresRagRepository(IRagRepository):
     Leverages PostgreSQL for both pgvector (Dense) and TSVECTOR FTS (Sparse) indexing.
     """
 
-    def save_rag_chunks(
+    def replace_rag_chunks(
             self,
             source_id: UUID,
             chunks: List[UnifiedChunk],
             embeddings: List[List[float]]
     ) -> int:
-        if not chunks or not embeddings:
-            return 0
-
         if len(chunks) != len(embeddings):
             raise ValueError("Mismatch between number of chunks and embeddings.")
 
         try:
+            # One session == one transaction: the delete only commits if the insert succeeds.
             with db_manager.session() as session:
-                vector_models = []
-                for chunk, embedding in zip(chunks, embeddings):
-                    model = VectorChunkModel(
+                deleted = session.execute(delete(VectorChunkModel).where(VectorChunkModel.source_id == source_id))
+                if deleted.rowcount:
+                    logger.info(f"Replacing {deleted.rowcount} existing RAG chunks for source {source_id}.")
+
+                vector_models = [
+                    VectorChunkModel(
                         source_id=source_id,
                         chunk_id=chunk.chunk_id,
                         start_sec=chunk.start_sec,
@@ -45,7 +46,8 @@ class PostgresRagRepository(IRagRepository):
                         text_payload=chunk.text_payload,
                         embedding=embedding
                     )
-                    vector_models.append(model)
+                    for chunk, embedding in zip(chunks, embeddings)
+                ]
 
                 # bulk_save_objects safely ignores the Computed fts_document column
                 # and lets Postgres generate it upon insertion.
@@ -55,7 +57,7 @@ class PostgresRagRepository(IRagRepository):
                 return len(vector_models)
 
         except Exception as e:
-            raise map_storage_error(e, context=f"Saving hybrid RAG chunks for source {source_id}")
+            raise map_storage_error(e, context=f"Replacing hybrid RAG chunks for source {source_id}") from e
 
     def delete_by_source_id(self, source_id: UUID) -> None:
         try:
@@ -67,4 +69,4 @@ class PostgresRagRepository(IRagRepository):
                 if result.rowcount > 0:
                     logger.info(f"Cleared {result.rowcount} existing RAG chunks for source {source_id}.")
         except Exception as e:
-            raise map_storage_error(e, context=f"Clearing RAG chunks for source {source_id}")
+            raise map_storage_error(e, context=f"Clearing RAG chunks for source {source_id}") from e

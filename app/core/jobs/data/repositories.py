@@ -67,7 +67,7 @@ class JobRepository(IJobRepository):
                     raise JobDataError(f"Cannot finish job: Job {job_id} not found.")
 
                 job_model.status = JobStatus.COMPLETED.value
-                job_model.output_result = output_data
+                job_model.output_params = output_data
                 job_model.completed_at = datetime.now(timezone.utc)
 
                 session.add(job_model)

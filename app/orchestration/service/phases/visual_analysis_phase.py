@@ -71,6 +71,12 @@ class VisualAnalysisPhase:
 
         return {"analyzed_chunks_count": analyzed_chunks_count}
 
+    def discard_preload(self) -> None:
+        """Releases a preload that execute() never resolved (e.g. the pipeline halted early)."""
+        if self._preload_future:
+            future, self._preload_future = self._preload_future, None
+            self._async_service.discard_preload(future, self._loader)
+
     def execute(self, frame_extraction_results: List[FrameExtractionJobResult]) -> PhaseBatchResult:
         """
         Phase 12: Waits for the VLM model to load, then evaluates all extracted frames.
@@ -82,8 +88,9 @@ class VisualAnalysisPhase:
         loaded_model: Optional[LoadedModel] = None
 
         if self._preload_future:
+            future, self._preload_future = self._preload_future, None
             try:
-                loaded_model = self._async_service.resolve_preload(self._preload_future)
+                loaded_model = self._async_service.resolve_preload(future)
             except ModelManagerError as e:
                 return PhaseBatchResult(
                     phase=PipelinePhase.VISUAL_ANALYSIS,

@@ -1,4 +1,4 @@
-# Canvas: diarization_api_v3
+# Canvas: diarization_api_v4
 # Path: app/features/diarization/service/diarization_api.py
 
 import uuid
@@ -37,7 +37,7 @@ class DiarizationAPI:
         self._adapter = adapter
 
     def process_audio(self, source_id: uuid.UUID, audio_path: str, release_after: bool = True) -> DiarizationMap:
-        # 1. Idempotency Check
+        # 1. Idempotency Check (the saved map is the completion marker, see step 8)
         existing_map = self._repo.get_map_by_source_id(source_id)
         if existing_map:
             return existing_map
@@ -71,16 +71,15 @@ class DiarizationAPI:
                 source_id=source_id
             )
 
-            # 6. Save the Diarization Map to Postgres
-            saved_diarization_map = self._repo.save_map(diarization_map)
+            # 6. Execute the Aligner Math
+            aligned_transcript = align_transcript_with_diarization(transcript, diarization_map)
 
-            # 7. Execute the Aligner Math
-            aligned_transcript = align_transcript_with_diarization(transcript, saved_diarization_map)
-
-            # 8. Update the Transcription Record
+            # 7. Update the Transcription Record
             self._transcription_api.update_transcript(aligned_transcript)
 
-            return saved_diarization_map
+            # 8. Save the Diarization Map LAST. It doubles as the idempotency marker, so saving it
+            # before the transcript update meant a crash in between skipped alignment forever.
+            return self._repo.save_map(diarization_map)
 
         except Exception as e:
             raise map_diarization_error(e) from e

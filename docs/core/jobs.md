@@ -13,10 +13,10 @@ A generic job-lifecycle/audit-trail wrapper used by every orchestration `Phase` 
 1. Creates the job row via `IJobRepository.create_job`.
 2. Calls `start_job` (must succeed or raises `JobExecutionFailed`).
 3. Invokes `target_func(*args, **kwargs)` inside a try/except.
-4. On success: non-dict results are wrapped as `{"result": str(result)}`, then `finish_job` is called.
+4. On success: a compact JSON-safe summary is built — dict results keep their scalar entries (keys starting with `_` carry transient in-memory payloads and are dropped); any other result is reduced to `{result_type, result_id}` so whole transcripts never land in the jobs table — then `finish_job` stores it in the `output_params` column.
 5. On any exception: captures `traceback.format_exc()`, calls `fail_job(error_message, stack_trace)`, and **re-raises the original exception** — so the calling Phase/Pipeline still sees the real typed error (e.g. `ScannerError`), the job row is just a side-effect record of it.
 
-`JobRequest` (frozen entity) holds `job_type: JobType`, optional `source_id`, and `input_params`. `Job` adds `status`, `worker_id`, `output_result`, error fields, timing fields, and a `computed_field duration_ms`. `JobType` enumerates every pipeline phase (directory_scan through qa_generation) — it effectively documents the full phase list in one enum. `JobStatus` is `PENDING`/`PROCESSING`/`COMPLETED`/`FAILED`/`CANCELLED`. `JobManager` also exposes `cancel_job()` and `get_source_history()`.
+`JobRequest` (frozen entity) holds `job_type: JobType`, optional `source_id`, and `input_params`. `Job` adds `status`, `worker_id`, `output_result` (read from the `output_params` column), error fields, timing fields, and a `computed_field duration_ms`. `JobType` enumerates every pipeline phase (directory_scan through qa_generation) — it effectively documents the full phase list in one enum. `JobStatus` is `PENDING`/`PROCESSING`/`COMPLETED`/`FAILED`/`CANCELLED`. `JobManager` also exposes `cancel_job()` and `get_source_history()`.
 
 ## Inputs / Outputs
 

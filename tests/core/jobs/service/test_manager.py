@@ -103,3 +103,45 @@ class TestJobManager:
 
         mock_repo.finish_job.assert_not_called()
         mock_repo.fail_job.assert_not_called()
+
+    def _started_job(self, mock_repo):
+        job = Job(
+            id=uuid.uuid4(),
+            job_type=JobType.DIRECTORY_SCAN,
+            status=JobStatus.PENDING,
+            created_at=datetime.now(timezone.utc)
+        )
+        mock_repo.create_job.return_value = job
+        mock_repo.start_job.return_value = job
+        return job
+
+    def test_run_job_drops_transient_and_non_scalar_dict_entries(self, manager, mock_repo):
+        job = self._started_job(mock_repo)
+        payload = {"surviving_chunks_count": 2, "_transient_chunks": [object()], "nested": {"a": 1}}
+
+        result = manager.run_job(JobRequest(job_type=JobType.DIRECTORY_SCAN), lambda: payload)
+
+        assert result is payload
+        mock_repo.finish_job.assert_called_once_with(job.id, {"surviving_chunks_count": 2})
+
+    def test_run_job_summarizes_domain_objects_by_type_and_id(self, manager, mock_repo):
+        job = self._started_job(mock_repo)
+
+        class FakeTranscript:
+            def __init__(self):
+                self.id = uuid.uuid4()
+                self.segments = ["huge"] * 1000
+
+        transcript = FakeTranscript()
+        manager.run_job(JobRequest(job_type=JobType.DIRECTORY_SCAN), lambda: transcript)
+
+        mock_repo.finish_job.assert_called_once_with(
+            job.id, {"result_type": "FakeTranscript", "result_id": str(transcript.id)}
+        )
+
+    def test_run_job_summarizes_results_without_id(self, manager, mock_repo):
+        job = self._started_job(mock_repo)
+
+        manager.run_job(JobRequest(job_type=JobType.DIRECTORY_SCAN), lambda: ("cleaned", "telemetry"))
+
+        mock_repo.finish_job.assert_called_once_with(job.id, {"result_type": "tuple"})

@@ -1,4 +1,4 @@
-# Canvas: ffmpeg_video_adapter_v1
+# Canvas: ffmpeg_video_adapter_v2
 # Path: app/features/clip_extractor/data/ffmpeg_video_adapter.py
 
 import os
@@ -27,14 +27,19 @@ class FFmpegVideoAdapter(IFFmpegVideoAdapter):
         os.close(temp_fd)
         temp_path = Path(temp_path_str)
 
+        duration_sec = max(0.0, end_sec - start_sec)
+
         # 2. FFmpeg Execution Command
         # Placing -ss before -i enables fast seeking to the nearest keyframe.
+        # Input seeking resets output timestamps to 0, so the clip length MUST be given as a
+        # duration (-t). An output `-to end_sec` is silently treated as a duration too, which
+        # produced clips running from start_sec to start_sec + end_sec.
         # -c copy avoids expensive CPU re-encoding by just copying the stream.
         command: list[str] = [
             "ffmpeg",
             "-ss", str(start_sec),
             "-i", os.fspath(src),
-            "-to", str(end_sec),
+            "-t", f"{duration_sec:.3f}",
             "-c", "copy",
             "-y",  # Overwrite output file if it exists
             os.fspath(temp_path)

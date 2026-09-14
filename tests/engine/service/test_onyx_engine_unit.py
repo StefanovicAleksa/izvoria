@@ -207,3 +207,32 @@ class TestOnyxEngineUnit:
 
         assert len(result.citations) == 1
         assert getattr(result.citations[0], 'physical_path') == "/vault/video_clip.mp4"
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_ingestion_cleanup_releases_all_models(self, _, engine, mock_media_pipeline, mock_async_service):
+        engine.start()
+        mock_media_pipeline.process_directory.return_value = {}
+
+        engine.ingest_videos("/dummy/path")
+
+        mock_async_service.release_all.assert_called_once_with()
+        assert engine.get_state() == EngineState.ONLINE
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_failed_chat_releases_all_models(self, _, engine, mock_live_qa_pipeline, mock_async_service):
+        engine.start()
+        mock_live_qa_pipeline.execute_chat.side_effect = RuntimeError("Scrubber crashed")
+
+        with pytest.raises(Exception):
+            engine.chat(SearchQuery(prompt="test"))
+
+        mock_async_service.release_all.assert_called_once_with()
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_failed_search_still_raises_if_release_fails(self, _, engine, mock_live_pipeline, mock_async_service):
+        engine.start()
+        mock_live_pipeline.execute_search.side_effect = RuntimeError("DB down")
+        mock_async_service.release_all.side_effect = RuntimeError("release failed")
+
+        with pytest.raises(Exception, match="DB down"):
+            engine.search_standard(SearchQuery(prompt="test"))

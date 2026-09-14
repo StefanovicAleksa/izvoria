@@ -8,7 +8,7 @@ Turns a finished `UnifiedTranscript` into a searchable knowledge base — embeds
 
 ## How it does it
 
-`RAGStorageService.index_transcript(source_id, transcript: UnifiedTranscript, release_after=True)` wipes any prior rows for that source (`delete_by_source_id`, so re-indexing is idempotent/replace-in-place rather than additive), normalizes chunk text, acquires the `RAG_EMBEDDING` model via `ModelManagerOrchestrator`, calls `embed_batch()` (batch size 16, `normalize_embeddings=True`), releases the model if `release_after=True`, then bulk-inserts via `save_rag_chunks()`. Returns an `IngestionResult`/`IndexingTelemetry`.
+`RAGStorageService.index_transcript(source_id, transcript: UnifiedTranscript, release_after=True)` normalizes chunk text, acquires the `RAG_EMBEDDING` model via `ModelManagerOrchestrator`, calls `embed_batch()` (batch size 16, `normalize_embeddings=True`), releases the model if `release_after=True`, and only then calls `replace_rag_chunks()`, which deletes the source's previous rows and inserts the new ones in **one transaction** — re-indexing is replace-in-place, and a failure leaves the old index intact. Returns an `IngestionResult`/`IndexingTelemetry` on success; any failure raises a typed `RAGStorageError` (via `utils/error_mapper.py`) so the job is recorded as FAILED. An empty transcript clears the source's rows.
 
 `HuggingFaceEmbeddingAdapter` (`data/hf_embedder.py`) wraps `sentence_transformers.SentenceTransformer`, running fp16 on CUDA. It does a scoped `sys.modules["torchcodec"] = None` hack inside `_get_embedding_model` (restored in `finally`) to stop torchvision/torchcodec's broken C++ codec bindings from crashing the model load — see Gotchas.
 

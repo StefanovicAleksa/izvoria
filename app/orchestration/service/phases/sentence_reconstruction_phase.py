@@ -44,6 +44,12 @@ class SentenceReconstructionPhase:
         """Triggers the background loading of the Token Classification (Punctuation) model."""
         self._preload_future = self._async_service.trigger_preload(self._manifest, self._adapter)
 
+    def discard_preload(self) -> None:
+        """Releases a preload that execute() never resolved (e.g. the pipeline halted early)."""
+        if self._preload_future:
+            future, self._preload_future = self._preload_future, None
+            self._async_service.discard_preload(future, self._adapter)
+
     def execute(self, diarize_results: List[DiarizeJobResult]) -> PhaseBatchResult:
         """
         Phase 7: Waits for the punctuation model to load, then deterministically reconstructs sentences sequentially.
@@ -56,8 +62,9 @@ class SentenceReconstructionPhase:
 
         # 1. Wait for the background GPU loading to finish
         if self._preload_future:
+            future, self._preload_future = self._preload_future, None
             try:
-                loaded_model = self._async_service.resolve_preload(self._preload_future)
+                loaded_model = self._async_service.resolve_preload(future)
             except ModelManagerError as e:
                 return PhaseBatchResult(
                     phase=PipelinePhase.SENTENCE_RECONSTRUCTION,

@@ -193,3 +193,30 @@ class TestStorageRepository:
 
         with pytest.raises(SourceNotFound):
             repository.mark_as_processed(uuid.uuid4())
+
+    def test_delete_file_found(self, repository, mock_db_manager):
+        session = mock_db_manager.session.return_value.__enter__.return_value
+        file_id = uuid.uuid4()
+        mock_file_model = MagicMock()
+        mock_file_model.id = file_id
+        mock_file_model.file_path = "/vault/clip.mp4"
+        mock_file_model.file_name = "clip.mp4"
+        mock_file_model.file_size_bytes = 10
+        mock_file_model.mime_type = "video/mp4"
+        mock_file_model.file_metadata = {}
+        mock_file_model.is_processed = False
+        mock_file_model.created_at = datetime.now(timezone.utc)
+        session.get.return_value = mock_file_model
+
+        result = repository.delete_file(file_id)
+
+        assert result.id == file_id
+        assert result.file_path == "/vault/clip.mp4"
+        session.delete.assert_called_once_with(mock_file_model)
+
+    def test_delete_file_not_found(self, repository, mock_db_manager):
+        session = mock_db_manager.session.return_value.__enter__.return_value
+        session.get.return_value = None
+
+        assert repository.delete_file(uuid.uuid4()) is None
+        session.delete.assert_not_called()

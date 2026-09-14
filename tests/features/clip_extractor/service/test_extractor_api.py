@@ -112,3 +112,26 @@ class TestClipExtractorAPI:
             api.extract_clips_from_transcript(dummy_transcript)
 
         mock_temp_path.unlink.assert_called_once()
+
+    def test_extract_clips_removes_already_vaulted_files_when_a_later_chunk_fails(
+            self, api, mock_ffmpeg, mock_repo, mock_storage, dummy_transcript
+    ):
+        """Files vaulted before a failure have no DB rows, so they must be deleted, not orphaned."""
+        mock_repo.get_by_source_id.return_value = []
+
+        mock_source = MagicMock()
+        mock_source.source_type = SourceType.VIDEO
+        mock_storage.get_source.return_value = mock_source
+
+        first_temp = MagicMock()
+        mock_ffmpeg.extract_clip.side_effect = [first_temp, Exception("FFmpeg died")]
+
+        vaulted_file = MagicMock()
+        vaulted_file.id = uuid.uuid4()
+        mock_storage.ingest_raw_file.return_value = vaulted_file
+
+        with pytest.raises(Exception, match="FFmpeg died"):
+            api.extract_clips_from_transcript(dummy_transcript)
+
+        mock_storage.delete_raw_file.assert_called_once_with(vaulted_file.id)
+        mock_repo.create_bulk.assert_not_called()

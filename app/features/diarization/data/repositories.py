@@ -28,6 +28,7 @@ class DiarizationRepository(IDiarizationRepository):
                 id=diarization_map.id,
                 source_id=diarization_map.source_id,
                 segments=serialized_segments,
+                fallback_applied=diarization_map.fallback_applied,
                 created_at=diarization_map.created_at
             )
 
@@ -54,6 +55,7 @@ class DiarizationRepository(IDiarizationRepository):
                     id=db_model.id,
                     source_id=db_model.source_id,
                     segments=domain_segments,
+                    fallback_applied=bool(db_model.fallback_applied),
                     created_at=db_model.created_at
                 )
 

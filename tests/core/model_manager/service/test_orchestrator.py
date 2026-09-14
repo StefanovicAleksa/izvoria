@@ -108,3 +108,58 @@ class TestModelManagerOrchestrator:
 
         mock_loader.unload.assert_called_once_with(dummy_loaded)
         mock_monitor.flush_memory.assert_called_once()
+
+    def test_same_path_different_model_type_is_not_reused(self, mock_monitor, sample_manifest):
+        """The same weights loaded by a different feature must be swapped, never handed over."""
+        orchestrator = ModelManagerOrchestrator(mock_monitor)
+        first_loader, second_loader = MagicMock(), MagicMock()
+
+        first_loaded = LoadedModel(manifest=sample_manifest, model_instance="ctx_4096")
+        first_loader.load.return_value = first_loaded
+        orchestrator.acquire_model(sample_manifest, first_loader)
+
+        other_manifest = ModelManifest(
+            model_type=ModelType.CONTEXTUAL_RETRIEVAL,
+            model_path=sample_manifest.model_path,
+            required_vram_mb=1000.0
+        )
+        second_loaded = LoadedModel(manifest=other_manifest, model_instance="ctx_32768")
+        second_loader.load.return_value = second_loaded
+
+        result = orchestrator.acquire_model(other_manifest, second_loader)
+
+        assert result == second_loaded
+        second_loader.load.assert_called_once_with(other_manifest)
+        first_loader.unload.assert_called_once_with(first_loaded)
+
+    def test_wait_for_clear_times_out_on_leaked_model(self, mock_monitor, mock_loader, sample_manifest):
+        """A resident model that is never released must raise instead of parking forever."""
+        orchestrator = ModelManagerOrchestrator(mock_monitor)
+        mock_loader.load.return_value = LoadedModel(manifest=sample_manifest, model_instance="leaked")
+        orchestrator.acquire_model(sample_manifest, mock_loader)
+
+        other_manifest = ModelManifest(
+            model_type=ModelType.TRANSCRIPTION,
+            model_path="models/other.bin",
+            required_vram_mb=1000.0
+        )
+        other_loader = MagicMock()
+
+        with pytest.raises(exc.ModelAcquireTimeoutError, match="transcription"):
+            orchestrator.acquire_model(other_manifest, other_loader, wait_for_clear=True, wait_timeout_sec=0.2)
+
+        other_loader.load.assert_not_called()
+        mock_loader.unload.assert_not_called()
+
+    def test_wait_for_clear_returns_resident_of_same_manifest_immediately(
+            self, mock_monitor, mock_loader, sample_manifest
+    ):
+        orchestrator = ModelManagerOrchestrator(mock_monitor)
+        loaded = LoadedModel(manifest=sample_manifest, model_instance="resident")
+        mock_loader.load.return_value = loaded
+        orchestrator.acquire_model(sample_manifest, mock_loader)
+
+        result = orchestrator.acquire_model(sample_manifest, mock_loader, wait_for_clear=True, wait_timeout_sec=0.2)
+
+        assert result == loaded
+        assert mock_loader.load.call_count == 1

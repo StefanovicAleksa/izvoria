@@ -127,3 +127,37 @@ class TestDiarizationAPI:
             loaded_model_mock, mocks["adapter"], flush=True
         )
         mocks["repo"].save_map.assert_not_called()
+
+    @patch("app.features.diarization.service.diarization_api.align_transcript_with_diarization")
+    def test_process_audio_saves_map_only_after_transcript_update(self, mock_aligner, api, mocks):
+        """The map is the idempotency marker, so it must be persisted after alignment is stored."""
+        source_id = uuid.uuid4()
+        mocks["repo"].get_map_by_source_id.return_value = None
+        mocks["vad_repo"].get_map_by_source_id.return_value = VadMap(source_id=source_id, segments=[])
+        mocks["transcription_api"].get_transcript.return_value = Transcript(source_id=source_id, segments=[])
+
+        generated_map = DiarizationMap(source_id=source_id, segments=[])
+        mocks["adapter"].generate_diarization_map.return_value = generated_map
+        mocks["repo"].save_map.return_value = generated_map
+
+        call_order = MagicMock()
+        call_order.attach_mock(mocks["transcription_api"].update_transcript, "update_transcript")
+        call_order.attach_mock(mocks["repo"].save_map, "save_map")
+
+        api.process_audio(source_id, "/dummy.wav")
+
+        assert [c[0] for c in call_order.mock_calls] == ["update_transcript", "save_map"]
+
+    @patch("app.features.diarization.service.diarization_api.align_transcript_with_diarization")
+    def test_process_audio_does_not_save_map_if_transcript_update_fails(self, mock_aligner, api, mocks):
+        source_id = uuid.uuid4()
+        mocks["repo"].get_map_by_source_id.return_value = None
+        mocks["vad_repo"].get_map_by_source_id.return_value = VadMap(source_id=source_id, segments=[])
+        mocks["transcription_api"].get_transcript.return_value = Transcript(source_id=source_id, segments=[])
+        mocks["adapter"].generate_diarization_map.return_value = DiarizationMap(source_id=source_id, segments=[])
+        mocks["transcription_api"].update_transcript.side_effect = RuntimeError("DB connection dropped")
+
+        with pytest.raises(Exception):
+            api.process_audio(source_id, "/dummy.wav")
+
+        mocks["repo"].save_map.assert_not_called()

@@ -136,6 +136,7 @@ class OnyxEngine(IOnyxEngine):
         """Unlocks the engine and clears any lingering pipeline artifacts."""
         try:
             logger.info("Batch ingestion finished. Purging pipeline artifacts from VRAM...")
+            self._async_service.release_all()
             self._force_aggressive_garbage_collection()
         except Exception as e:
             logger.error(f"Failed to cleanly purge VRAM: {e}")
@@ -203,6 +204,7 @@ class OnyxEngine(IOnyxEngine):
             self._resolve_physical_paths(result)
             return result
         except Exception as e:
+            self._release_models_after_failure()
             raise map_engine_error(e, context=f"Standard Search [{query.prompt}]")
 
     def search_verified(self, query: SearchQuery) -> SearchResult:
@@ -213,6 +215,7 @@ class OnyxEngine(IOnyxEngine):
             self._resolve_physical_paths(result)
             return result
         except Exception as e:
+            self._release_models_after_failure()
             raise map_engine_error(e, context=f"Verified Search [{query.prompt}]")
 
     def chat(self, query: SearchQuery) -> QAResponse:
@@ -223,7 +226,15 @@ class OnyxEngine(IOnyxEngine):
             self._resolve_citation_paths(result)
             return result
         except Exception as e:
+            self._release_models_after_failure()
             raise map_engine_error(e, context=f"Chat QA Generation [{query.prompt}]")
+
+    def _release_models_after_failure(self) -> None:
+        """A failed live call must not leave a model resident for the next request to wait on."""
+        try:
+            self._async_service.release_all()
+        except Exception as e:
+            logger.error(f"Failed to release models after live inference failure: {e}")
 
     def _enforce_online_state(self) -> None:
         with self._state_lock:

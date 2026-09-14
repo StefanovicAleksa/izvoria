@@ -4,6 +4,7 @@
 import os
 import gc
 import json
+import logging
 import tempfile
 import uuid
 from pathlib import Path
@@ -17,6 +18,8 @@ from app.features.vad.domain.entities import VadMap
 from app.features.diarization.domain.interfaces import IDiarizationModelAdapter
 from app.features.diarization.domain.entities import DiarizationMap, DiarizationSegment
 from app.features.diarization.utils.error_mapper import map_diarization_error
+
+logger = logging.getLogger(__name__)
 
 
 class NeMoDiarizationAdapter(IDiarizationModelAdapter):
@@ -183,7 +186,7 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                     is_clustering_fault = "linalg" in err_str or "singular matrix" in err_str or "converge" in err_str
 
                     if is_math_error or is_clustering_fault:
-                        print(f"[DIARIZATION FALLBACK] Spectral Clustering failed (likely a monologue). Applying fallback. Details: {fallback_err}")
+                        logger.warning(f"[DIARIZATION FALLBACK] Spectral Clustering failed (likely a monologue). Attributing all speech to Speaker_0. Details: {fallback_err}")
                         fallback_segments = [
                             DiarizationSegment(
                                 start_sec=seg.start_sec,
@@ -191,7 +194,7 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                                 speaker_id="Speaker_0"
                             ) for seg in vad_map.segments
                         ]
-                        return DiarizationMap(source_id=source_id, segments=fallback_segments)
+                        return DiarizationMap(source_id=source_id, segments=fallback_segments, fallback_applied=True)
 
                     raise fallback_err
                 # ----------------------------------
@@ -199,7 +202,7 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                 # 5. Parse Output
                 pred_rttm_path = tmp_path / "pred_rttms" / f"{audio_id}.rttm"
                 if not pred_rttm_path.exists():
-                    print(f"[DIARIZATION FALLBACK] RTTM output missing at {pred_rttm_path}. Applying fallback.")
+                    logger.warning(f"[DIARIZATION FALLBACK] RTTM output missing at {pred_rttm_path}. Attributing all speech to Speaker_0.")
                     fallback_segments = [
                         DiarizationSegment(
                             start_sec=seg.start_sec,
@@ -207,7 +210,7 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                             speaker_id="Speaker_0"
                         ) for seg in vad_map.segments
                     ]
-                    return DiarizationMap(source_id=source_id, segments=fallback_segments)
+                    return DiarizationMap(source_id=source_id, segments=fallback_segments, fallback_applied=True)
 
                 diarization_segments = []
                 with open(pred_rttm_path, "r", encoding="utf-8") as f:

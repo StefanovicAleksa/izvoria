@@ -1,4 +1,4 @@
-# Canvas: orchestrator_v5
+# Canvas: orchestrator_v6
 # Path: app/core/model_manager/service/orchestrator.py
 
 import uuid
@@ -6,8 +6,9 @@ import threading
 import logging
 import time
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
+from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.interfaces import IVramMonitor, IModelLoader
 from app.core.model_manager import exceptions as exc
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 class ModelManagerOrchestrator:
     VRAM_SAFETY_BUFFER_MB = 500.0
+    WAIT_POLL_INTERVAL_SEC = 0.1
 
     def __init__(self, vram_monitor: IVramMonitor):
         self._monitor = vram_monitor
@@ -26,25 +28,58 @@ class ModelManagerOrchestrator:
         self._historical_backpacks: Dict[str, float] = {}
         self._lock = threading.RLock()
 
-    def acquire_model(self, manifest: ModelManifest, loader: IModelLoader, wait_for_clear: bool = False) -> LoadedModel:
-        # 1. Idempotency Check (Unprotected read is safe here for quick exit)
+    def _find_resident(self, manifest: ModelManifest) -> Optional[LoadedModel]:
+        """
+        Residency is keyed on (model_type, model_path), not the path alone: the same
+        GGUF file is loaded by several adapters with different settings (e.g. n_ctx),
+        so a resident instance must never be handed to a different feature.
+        Callers must hold `self._lock`.
+        """
         for active_model in self._active_models.values():
-            if active_model.manifest.model_path == manifest.model_path:
+            if (active_model.manifest.model_type == manifest.model_type
+                    and active_model.manifest.model_path == manifest.model_path):
                 return active_model
+        return None
+
+    def _wait_until_clear(self, manifest: ModelManifest, timeout_sec: float) -> None:
+        deadline = time.monotonic() + timeout_sec
+        logger.info("Background preloader parking politely until active models clear VRAM...")
+        while True:
+            with self._lock:
+                if not self._active_models or self._find_resident(manifest):
+                    return
+            if time.monotonic() >= deadline:
+                raise exc.ModelAcquireTimeoutError(
+                    f"Timed out after {timeout_sec:.0f}s waiting for VRAM to clear before loading "
+                    f"{manifest.model_type.value}. A resident model was never released."
+                )
+            time.sleep(self.WAIT_POLL_INTERVAL_SEC)
+
+    def acquire_model(
+            self,
+            manifest: ModelManifest,
+            loader: IModelLoader,
+            wait_for_clear: bool = False,
+            wait_timeout_sec: Optional[float] = None
+    ) -> LoadedModel:
+        # 1. Idempotency Check
+        with self._lock:
+            resident = self._find_resident(manifest)
+            if resident:
+                return resident
 
         # 2. Prevent Race Conditions: Background preloads must wait for active inference to finish
         if wait_for_clear:
-            logger.info(f"Background preloader parking politely until active models clear VRAM...")
-            while self._active_models:
-                time.sleep(0.1)
+            timeout = wait_timeout_sec if wait_timeout_sec is not None else settings.MODEL_WAIT_FOR_CLEAR_TIMEOUT_SEC
+            self._wait_until_clear(manifest, timeout)
 
         with self._lock:
             # Double check idempotency after acquiring lock
-            for active_model in self._active_models.values():
-                if active_model.manifest.model_path == manifest.model_path:
-                    return active_model
+            resident = self._find_resident(manifest)
+            if resident:
+                return resident
 
-            # 3. Swap logic: If VRAM is occupied (and we are on the main thread), release existing models
+            # 3. Swap logic: If VRAM is occupied, release existing models
             if self._active_models:
                 logger.info("Swapping models. Releasing current residents...")
                 active_ids = list(self._active_models.keys())

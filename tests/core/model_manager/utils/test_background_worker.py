@@ -2,6 +2,7 @@
 # Path: tests/core/model_manager/utils/test_background_worker.py
 
 import time
+import concurrent.futures
 from unittest.mock import MagicMock
 from app.core.model_manager.utils.background_worker import BackgroundModelWorker
 
@@ -34,4 +35,63 @@ class TestBackgroundModelWorker:
 
         result = future.result()
         assert result == "LoadedMock"
+        worker.shutdown()
+
+    def test_discard_preload_cancels_pending_future(self):
+        mock_orchestrator = MagicMock()
+        worker = BackgroundModelWorker(mock_orchestrator)
+
+        future = concurrent.futures.Future()
+        worker.discard_preload(future, MagicMock())
+
+        assert future.cancelled() is True
+        mock_orchestrator.release_model.assert_not_called()
+        worker.shutdown()
+
+    def test_discard_preload_releases_already_loaded_model(self):
+        mock_orchestrator = MagicMock()
+        worker = BackgroundModelWorker(mock_orchestrator)
+        loader, loaded = MagicMock(), MagicMock()
+
+        future = concurrent.futures.Future()
+        future.set_running_or_notify_cancel()
+        future.set_result(loaded)
+        worker.discard_preload(future, loader)
+
+        mock_orchestrator.release_model.assert_called_once_with(loaded, loader, flush=True)
+        worker.shutdown()
+
+    def test_discard_preload_releases_running_load_once_it_completes(self):
+        mock_orchestrator = MagicMock()
+        worker = BackgroundModelWorker(mock_orchestrator)
+        loader, loaded = MagicMock(), MagicMock()
+
+        future = concurrent.futures.Future()
+        future.set_running_or_notify_cancel()
+        worker.discard_preload(future, loader)
+        mock_orchestrator.release_model.assert_not_called()
+
+        future.set_result(loaded)
+        mock_orchestrator.release_model.assert_called_once_with(loaded, loader, flush=True)
+        worker.shutdown()
+
+    def test_discard_preload_ignores_failed_load(self):
+        mock_orchestrator = MagicMock()
+        worker = BackgroundModelWorker(mock_orchestrator)
+
+        future = concurrent.futures.Future()
+        future.set_running_or_notify_cancel()
+        future.set_exception(RuntimeError("load failed"))
+        worker.discard_preload(future, MagicMock())
+
+        mock_orchestrator.release_model.assert_not_called()
+        worker.shutdown()
+
+    def test_release_all_delegates_to_orchestrator(self):
+        mock_orchestrator = MagicMock()
+        worker = BackgroundModelWorker(mock_orchestrator)
+
+        worker.release_all()
+
+        mock_orchestrator.release_all.assert_called_once_with({})
         worker.shutdown()

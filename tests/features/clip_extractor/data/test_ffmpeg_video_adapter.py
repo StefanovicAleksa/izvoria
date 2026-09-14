@@ -1,4 +1,4 @@
-# Canvas: test_ffmpeg_video_adapter_v1
+# Canvas: test_ffmpeg_video_adapter_v2
 # Path: tests/features/clip_extractor/data/test_ffmpeg_video_adapter.py
 
 import subprocess
@@ -18,7 +18,7 @@ class TestFFmpegVideoAdapter:
 
     @patch("app.features.clip_extractor.data.ffmpeg_video_adapter.subprocess.run")
     def test_extract_clip_happy_path(self, mock_run, adapter, tmp_path):
-        """Verifies correct FFmpeg CLI arguments for fast keyframe seeking."""
+        """Verifies input seeking plus a DURATION (-t), never an output -to position."""
         source_file = tmp_path / "test_video.mp4"
         source_file.write_text("fake video data")
 
@@ -31,19 +31,44 @@ class TestFFmpegVideoAdapter:
         mock_run.assert_called_once()
         called_args = mock_run.call_args[0][0]
 
-        # Verify command structure explicitly
-        assert called_args[0] == "ffmpeg"
-        assert called_args[1] == "-ss"
-        assert called_args[2] == "15.0"
-        assert called_args[3] == "-i"
-        assert called_args[4] == str(source_file)
-        assert called_args[5] == "-to"
-        assert called_args[6] == "30.0"
-        assert called_args[7] == "-c"
-        assert called_args[8] == "copy"
+        assert called_args == [
+            "ffmpeg",
+            "-ss", "15.0",
+            "-i", str(source_file),
+            "-t", "15.000",
+            "-c", "copy",
+            "-y",
+            str(result_path)
+        ]
+        assert "-to" not in called_args
 
         if result_path.exists():
             result_path.unlink()
+
+    @patch("app.features.clip_extractor.data.ffmpeg_video_adapter.subprocess.run")
+    def test_extract_clip_duration_is_relative_to_start(self, mock_run, adapter, tmp_path):
+        """A late chunk (3600s-3700s) must produce a 100s clip, not a 3700s one."""
+        source_file = tmp_path / "long_video.mp4"
+        source_file.write_text("fake video data")
+
+        result_path = adapter.extract_clip(source_file, start_sec=3600.0, end_sec=3700.0)
+
+        called_args = mock_run.call_args[0][0]
+        assert called_args[called_args.index("-t") + 1] == "100.000"
+
+        result_path.unlink()
+
+    @patch("app.features.clip_extractor.data.ffmpeg_video_adapter.subprocess.run")
+    def test_extract_clip_negative_range_clamps_to_zero(self, mock_run, adapter, tmp_path):
+        source_file = tmp_path / "video.mp4"
+        source_file.write_text("fake video data")
+
+        result_path = adapter.extract_clip(source_file, start_sec=10.0, end_sec=5.0)
+
+        called_args = mock_run.call_args[0][0]
+        assert called_args[called_args.index("-t") + 1] == "0.000"
+
+        result_path.unlink()
 
     def test_extract_clip_source_not_found(self, adapter):
         with pytest.raises(exc.ClipExtractorError, match="Source file not found"):

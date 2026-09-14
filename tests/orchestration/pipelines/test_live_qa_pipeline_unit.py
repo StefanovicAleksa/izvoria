@@ -106,3 +106,36 @@ class TestLiveQAPipelineUnit:
             pipeline.execute_chat(uuid.uuid4(), SearchQuery(prompt="Test"))
 
         assert "Pipeline halted: Final LLM Generation failed" in str(exc_info.value)
+
+    def test_failed_retrieval_discards_pending_preloads(
+            self, pipeline, mock_retrieval_phase, mock_scrubber_phase, mock_qa_phase
+    ):
+        """
+        Regression: a failed retrieval used to leave the scrubber/QA preloads loading on the
+        single worker thread with nobody to release them, hanging every later live call.
+        """
+        mock_retrieval_phase.execute.return_value = PhaseBatchResult(
+            phase=PipelinePhase.RAG_RETRIEVAL,
+            status=PhaseStatus.FAILED,
+            errors=["Embedder crashed"]
+        )
+
+        with pytest.raises(WorkflowStateError):
+            pipeline.execute_chat(uuid.uuid4(), SearchQuery(prompt="Test"))
+
+        mock_scrubber_phase.execute.assert_not_called()
+        mock_qa_phase.execute.assert_not_called()
+        mock_retrieval_phase.discard_preload.assert_called_once_with()
+        mock_scrubber_phase.discard_preload.assert_called_once_with()
+        mock_qa_phase.discard_preload.assert_called_once_with()
+
+    def test_unexpected_crash_still_discards_pending_preloads(
+            self, pipeline, mock_retrieval_phase, mock_scrubber_phase, mock_qa_phase
+    ):
+        mock_retrieval_phase.execute.side_effect = RuntimeError("boom")
+
+        with pytest.raises(Exception):
+            pipeline.execute_chat(uuid.uuid4(), SearchQuery(prompt="Test"))
+
+        mock_scrubber_phase.discard_preload.assert_called_once_with()
+        mock_qa_phase.discard_preload.assert_called_once_with()

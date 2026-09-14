@@ -41,6 +41,18 @@ class LiveQAPipeline:
         self._scrubber_phase.preload_model()
         self._qa_generation_phase.preload_model()
 
+    def _discard_pending_preloads(self) -> None:
+        """
+        Guarantees no background preload outlives this run. Phases clear their own future
+        once resolved, so this only touches preloads for phases that never executed
+        (early return, halted branch, or an exception).
+        """
+        for phase in (self._retrieval_phase, self._scrubber_phase, self._qa_generation_phase):
+            try:
+                phase.discard_preload()
+            except Exception as e:
+                logger.error(f"Failed to discard pending preload for {type(phase).__name__}: {e}")
+
     def execute_chat(self, search_id: uuid.UUID, query: SearchQuery) -> QAResponse:
         logger.info(f"========== Starting Live QA Pipeline for Search [{search_id}] ==========")
 
@@ -106,3 +118,5 @@ class LiveQAPipeline:
         except Exception as e:
             logger.error(f"Critical QA Pipeline Crash: {e}")
             raise WorkflowExecutionError(f"Critical QA Pipeline Crash: {str(e)}", original_exception=e) from e
+        finally:
+            self._discard_pending_preloads()

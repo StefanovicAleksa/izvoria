@@ -35,7 +35,7 @@ class TestJobRepository:
         mock_model.status = "processing"
         mock_model.created_at = datetime.now(timezone.utc)
         mock_model.input_params = {}
-        mock_model.output_result = {}
+        mock_model.output_params = {}
         # Explicitly set unused fields to None to bypass MagicMock validation errors
         mock_model.source_id = None
         mock_model.worker_id = None
@@ -91,7 +91,8 @@ class TestJobRepository:
         result = repository.finish_job(mock_model.id, {"found": 10})
 
         assert mock_model.status == "completed"
-        assert mock_model.output_result == {"found": 10}
+        assert mock_model.output_params == {"found": 10}
+        assert result.output_result == {"found": 10}
         assert mock_model.completed_at is not None
         assert result.status == JobStatus.COMPLETED
 

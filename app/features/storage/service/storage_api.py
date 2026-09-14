@@ -92,6 +92,17 @@ class StorageAPI:
         """Fetches a standalone raw file directly by its UUID."""
         return self.repository.get_file_by_id(file_id)
 
+    def delete_raw_file(self, file_id: uuid.UUID) -> bool:
+        """
+        Removes a standalone vaulted file (DB record + physical file).
+        Used to roll back files vaulted by a feature whose run failed before recording them.
+        """
+        deleted = self.repository.delete_file(file_id)
+        if not deleted:
+            return False
+        self.file_manager.delete(deleted.file_path)
+        return True
+
     def get_file_path(self, file_id: uuid.UUID) -> Path:
         """
         Fetches a file record and strictly verifies the physical file exists in the vault.

@@ -53,6 +53,12 @@ class RagIndexingPhase:
             loader=self._loader
         )
 
+    def discard_preload(self) -> None:
+        """Releases a preload that execute() never resolved (e.g. the pipeline halted early)."""
+        if self._preload_future:
+            future, self._preload_future = self._preload_future, None
+            self._async_service.discard_preload(future, self._loader)
+
     def execute(self, unification_results: List[ContextUnificationJobResult]) -> PhaseBatchResult:
         logger.info(f"Executing RAG Indexing Phase for {len(unification_results)} transcripts...")
         results: List[RagIndexingJobResult] = []
@@ -62,8 +68,9 @@ class RagIndexingPhase:
         loaded_model: Optional[LoadedModel] = None
 
         if self._preload_future:
+            future, self._preload_future = self._preload_future, None
             try:
-                loaded_model = self._async_service.resolve_preload(self._preload_future)
+                loaded_model = self._async_service.resolve_preload(future)
                 logger.info("Successfully resolved preloaded RAG Embedding model.")
             except ModelManagerError as e:
                 logger.error(f"Failed to load RAG Embedding model: {e}")

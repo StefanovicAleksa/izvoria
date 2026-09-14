@@ -27,6 +27,8 @@ class DiarizationMap(BaseModel):
     id: uuid.UUID = Field(default_factory=uuid.uuid4)
     source_id: uuid.UUID
     segments: List[DiarizationSegment]
+    # True when clustering failed and every speech segment was attributed to a single speaker.
+    fallback_applied: bool = Field(default=False)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
     @property

@@ -93,6 +93,18 @@ class BatchMediaPipeline:
         self._clip_extraction_phase = clip_extraction_phase
         self._rag_indexing_phase = rag_indexing_phase
 
+    def _discard_pending_preloads(self) -> None:
+        """
+        Guarantees no background preload outlives this run. Phases clear their own future
+        once resolved, so this only touches preloads for phases that never executed
+        (early return, halted branch, or an exception).
+        """
+        for phase in (self._vad_phase, self._transcribe_phase, self._diarize_phase, self._sentence_reconstruction_phase, self._domain_phonetic_correction_phase, self._contextual_retrieval_phase, self._visual_cue_detection_phase, self._visual_analysis_phase, self._visual_hallucination_correction_phase, self._visual_context_synthesis_phase, self._rag_indexing_phase):
+            try:
+                phase.discard_preload()
+            except Exception as e:
+                logger.error(f"Failed to discard pending preload for {type(phase).__name__}: {e}")
+
     def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[
         PipelinePhase, PhaseBatchResult]:
         pipeline_results: Dict[PipelinePhase, PhaseBatchResult] = {}
@@ -308,3 +320,5 @@ class BatchMediaPipeline:
         except Exception as e:
             logger.error(f"Critical Pipeline Crash: {e}")
             raise WorkflowExecutionError(f"Critical Pipeline Crash: {str(e)}", original_exception=e) from e
+        finally:
+            self._discard_pending_preloads()

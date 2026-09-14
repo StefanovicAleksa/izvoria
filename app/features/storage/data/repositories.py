@@ -86,6 +86,19 @@ class StorageRepository(IStorageRepository):
         except db_exc.DatabaseError as e:
             raise map_storage_error(e)
 
+    def delete_file(self, file_id: uuid.UUID) -> Optional[File]:
+        """Deletes a standalone physical file record."""
+        try:
+            with self._db.session() as session:
+                model = session.get(FileModel, file_id)
+                if not model:
+                    return None
+                deleted = File.model_validate(model)
+                session.delete(model)
+                return deleted
+        except db_exc.DatabaseError as e:
+            raise map_storage_error(e)
+
     def get_by_hash(self, content_hash: str) -> Optional[Source]:
         try:
             with self._db.session() as session:
