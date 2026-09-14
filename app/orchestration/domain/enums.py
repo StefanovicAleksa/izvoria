@@ -29,6 +29,7 @@ class PipelinePhase(str, Enum):
 
     # NEW: Live Inference Retrieval Phases
     RAG_RETRIEVAL = "rag_retrieval"
+    RAG_RERANKING = "rag_reranking"
     RETRIEVAL_SCRUBBING = "retrieval_scrubbing"
     QA_GENERATION = "qa_generation"
 

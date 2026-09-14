@@ -1,4 +1,4 @@
-# Canvas: live_qa_pipeline_v3
+# Canvas: live_qa_pipeline_v4
 # Path: app/orchestration/service/pipelines/live_qa_pipeline.py
 
 import logging
@@ -9,10 +9,12 @@ from app.features.rag_retrieval.domain.entities import SearchQuery, SearchResult
 from app.features.qa_generation.domain.entities import QAResponse
 
 from app.orchestration.domain.enums import PhaseStatus
-from app.orchestration.domain.entities import RagRetrievalJobResult, RetrievalScrubbingJobResult, QAGenerationJobResult
+from app.orchestration.domain.entities import RagRetrievalJobResult, RagRerankingJobResult, \
+    RetrievalScrubbingJobResult, QAGenerationJobResult
 from app.orchestration.exceptions.workflow import WorkflowStateError, WorkflowExecutionError
 
 from app.orchestration.service.phases.rag_retrieval_phase import RagRetrievalPhase
+from app.orchestration.service.phases.rag_reranking_phase import RagRerankingPhase
 from app.orchestration.service.phases.retrieval_scrubber_phase import RetrievalScrubberPhase
 from app.orchestration.service.phases.qa_generation_phase import QAGenerationPhase
 
@@ -22,22 +24,25 @@ logger = logging.getLogger(__name__)
 class LiveQAPipeline:
     """
     Synchronous pipeline for executing end-to-end "Chat with your Data".
-    Executes Hybrid Search -> SLM Semantic Scrubbing -> Local LLM Final Answer Generation.
+    Executes Hybrid Search -> Cross-Encoder Reranking -> SLM Semantic Scrubbing -> Local LLM Final Answer Generation.
     """
 
     def __init__(
             self,
             retrieval_phase: RagRetrievalPhase,
+            reranking_phase: RagRerankingPhase,
             scrubber_phase: RetrievalScrubberPhase,
             qa_generation_phase: QAGenerationPhase
     ):
         self._retrieval_phase = retrieval_phase
+        self._reranking_phase = reranking_phase
         self._scrubber_phase = scrubber_phase
         self._qa_generation_phase = qa_generation_phase
 
     def preload_models(self) -> None:
         """Trigger async loads for all models in the RAG + Chat sequence to warm the VRAM caches."""
         self._retrieval_phase.preload_model()
+        self._reranking_phase.preload_model()
         self._scrubber_phase.preload_model()
         self._qa_generation_phase.preload_model()
 
@@ -47,7 +52,7 @@ class LiveQAPipeline:
         once resolved, so this only touches preloads for phases that never executed
         (early return, halted branch, or an exception).
         """
-        for phase in (self._retrieval_phase, self._scrubber_phase, self._qa_generation_phase):
+        for phase in (self._retrieval_phase, self._reranking_phase, self._scrubber_phase, self._qa_generation_phase):
             try:
                 phase.discard_preload()
             except Exception as e:
@@ -80,9 +85,22 @@ class LiveQAPipeline:
                 raise WorkflowStateError("Pipeline halted: Failed to extract SearchResult from Database Phase.")
 
             # ==========================================
-            # STAGE 2: RETRIEVAL SCRUBBING (SLM)
+            # STAGE 2: CROSS-ENCODER RERANKING
             # ==========================================
-            scrub_result = self._scrubber_phase.execute(raw_transient_results)
+            rerank_result = self._reranking_phase.execute(raw_transient_results, top_n=query.limit)
+
+            if rerank_result.status == PhaseStatus.FAILED:
+                raise WorkflowStateError(f"Pipeline halted: RAG Reranking failed. Errors: {rerank_result.errors}")
+
+            reranked_results: List[Tuple[RagRerankingJobResult, Optional[SearchResult]]] = [
+                (job_result, search_result) for job_result, search_result in rerank_result.items
+                if isinstance(job_result, RagRerankingJobResult)
+            ]
+
+            # ==========================================
+            # STAGE 3: RETRIEVAL SCRUBBING (SLM)
+            # ==========================================
+            scrub_result = self._scrubber_phase.execute(reranked_results)
 
             if scrub_result.status == PhaseStatus.FAILED:
                 raise WorkflowStateError(f"Pipeline halted: SLM Scrubbing failed. Errors: {scrub_result.errors}")
@@ -97,14 +115,14 @@ class LiveQAPipeline:
                 raise WorkflowStateError("Pipeline halted: No chunks survived the SLM scrubber.")
 
             # ==========================================
-            # STAGE 3: QA GENERATION (LLM)
+            # STAGE 4: QA GENERATION (LLM)
             # ==========================================
             qa_phase_result = self._qa_generation_phase.execute(qa_inputs)
 
             if qa_phase_result.status == PhaseStatus.FAILED:
                 raise WorkflowStateError(f"Pipeline halted: Final LLM Generation failed. Errors: {qa_phase_result.errors}")
 
-            # 4. Extract and Return Final Payload
+            # 5. Extract and Return Final Payload
             for job_result, qa_response in qa_phase_result.items:
                 if isinstance(job_result, QAGenerationJobResult) and job_result.success and qa_response:
                     logger.info(f"========== Live QA Pipeline Completed for Search [{search_id}] ==========")

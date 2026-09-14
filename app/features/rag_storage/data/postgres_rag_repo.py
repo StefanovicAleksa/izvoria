@@ -1,4 +1,4 @@
-# Canvas: rag_storage_postgres_repo_v4
+# Canvas: rag_storage_postgres_repo_v5
 # Path: app/features/rag_storage/data/postgres_rag_repo.py
 
 import logging
@@ -44,6 +44,11 @@ class PostgresRagRepository(IRagRepository):
                         start_sec=chunk.start_sec,
                         end_sec=chunk.end_sec,
                         text_payload=chunk.text_payload,
+                        # Chunks built outside context unification may carry no separate raw text;
+                        # their payload is then the only text available.
+                        raw_text=chunk.raw_text or chunk.text_payload,
+                        context_text=chunk.context_text or None,
+                        speaker_labels=list(chunk.speaker_labels),
                         embedding=embedding
                     )
                     for chunk, embedding in zip(chunks, embeddings)

@@ -1,4 +1,4 @@
-# Canvas: context_unification_entities_v1
+# Canvas: context_unification_entities_v2
 # Path: app/features/context_unification/domain/entities.py
 
 import uuid
@@ -23,6 +23,14 @@ class UnifiedChunk(BaseModel):
 
     # The stitched string: [Audio Context] + [Visual Context] + Raw Text
     text_payload: str = Field(description="The fully assembled string ready for vector embedding.")
+
+    # Verbatim, speaker/timestamp-labelled transcript text. The only text an answer model may cite.
+    raw_text: str = Field(default="", description="Verbatim speaker-labelled transcript text of the chunk.")
+
+    # Model-generated situating context (audio + visual). Indexed for retrieval, never citable evidence.
+    context_text: str = Field(default="", description="SLM/VLM-generated context prepended for retrieval only.")
+
+    speaker_labels: List[str] = Field(default_factory=list, description="Speakers in order of first appearance.")
 
     # Frame pointers for the UI to display the exact images associated with this chunk
     visual_evidence: List[VisualContextFrame] = Field(default_factory=list)

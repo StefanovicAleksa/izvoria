@@ -68,3 +68,33 @@ class TestContextUnificationAssembler:
         assert "Visual Context:" not in unified_chunk.text_payload
         assert "Just talking to the camera." in unified_chunk.text_payload
         assert len(unified_chunk.visual_evidence) == 0
+
+    def test_assemble_keeps_raw_transcript_and_generated_context_separate(self):
+        import uuid as _uuid
+        from app.features.sentence_reconstruction.domain.entities import ReconstructedSentence
+
+        chunk_id = _uuid.uuid4()
+        sentences = [
+            ReconstructedSentence(text="Did you see him?", speaker_id="Speaker_1", start_sec=0, end_sec=1),
+            ReconstructedSentence(text="Yes.", speaker_id="Speaker_0", start_sec=1, end_sec=2),
+            ReconstructedSentence(text="Where?", speaker_id="Speaker_1", start_sec=2, end_sec=3),
+        ]
+        raw = "[Speaker_1 @ 00:00:00]: Did you see him?\n[Speaker_0 @ 00:00:01]: Yes.\n[Speaker_1 @ 00:00:02]: Where?"
+        audio_transcript = ContextualizedTranscript(
+            source_id=_uuid.uuid4(),
+            chunks=[ContextualizedChunk(chunk_id=chunk_id, start_sec=0.0, end_sec=3.0, original_text=raw,
+                                        context_string="Cross-examination of the witness.", sentences=sentences)]
+        )
+        visual_timeline = VisualTimeline(
+            source_id=audio_transcript.source_id,
+            visual_chunks=[VisualTimelineChunk(chunk_id=chunk_id, visual_context_string="Exhibit 4 on screen.")]
+        )
+
+        unified_chunk = assemble_unified_chunks(audio_transcript, visual_timeline)[0]
+
+        assert unified_chunk.raw_text == raw
+        assert unified_chunk.context_text == (
+            "[Audio Context: Cross-examination of the witness.]\n[Visual Context: Exhibit 4 on screen.]"
+        )
+        assert unified_chunk.text_payload == unified_chunk.context_text + "\n\n" + raw
+        assert unified_chunk.speaker_labels == ["Speaker_1", "Speaker_0"]

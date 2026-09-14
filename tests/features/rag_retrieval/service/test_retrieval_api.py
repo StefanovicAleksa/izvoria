@@ -74,3 +74,20 @@ class TestRetrievalAPI:
 
         # Ensure the finally block released the VRAM even during a crash
         mocks["orchestrator"].release_model.assert_called_once()
+
+    def test_search_fetches_the_reranker_candidate_pool(self, api, mocks):
+        from app.core.config import settings
+
+        source_id = uuid.uuid4()
+        mocks["orchestrator"].acquire_model.return_value = MagicMock(spec=LoadedModel)
+        mocks["embedding_adapter"].embed_prompt.return_value = [0.1, 0.2]
+        mocks["search_repo"].execute_hybrid_search.return_value = []
+
+        api.search(SearchQuery(prompt="what did the witness say", limit=5, source_id_filter=source_id))
+
+        mocks["search_repo"].execute_hybrid_search.assert_called_once_with(
+            query_vector=[0.1, 0.2],
+            query_text="what did the witness say",
+            limit=settings.RAG_RETRIEVAL_CANDIDATES,
+            source_id_filter=source_id
+        )

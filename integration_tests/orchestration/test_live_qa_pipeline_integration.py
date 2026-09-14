@@ -28,6 +28,8 @@ from app.features.rag_retrieval.data.embedding_adapter import HuggingFacePromptA
 from app.features.rag_retrieval.data.postgres_search_repo import PostgresSearchRepository
 from app.features.rag_retrieval.service.retrieval_api import RetrievalAPI
 
+from app.features.rag_reranking.data.cross_encoder_adapter import CrossEncoderRerankerAdapter
+from app.features.rag_reranking.service.rerank_api import RerankAPI
 from app.features.retrieval_hallucination_scrubber.data.slm_adapter import QwenRetrievalScrubberAdapter
 from app.features.retrieval_hallucination_scrubber.service.scrubber_api import RetrievalScrubberAPI
 
@@ -36,6 +38,7 @@ from app.features.qa_generation.data.gemma_adapter import GemmaGenerationAdapter
 from app.features.qa_generation.service.generation_api import QAGenerationAPI
 
 from app.orchestration.service.phases.rag_retrieval_phase import RagRetrievalPhase
+from app.orchestration.service.phases.rag_reranking_phase import RagRerankingPhase
 from app.orchestration.service.phases.retrieval_scrubber_phase import RetrievalScrubberPhase
 from app.orchestration.service.phases.qa_generation_phase import QAGenerationPhase
 from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
@@ -102,7 +105,7 @@ class TestLiveQAPipelineIntegration:
         embeddings = embedder.embed_batch(loaded, texts)
         embedder.unload(loaded)
 
-        rag_repo.save_rag_chunks(source_id, chunks, embeddings)
+        rag_repo.replace_rag_chunks(source_id, chunks, embeddings)
 
         yield
 
@@ -167,8 +170,14 @@ class TestLiveQAPipelineIntegration:
         qa_api = QAGenerationAPI(qa_adapter, orchestrator)
         qa_phase = QAGenerationPhase(job_manager, qa_api, async_service, qa_adapter)
 
+        # Reranking Phase Dependencies (passes through in RRF order if reranker weights aren't installed)
+        reranker_adapter = CrossEncoderRerankerAdapter()
+        rerank_api = RerankAPI(orchestrator, reranker_adapter)
+        rerank_phase = RagRerankingPhase(job_manager, rerank_api, async_service, reranker_adapter)
+
         qa_pipeline = LiveQAPipeline(
             retrieval_phase=rag_phase,
+            reranking_phase=rerank_phase,
             scrubber_phase=scrub_phase,
             qa_generation_phase=qa_phase
         )

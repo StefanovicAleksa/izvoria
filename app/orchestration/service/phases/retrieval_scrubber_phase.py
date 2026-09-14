@@ -107,7 +107,7 @@ class RetrievalScrubberPhase:
                         surviving, audits = self._scrubber_api.scrub_retrieved_chunks(
                             user_prompt=prompt,
                             raw_chunks=chunks,
-                            release_after=False  # Handled by finally block
+                            release_after=loaded_model is None  # Retained for the batch only when this phase resolved a preload
                         )
                         return {"surviving_chunks_count": len(surviving), "_transient_chunks": surviving}
 

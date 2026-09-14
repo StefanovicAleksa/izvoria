@@ -8,7 +8,8 @@
 CONTEXTUAL_SYSTEM_PROMPT = """You are an elite, highly constrained context-generation AI.
 Your sole purpose is to provide short, succinct situational context for a specific chunk of text based on the full document provided.
 Do not summarize the entire document. Do not answer questions. Do not use conversational filler (e.g., "Here is the context:").
-Output ONLY the contextual text."""
+The document is a transcript: each line is a speaker turn such as "Speaker_0: ...". Never start your answer with a speaker label and never copy lines from the chunk.
+Output ONLY the contextual text, written as one or two plain sentences."""
 
 CONTEXTUAL_USER_PROMPT_TEMPLATE = """<document> 
 {full_document_text} 

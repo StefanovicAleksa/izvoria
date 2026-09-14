@@ -30,6 +30,7 @@ One `Phase` class per pipeline stage — each wraps a feature's `service/*_api.p
 | 15.5 | `clip_extraction_phase.py` | `ClipExtractionPhase` | Extracts physical `.mp4` clips (`clip_extractor`) |
 | 16 | `rag_indexing_phase.py` | `RagIndexingPhase` | Embeds + writes vectors (`rag_storage`) |
 | — | `rag_retrieval_phase.py` | `RagRetrievalPhase` | Live hybrid search execution (`rag_retrieval`) |
+| — | `rag_reranking_phase.py` | `RagRerankingPhase` | Live cross-encoder reranking of the candidate pool (`rag_reranking`); skips its preload when reranker weights aren't installed |
 | — | `retrieval_scrubber_phase.py` | `RetrievalScrubberPhase` | Live SLM hallucination scrubbing (`retrieval_hallucination_scrubber`) |
 | — | `qa_generation_phase.py` | `QAGenerationPhase` | Final LLM answer generation with citations (`qa_generation`) |
 | *(dead)* | `hallucination_scrubber_phase.py` | `HallucinationScrubberPhase` | Legacy DeBERTa scrubber — not wired into `bootstrap.py` |
@@ -39,9 +40,9 @@ One `Phase` class per pipeline stage — each wraps a feature's `service/*_api.p
 
 - **`BatchMediaPipeline`** (`batch_media_pipeline.py`) — the canonical video ingestion workflow. Runs phases 1→9 strictly sequentially, then **conditionally** runs the visual branch (phases 10–14) only if `visual_cue_detection` actually flagged chunks needing visual evidence, then phase 15 (unification), then runs clip extraction (15.5) and RAG indexing (16) **concurrently** via a `ThreadPoolExecutor(max_workers=2)` — safe because clip extraction is pure CPU/ffmpeg work while RAG indexing is the sole GPU consumer at that point.
 - **`BatchAudioPipeline`** (`batch_audio_pipeline.py`) — the same spine for audio-only sources: filters by `AUDIO_EXTENSIONS`, skips the entire visual branch (phases 10–14) and clip extraction (no video to clip from).
-- **`LiveRetrievalPipeline`** (`live_retrieval_pipeline.py`) — query-time fast path: embed the query, run hybrid search, return results. No SLM verification.
-- **`LiveVerifiedRetrievalPipeline`** (`live_verified_retrieval_pipeline.py`) — `LiveRetrievalPipeline` plus a pass through the SLM hallucination scrubber for higher-precision "verified search."
-- **`LiveQAPipeline`** (`live_qa_pipeline.py`) — the full "chat with your data" chain: retrieval → SLM scrubber → LLM QA generation. Preloads all three models concurrently ahead of executing each stage, then hands off VRAM by unloading before the next stage's model loads.
+- **`LiveRetrievalPipeline`** (`live_retrieval_pipeline.py`) — query-time fast path: embed the query, run hybrid search for the candidate pool, rerank it down to `query.limit`, return results. No SLM verification.
+- **`LiveVerifiedRetrievalPipeline`** (`live_verified_retrieval_pipeline.py`) — retrieval → reranking, plus a pass through the SLM hallucination scrubber for higher-precision "verified search."
+- **`LiveQAPipeline`** (`live_qa_pipeline.py`) — the full "chat with your data" chain: retrieval → reranking → SLM scrubber → LLM QA generation. Queues preloads for all four models ahead of executing each stage, then hands off VRAM by unloading before the next stage's model loads.
 
 Every pipeline calls `discard_preload()` on each of its GPU phases in a `finally`, so a preload triggered for a stage that never ran (early return, halted visual branch, failed retrieval) is cancelled or released instead of staying resident and blocking the next acquire.
 

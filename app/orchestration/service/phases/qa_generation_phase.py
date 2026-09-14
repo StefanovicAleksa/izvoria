@@ -103,13 +103,13 @@ class QAGenerationPhase:
                 try:
                     logger.info(f"Processing QA Generation for Search ID: {search_id}")
 
-                    # We pass release_after=False so the batch loop handles VRAM retention
+                    # The batch loop retains VRAM only when this phase resolved a preload (and unloads it in finally)
                     qa_response: QAResponse = self._job_manager.run_job(
                         request,
                         self._qa_api.generate,
                         user_query=user_query,
                         retrieved_chunks=chunks,
-                        release_after=False
+                        release_after=loaded_model is None
                     )
 
                     preview = qa_response.generated_answer[:50] + "..." if qa_response.generated_answer else ""

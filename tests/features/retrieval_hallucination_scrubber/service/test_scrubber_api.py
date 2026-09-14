@@ -64,3 +64,35 @@ class TestRetrievalScrubberAPI:
         passed_text_chunk = adapter_call_args["text_chunk"]
 
         assert len(passed_text_chunk) == 3000
+
+    def test_unparseable_verdict_keeps_chunk_and_flags_audit(self, api, mock_adapter, mock_orchestrator):
+        from app.features.retrieval_hallucination_scrubber.exceptions.pipeline import JSONScrubParseError
+
+        chunk1 = RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload="Maybe relevant",
+                                start_sec=0, end_sec=5, relevance_score=1.0)
+        chunk2 = RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload="Off topic",
+                                start_sec=5, end_sec=10, relevance_score=0.9)
+        mock_adapter.evaluate_relevance.side_effect = [
+            JSONScrubParseError("SLM hallucinated invalid JSON"),
+            ScrubAudit(chunk_id=chunk2.chunk_id, is_relevant=False, discard_reason="Off topic")
+        ]
+
+        surviving, audits = api.scrub_retrieved_chunks("Find info", [chunk1, chunk2], release_after=True)
+
+        assert surviving == [chunk1]
+        assert audits[0] == ScrubAudit(chunk_id=chunk1.chunk_id, is_relevant=True, discard_reason=None,
+                                       evaluation_failed=True)
+        assert audits[1].evaluation_failed is False
+        mock_orchestrator.release_model.assert_called_once()
+
+    def test_model_failures_still_abort_the_scrub(self, api, mock_adapter, mock_orchestrator):
+        from app.features.retrieval_hallucination_scrubber.exceptions.model import SLMOOMError
+
+        chunk = RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload="x",
+                               start_sec=0, end_sec=5, relevance_score=1.0)
+        mock_adapter.evaluate_relevance.side_effect = SLMOOMError("VRAM exhausted")
+
+        with pytest.raises(SLMOOMError):
+            api.scrub_retrieved_chunks("Find info", [chunk], release_after=True)
+
+        mock_orchestrator.release_model.assert_called_once()

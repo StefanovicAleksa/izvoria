@@ -1,9 +1,9 @@
-# Canvas: test_contextualizer_api_v2
+# Canvas: test_contextualizer_api_v3
 # Path: tests/features/contextual_retrieval/service/test_contextualizer_api.py
 
 import uuid
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, call
 
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.features.domain_phonetic_correction.domain.entities import DomainPhoneticCorrectedTranscript
@@ -11,6 +11,12 @@ from app.features.sentence_reconstruction.domain.entities import ReconstructedSe
 from app.features.contextual_retrieval.service.contextualizer_api import ContextualizerAPI
 from app.features.contextual_retrieval.domain.entities import ContextualizedTranscript
 from app.features.contextual_retrieval.exceptions.model import SLMInferenceError
+
+
+def _sentence(text: str, speaker: str = "S0", start: float = 0.0) -> ReconstructedSentence:
+    return ReconstructedSentence(
+        sentence_id=uuid.uuid4(), text=text, speaker_id=speaker, start_sec=start, end_sec=start + 1, words=[]
+    )
 
 
 class TestContextualizerAPI:
@@ -70,9 +76,7 @@ class TestContextualizerAPI:
         source_id = uuid.uuid4()
         mocks["repo"].get_by_source_id.return_value = None
 
-        dummy_sentence = ReconstructedSentence(
-            sentence_id=uuid.uuid4(), text="I have angina.", speaker_id="S0", start_sec=0, end_sec=1, words=[]
-        )
+        dummy_sentence = _sentence("I have angina.")
         dummy_input = DomainPhoneticCorrectedTranscript(
             source_id=source_id, sentences=[dummy_sentence], audit_trail=[]
         )
@@ -81,16 +85,19 @@ class TestContextualizerAPI:
 
         mock_loaded_model = MagicMock()
         mocks["orchestrator"].acquire_model.return_value = mock_loaded_model
+        mocks["slm_adapter"].count_tokens.return_value = 12
         mocks["slm_adapter"].generate_context.return_value = "Patient statement."
         mocks["repo"].save.side_effect = lambda x: x
 
         result = api.execute(dummy_input, release_after=True)
 
+        labelled_text = "[S0 @ 00:00:00]: I have angina."
         mocks["orchestrator"].acquire_model.assert_called_once()
+        # The SLM reads plain turns; the stored chunk keeps full timestamped labels
         mocks["slm_adapter"].generate_context.assert_called_once_with(
             model=mock_loaded_model,
-            full_document_text="I have angina.",
-            chunk_text="I have angina."
+            full_document_text="S0: I have angina.",
+            chunk_text="S0: I have angina."
         )
         mocks["orchestrator"].release_model.assert_called_once_with(
             mock_loaded_model, mocks["slm_adapter"], flush=True
@@ -98,22 +105,47 @@ class TestContextualizerAPI:
 
         assert len(result.chunks) == 1
         assert result.chunks[0].context_string == "Patient statement."
-        assert result.chunks[0].original_text == "I have angina."
+        assert result.chunks[0].original_text == labelled_text
         assert "Patient statement." in result.chunks[0].combined_text
+
+    @patch("app.features.contextual_retrieval.service.contextualizer_api.settings")
+    @patch("app.features.contextual_retrieval.service.contextualizer_api.build_rag_chunks")
+    def test_execute_situates_chunks_in_sections_when_transcript_overflows(
+            self, mock_chunker, mock_settings, api, mocks
+    ):
+        """A transcript larger than the context budget must not fail; chunks get a document section."""
+        mock_settings.CONTEXTUAL_RETRIEVAL_N_CTX = 1502
+        mock_settings.CONTEXTUAL_RETRIEVAL_RESERVED_TOKENS = 1500  # budget = 2 tokens
+
+        mocks["repo"].get_by_source_id.return_value = None
+        s0, s1, s2 = _sentence("First.", "S0", 0), _sentence("Second.", "S1", 5), _sentence("Third.", "S0", 10)
+        dummy_input = DomainPhoneticCorrectedTranscript(source_id=uuid.uuid4(), sentences=[s0, s1, s2], audit_trail=[])
+        mock_chunker.return_value = [[s0], [s1], [s2]]
+
+        mocks["orchestrator"].acquire_model.return_value = MagicMock()
+        # The whole document overflows; each single sentence costs 1 token
+        mocks["slm_adapter"].count_tokens.side_effect = lambda model, text: 100 if "\n" in text else 1
+        mocks["slm_adapter"].generate_context.return_value = "ctx"
+        mocks["repo"].save.side_effect = lambda x: x
+
+        api.execute(dummy_input)
+
+        documents = [c.kwargs["full_document_text"] for c in mocks["slm_adapter"].generate_context.call_args_list]
+        first_section = "S0: First.\nS1: Second."
+        second_section = "S1: Second.\nS0: Third."
+        assert documents == [first_section, first_section, second_section]
 
     def test_execute_guarantees_vram_release_on_crash(self, api, mocks):
         source_id = uuid.uuid4()
         mocks["repo"].get_by_source_id.return_value = None
 
-        dummy_sentence = ReconstructedSentence(
-            sentence_id=uuid.uuid4(), text="Test.", speaker_id="S0", start_sec=0, end_sec=1, words=[]
-        )
         dummy_input = DomainPhoneticCorrectedTranscript(
-            source_id=source_id, sentences=[dummy_sentence], audit_trail=[]
+            source_id=source_id, sentences=[_sentence("Test.")], audit_trail=[]
         )
 
         mock_loaded_model = MagicMock()
         mocks["orchestrator"].acquire_model.return_value = mock_loaded_model
+        mocks["slm_adapter"].count_tokens.return_value = 5
 
         mocks["slm_adapter"].generate_context.side_effect = SLMInferenceError("Out of Memory")
 

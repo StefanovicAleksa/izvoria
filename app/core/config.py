@@ -3,6 +3,7 @@
 
 import os
 from pathlib import Path
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 APP_ENV = os.environ.get("ENV", "development")
@@ -114,6 +115,10 @@ class Settings(BaseSettings):
 
     CONTEXTUAL_RETRIEVAL_MODEL_PATH: str = "models/llama-3.2-3b-instruct-q8_0.gguf"
     CONTEXTUAL_RETRIEVAL_VRAM_REQUIREMENT_MB: float = 3500.0
+    # Context window of the contextual-retrieval SLM. Transcripts longer than
+    # (N_CTX - RESERVED_TOKENS) are situated within overlapping document sections instead.
+    CONTEXTUAL_RETRIEVAL_N_CTX: int = 32768
+    CONTEXTUAL_RETRIEVAL_RESERVED_TOKENS: int = 1500
 
     VISUAL_CUE_DETECTION_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
     VISUAL_CUE_DETECTION_VRAM_REQUIREMENT_MB: float = 5000.0
@@ -137,6 +142,13 @@ class Settings(BaseSettings):
     RAG_EMBEDDING_MODEL_PATH: str = "models/bge-m3"
     RAG_EMBEDDING_VRAM_REQUIREMENT_MB: float = 2500.0
     RAG_RRF_K_CONSTANT: int = 60
+    # Size of the RRF-fused candidate pool handed to the reranker
+    RAG_RETRIEVAL_CANDIDATES: int = 40
+    # Postgres text search configuration for the sparse (FTS) leg. Used in DDL, so restricted to identifiers.
+    FTS_LANGUAGE_CONFIG: str = Field(default="english", pattern=r"^[a-z_]+$")
+
+    RAG_RERANKER_MODEL_PATH: str = "models/bge-reranker-v2-m3"
+    RAG_RERANKER_VRAM_REQUIREMENT_MB: float = 1500.0
 
     RETRIEVAL_SCRUBBER_MODEL_PATH: str = "models/qwen2.5-3b-instruct-q4_k_m.gguf"
     RETRIEVAL_SCRUBBER_VRAM_REQUIREMENT_MB: float = 2500.0

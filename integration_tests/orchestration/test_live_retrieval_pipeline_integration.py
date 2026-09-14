@@ -27,10 +27,13 @@ from app.features.rag_retrieval.domain.entities import SearchQuery
 from app.features.rag_retrieval.data.embedding_adapter import HuggingFacePromptAdapter
 from app.features.rag_retrieval.data.postgres_search_repo import PostgresSearchRepository
 from app.features.rag_retrieval.service.retrieval_api import RetrievalAPI
+from app.features.rag_reranking.data.cross_encoder_adapter import CrossEncoderRerankerAdapter
+from app.features.rag_reranking.service.rerank_api import RerankAPI
 from app.features.retrieval_hallucination_scrubber.data.slm_adapter import QwenRetrievalScrubberAdapter
 from app.features.retrieval_hallucination_scrubber.service.scrubber_api import RetrievalScrubberAPI
 
 from app.orchestration.service.phases.rag_retrieval_phase import RagRetrievalPhase
+from app.orchestration.service.phases.rag_reranking_phase import RagRerankingPhase
 from app.orchestration.service.phases.retrieval_scrubber_phase import RetrievalScrubberPhase
 from app.orchestration.service.pipelines.live_retrieval_pipeline import LiveRetrievalPipeline
 from app.orchestration.service.pipelines.live_verified_retrieval_pipeline import LiveVerifiedRetrievalPipeline
@@ -97,7 +100,7 @@ class TestLiveRetrievalPipelinesIntegration:
         embeddings = embedder.embed_batch(loaded, texts)
         embedder.unload(loaded)
 
-        rag_repo.save_rag_chunks(source_id, chunks, embeddings)
+        rag_repo.replace_rag_chunks(source_id, chunks, embeddings)
 
         yield
 
@@ -157,8 +160,15 @@ class TestLiveRetrievalPipelinesIntegration:
 
         scrub_phase = RetrievalScrubberPhase(job_manager, scrubber_api, async_service, scrubber_adapter)
 
-        standard_pipeline = LiveRetrievalPipeline(retrieval_phase=rag_phase)
-        verified_pipeline = LiveVerifiedRetrievalPipeline(retrieval_phase=rag_phase, scrubber_phase=scrub_phase)
+        # Reranking Phase Dependencies (passes through in RRF order if reranker weights aren't installed)
+        reranker_adapter = CrossEncoderRerankerAdapter()
+        rerank_api = RerankAPI(orchestrator, reranker_adapter)
+        rerank_phase = RagRerankingPhase(job_manager, rerank_api, async_service, reranker_adapter)
+
+        standard_pipeline = LiveRetrievalPipeline(retrieval_phase=rag_phase, reranking_phase=rerank_phase)
+        verified_pipeline = LiveVerifiedRetrievalPipeline(
+            retrieval_phase=rag_phase, reranking_phase=rerank_phase, scrubber_phase=scrub_phase
+        )
 
         yield standard_pipeline, verified_pipeline
         async_service.shutdown()

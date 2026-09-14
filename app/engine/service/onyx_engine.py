@@ -349,21 +349,21 @@ class OnyxEngine(IOnyxEngine):
                     input("\nPress Enter...")
                 elif choice == "3":
                     prompt = input("Enter your search query: ").strip()
-                    results = self.search_standard(SearchQuery(prompt=prompt, limit=5))
+                    results = self.search_standard(SearchQuery(prompt=prompt))
                     for idx, chunk in enumerate(results.results, 1):
                         print(
                             f"\n--- Result {idx} ---\nPath: {getattr(chunk, 'physical_path', 'Unknown')}\nContent: {chunk.text_payload}")
                     input("\nPress Enter...")
                 elif choice == "4":
                     prompt = input("Enter your high-precision search query: ").strip()
-                    results = self.search_verified(SearchQuery(prompt=prompt, limit=5))
+                    results = self.search_verified(SearchQuery(prompt=prompt))
                     for idx, chunk in enumerate(results.results, 1):
                         print(
                             f"\n--- Verified Result {idx} ---\nPath: {getattr(chunk, 'physical_path', 'Unknown')}\nContent: {chunk.text_payload}")
                     input("\nPress Enter...")
                 elif choice == "5":
                     prompt = input("Enter your question: ").strip()
-                    response = self.chat(SearchQuery(prompt=prompt, limit=5))
+                    response = self.chat(SearchQuery(prompt=prompt))
                     print(f"\n--- Onyx AI ---\n{response.generated_answer}")
                     print(f"\n[Citations Used: {len(response.citations)}]")
                     for idx, citation in enumerate(response.citations, 1):

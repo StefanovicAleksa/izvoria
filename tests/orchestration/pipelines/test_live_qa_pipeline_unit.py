@@ -1,4 +1,4 @@
-# Canvas: test_live_qa_pipeline_unit_v1
+# Canvas: test_live_qa_pipeline_unit_v2
 # Path: tests/orchestration/pipelines/test_live_qa_pipeline_unit.py
 
 import pytest
@@ -7,8 +7,8 @@ from unittest.mock import Mock
 
 from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
-from app.orchestration.domain.entities import PhaseBatchResult, RagRetrievalJobResult, RetrievalScrubbingJobResult, \
-    QAGenerationJobResult
+from app.orchestration.domain.entities import PhaseBatchResult, RagRetrievalJobResult, RagRerankingJobResult, \
+    RetrievalScrubbingJobResult, QAGenerationJobResult
 from app.features.rag_retrieval.domain.entities import SearchQuery, SearchResult, RetrievedChunk
 from app.features.qa_generation.domain.entities import QAResponse
 from app.orchestration.exceptions.workflow import WorkflowStateError
@@ -19,82 +19,82 @@ class TestLiveQAPipelineUnit:
     def mock_retrieval_phase(self): return Mock()
 
     @pytest.fixture
+    def mock_reranking_phase(self): return Mock()
+
+    @pytest.fixture
     def mock_scrubber_phase(self): return Mock()
 
     @pytest.fixture
     def mock_qa_phase(self): return Mock()
 
     @pytest.fixture
-    def pipeline(self, mock_retrieval_phase, mock_scrubber_phase, mock_qa_phase):
+    def pipeline(self, mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase, mock_qa_phase):
         return LiveQAPipeline(
             retrieval_phase=mock_retrieval_phase,
+            reranking_phase=mock_reranking_phase,
             scrubber_phase=mock_scrubber_phase,
             qa_generation_phase=mock_qa_phase
         )
 
-    def test_execute_chat_happy_path(self, pipeline, mock_retrieval_phase, mock_scrubber_phase, mock_qa_phase):
-        search_id = uuid.uuid4()
-        query = SearchQuery(prompt="Who entered the bank?")
+    @pytest.fixture
+    def raw_chunk(self):
+        return RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload="Defendant", start_sec=0,
+                              end_sec=1, relevance_score=1.0)
 
-        raw_chunk = RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload="Defendant", start_sec=0,
-                                   end_sec=1, relevance_score=1.0)
+    def _stub_until_scrubber(self, search_id, raw_chunk, mock_retrieval_phase, mock_reranking_phase,
+                             mock_scrubber_phase):
         search_result = SearchResult(query="Who entered the bank?", results=[raw_chunk], execution_time_ms=10)
-        retrieval_job_result = RagRetrievalJobResult(search_id=search_id, success=True)
-
         mock_retrieval_phase.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.RAG_RETRIEVAL,
-            status=PhaseStatus.COMPLETED,
-            successful_count=1,
-            items=[(retrieval_job_result, search_result)]
+            phase=PipelinePhase.RAG_RETRIEVAL, status=PhaseStatus.COMPLETED, successful_count=1,
+            items=[(RagRetrievalJobResult(search_id=search_id, success=True), search_result)]
         )
-
-        scrub_job_result = RetrievalScrubbingJobResult(search_id=search_id, success=True, surviving_chunks_count=1)
+        rerank_job = RagRerankingJobResult(search_id=search_id, success=True, reranked_chunks_count=1)
+        mock_reranking_phase.execute.return_value = PhaseBatchResult(
+            phase=PipelinePhase.RAG_RERANKING, status=PhaseStatus.COMPLETED, successful_count=1,
+            items=[(rerank_job, search_result)]
+        )
         mock_scrubber_phase.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.RETRIEVAL_SCRUBBING,
-            status=PhaseStatus.COMPLETED,
-            successful_count=1,
-            items=[(scrub_job_result, [raw_chunk])]
+            phase=PipelinePhase.RETRIEVAL_SCRUBBING, status=PhaseStatus.COMPLETED, successful_count=1,
+            items=[(RetrievalScrubbingJobResult(search_id=search_id, success=True, surviving_chunks_count=1),
+                    [raw_chunk])]
+        )
+        return rerank_job, search_result
+
+    def test_execute_chat_happy_path(self, pipeline, mock_retrieval_phase, mock_reranking_phase,
+                                     mock_scrubber_phase, mock_qa_phase, raw_chunk):
+        search_id = uuid.uuid4()
+        query = SearchQuery(prompt="Who entered the bank?", limit=6)
+        rerank_job, reranked_result = self._stub_until_scrubber(
+            search_id, raw_chunk, mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase
         )
 
         qa_response = QAResponse(query="Who entered the bank?", generated_answer="The defendant.", citations=[],
                                  inference_time_ms=50)
-        qa_job_result = QAGenerationJobResult(search_id=search_id, success=True, citations_count=0)
         mock_qa_phase.execute.return_value = PhaseBatchResult(
             phase=PipelinePhase.QA_GENERATION,
             status=PhaseStatus.COMPLETED,
             successful_count=1,
-            items=[(qa_job_result, qa_response)]
+            items=[(QAGenerationJobResult(search_id=search_id, success=True, citations_count=0), qa_response)]
         )
 
         result = pipeline.execute_chat(search_id, query)
 
-        mock_retrieval_phase.preload_model.assert_called_once()
-        mock_scrubber_phase.preload_model.assert_called_once()
-        mock_qa_phase.preload_model.assert_called_once()
+        for phase in (mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase, mock_qa_phase):
+            phase.preload_model.assert_called_once_with()
+            phase.execute.assert_called_once()
+            phase.discard_preload.assert_called_once_with()
 
-        mock_retrieval_phase.execute.assert_called_once()
-        mock_scrubber_phase.execute.assert_called_once()
-        mock_qa_phase.execute.assert_called_once()
+        assert mock_reranking_phase.execute.call_args.kwargs == {"top_n": 6}
+        mock_scrubber_phase.execute.assert_called_once_with([(rerank_job, reranked_result)])
+        mock_qa_phase.execute.assert_called_once_with([(search_id, "Who entered the bank?", [raw_chunk])])
 
         assert isinstance(result, QAResponse)
         assert result.generated_answer == "The defendant."
 
-    def test_execute_fails_if_qa_fails(self, pipeline, mock_retrieval_phase, mock_scrubber_phase, mock_qa_phase):
-        retrieval_job_result = RagRetrievalJobResult(search_id=uuid.uuid4(), success=True)
-        raw_chunk = RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload="Defendant", start_sec=0,
-                                   end_sec=1, relevance_score=1.0)
-        mock_retrieval_phase.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.RAG_RETRIEVAL,
-            status=PhaseStatus.COMPLETED,
-            items=[(retrieval_job_result, SearchResult(query="A", results=[raw_chunk], execution_time_ms=0))]
-        )
-
-        scrub_job_result = RetrievalScrubbingJobResult(search_id=uuid.uuid4(), success=True, surviving_chunks_count=1)
-        mock_scrubber_phase.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.RETRIEVAL_SCRUBBING,
-            status=PhaseStatus.COMPLETED,
-            items=[(scrub_job_result, [raw_chunk])]
-        )
+    def test_execute_fails_if_qa_fails(self, pipeline, mock_retrieval_phase, mock_reranking_phase,
+                                       mock_scrubber_phase, mock_qa_phase, raw_chunk):
+        self._stub_until_scrubber(uuid.uuid4(), raw_chunk, mock_retrieval_phase, mock_reranking_phase,
+                                  mock_scrubber_phase)
 
         mock_qa_phase.execute.return_value = PhaseBatchResult(
             phase=PipelinePhase.QA_GENERATION,
@@ -108,7 +108,7 @@ class TestLiveQAPipelineUnit:
         assert "Pipeline halted: Final LLM Generation failed" in str(exc_info.value)
 
     def test_failed_retrieval_discards_pending_preloads(
-            self, pipeline, mock_retrieval_phase, mock_scrubber_phase, mock_qa_phase
+            self, pipeline, mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase, mock_qa_phase
     ):
         """
         Regression: a failed retrieval used to leave the scrubber/QA preloads loading on the
@@ -123,19 +123,37 @@ class TestLiveQAPipelineUnit:
         with pytest.raises(WorkflowStateError):
             pipeline.execute_chat(uuid.uuid4(), SearchQuery(prompt="Test"))
 
+        mock_reranking_phase.execute.assert_not_called()
         mock_scrubber_phase.execute.assert_not_called()
         mock_qa_phase.execute.assert_not_called()
-        mock_retrieval_phase.discard_preload.assert_called_once_with()
-        mock_scrubber_phase.discard_preload.assert_called_once_with()
-        mock_qa_phase.discard_preload.assert_called_once_with()
+        for phase in (mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase, mock_qa_phase):
+            phase.discard_preload.assert_called_once_with()
 
     def test_unexpected_crash_still_discards_pending_preloads(
-            self, pipeline, mock_retrieval_phase, mock_scrubber_phase, mock_qa_phase
+            self, pipeline, mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase, mock_qa_phase
     ):
         mock_retrieval_phase.execute.side_effect = RuntimeError("boom")
 
         with pytest.raises(Exception):
             pipeline.execute_chat(uuid.uuid4(), SearchQuery(prompt="Test"))
 
-        mock_scrubber_phase.discard_preload.assert_called_once_with()
-        mock_qa_phase.discard_preload.assert_called_once_with()
+        for phase in (mock_reranking_phase, mock_scrubber_phase, mock_qa_phase):
+            phase.discard_preload.assert_called_once_with()
+
+    def test_failed_reranking_halts_before_scrubbing(self, pipeline, mock_retrieval_phase, mock_reranking_phase,
+                                                     mock_scrubber_phase, mock_qa_phase, raw_chunk):
+        search_id = uuid.uuid4()
+        mock_retrieval_phase.execute.return_value = PhaseBatchResult(
+            phase=PipelinePhase.RAG_RETRIEVAL, status=PhaseStatus.COMPLETED,
+            items=[(RagRetrievalJobResult(search_id=search_id, success=True),
+                    SearchResult(query="Q", results=[raw_chunk], execution_time_ms=1))]
+        )
+        mock_reranking_phase.execute.return_value = PhaseBatchResult(
+            phase=PipelinePhase.RAG_RERANKING, status=PhaseStatus.FAILED, errors=["Reranker OOM"]
+        )
+
+        with pytest.raises(WorkflowStateError, match="RAG Reranking failed"):
+            pipeline.execute_chat(search_id, SearchQuery(prompt="Q"))
+
+        mock_scrubber_phase.execute.assert_not_called()
+        mock_qa_phase.execute.assert_not_called()

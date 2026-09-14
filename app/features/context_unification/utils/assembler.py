@@ -1,4 +1,4 @@
-# Canvas: context_unification_assembler_v1
+# Canvas: context_unification_assembler_v2
 # Path: app/features/context_unification/utils/assembler.py
 
 import uuid
@@ -16,6 +16,10 @@ def assemble_unified_chunks(
     """
     Deterministically stitches Phase 9 Audio Context and Phase 14 Visual Context
     into a single, RAG-optimized text payload.
+
+    The contextualized `text_payload` is what gets embedded and keyword-indexed (Anthropic's
+    Contextual Retrieval). The verbatim transcript and the generated context are also kept
+    apart in `raw_text` / `context_text`, so the answer model is only ever shown source text.
 
     Args:
         audio_transcript: The Phase 9 output containing situational context.
@@ -42,22 +46,16 @@ def assemble_unified_chunks(
         visual_match = visual_dict.get(audio_chunk.chunk_id)
 
         # 3. Apply the formatting template
+        context_lines = [f"[Audio Context: {audio_context}]"]
         if visual_match and visual_match.visual_context_string.strip():
-            visual_context = visual_match.visual_context_string.strip()
-
-            payload = (
-                f"[Audio Context: {audio_context}]\n"
-                f"[Visual Context: {visual_context}]\n\n"
-                f"{original_text}"
-            )
+            context_lines.append(f"[Visual Context: {visual_match.visual_context_string.strip()}]")
             evidence = visual_match.visual_evidence
         else:
             # Fallback if there was no screen activity during this chunk
-            payload = (
-                f"[Audio Context: {audio_context}]\n\n"
-                f"{original_text}"
-            )
             evidence = []
+
+        context_text = "\n".join(context_lines)
+        payload = f"{context_text}\n\n{original_text}"
 
         # 4. Construct Final Domain Entity
         unified_chunks.append(UnifiedChunk(
@@ -65,6 +63,9 @@ def assemble_unified_chunks(
             start_sec=audio_chunk.start_sec,
             end_sec=audio_chunk.end_sec,
             text_payload=payload,
+            raw_text=original_text,
+            context_text=context_text,
+            speaker_labels=list(dict.fromkeys(s.speaker_id for s in audio_chunk.sentences)),
             visual_evidence=evidence
         ))
 

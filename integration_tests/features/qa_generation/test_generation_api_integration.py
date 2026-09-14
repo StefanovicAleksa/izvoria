@@ -98,6 +98,8 @@ class TestQAGenerationAPIIntegration:
                 start_sec=540.0,
                 end_sec=550.0,
                 text_payload="The defendant wearing a red jacket entered the bank at exactly 09:00 AM.",
+                raw_text="[Speaker_0 @ 00:09:00]: The defendant wearing a red jacket entered the bank at exactly 09:00 AM.",
+                speaker_labels=["Speaker_0"],
                 embedding=[0.01] * 1024
             )
             session.add(vector_model)
@@ -139,6 +141,8 @@ class TestQAGenerationAPIIntegration:
             chunk_id=seeded_db_context["chunk_id"],
             source_id=seeded_db_context["source_id"],
             text_payload="The defendant wearing a red jacket entered the bank at exactly 09:00 AM.",
+            raw_text="[Speaker_0 @ 00:09:00]: The defendant wearing a red jacket entered the bank at exactly 09:00 AM.",
+            speaker_labels=["Speaker_0"],
             start_sec=540.0,
             end_sec=550.0,
             relevance_score=0.95

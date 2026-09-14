@@ -1,4 +1,4 @@
-# Canvas: test_rag_retrieval_api_integration_v5
+# Canvas: test_rag_retrieval_api_integration_v6
 # Path: integration_tests/features/rag_retrieval/test_retrieval_api_integration.py
 
 import os
@@ -59,6 +59,7 @@ class TestRetrievalAPIIntegration:
         source_id = uuid.uuid4()
         chunk_id = uuid.uuid4()
         file_id = uuid.uuid4()
+        raw_text = "[Speaker_0 @ 00:00:00]: The patient presents with severe migraines."
 
         with db_manager.session() as session:
             # 1. Drop foreign keys for isolated testing (Raw SQL is fine here)
@@ -74,7 +75,10 @@ class TestRetrievalAPIIntegration:
                 chunk_id=chunk_id,
                 start_sec=0.0,
                 end_sec=5.0,
-                text_payload="The patient presents with severe migraines.",
+                text_payload=f"[Audio Context: Neurology intake consultation.]\n\n{raw_text}",
+                raw_text=raw_text,
+                context_text="[Audio Context: Neurology intake consultation.]",
+                speaker_labels=["Speaker_0"],
                 embedding=[0.01] * 1024  # pgvector handles the python list automatically
             )
             session.add(vector_model)
@@ -91,7 +95,7 @@ class TestRetrievalAPIIntegration:
 
             session.commit()
 
-        yield {"source_id": source_id, "chunk_id": chunk_id, "extracted_file_id": file_id}
+        yield {"source_id": source_id, "chunk_id": chunk_id, "extracted_file_id": file_id, "raw_text": raw_text}
 
         # Cleanup
         with db_manager.session() as session:
@@ -118,7 +122,27 @@ class TestRetrievalAPIIntegration:
         assert top_match.chunk_id == seeded_data["chunk_id"]
         assert top_match.source_id == seeded_data["source_id"]
         assert "severe migraines" in top_match.text_payload
+        assert top_match.raw_text == seeded_data["raw_text"]
+        assert top_match.speaker_labels == ["Speaker_0"]
         assert top_match.relevance_score > 0.0
 
         # Verify the LEFT JOIN correctly pulled the Storage ID
         assert top_match.extracted_file_id == seeded_data["extracted_file_id"]
+
+    def test_natural_language_question_still_hits_the_sparse_leg(self, live_api: RetrievalAPI, seeded_data: dict):
+        """
+        Regression: plainto_tsquery ANDed every lexeme, so a question containing words absent from
+        the chunk ("what", "doctor", "say") produced no keyword match. With OR semantics the chunk
+        must be ranked by BOTH legs, i.e. its fused score exceeds a dense-only rank-1 score.
+        """
+        query = SearchQuery(
+            prompt="What did the doctor say about the patient's migraines?",
+            limit=1,
+            source_id_filter=seeded_data["source_id"]
+        )
+
+        result = live_api.search(query)
+
+        assert len(result.results) == 1
+        dense_only_rank_one = 1.0 / (settings.RAG_RRF_K_CONSTANT + 1)
+        assert result.results[0].relevance_score > dense_only_rank_one

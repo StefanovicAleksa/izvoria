@@ -15,6 +15,7 @@ from app.features.retrieval_hallucination_scrubber.data.prompts import (
     RETRIEVAL_SCRUBBER_SYSTEM_PROMPT,
     RETRIEVAL_SCRUBBER_USER_TEMPLATE
 )
+from app.features.retrieval_hallucination_scrubber.exceptions.pipeline import JSONScrubParseError
 from app.features.retrieval_hallucination_scrubber.utils.error_mapper import map_scrubber_error
 
 
@@ -91,6 +92,9 @@ class QwenRetrievalScrubberAdapter(IRetrievalScrubberAdapter):
                 parsed_data = json.loads(json_match.group(0))
             else:
                 parsed_data = json.loads(raw_content)
+
+            if not isinstance(parsed_data, dict):
+                raise JSONScrubParseError(f"Scrubber verdict is not a JSON object: {raw_content[:200]!r}")
 
             return ScrubAudit(
                 chunk_id=chunk_id,

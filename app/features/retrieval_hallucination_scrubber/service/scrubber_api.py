@@ -1,4 +1,4 @@
-# Canvas: retrieval_scrubber_api_v3
+# Canvas: retrieval_scrubber_api_v4
 # Path: app/features/retrieval_hallucination_scrubber/service/scrubber_api.py
 
 import logging
@@ -12,6 +12,7 @@ from app.core.model_manager.domain.enums import ModelType
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.retrieval_hallucination_scrubber.domain.interfaces import IRetrievalScrubberAdapter
 from app.features.retrieval_hallucination_scrubber.domain.entities import ScrubAudit
+from app.features.retrieval_hallucination_scrubber.exceptions.pipeline import JSONScrubParseError
 from app.features.retrieval_hallucination_scrubber.utils.error_mapper import map_scrubber_error
 
 logger = logging.getLogger(__name__)
@@ -57,12 +58,24 @@ class RetrievalScrubberAPI:
                 for chunk in raw_chunks:
                     safe_text = chunk.text_payload[:3000] if len(chunk.text_payload) > 3000 else chunk.text_payload
 
-                    audit = self._adapter.evaluate_relevance(
-                        model=loaded_model,
-                        chunk_id=chunk.chunk_id,
-                        user_prompt=user_prompt,
-                        text_chunk=safe_text
-                    )
+                    try:
+                        audit = self._adapter.evaluate_relevance(
+                            model=loaded_model,
+                            chunk_id=chunk.chunk_id,
+                            user_prompt=user_prompt,
+                            text_chunk=safe_text
+                        )
+                    except JSONScrubParseError as parse_err:
+                        # Fail open for this chunk only: one malformed verdict from the SLM used to
+                        # abort the whole query. The chunk is kept (the prompt already says "when
+                        # in doubt, accept") and the audit records that no real verdict exists.
+                        logger.warning(f"Scrubber verdict unparseable for chunk {chunk.chunk_id}; keeping it. {parse_err}")
+                        audit = ScrubAudit(
+                            chunk_id=chunk.chunk_id,
+                            is_relevant=True,
+                            discard_reason=None,
+                            evaluation_failed=True
+                        )
 
                     audits.append(audit)
 

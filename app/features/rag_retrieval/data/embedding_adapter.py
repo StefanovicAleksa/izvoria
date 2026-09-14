@@ -1,14 +1,14 @@
-# Canvas: rag_retrieval_embedding_adapter_v1
+# Canvas: rag_retrieval_embedding_adapter_v2
 # Path: app/features/rag_retrieval/data/embedding_adapter.py
 
 import os
 import gc
-import sys
 import logging
 from typing import List, Any
 import torch
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
+from app.core.model_manager.utils.torchcodec_guard import block_torchcodec_import
 from app.features.rag_retrieval.domain.interfaces import IPromptEmbeddingAdapter
 from app.features.rag_retrieval.utils.error_mapper import map_retrieval_error
 
@@ -18,18 +18,8 @@ class HuggingFacePromptAdapter(IPromptEmbeddingAdapter):
 
     @staticmethod
     def _get_embedding_model(model_path: str) -> Any:
-        # Prevent torchcodec from crashing the environment (same fix as batch ingestion).
-        #
-        # Scoped to just this call (and restored in `finally`): leaving this in
-        # sys.modules permanently broke every later `torchaudio.load()` in the same
-        # process (e.g. the VAD phase's NeMoVadAdapter), since torchaudio's own
-        # `import torchcodec` would then hit this poisoned entry too. See
-        # integration_tests/core/model_manager/test_torchcodec_environment_integration.py.
-        had_torchcodec = "torchcodec" in sys.modules
-        original_torchcodec = sys.modules.get("torchcodec")
-        sys.modules["torchcodec"] = None  # type: ignore
-
-        try:
+        # Scoped torchcodec block (same fix as batch ingestion): see torchcodec_guard.py
+        with block_torchcodec_import():
             from sentence_transformers import SentenceTransformer
 
             device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -40,11 +30,6 @@ class HuggingFacePromptAdapter(IPromptEmbeddingAdapter):
                 model_kwargs=model_kwargs,
                 local_files_only=True
             )
-        finally:
-            if had_torchcodec:
-                sys.modules["torchcodec"] = original_torchcodec
-            else:
-                del sys.modules["torchcodec"]
 
     def load(self, manifest: ModelManifest) -> LoadedModel:
         try:

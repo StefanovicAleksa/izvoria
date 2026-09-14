@@ -160,6 +160,13 @@ class RagRetrievalJobResult(BaseModel):
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 
+class RagRerankingJobResult(BaseModel):
+    search_id: uuid.UUID
+    success: bool
+    reranked_chunks_count: int = 0
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
 class RetrievalScrubbingJobResult(BaseModel):
     search_id: uuid.UUID
     success: bool

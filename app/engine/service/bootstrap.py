@@ -91,6 +91,9 @@ from app.features.rag_retrieval.data.embedding_adapter import HuggingFacePromptA
 from app.features.rag_retrieval.data.postgres_search_repo import PostgresSearchRepository
 from app.features.rag_retrieval.service.retrieval_api import RetrievalAPI
 
+from app.features.rag_reranking.data.cross_encoder_adapter import CrossEncoderRerankerAdapter
+from app.features.rag_reranking.service.rerank_api import RerankAPI
+
 from app.features.retrieval_hallucination_scrubber.data.slm_adapter import QwenRetrievalScrubberAdapter
 from app.features.retrieval_hallucination_scrubber.service.scrubber_api import RetrievalScrubberAPI
 
@@ -117,6 +120,7 @@ from app.orchestration.service.phases.context_unification_phase import ContextUn
 from app.orchestration.service.phases.clip_extraction_phase import ClipExtractionPhase
 from app.orchestration.service.phases.rag_indexing_phase import RagIndexingPhase
 from app.orchestration.service.phases.rag_retrieval_phase import RagRetrievalPhase
+from app.orchestration.service.phases.rag_reranking_phase import RagRerankingPhase
 from app.orchestration.service.phases.retrieval_scrubber_phase import RetrievalScrubberPhase
 from app.orchestration.service.phases.qa_generation_phase import QAGenerationPhase
 
@@ -264,6 +268,9 @@ class OnyxBootstrapper:
         retrieval_api = RetrievalAPI(orchestrator=orchestrator, embedding_adapter=prompt_adapter,
                                      search_repo=search_repo)
 
+        reranker_adapter = CrossEncoderRerankerAdapter()
+        rerank_api = RerankAPI(orchestrator=orchestrator, adapter=reranker_adapter)
+
         scrubber_adapter = QwenRetrievalScrubberAdapter()
         scrubber_api = RetrievalScrubberAPI(adapter=scrubber_adapter, orchestrator=orchestrator)
 
@@ -320,6 +327,7 @@ class OnyxBootstrapper:
 
         # --- Orchestration: Live Inference Phases ---
         rag_retrieval_phase = RagRetrievalPhase(job_manager, retrieval_api, async_service, prompt_adapter)
+        rag_reranking_phase = RagRerankingPhase(job_manager, rerank_api, async_service, reranker_adapter)
         retrieval_scrubber_phase = RetrievalScrubberPhase(job_manager, scrubber_api, async_service, scrubber_adapter)
         qa_generation_phase = QAGenerationPhase(job_manager, qa_api, async_service, qa_adapter)
 
@@ -346,10 +354,12 @@ class OnyxBootstrapper:
             rag_indexing_phase=rag_indexing_phase, storage_api=storage_api
         )
 
-        live_pipeline = LiveRetrievalPipeline(retrieval_phase=rag_retrieval_phase)
+        live_pipeline = LiveRetrievalPipeline(retrieval_phase=rag_retrieval_phase, reranking_phase=rag_reranking_phase)
         live_verified_pipeline = LiveVerifiedRetrievalPipeline(retrieval_phase=rag_retrieval_phase,
+                                                               reranking_phase=rag_reranking_phase,
                                                                scrubber_phase=retrieval_scrubber_phase)
-        live_qa_pipeline = LiveQAPipeline(retrieval_phase=rag_retrieval_phase, scrubber_phase=retrieval_scrubber_phase,
+        live_qa_pipeline = LiveQAPipeline(retrieval_phase=rag_retrieval_phase, reranking_phase=rag_reranking_phase,
+                                          scrubber_phase=retrieval_scrubber_phase,
                                           qa_generation_phase=qa_generation_phase)
 
         # --- Final Engine Assembly ---

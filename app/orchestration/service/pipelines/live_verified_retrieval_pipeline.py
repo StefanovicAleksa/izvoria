@@ -1,4 +1,4 @@
-# Canvas: live_verified_retrieval_pipeline_v3
+# Canvas: live_verified_retrieval_pipeline_v4
 # Path: app/orchestration/service/pipelines/live_verified_retrieval_pipeline.py
 
 import logging
@@ -7,10 +7,12 @@ from typing import List, Tuple, Optional
 
 from app.features.rag_retrieval.domain.entities import SearchQuery, SearchResult
 from app.orchestration.domain.enums import PhaseStatus
-from app.orchestration.domain.entities import RagRetrievalJobResult, RetrievalScrubbingJobResult
+from app.orchestration.domain.entities import RagRetrievalJobResult, RagRerankingJobResult, \
+    RetrievalScrubbingJobResult
 from app.orchestration.exceptions.workflow import WorkflowStateError, WorkflowExecutionError
 
 from app.orchestration.service.phases.rag_retrieval_phase import RagRetrievalPhase
+from app.orchestration.service.phases.rag_reranking_phase import RagRerankingPhase
 from app.orchestration.service.phases.retrieval_scrubber_phase import RetrievalScrubberPhase
 
 logger = logging.getLogger(__name__)
@@ -19,21 +21,24 @@ logger = logging.getLogger(__name__)
 class LiveVerifiedRetrievalPipeline:
     """
     Synchronous pipeline for executing live user RAG queries requiring high precision.
-    Executes Hybrid Search, followed immediately by an SLM Hallucination Scrubber to
+    Executes Hybrid Search, cross-encoder reranking, then an SLM Hallucination Scrubber to
     drop irrelevant context before returning to the UI/LLM layer.
     """
 
     def __init__(
             self,
             retrieval_phase: RagRetrievalPhase,
+            reranking_phase: RagRerankingPhase,
             scrubber_phase: RetrievalScrubberPhase
     ):
         self._retrieval_phase = retrieval_phase
+        self._reranking_phase = reranking_phase
         self._scrubber_phase = scrubber_phase
 
     def preload_models(self) -> None:
         """Public method to safely trigger the preloads for its sub-phases."""
         self._retrieval_phase.preload_model()
+        self._reranking_phase.preload_model()
         self._scrubber_phase.preload_model()
 
     def _discard_pending_preloads(self) -> None:
@@ -42,7 +47,7 @@ class LiveVerifiedRetrievalPipeline:
         once resolved, so this only touches preloads for phases that never executed
         (early return, halted branch, or an exception).
         """
-        for phase in (self._retrieval_phase, self._scrubber_phase):
+        for phase in (self._retrieval_phase, self._reranking_phase, self._scrubber_phase):
             try:
                 phase.discard_preload()
             except Exception as e:
@@ -55,7 +60,7 @@ class LiveVerifiedRetrievalPipeline:
             # ==========================================
             # PHASE 1: RAG RETRIEVAL (EMBEDDING)
             # ==========================================
-            # Preload Embedder + Scrubber concurrently to minimize VRAM swap time
+            # Preload Embedder + Reranker + Scrubber ahead to minimize VRAM swap time
             self.preload_models()
 
             queries: List[Tuple[uuid.UUID, SearchQuery]] = [(search_id, query)]
@@ -65,7 +70,6 @@ class LiveVerifiedRetrievalPipeline:
                 raise WorkflowStateError(
                     f"Pipeline halted: RAG Retrieval failed. Errors: {retrieval_phase_result.errors}")
 
-            # Extract the raw results with explicit typing to satisfy strict linters
             raw_transient_results: List[Tuple[RagRetrievalJobResult, Optional[SearchResult]]] = []
             for item in retrieval_phase_result.items:
                 if isinstance(item, tuple) and len(item) == 2:
@@ -77,14 +81,28 @@ class LiveVerifiedRetrievalPipeline:
                 raise WorkflowStateError("Pipeline halted: Failed to extract raw transient results from RAG retrieval.")
 
             # ==========================================
-            # PHASE 2: RETRIEVAL SCRUBBING (SLM)
+            # PHASE 2: CROSS-ENCODER RERANKING
             # ==========================================
-            scrub_phase_result = self._scrubber_phase.execute(raw_transient_results)
+            rerank_phase_result = self._reranking_phase.execute(raw_transient_results, top_n=query.limit)
+
+            if rerank_phase_result.status == PhaseStatus.FAILED:
+                raise WorkflowStateError(
+                    f"Pipeline halted: RAG Reranking failed. Errors: {rerank_phase_result.errors}")
+
+            reranked_results: List[Tuple[RagRerankingJobResult, Optional[SearchResult]]] = [
+                (job_result, search_result) for job_result, search_result in rerank_phase_result.items
+                if isinstance(job_result, RagRerankingJobResult)
+            ]
+
+            # ==========================================
+            # PHASE 3: RETRIEVAL SCRUBBING (SLM)
+            # ==========================================
+            scrub_phase_result = self._scrubber_phase.execute(reranked_results)
 
             if scrub_phase_result.status == PhaseStatus.FAILED:
                 raise WorkflowStateError(f"Pipeline halted: SLM Scrubbing failed. Errors: {scrub_phase_result.errors}")
 
-            # 3. Construct the final Verified SearchResult
+            # 4. Construct the final Verified SearchResult
             for job_result, surviving_chunks in scrub_phase_result.items:
                 if isinstance(job_result, RetrievalScrubbingJobResult) and job_result.success:
                     verified_result = SearchResult(

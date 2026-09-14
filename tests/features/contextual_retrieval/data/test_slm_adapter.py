@@ -56,3 +56,26 @@ class TestSLMContextAdapter:
         call_kwargs = mock_llm.create_chat_completion.call_args[1]
         assert call_kwargs["max_tokens"] == 150
         assert call_kwargs["temperature"] == 0.0
+
+    def test_count_tokens_uses_model_tokenizer_without_bos(self, manifest):
+        adapter = SLMContextAdapter()
+        mock_llm = MagicMock()
+        mock_llm.tokenize.return_value = [1, 2, 3, 4]
+        loaded_model = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        assert adapter.count_tokens(loaded_model, "Doktor Å") == 4
+        mock_llm.tokenize.assert_called_once_with("Doktor Å".encode("utf-8"), add_bos=False)
+
+    @pytest.mark.parametrize("raw_output, expected", [
+        ("[Speaker_0 @ 00:00:00]: The patient reports chest pain.", "The patient reports chest pain."),
+        ("[Speaker_0 @ 00:00:00]", ""),
+        ("Speaker_1: Dr. Smith explains the MRI.", "Dr. Smith explains the MRI."),
+        ("Speaker_0 describes chest pain during intake.", "Speaker_0 describes chest pain during intake."),
+    ])
+    def test_generate_context_strips_echoed_speaker_labels(self, manifest, raw_output, expected):
+        adapter = SLMContextAdapter()
+        mock_llm = MagicMock()
+        mock_llm.create_chat_completion.return_value = {"choices": [{"message": {"content": raw_output}}]}
+        loaded_model = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        assert adapter.generate_context(loaded_model, "Speaker_0: doc", "Speaker_0: chunk") == expected

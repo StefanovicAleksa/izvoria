@@ -95,3 +95,14 @@ class TestQwenRetrievalScrubberAdapter:
         mock_llm.close.assert_called_once()
         assert loaded_model.model_instance is None
         mock_gc.assert_called_once()
+
+    def test_evaluate_relevance_non_object_json_is_a_parse_error(self, manifest: ModelManifest) -> None:
+        from app.features.retrieval_hallucination_scrubber.exceptions.pipeline import JSONScrubParseError
+
+        adapter = QwenRetrievalScrubberAdapter()
+        mock_llm = MagicMock()
+        mock_llm.create_chat_completion.return_value = {"choices": [{"message": {"content": "[true]"}}]}
+        loaded_model = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        with pytest.raises(JSONScrubParseError):
+            adapter.evaluate_relevance(loaded_model, uuid.uuid4(), "prompt", "text")

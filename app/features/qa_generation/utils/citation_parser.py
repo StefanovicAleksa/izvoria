@@ -1,4 +1,4 @@
-# Canvas: citation_parser_v2
+# Canvas: citation_parser_v3
 # Path: app/features/qa_generation/utils/citation_parser.py
 
 import re
@@ -9,10 +9,20 @@ from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.qa_generation.domain.entities import RAGContextBlock, QACitation
 
 
+def _format_timestamp(seconds: float) -> str:
+    total = max(0, int(seconds))
+    return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+
+
 def build_context_block(chunks: List[RetrievedChunk]) -> RAGContextBlock:
     """
-    Transforms raw database chunks into a strict, cited text block for the LLM.
+    Transforms retrieved chunks into a strict, cited text block for the LLM.
     Maintains a mapping of [Doc X] to the original chunk UUID.
+
+    Only the verbatim transcript (`raw_text`) is shown to the model. The model-generated situating
+    context embedded in `text_payload` improves retrieval, but it is not source material: if it
+    were in the prompt, an answer grounded only in that generated sentence would still receive a
+    valid citation. `text_payload` is used only for chunks that carry no separate raw text.
     """
     formatted_parts = []
     doc_mapping: Dict[str, uuid.UUID] = {}
@@ -21,8 +31,11 @@ def build_context_block(chunks: List[RetrievedChunk]) -> RAGContextBlock:
         doc_id = f"[Doc {idx}]"
         doc_mapping[doc_id] = chunk.chunk_id
 
+        source_text = chunk.raw_text or chunk.text_payload
+        header = f"{doc_id} ({_format_timestamp(chunk.start_sec)}–{_format_timestamp(chunk.end_sec)})"
+
         # Format the text injected into the LLM context window
-        formatted_parts.append(f"{doc_id}\n{chunk.text_payload}\n")
+        formatted_parts.append(f"{header}\n{source_text}\n")
 
     return RAGContextBlock(
         formatted_text="\n".join(formatted_parts),

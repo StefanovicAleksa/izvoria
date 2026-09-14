@@ -1,4 +1,4 @@
-# Canvas: rag_retrieval_service_v2
+# Canvas: rag_retrieval_service_v3
 # Path: app/features/rag_retrieval/service/retrieval_api.py
 
 import time
@@ -31,7 +31,13 @@ class RetrievalAPI:
         self._search_repo = search_repo
 
     def search(self, query: SearchQuery) -> SearchResult:
-        logger.info(f"Executing RAG Retrieval for query: '{query.prompt}' (Limit: {query.limit})")
+        """
+        Returns the RRF-fused candidate pool (at least `RAG_RETRIEVAL_CANDIDATES` chunks, ranked).
+        Narrowing the pool down to `query.limit` is the reranker's job, so relevant chunks that
+        fuse just below the final cut still get a chance to be scored.
+        """
+        candidate_count = max(query.limit, settings.RAG_RETRIEVAL_CANDIDATES)
+        logger.info(f"Executing RAG Retrieval for query: '{query.prompt}' (Candidates: {candidate_count})")
         start_time = time.time()
 
         try:
@@ -54,7 +60,7 @@ class RetrievalAPI:
             retrieved_chunks = self._search_repo.execute_hybrid_search(
                 query_vector=query_vector,
                 query_text=query.prompt,
-                limit=query.limit,
+                limit=candidate_count,
                 source_id_filter=query.source_id_filter
             )
 
@@ -69,4 +75,4 @@ class RetrievalAPI:
             )
 
         except Exception as e:
-            raise map_retrieval_error(e, context=f"Processing search query: '{query.prompt}'")
+            raise map_retrieval_error(e, context=f"Processing search query: '{query.prompt}'") from e

@@ -1,4 +1,4 @@
-# Canvas: contextual_interfaces_v2
+# Canvas: contextual_interfaces_v3
 # Path: app/features/contextual_retrieval/domain/interfaces.py
 
 import uuid
@@ -27,6 +27,11 @@ class ISLMContextAdapter(IModelLoader, ABC):
         Uses prompt caching to efficiently evaluate the chunk against the full document.
         Returns a concise 50-100 word context string explaining the chunk.
         """
+        pass
+
+    @abstractmethod
+    def count_tokens(self, model: LoadedModel, text: str) -> int:
+        """Returns the number of tokens `text` occupies in the loaded model's context window."""
         pass
 
 

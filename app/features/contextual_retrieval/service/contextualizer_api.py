@@ -1,18 +1,21 @@
-# Canvas: contextualizer_api_v3
+# Canvas: contextualizer_api_v4
 # Path: app/features/contextual_retrieval/service/contextualizer_api.py
 
 import logging
-from typing import List
+from typing import Dict, List, Tuple
 
 from app.core.config import settings
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
-from app.core.model_manager.domain.entities import ModelManifest
+from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.enums import ModelType
 
 from app.features.domain_phonetic_correction.domain.entities import DomainPhoneticCorrectedTranscript
+from app.features.sentence_reconstruction.domain.entities import ReconstructedSentence
 from app.features.contextual_retrieval.domain.interfaces import IContextualRepository, ISLMContextAdapter
 from app.features.contextual_retrieval.domain.entities import ContextualizedTranscript, ContextualizedChunk
 from app.features.contextual_retrieval.utils.chunker import build_rag_chunks
+from app.features.contextual_retrieval.utils.document_window import build_document_sections, assign_section
+from app.features.contextual_retrieval.utils.transcript_formatter import format_speaker_turns
 from app.features.contextual_retrieval.utils.error_mapper import map_contextual_error
 
 logger = logging.getLogger(__name__)
@@ -57,8 +60,9 @@ class ContextualizerAPI:
                 empty_transcript = ContextualizedTranscript(source_id=transcript.source_id, chunks=[])
                 return self._repo.save(empty_transcript)
 
-            full_document_text = " ".join([s.text for s in transcript.sentences])
-            raw_chunks = build_rag_chunks(transcript.sentences, max_words=250, overlap_sentences=1)
+            sentences = transcript.sentences
+            raw_chunks = build_rag_chunks(sentences, max_words=250, overlap_sentences=1)
+            sentence_index = {s.sentence_id: idx for idx, s in enumerate(sentences)}
 
             loaded_model = None
             contextualized_chunks: List[ContextualizedChunk] = []
@@ -66,14 +70,32 @@ class ContextualizerAPI:
             try:
                 loaded_model = self._orchestrator.acquire_model(self._manifest, self._slm_adapter)
 
+                sections = self._plan_document_sections(loaded_model, sentences)
+                if len(sections) > 1:
+                    logger.info(
+                        f"Transcript for Source {transcript.source_id} exceeds the context window; "
+                        f"situating chunks within {len(sections)} overlapping document sections."
+                    )
+                section_texts: Dict[int, str] = {}
+
                 for idx, chunk_sentences in enumerate(raw_chunks):
                     logger.info(f"  -> Generating Context for Chunk {idx + 1}/{len(raw_chunks)}...")
-                    chunk_text = " ".join([s.text for s in chunk_sentences])
+                    # Stored/indexed text keeps full "[Speaker_0 @ 00:12:31]" labels; the SLM reads plain turns
+                    chunk_text = format_speaker_turns(chunk_sentences)
+
+                    section_idx = assign_section(
+                        sections,
+                        sentence_index[chunk_sentences[0].sentence_id],
+                        sentence_index[chunk_sentences[-1].sentence_id]
+                    )
+                    if section_idx not in section_texts:
+                        start, end = sections[section_idx]
+                        section_texts[section_idx] = format_speaker_turns(sentences[start:end], include_timestamps=False)
 
                     context_string = self._slm_adapter.generate_context(
                         model=loaded_model,
-                        full_document_text=full_document_text,
-                        chunk_text=chunk_text
+                        full_document_text=section_texts[section_idx],
+                        chunk_text=format_speaker_turns(chunk_sentences, include_timestamps=False)
                     )
 
                     contextualized_chunks.append(
@@ -99,3 +121,24 @@ class ContextualizerAPI:
 
         except Exception as e:
             raise map_contextual_error(e, context=f"ContextualizerAPI.execute for Source {transcript.source_id}") from e
+
+    def _plan_document_sections(
+            self,
+            model: LoadedModel,
+            sentences: List[ReconstructedSentence]
+    ) -> List[Tuple[int, int]]:
+        """
+        Uses the whole transcript as the document whenever it fits the context budget (one stable
+        prompt prefix for every chunk). Otherwise splits it into overlapping sections; a whole
+        transcript that overflows n_ctx used to fail the source at this phase.
+        """
+        budget = settings.CONTEXTUAL_RETRIEVAL_N_CTX - settings.CONTEXTUAL_RETRIEVAL_RESERVED_TOKENS
+
+        if self._slm_adapter.count_tokens(model, format_speaker_turns(sentences, include_timestamps=False)) <= budget:
+            return [(0, len(sentences))]
+
+        # Per-sentence costs include a speaker label each, which over-estimates merged turns (safe side).
+        token_counts = [
+            self._slm_adapter.count_tokens(model, format_speaker_turns([s], include_timestamps=False)) for s in sentences
+        ]
+        return build_document_sections(token_counts, budget)

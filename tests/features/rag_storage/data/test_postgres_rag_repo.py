@@ -71,3 +71,33 @@ class TestPostgresRagRepository:
         repo.delete_by_source_id(uuid.uuid4())
 
         session_mock.execute.assert_called_once()
+
+    @patch("app.features.rag_storage.data.postgres_rag_repo.db_manager")
+    def test_replace_rag_chunks_persists_raw_text_context_and_speakers(self, mock_db_manager):
+        session_mock = _session(mock_db_manager)
+        chunk = UnifiedChunk(
+            chunk_id=uuid.uuid4(), start_sec=0, end_sec=1,
+            text_payload="[Audio Context: Intake.]\n\n[Speaker_0 @ 00:00:00]: I have angina.",
+            raw_text="[Speaker_0 @ 00:00:00]: I have angina.",
+            context_text="[Audio Context: Intake.]",
+            speaker_labels=["Speaker_0"]
+        )
+
+        PostgresRagRepository().replace_rag_chunks(uuid.uuid4(), [chunk], [[0.1]])
+
+        saved = session_mock.bulk_save_objects.call_args[0][0][0]
+        assert saved.raw_text == "[Speaker_0 @ 00:00:00]: I have angina."
+        assert saved.context_text == "[Audio Context: Intake.]"
+        assert saved.speaker_labels == ["Speaker_0"]
+
+    @patch("app.features.rag_storage.data.postgres_rag_repo.db_manager")
+    def test_replace_rag_chunks_falls_back_to_payload_without_raw_text(self, mock_db_manager):
+        session_mock = _session(mock_db_manager)
+        chunk = UnifiedChunk(chunk_id=uuid.uuid4(), start_sec=0, end_sec=1, text_payload="Plain text")
+
+        PostgresRagRepository().replace_rag_chunks(uuid.uuid4(), [chunk], [[0.1]])
+
+        saved = session_mock.bulk_save_objects.call_args[0][0][0]
+        assert saved.raw_text == "Plain text"
+        assert saved.context_text is None
+        assert saved.speaker_labels == []

@@ -1,4 +1,4 @@
-# Canvas: verified_retrieval_entities_v1
+# Canvas: verified_retrieval_entities_v2
 # Path: app/features/retrieval_hallucination_scrubber/domain/entities.py
 
 import uuid
@@ -21,6 +21,11 @@ class ScrubAudit(BaseModel):
     discard_reason: Optional[str] = Field(
         default=None,
         description="The strict 1-sentence reason the SLM rejected the chunk, if applicable."
+    )
+
+    evaluation_failed: bool = Field(
+        default=False,
+        description="True if the SLM produced an unparseable verdict and the chunk was kept by default."
     )
 
     model_config = ConfigDict(frozen=True)

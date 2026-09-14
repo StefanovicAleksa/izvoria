@@ -47,3 +47,20 @@ class TestCitationParser:
         assert len(citations) == 2
         assert citations[0].doc_id == "[Doc 1]"
         assert citations[0].start_sec == 10.0
+
+    def test_context_block_shows_only_raw_transcript_with_time_range(self):
+        chunk = RetrievedChunk(
+            chunk_id=uuid.uuid4(), source_id=uuid.uuid4(),
+            text_payload="[Audio Context: The doctor confirms a fracture.]\n\n[Speaker_0 @ 00:12:31]: The X-ray is clear.",
+            raw_text="[Speaker_0 @ 00:12:31]: The X-ray is clear.",
+            start_sec=751.0, end_sec=842.0, relevance_score=0.9
+        )
+
+        block = build_context_block([chunk])
+
+        assert block.formatted_text == "[Doc 1] (00:12:31–00:14:02)\n[Speaker_0 @ 00:12:31]: The X-ray is clear.\n"
+        assert "Audio Context" not in block.formatted_text
+
+    def test_context_block_falls_back_to_payload_without_raw_text(self, sample_chunks):
+        block = build_context_block(sample_chunks[:1])
+        assert block.formatted_text == "[Doc 1] (00:00:10–00:00:15)\nX-ray shows a broken rib.\n"

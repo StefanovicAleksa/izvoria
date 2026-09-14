@@ -9,7 +9,7 @@ The composition root and top-level facade of the whole application. Two pieces: 
 `app/engine/service/bootstrap.py`. The single dependency-injection root. In order, it constructs:
 
 1. Core infra: `JobRepository`/`JobManager`, `PyTorchVramMonitor` → `ModelManagerOrchestrator` → `BackgroundModelWorker` → `AsyncModelService`.
-2. Every feature's repository + adapter + `*API` object: storage, audio extraction, VAD, domain adaptation, transcription, hallucination correction, diarization, sentence reconstruction, domain phonetic correction, contextual retrieval, all five visual features, context unification, clip extraction, RAG storage, RAG retrieval, retrieval scrubber, QA generation.
+2. Every feature's repository + adapter + `*API` object: storage, audio extraction, VAD, domain adaptation, transcription, hallucination correction, diarization, sentence reconstruction, domain phonetic correction, contextual retrieval, all five visual features, context unification, clip extraction, RAG storage, RAG retrieval, RAG reranking, retrieval scrubber, QA generation.
 3. Every orchestration `Phase`, wrapping those APIs with `job_manager`/`async_service`.
 4. The five `Pipeline`s (`BatchMediaPipeline`, `BatchAudioPipeline`, `LiveRetrievalPipeline`, `LiveVerifiedRetrievalPipeline`, `LiveQAPipeline`).
 5. Finally assembles `OnyxEngine(...)` and returns it, typed as `IOnyxEngine`.
