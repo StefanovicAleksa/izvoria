@@ -1,4 +1,4 @@
-# Canvas: detection_api_v5
+# Canvas: detection_api_v6
 # Path: app/features/visual_cue_detection/service/detection_api.py
 
 import logging
@@ -52,21 +52,28 @@ class VisualCueDetectionAPI:
         manage_lifecycle = loaded_model is None
 
         try:
+            # Idempotency: a rerun after a crash (or a re-ingest) must not re-judge chunks already evaluated
+            if all(chunk.cue_evaluated for chunk in transcript.chunks):
+                logger.info(f"Visual cues already evaluated for Source {transcript.source_id}. Skipping.")
+                return transcript
+
             if manage_lifecycle:
                 loaded_model = self._orchestrator.acquire_model(self._manifest, self._adapter)
 
-            # =====================================================================
-            # THE FIX: Execute the visual cue chunk evaluation via the AI adapter
-            # without silently swallowing errors. If a chunk fails, the job fails.
-            # =====================================================================
+            # A chunk failure is not swallowed: if a chunk fails, the job fails.
             updated_chunks = []
             for chunk in transcript.chunks:
+                if chunk.cue_evaluated:
+                    updated_chunks.append(chunk)
+                    continue
+
                 try:
                     updated_chunk = self._adapter.detect_cues(loaded_model, chunk)
-                    updated_chunks.append(updated_chunk)
                 except Exception as e:
                     # Bubble up the exact error so the JobManager marks it as FAILED
                     raise map_detection_error(e, context=f"Detecting cues for chunk {chunk.chunk_id}") from e
+
+                updated_chunks.append(updated_chunk.model_copy(update={"cue_evaluated": True}))
 
             # Assign updated chunks back to the transcript
             transcript.chunks = updated_chunks

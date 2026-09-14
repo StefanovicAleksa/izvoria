@@ -30,6 +30,10 @@ class ContextualizedChunk(BaseModel):
         default=False,
         description="True if the text contains visual cues requiring Phase 10 extraction."
     )
+    cue_evaluated: bool = Field(
+        default=False,
+        description="True once visual cue detection has judged this chunk, so a rerun can skip it."
+    )
 
     # Placeholder for the Vision Phase (Phase 10)
     visual_descriptions: List[str] = Field(default_factory=list)

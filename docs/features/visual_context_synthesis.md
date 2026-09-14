@@ -23,4 +23,4 @@ Phase 14 (`VisualContextSynthesisPhase`) — the last visual-branch phase, runni
 ## Gotchas / design notes
 
 - The NLTK `stopwords` corpus auto-downloads on first import if not already present locally — a network dependency at import time worth knowing about on a genuinely offline/air-gapped deployment (it should be pre-downloaded as part of setup, not fetched at runtime).
-- `base_timestamp_sec` has a defensive fallback for frame analyses that lack an explicit timestamp.
+- Frame analyses carry their frame's `timestamp_sec` (copied from `ExtractedFrame` by `visual_analysis`), so timeline events get real start/end times. `base_timestamp_sec` (the chunk start) is only a fallback for records written before that field existed. Previously `FrameAnalysis` had no timestamp, so every event was stamped with the chunk start.

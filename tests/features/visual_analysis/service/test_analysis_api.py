@@ -1,9 +1,9 @@
-# Canvas: test_visual_analysis_api_v1
+# Canvas: test_visual_analysis_api_v2
 # Path: tests/features/visual_analysis/service/test_analysis_api.py
 
 import uuid
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call, patch
 from pathlib import Path
 
 from app.core.model_manager.domain.entities import LoadedModel
@@ -11,6 +11,12 @@ from app.features.contextual_retrieval.domain.entities import ContextualizedChun
 from app.features.frame_extraction.domain.entities import ExtractedChunkFrames, ExtractedFrame
 from app.features.visual_analysis.service.analysis_api import VisualAnalysisAPI
 from app.features.visual_analysis.domain.entities import ChunkVisualAnalysis
+
+MODULE = "app.features.visual_analysis.service.analysis_api"
+
+
+def _frame(timestamp_sec: float) -> ExtractedFrame:
+    return ExtractedFrame(file_id=uuid.uuid4(), timestamp_sec=timestamp_sec, phash_value="abc", quality_score=100)
 
 
 class TestVisualAnalysisAPI:
@@ -46,7 +52,7 @@ class TestVisualAnalysisAPI:
 
         assert result == existing_analysis
         mocks["repo"].get_by_chunk_id.assert_called_once_with(chunk.chunk_id)
-        mocks["vlm_adapter"].analyze_frame.assert_not_called()
+        mocks["vlm_adapter"].analyze_frames.assert_not_called()
 
     def test_process_chunk_empty_frames_saves_empty_ledger(self, api, mocks):
         """If the frame extractor dropped all frames (e.g. blurry), save an empty array."""
@@ -62,55 +68,82 @@ class TestVisualAnalysisAPI:
         assert result.chunk_id == chunk.chunk_id
         assert len(result.analyses) == 0
         mocks["repo"].save.assert_called_once()
-        mocks["vlm_adapter"].analyze_frame.assert_not_called()
+        mocks["vlm_adapter"].analyze_frames.assert_not_called()
 
-    def test_process_chunk_success_flow(self, api, mocks):
+    def test_process_chunk_describes_frames_in_one_call(self, api, mocks):
         source_id = uuid.uuid4()
         chunk = ContextualizedChunk(
             chunk_id=uuid.uuid4(),
             original_text="The red line goes up.",
             context_string="Reviewing Q3 performance."
         )
-
-        frame_1 = ExtractedFrame(file_id=uuid.uuid4(), timestamp_sec=1.0, phash_value="abc", quality_score=100)
-        frame_2 = ExtractedFrame(file_id=uuid.uuid4(), timestamp_sec=2.0, phash_value="def", quality_score=100)
-
-        extracted_frames = ExtractedChunkFrames(
-            source_id=source_id,
-            chunk_id=chunk.chunk_id,
-            frames=[frame_1, frame_2]
-        )
-
+        frame_1, frame_2 = _frame(1.0), _frame(2.0)
+        extracted_frames = ExtractedChunkFrames(source_id=source_id, chunk_id=chunk.chunk_id, frames=[frame_1, frame_2])
         mock_model = MagicMock(spec=LoadedModel)
 
         mocks["repo"].get_by_chunk_id.return_value = None
         mocks["repo"].save.side_effect = lambda x: x
+        mocks["storage_api"].get_file_path.side_effect = [Path("/vault/a.jpg"), Path("/vault/b.jpg")]
+        mocks["vlm_adapter"].analyze_frames.return_value = ["A red line going up.", "A zoomed in view of the red line."]
 
-        mocks["storage_api"].get_file_path.return_value = Path("/mock/vault/frame.jpg")
-        mocks["vlm_adapter"].analyze_frame.side_effect = [
-            "A red line going up.",
-            "A zoomed in view of the red line."
-        ]
-
-        # Execute
         result = api.process_chunk(source_id, chunk, extracted_frames, mock_model)
 
-        # Assertions
-        assert result.chunk_id == chunk.chunk_id
-        assert len(result.analyses) == 2
-        assert result.analyses[0].description == "A red line going up."
-        assert result.analyses[1].description == "A zoomed in view of the red line."
-
-        # Verify dependencies were called correctly
-        assert mocks["storage_api"].get_file_path.call_count == 2
-        assert mocks["vlm_adapter"].analyze_frame.call_count == 2
+        mocks["vlm_adapter"].analyze_frames.assert_called_once_with(
+            model=mock_model,
+            image_paths=[Path("/vault/a.jpg"), Path("/vault/b.jpg")],
+            original_text="The red line goes up.",
+            context_string="Reviewing Q3 performance."
+        )
+        assert mocks["storage_api"].get_file_path.call_args_list == [call(frame_1.file_id), call(frame_2.file_id)]
+        assert [(a.frame_id, a.description, a.timestamp_sec) for a in result.analyses] == [
+            (frame_1.frame_id, "A red line going up.", 1.0),
+            (frame_2.frame_id, "A zoomed in view of the red line.", 2.0),
+        ]
         mocks["repo"].save.assert_called_once()
+
+    @patch(f"{MODULE}.settings")
+    def test_process_chunk_groups_frames_chronologically_per_call(self, mock_settings, api, mocks):
+        mock_settings.VISION_MAX_IMAGES_PER_CALL = 2
+        source_id = uuid.uuid4()
+        chunk = ContextualizedChunk(chunk_id=uuid.uuid4())
+        late, early, middle = _frame(3.0), _frame(1.0), _frame(2.0)
+        extracted_frames = ExtractedChunkFrames(source_id=source_id, chunk_id=chunk.chunk_id, frames=[late, early, middle])
+
+        mocks["repo"].get_by_chunk_id.return_value = None
+        mocks["repo"].save.side_effect = lambda x: x
+        mocks["storage_api"].get_file_path.side_effect = lambda file_id: Path(f"/vault/{file_id}.jpg")
+        mocks["vlm_adapter"].analyze_frames.side_effect = [["first", "second"], ["third"]]
+
+        result = api.process_chunk(source_id, chunk, extracted_frames, MagicMock(spec=LoadedModel))
+
+        calls = mocks["vlm_adapter"].analyze_frames.call_args_list
+        assert [c.kwargs["image_paths"] for c in calls] == [
+            [Path(f"/vault/{early.file_id}.jpg"), Path(f"/vault/{middle.file_id}.jpg")],
+            [Path(f"/vault/{late.file_id}.jpg")],
+        ]
+        assert [(a.frame_id, a.description) for a in result.analyses] == [
+            (early.frame_id, "first"), (middle.frame_id, "second"), (late.frame_id, "third")
+        ]
+
+    def test_process_chunk_skips_frames_without_a_description(self, api, mocks):
+        source_id = uuid.uuid4()
+        chunk = ContextualizedChunk(chunk_id=uuid.uuid4())
+        described, blank = _frame(1.0), _frame(2.0)
+        extracted_frames = ExtractedChunkFrames(source_id=source_id, chunk_id=chunk.chunk_id, frames=[described, blank])
+
+        mocks["repo"].get_by_chunk_id.return_value = None
+        mocks["repo"].save.side_effect = lambda x: x
+        mocks["storage_api"].get_file_path.return_value = Path("/vault/frame.jpg")
+        mocks["vlm_adapter"].analyze_frames.return_value = [" A slide. ", "  "]
+
+        result = api.process_chunk(source_id, chunk, extracted_frames, MagicMock(spec=LoadedModel))
+
+        assert [(a.frame_id, a.description) for a in result.analyses] == [(described.frame_id, "A slide.")]
 
     def test_process_chunk_maps_storage_errors(self, api, mocks):
         source_id = uuid.uuid4()
         chunk = ContextualizedChunk(chunk_id=uuid.uuid4())
-        frame = ExtractedFrame(file_id=uuid.uuid4(), timestamp_sec=1.0, phash_value="abc", quality_score=100)
-        extracted_frames = ExtractedChunkFrames(source_id=source_id, chunk_id=chunk.chunk_id, frames=[frame])
+        extracted_frames = ExtractedChunkFrames(source_id=source_id, chunk_id=chunk.chunk_id, frames=[_frame(1.0)])
 
         mocks["repo"].get_by_chunk_id.return_value = None
         mocks["storage_api"].get_file_path.side_effect = Exception("Storage Drive Offline")

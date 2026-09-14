@@ -142,6 +142,19 @@ class Settings(BaseSettings):
     # the Model Orchestrator's admission control relies on.
     VISION_MODEL_PATH: str = "models/qwen2-vl-7b-hf-bnb4bit"
     VISION_VRAM_REQUIREMENT_MB: float = 7500.0
+    # A chunk's frames are described in multi-image calls of at most this many frames
+    VISION_MAX_IMAGES_PER_CALL: int = 4
+    # Per-frame pixel cap inside a multi-image call (a lone frame keeps the adapter's larger cap)
+    VISION_MULTI_IMAGE_MAX_PIXELS: int = 768 * 28 * 28
+    # Generation budget per frame; a 4-frame call may generate up to 4x this
+    VISION_MAX_NEW_TOKENS_PER_FRAME: int = 160
+
+    # Frame extraction: Laplacian-variance sharpness floor and the per-chunk cap on visually distinct frames
+    FRAME_BLUR_THRESHOLD: float = 100.0
+    FRAME_MAX_PER_CHUNK: int = 4
+    # Chunks extracted concurrently, each with one FFmpeg process; 0 means max(2, cpu_count // 2)
+    FRAME_EXTRACTION_WORKERS: int = 0
+    FRAME_FFMPEG_THREADS: int = 2
 
     VISUAL_HALLUCINATION_CORRECTION_MODEL_PATH: str = "models/qwen2.5-3b-instruct-q4_k_m.gguf"
     VISUAL_HALLUCINATION_CORRECTION_VRAM_REQUIREMENT_MB: float = 2500.0

@@ -82,7 +82,7 @@ class QwenHallucinationAdapter(IVisualHallucinationAdapter):
             response = llm.create_chat_completion(
                 messages=messages,
                 response_format={"type": "json_object"},
-                temperature=0.1,
+                temperature=0.0,  # A verdict must be reproducible across reruns
                 max_tokens=150
             )
 

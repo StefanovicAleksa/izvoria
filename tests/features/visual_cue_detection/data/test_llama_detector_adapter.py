@@ -59,6 +59,7 @@ class TestQwenDetectorAdapter:
         # Verify it passed the required parameters
         call_kwargs = llm.create_chat_completion.call_args.kwargs
         assert call_kwargs["max_tokens"] == 250
+        assert call_kwargs["temperature"] == 0.0
         assert "response_format" in call_kwargs
 
     def test_detect_cues_happy_path_false(self, adapter, mock_model, sample_chunk):

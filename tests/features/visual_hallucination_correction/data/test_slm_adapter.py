@@ -51,6 +51,7 @@ class TestQwenHallucinationAdapter:
         # Verify JSON object mode was enforced
         call_kwargs = mock_llm.create_chat_completion.call_args[1]
         assert call_kwargs["response_format"]["type"] == "json_object"
+        assert call_kwargs["temperature"] == 0.0
 
     def test_evaluate_visual_match_acceptance(self, manifest: ModelManifest) -> None:
         adapter = QwenHallucinationAdapter()

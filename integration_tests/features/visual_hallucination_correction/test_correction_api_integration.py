@@ -1,6 +1,7 @@
 import os
 import uuid
 import pytest
+from sqlalchemy import text as sa_text
 
 from app.core.config import settings
 from app.core.database.data.engine import Base
@@ -32,6 +33,15 @@ class TestVisualHallucinationCorrectionAPIIntegration:
         engine = db_manager._engine_wrapper._engine
         Base.metadata.create_all(bind=engine)
         yield
+
+    @pytest.fixture(scope="module", autouse=True)
+    def isolated_setup(self, setup_database):
+        # Seeded rows use random source ids with no `sources` row; without this the test only passed
+        # when an earlier test in the session had already dropped these constraints.
+        with db_manager.session() as session:
+            for table in ("contextualized_transcripts", "chunk_visual_analyses", "visual_hallucination_evaluations"):
+                session.execute(sa_text(f"ALTER TABLE {table} DROP CONSTRAINT IF EXISTS {table}_source_id_fkey;"))
+            session.commit()
 
     @pytest.fixture(scope="module", autouse=True)
     def check_model_downloaded(self):

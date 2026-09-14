@@ -1,66 +1,75 @@
-# Canvas: test_quality_filter_v1
+# Canvas: test_quality_filter_v2
 # Path: tests/features/frame_extraction/utils/test_quality_filter.py
 
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
+from app.core.config import settings
 from app.features.frame_extraction.utils.quality_filter import QualityFilter
 
+MODULE = "app.features.frame_extraction.utils.quality_filter"
 
+
+def _laplacians(*variances: float):
+    return [MagicMock(**{"var.return_value": variance}) for variance in variances]
+
+
+class TestQualityFilterConfig:
+    def test_default_threshold_comes_from_settings(self):
+        assert QualityFilter().blur_threshold == settings.FRAME_BLUR_THRESHOLD
+
+    def test_explicit_threshold_wins(self):
+        assert QualityFilter(blur_threshold=42.0).blur_threshold == 42.0
+
+
+@patch("pathlib.Path.unlink")
+@patch(f"{MODULE}.cv2.Laplacian")
+@patch(f"{MODULE}.cv2.cvtColor")
+@patch(f"{MODULE}.cv2.imread")
+@patch("pathlib.Path.exists", return_value=True)
 class TestQualityFilter:
     @pytest.fixture
     def quality_filter(self):
         return QualityFilter(blur_threshold=100.0)
 
-    @patch("app.features.frame_extraction.utils.quality_filter.cv2.Laplacian")
-    @patch("app.features.frame_extraction.utils.quality_filter.cv2.cvtColor")
-    @patch("app.features.frame_extraction.utils.quality_filter.cv2.imread")
-    @patch("pathlib.Path.exists", return_value=True)
-    def test_filter_frames_keeps_sharp_frames(self, mock_exists, mock_imread, mock_cvt, mock_laplacian, quality_filter):
-        mock_imread.return_value = MagicMock()
-        mock_cvt.return_value = MagicMock()
+    def test_keeps_sharp_frames_and_deletes_blurry_ones(
+            self, mock_exists, mock_imread, mock_cvt, mock_laplacian, mock_unlink, quality_filter
+    ):
+        mock_laplacian.side_effect = _laplacians(150.0, 50.0)
 
-        # Mock a high variance (sharp image)
-        mock_lap_var = MagicMock()
-        mock_lap_var.var.return_value = 150.0
-        mock_laplacian.return_value = mock_lap_var
+        result = quality_filter.filter_frames([(1.0, Path("a.jpg")), (2.0, Path("b.jpg"))])
 
-        frames = [(1.0, Path("frame_1.jpg"))]
-        result = quality_filter.filter_frames(frames)
+        assert result == [(1.0, Path("a.jpg"), 150.0)]
+        mock_unlink.assert_called_once_with(missing_ok=True)
 
-        assert len(result) == 1
-        assert result[0][0] == 1.0
-        assert result[0][2] == 150.0
+    def test_keeps_the_sharpest_frame_when_all_are_blurry(
+            self, mock_exists, mock_imread, mock_cvt, mock_laplacian, mock_unlink, quality_filter
+    ):
+        mock_laplacian.side_effect = _laplacians(40.0, 80.0, 10.0)
 
-    @patch("pathlib.Path.unlink")
-    @patch("app.features.frame_extraction.utils.quality_filter.cv2.Laplacian")
-    @patch("app.features.frame_extraction.utils.quality_filter.cv2.cvtColor")
-    @patch("app.features.frame_extraction.utils.quality_filter.cv2.imread")
-    @patch("pathlib.Path.exists", return_value=True)
-    def test_filter_frames_drops_blurry_frames(self, mock_exists, mock_imread, mock_cvt, mock_laplacian, mock_unlink,
-                                               quality_filter):
-        mock_imread.return_value = MagicMock()
-        mock_cvt.return_value = MagicMock()
+        result = quality_filter.filter_frames([(1.0, Path("a.jpg")), (2.0, Path("b.jpg")), (3.0, Path("c.jpg"))])
 
-        # Mock a low variance (blurry image)
-        mock_lap_var = MagicMock()
-        mock_lap_var.var.return_value = 50.0
-        mock_laplacian.return_value = mock_lap_var
+        assert result == [(2.0, Path("b.jpg"), 80.0)]
+        assert mock_unlink.call_count == 2
 
-        frames = [(1.0, Path("frame_1.jpg"))]
-        result = quality_filter.filter_frames(frames)
+    def test_never_keeps_a_uniform_frame(
+            self, mock_exists, mock_imread, mock_cvt, mock_laplacian, mock_unlink, quality_filter
+    ):
+        mock_laplacian.side_effect = _laplacians(0.0)
 
-        assert len(result) == 0
-        mock_unlink.assert_called_once()
+        result = quality_filter.filter_frames([(1.0, Path("black.jpg"))])
 
-    @patch("pathlib.Path.unlink")
-    @patch("app.features.frame_extraction.utils.quality_filter.cv2.imread", return_value=None)
-    @patch("pathlib.Path.exists", return_value=True)
-    def test_graceful_degradation_on_corrupt_image(self, mock_exists, mock_imread, mock_unlink, quality_filter):
-        frames = [(1.0, Path("corrupt.jpg"))]
-        result = quality_filter.filter_frames(frames)
+        assert result == []
+        mock_unlink.assert_called_once_with(missing_ok=True)
 
-        # Ensure it didn't crash and cleaned up the bad file
-        assert len(result) == 0
-        mock_unlink.assert_called_once()
+    def test_graceful_degradation_on_corrupt_image(
+            self, mock_exists, mock_imread, mock_cvt, mock_laplacian, mock_unlink, quality_filter
+    ):
+        mock_imread.return_value = None
+
+        result = quality_filter.filter_frames([(1.0, Path("corrupt.jpg"))])
+
+        assert result == []
+        mock_laplacian.assert_not_called()
+        mock_unlink.assert_called_once_with(missing_ok=True)

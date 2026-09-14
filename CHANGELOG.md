@@ -52,6 +52,27 @@ Fixes from the full review of RAG retrieval/storage and the audio/video ingestio
 - **Oversized sentences are split at whitespace** (`domain_phonetic_correction/utils/sentence_splitter.py`) with the word array divided in step with the text, instead of cutting mid-word by character index with a mismatched audit trail.
 - **Unit-test hygiene:** `test_bootstrap_unit` now shuts down the engine it builds. Its leaked telemetry thread polled `torch.cuda.is_available()` every 0.5s and intermittently broke `test_generate_diarization_map_pure_mock`.
 
+### Batch 4 — Throughput & visual branch
+
+- **Frame extraction decodes each chunk once** (`frame_extraction/data/ffmpeg_adapter.py`). The adapter spawned one FFmpeg process per second of footage, each re-opening and re-seeking the video (about 3,600 processes per flagged hour). It now runs one `-ss start -t duration -vf fps=1` decode per chunk and stamps frame *i* at `start + i`. Frames written before an FFmpeg error are kept, and if an interval yields nothing, a single midpoint frame is taken as a fallback. The worker pool is `max(2, cpu_count // 2)` (`FRAME_EXTRACTION_WORKERS`) instead of `min(32, cpu_count * 2)` — each worker is now a multi-threaded decode, and the old pool oversubscribed the CPU.
+- **Each chunk keeps at most 4 visually distinct frames** (`frame_extraction/utils/frame_selector.py`, `FRAME_MAX_PER_CHUNK`). Sequential pHash deduplication only collapses back-to-back duplicates, so a long chunk sent every changed second to the 7B VLM. Greedy farthest-point selection on pHash distance (sharpest first, ties to the sharper frame) keeps distinct scenes, e.g. a slide, a chart and a close-up, rather than neighbouring seconds of one slide.
+- **An all-blurry chunk keeps its sharpest frame** (`frame_extraction/utils/quality_filter.py`, `FRAME_BLUR_THRESHOLD`). Low-texture evidence such as scanned pages and white slides falls under the Laplacian threshold, so a chunk the cue detector flagged ended up with no visual at all. Perfectly uniform frames (score 0) are still dropped.
+- **The VLM may only describe what is visible** (`visual_analysis/data/prompts.py`, `vlm_adapter.py`). The transcript stays in the prompt to steer attention, with new rules:
+  - describe only what is visibly present;
+  - transcribe visible text and numbers exactly;
+  - never state a value that isn't legible, even if the speaker says it;
+  - say when a frame doesn't show what is described.
+
+  Decoding is greedy (`do_sample=False`), replacing sampling at temperature 0.1, which could invent details and made results non-reproducible.
+- **Frames are described in one multi-image call per chunk** (`VisualAnalysisAPI.process_chunk`, `IVisualLanguageModelAdapter.analyze_frames`). Previously every frame was a separate call that re-encoded the same prompt.
+  - Up to `VISION_MAX_IMAGES_PER_CALL` (4) frames go in each call.
+  - Each image is capped at `VISION_MULTI_IMAGE_MAX_PIXELS` (768·28·28).
+  - The generation budget is `VISION_MAX_NEW_TOKENS_PER_FRAME` (160) × frames. This scales with the frame count instead of the planned flat 320, so frames full of text aren't truncated.
+  - The model answers in `Frame N:` lines, split by `visual_analysis/utils/frame_description_parser.py`. An unformatted answer is kept and attributed to the first frame.
+- **Visual timelines have real timestamps** (`FrameAnalysis.timestamp_sec`). `FrameAnalysis` had no timestamp, so `visual_context_synthesis/utils/fuzzy_grouper.py` stamped every event with the chunk start and sorted frames arbitrarily.
+- **The visual hallucination check rejects transcript restatements** (`visual_hallucination_correction/data/prompts.py`). A description with no visual content that only paraphrases the speaker is now rejected — the VLM sees the transcript, so a restatement proves nothing about the screen. "The discussed item is not visible" still counts as a description. Temperature is 0.0.
+- **Visual cue detection is deterministic and idempotent** (`visual_cue_detection`). Temperature is 0.0, and the new `ContextualizedChunk.cue_evaluated` flag lets a rerun skip chunks already judged. A fully evaluated transcript no longer loads the model or rewrites the row.
+
 ## Unreleased / In progress
 
 - **Environment/hardware diagnostics**: new integration tests documenting two subprocess-isolated regressions — cross-feature `sys.modules["torchcodec"]` leakage in long-lived processes, and the confirmed llama.cpp SIGSEGV in the Qwen-VL vision encoder (native HF Transformers remains the required path for vision). See "Known gotchas" in `CLAUDE.md`.

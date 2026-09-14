@@ -1,4 +1,4 @@
-# Canvas: test_detection_api_unit_v1
+# Canvas: test_detection_api_unit_v2
 # Path: tests/features/visual_cue_detection/service/test_detection_api_unit.py
 
 import pytest
@@ -53,3 +53,36 @@ class TestVisualCueDetectionAPIUnit:
             api.process_transcript(transcript=transcript, model=mock_model, release_after=False)
 
         assert "context window exceeded" in str(exc_info.value).lower()
+
+    def test_process_transcript_skips_a_fully_evaluated_transcript(self, api, mock_adapter, mock_orchestrator,
+                                                                  mock_repo):
+        transcript = ContextualizedTranscript(chunks=[
+            ContextualizedChunk(original_text="a", needs_visual=True, cue_evaluated=True),
+            ContextualizedChunk(original_text="b", needs_visual=False, cue_evaluated=True),
+        ])
+
+        result = api.process_transcript(transcript=transcript)
+
+        assert result is transcript
+        mock_orchestrator.acquire_model.assert_not_called()
+        mock_adapter.detect_cues.assert_not_called()
+        mock_repo.update.assert_not_called()
+
+    def test_process_transcript_evaluates_only_pending_chunks(self, api, mock_adapter, mock_orchestrator, mock_repo):
+        evaluated = ContextualizedChunk(original_text="a", needs_visual=True, cue_evaluated=True)
+        pending = ContextualizedChunk(original_text="b")
+        transcript = ContextualizedTranscript(chunks=[evaluated, pending])
+
+        mock_adapter.detect_cues.side_effect = lambda model, chunk: chunk.model_copy(update={"needs_visual": True})
+        mock_model = Mock(spec=LoadedModel)
+
+        result = api.process_transcript(transcript=transcript, model=mock_model, release_after=False)
+
+        mock_adapter.detect_cues.assert_called_once_with(mock_model, pending)
+        assert result.chunks[0] is evaluated
+        assert (result.chunks[1].chunk_id, result.chunks[1].needs_visual, result.chunks[1].cue_evaluated) == (
+            pending.chunk_id, True, True
+        )
+        mock_repo.update.assert_called_once_with(transcript)
+        mock_orchestrator.acquire_model.assert_not_called()
+        mock_orchestrator.release_model.assert_not_called()

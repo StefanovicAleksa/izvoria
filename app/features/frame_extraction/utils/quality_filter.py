@@ -1,12 +1,14 @@
-# Canvas: quality_filter_v2
+# Canvas: quality_filter_v3
 # Path: app/features/frame_extraction/utils/quality_filter.py
 
 import logging
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 # noinspection PyPackageRequirements
 import cv2
+
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +19,8 @@ class QualityFilter:
     reach the database or GPU. Uses OpenCV Laplacian variance.
     """
 
-    def __init__(self, blur_threshold: float = 100.0):
-        self.blur_threshold = blur_threshold
+    def __init__(self, blur_threshold: Optional[float] = None):
+        self.blur_threshold = settings.FRAME_BLUR_THRESHOLD if blur_threshold is None else blur_threshold
 
     def filter_frames(
         self,
@@ -27,9 +29,14 @@ class QualityFilter:
         """
         Scans frames for sharpness.
         Returns a list of tuples containing (timestamp, path, quality_score).
-        Deletes failed frames from disk immediately.
+
+        If no frame reaches the threshold, the single sharpest one is kept anyway: low-texture evidence
+        (a scanned page, a mostly white slide) scores low on Laplacian variance, and dropping every frame
+        would leave a chunk that the cue detector flagged with no visual at all. A perfectly uniform frame
+        (score 0, e.g. a black transition) carries nothing and is never kept.
+        Rejected frames are deleted from disk.
         """
-        valid_frames: List[Tuple[float, Path, float]] = []
+        scored_frames: List[Tuple[float, Path, float]] = []
 
         for timestamp, file_path in extracted_frames:
             if not file_path.exists():
@@ -43,15 +50,22 @@ class QualityFilter:
 
                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
                 laplacian_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-
-                if laplacian_var >= self.blur_threshold:
-                    valid_frames.append((timestamp, file_path, float(laplacian_var)))
-                else:
-                    self._safe_delete(file_path)
+                scored_frames.append((timestamp, file_path, float(laplacian_var)))
 
             except Exception as e:
                 logger.warning(f"Failed to process quality check for {file_path.name}: {e}")
                 self._safe_delete(file_path)
+
+        valid_frames = [frame for frame in scored_frames if frame[2] >= self.blur_threshold]
+
+        if not valid_frames and scored_frames:
+            sharpest = max(scored_frames, key=lambda frame: frame[2])
+            if sharpest[2] > 0.0:
+                valid_frames = [sharpest]
+
+        for frame in scored_frames:
+            if frame not in valid_frames:
+                self._safe_delete(frame[1])
 
         return valid_frames
 

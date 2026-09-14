@@ -1,4 +1,4 @@
-# Canvas: visual_analysis_api_v2
+# Canvas: visual_analysis_api_v3
 # Path: app/features/visual_analysis/service/analysis_api.py
 
 import logging
@@ -73,33 +73,41 @@ class VisualAnalysisAPI:
                 logger.info(f"Visual analysis already exists for chunk {chunk.chunk_id}. Skipping.")
                 return existing_record
 
-            # 2. Edge Case: The visual cue detector flagged it, but all frames were too blurry
+            # 2. Edge Case: The visual cue detector flagged it, but no frames survived extraction
             if not extracted_frames.frames:
                 return self._save_empty_result(source_id, chunk)
 
             frame_analyses: List[FrameAnalysis] = []
+            frames = sorted(extracted_frames.frames, key=lambda f: f.timestamp_sec)
+            frames_per_call = max(1, settings.VISION_MAX_IMAGES_PER_CALL)
 
-            # 3. Process each vaulted frame chronologically
-            for frame in extracted_frames.frames:
-                # Retrieve the physical file path from the secure Onyx Storage Vault
-                physical_path = self._storage.get_file_path(frame.file_id)
+            # 3. Describe the frames chronologically, several per multimodal call: the shared prompt
+            # (system rules + chunk text) is encoded once per group instead of once per frame
+            for group_start in range(0, len(frames), frames_per_call):
+                group = frames[group_start:group_start + frames_per_call]
+                image_paths = [self._storage.get_file_path(frame.file_id) for frame in group]
 
-                logger.info(f"  -> VLM Analyzing Frame {frame.frame_id} for Chunk {chunk.chunk_id}...")
+                logger.info(f"  -> VLM analyzing {len(group)} frame(s) for Chunk {chunk.chunk_id}...")
 
-                # Execute the multimodal inference, strictly bounded by the chunk's text
-                description = self._vlm_adapter.analyze_frame(
+                descriptions = self._vlm_adapter.analyze_frames(
                     model=vlm_model,
-                    image_path=physical_path,
+                    image_paths=image_paths,
                     original_text=chunk.original_text,
                     context_string=chunk.context_string
                 )
 
-                frame_analyses.append(
-                    FrameAnalysis(
-                        frame_id=frame.frame_id,
-                        description=description
+                for frame, description in zip(group, descriptions):
+                    if not description.strip():
+                        logger.warning(f"VLM produced no description for frame {frame.frame_id}; skipping it.")
+                        continue
+
+                    frame_analyses.append(
+                        FrameAnalysis(
+                            frame_id=frame.frame_id,
+                            description=description.strip(),
+                            timestamp_sec=frame.timestamp_sec
+                        )
                     )
-                )
 
             # 4. Aggregate and Persist Mapping
             visual_analysis = ChunkVisualAnalysis(

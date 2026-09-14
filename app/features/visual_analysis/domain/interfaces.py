@@ -1,9 +1,9 @@
-# Canvas: visual_analysis_interfaces_v1
+# Canvas: visual_analysis_interfaces_v2
 # Path: app/features/visual_analysis/domain/interfaces.py
 
 import uuid
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import List, Optional
 from pathlib import Path
 
 from app.core.model_manager.domain.interfaces import IModelLoader
@@ -18,16 +18,18 @@ class IVisualLanguageModelAdapter(IModelLoader, ABC):
     """
 
     @abstractmethod
-    def analyze_frame(
+    def analyze_frames(
         self,
         model: LoadedModel,
-        image_path: Path,
+        image_paths: List[Path],
         original_text: str,
         context_string: str
-    ) -> str:
+    ) -> List[str]:
         """
-        Processes a physical image through the VLM using the surrounding text as strict context.
-        Returns a highly focused semantic description of the visual evidence.
+        Describes a chunk's frames (in chronological order) in one multimodal call, using the surrounding
+        text only to decide what to look at.
+        Returns exactly one description per image, in order. An entry is empty when the model produced
+        nothing usable for that frame.
         """
         pass
 

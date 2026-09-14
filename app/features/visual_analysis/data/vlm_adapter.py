@@ -1,18 +1,20 @@
-# Canvas: visual_analysis_vlm_adapter_v9
+# Canvas: visual_analysis_vlm_adapter_v10
 # Path: app/features/visual_analysis/data/vlm_adapter.py
 
 import gc
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, List
 
 import torch
 from PIL import Image
 
+from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.features.visual_analysis.domain.interfaces import IVisualLanguageModelAdapter
 from app.features.visual_analysis.data.prompts import VLM_SYSTEM_PROMPT, VLM_USER_PROMPT_TEMPLATE
 from app.features.visual_analysis.utils.error_mapper import map_visual_analysis_error
+from app.features.visual_analysis.utils.frame_description_parser import parse_frame_descriptions
 
 # Bounds Qwen2-VL's dynamic-resolution vision tower so a single large frame can't
 # blow past the VRAM budget the Model Orchestrator reserved for this phase.
@@ -83,48 +85,51 @@ class QwenVLMAdapter(IVisualLanguageModelAdapter):
         except Exception as e:
             raise map_visual_analysis_error(e, context="Unload Qwen2-VL Transformers Adapter") from e
 
-    def analyze_frame(
+    def analyze_frames(
             self,
             model: LoadedModel,
-            image_path: Path,
+            image_paths: List[Path],
             original_text: str,
             context_string: str
-    ) -> str:
+    ) -> List[str]:
+        if not image_paths:
+            return []
+
         try:
             payload = model.model_instance
             hf_model = payload["model"]
             processor = payload["processor"]
 
-            if not image_path.exists():
-                raise FileNotFoundError(f"Extracted frame missing from disk: {image_path}")
+            images = [self._open_image(image_path) for image_path in image_paths]
+            if len(images) > 1:
+                # All frames share one context window, so each gets a smaller pixel budget than a lone frame
+                images = [self._fit_pixel_budget(image, settings.VISION_MULTI_IMAGE_MAX_PIXELS) for image in images]
 
-            image = Image.open(image_path).convert("RGB")
-
+            frame_count = len(images)
             user_text = VLM_USER_PROMPT_TEMPLATE.format(
                 context_string=context_string,
-                original_text=original_text
+                original_text=original_text,
+                frame_count=frame_count,
+                frame_lines="\n".join(f"Frame {index}: <description>" for index in range(1, frame_count + 1))
             )
 
             messages = [
                 {"role": "system", "content": VLM_SYSTEM_PROMPT},
                 {
                     "role": "user",
-                    "content": [
-                        {"type": "image"},
-                        {"type": "text", "text": user_text}
-                    ]
+                    "content": [{"type": "image"} for _ in images] + [{"type": "text", "text": user_text}]
                 }
             ]
 
             prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            inputs = processor(text=[prompt], images=[image], return_tensors="pt").to(hf_model.device)
+            inputs = processor(text=[prompt], images=images, return_tensors="pt").to(hf_model.device)
 
             with torch.inference_mode():
+                # Greedy decoding: evidence descriptions must be reproducible, and sampling invents details
                 generated_ids = hf_model.generate(
                     **inputs,
-                    max_new_tokens=256,
-                    do_sample=True,
-                    temperature=0.1,
+                    max_new_tokens=settings.VISION_MAX_NEW_TOKENS_PER_FRAME * frame_count,
+                    do_sample=False,
                 )
 
             generated_ids_trimmed = [
@@ -134,7 +139,25 @@ class QwenVLMAdapter(IVisualLanguageModelAdapter):
                 generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
             )[0]
 
-            return output_text.strip()
+            return parse_frame_descriptions(output_text, frame_count)
 
         except Exception as e:
-            raise map_visual_analysis_error(e, context=f"Qwen2-VL Frame Analysis on {image_path.name}") from e
+            raise map_visual_analysis_error(
+                e, context=f"Qwen2-VL analysis of {len(image_paths)} frame(s) starting at {image_paths[0].name}"
+            ) from e
+
+    @staticmethod
+    def _open_image(image_path: Path) -> Any:
+        if not image_path.exists():
+            raise FileNotFoundError(f"Extracted frame missing from disk: {image_path}")
+        with Image.open(image_path) as image:
+            return image.convert("RGB")
+
+    @staticmethod
+    def _fit_pixel_budget(image: Any, max_pixels: int) -> Any:
+        """Downscales (never upscales) so width * height <= max_pixels, keeping the aspect ratio."""
+        width, height = image.size
+        if width * height <= max_pixels:
+            return image
+        scale = (max_pixels / float(width * height)) ** 0.5
+        return image.resize((max(28, int(width * scale)), max(28, int(height * scale))), Image.Resampling.BICUBIC)

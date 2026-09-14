@@ -1,4 +1,4 @@
-# Canvas: extraction_api_v3
+# Canvas: extraction_api_v4
 # Path: app/features/frame_extraction/service/extraction_api.py
 
 import os
@@ -9,11 +9,13 @@ from pathlib import Path
 import logging
 from typing import List
 
+from app.core.config import settings
 from app.features.contextual_retrieval.domain.entities import ContextualizedChunk
 from app.features.frame_extraction.domain.entities import ExtractedChunkFrames, ExtractedFrame
 from app.features.frame_extraction.domain.interfaces import IFFmpegExtractionAdapter, IFrameExtractionRepository
 from app.features.frame_extraction.utils.quality_filter import QualityFilter
 from app.features.frame_extraction.utils.frame_deduplicator import FrameDeduplicator
+from app.features.frame_extraction.utils.frame_selector import select_diverse_frames
 from app.features.frame_extraction.utils.error_mapper import map_extraction_error
 
 from app.features.storage.service.storage_api import StorageAPI
@@ -24,8 +26,8 @@ logger = logging.getLogger(__name__)
 class FrameExtractionAPI:
     """
     Orchestrates the strictly CPU-bound extraction of visual frames for a given text chunk.
-    Filters out blurry/duplicate frames before moving the survivors to the Storage Vault.
-    Now heavily multithreaded to saturate local enterprise workstation CPUs.
+    Filters out blurry/duplicate frames and caps each chunk at its most visually distinct frames
+    before moving the survivors to the Storage Vault.
     """
 
     def __init__(
@@ -57,11 +59,10 @@ class FrameExtractionAPI:
         if not chunks:
             return results
 
-        # Determine thread count (Cap at 32 to prevent OS file handle exhaustion)
-        max_workers = min(32, (os.cpu_count() or 4) * 2)
+        # Each worker drives one multi-threaded FFmpeg decode, so half the cores avoids oversubscription
+        max_workers = settings.FRAME_EXTRACTION_WORKERS or max(2, (os.cpu_count() or 4) // 2)
         logger.info(f"Spinning up {max_workers} concurrent CPU workers for Frame Extraction...")
 
-        # FIXED: Changed variable name to `target_chunk` to prevent shadowing warning
         def _worker(target_chunk: ContextualizedChunk) -> ExtractedChunkFrames:
             return self.process_chunk(source_id, video_path, target_chunk)
 
@@ -69,7 +70,6 @@ class FrameExtractionAPI:
             future_to_chunk_map = {executor.submit(_worker, c): c for c in chunks}
 
             for future in concurrent.futures.as_completed(future_to_chunk_map):
-                # FIXED: Changed variable name to `completed_chunk` to prevent shadowing
                 completed_chunk = future_to_chunk_map[future]
                 try:
                     result = future.result()
@@ -96,11 +96,11 @@ class FrameExtractionAPI:
                 logger.info(f"Frames already extracted for chunk {chunk.chunk_id}. Skipping.")
                 return existing_record
 
-            # 2. Secure Temporary Directory Context
+            # 2. Secure Temporary Directory Context (frames that are not vaulted are removed with it)
             with tempfile.TemporaryDirectory(prefix=f"onyx_chunk_{chunk.chunk_id}_") as tmpdir:
                 tmp_path = Path(tmpdir)
 
-                # 3. Step 1: Raw Fast-Seek Extraction (1 FPS)
+                # 3. Step 1: Single-pass extraction of the chunk's interval (1 FPS)
                 raw_frames = self._ffmpeg.extract_raw_frames(
                     video_path=video_path,
                     output_dir=tmp_path,
@@ -120,10 +120,18 @@ class FrameExtractionAPI:
                 # 5. Step 3: CPU pHash Deduplication (Static Scene collapse)
                 unique_frames = self._deduplicator.deduplicate(high_quality_frames)
 
-                # 6. Step 4: Vault Storage & Domain Mapping
+                # 6. Step 4: Keep only the most visually distinct frames. VLM cost scales with frame count,
+                # and a long chunk otherwise sends every changed second to the GPU.
+                selected_frames, dropped_frames = select_diverse_frames(unique_frames, settings.FRAME_MAX_PER_CHUNK)
+                if dropped_frames:
+                    logger.info(
+                        f"Chunk {chunk.chunk_id}: kept {len(selected_frames)} of {len(unique_frames)} distinct frames."
+                    )
+
+                # 7. Step 5: Vault Storage & Domain Mapping
                 final_extracted_frames: List[ExtractedFrame] = []
 
-                for timestamp_sec, img_path, quality_score, phash_val in unique_frames:
+                for timestamp_sec, img_path, quality_score, phash_val in selected_frames:
                     vaulted_file = self._storage.ingest_raw_file(
                         file_path=str(img_path),
                         delete_original=True
@@ -138,7 +146,7 @@ class FrameExtractionAPI:
                         )
                     )
 
-                # 7. Aggregate and Persist Mapping
+                # 8. Aggregate and Persist Mapping
                 chunk_frames = ExtractedChunkFrames(
                     source_id=source_id,
                     chunk_id=chunk.chunk_id,

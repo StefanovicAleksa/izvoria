@@ -8,11 +8,11 @@ Decides, per transcript chunk, whether the text actually needs visual evidence (
 
 ## How it does it
 
-`VisualCueDetectionAPI.process_transcript()` acquires a model via `ModelManagerOrchestrator` using a `ModelManifest(model_type=ModelType.VISUAL_CUE_DETECTION, ...)`, then loops `transcript.chunks`, calling `IVisualCueDetectorAdapter.detect_cues(model, chunk)` for each. The concrete `QwenDetectorAdapter` runs Qwen 2.5 GGUF via `llama_cpp.Llama` (`n_gpu_layers=-1`, `flash_attn=True`, `n_ctx=2048`), forces a JSON-schema response (`CUE_DETECTION_SCHEMA`) at `temperature=0.1`, and returns `chunk.model_copy(update={"needs_visual": bool})` (chunks are frozen Pydantic models, so mutation always goes through `model_copy`). Results are persisted via `contextual_retrieval`'s `IContextualRepository.update()` (a JSONB overwrite) rather than a dedicated repository of its own.
+`VisualCueDetectionAPI.process_transcript()` acquires a model via `ModelManagerOrchestrator` using a `ModelManifest(model_type=ModelType.VISUAL_CUE_DETECTION, ...)`, then loops `transcript.chunks`, calling `IVisualCueDetectorAdapter.detect_cues(model, chunk)` for each. The concrete `QwenDetectorAdapter` runs Qwen 2.5 GGUF via `llama_cpp.Llama` (`n_gpu_layers=-1`, `flash_attn=True`, `n_ctx=2048`), forces a JSON-schema response (`CUE_DETECTION_SCHEMA`) at `temperature=0.0` (reproducible verdicts), and returns `chunk.model_copy(update={"needs_visual": bool})` (chunks are frozen Pydantic models, so mutation always goes through `model_copy`). Results are persisted via `contextual_retrieval`'s `IContextualRepository.update()` (a JSONB overwrite) rather than a dedicated repository of its own. The API marks every judged chunk `cue_evaluated=True` and skips chunks already evaluated. If every chunk is already evaluated, it returns without loading the model or writing anything, so a rerun after a crash doesn't re-judge finished transcripts.
 
 ## Inputs / Outputs
 
-Input: `ContextualizedTranscript`. Output: the same transcript with `needs_visual` flags set per chunk.
+Input: `ContextualizedTranscript`. Output: the same transcript with `needs_visual` and `cue_evaluated` set per chunk.
 
 ## Where it fits
 

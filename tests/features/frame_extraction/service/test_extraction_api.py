@@ -1,6 +1,7 @@
 # Canvas: test_extraction_api_v3
 # Path: tests/features/frame_extraction/service/test_extraction_api.py
 
+import concurrent.futures
 import pytest
 import uuid
 from pathlib import Path
@@ -145,3 +146,47 @@ class TestFrameExtractionAPI:
         mocks["deduplicator"].deduplicate.assert_not_called()
         mocks["storage"].ingest_raw_file.assert_not_called()
         mocks["repository"].save.assert_called_once()
+
+    @patch("app.features.frame_extraction.service.extraction_api.os.cpu_count", return_value=16)
+    @patch("app.features.frame_extraction.service.extraction_api.settings")
+    def test_process_chunks_batch_uses_half_the_cores_by_default(self, mock_settings, mock_cpu_count, api, sample_chunk):
+        """Each worker drives a multi-threaded FFmpeg decode, so the pool no longer oversubscribes the CPU."""
+        mock_settings.FRAME_EXTRACTION_WORKERS = 0
+        real_executor = concurrent.futures.ThreadPoolExecutor
+        done = ExtractedChunkFrames(source_id=uuid.uuid4(), chunk_id=sample_chunk.chunk_id)
+
+        with patch.object(api, "process_chunk", return_value=done), \
+                patch("app.features.frame_extraction.service.extraction_api.concurrent.futures.ThreadPoolExecutor",
+                      side_effect=lambda max_workers: real_executor(max_workers=max_workers)) as mock_executor:
+            api.process_chunks_batch(uuid.uuid4(), "vid.mp4", [sample_chunk])
+
+        mock_executor.assert_called_once_with(max_workers=8)
+
+    @patch("app.features.frame_extraction.service.extraction_api.settings")
+    @patch("app.features.frame_extraction.service.extraction_api.tempfile.TemporaryDirectory")
+    def test_process_chunk_caps_frames_per_chunk(self, mock_tempdir, mock_settings, api, mocks, sample_chunk):
+        """Only the most visually distinct frames are vaulted and sent on to the VLM."""
+        mock_settings.FRAME_MAX_PER_CHUNK = 2
+        mocks["repository"].get_by_chunk_id.return_value = None
+        mock_tempdir.return_value.__enter__.return_value = "/tmp/onyx"
+
+        raw_frames = [(10.0 + i, Path(f"/tmp/onyx/frame_{i:05d}.jpg")) for i in range(3)]
+        mocks["ffmpeg"].extract_raw_frames.return_value = raw_frames
+        mocks["quality_filter"].filter_frames.return_value = [(ts, path, 150.0) for ts, path in raw_frames]
+        mocks["deduplicator"].deduplicate.return_value = [
+            (10.0, raw_frames[0][1], 200.0, "0000000000000000"),
+            (11.0, raw_frames[1][1], 150.0, "0000000000000001"),
+            (12.0, raw_frames[2][1], 150.0, "ffffffffffffffff"),
+        ]
+        mocks["storage"].ingest_raw_file.side_effect = lambda file_path, delete_original: MagicMock(id=uuid.uuid4())
+        mocks["repository"].save.side_effect = lambda x: x
+
+        result = api.process_chunk(uuid.uuid4(), "vid.mp4", sample_chunk)
+
+        assert [frame.timestamp_sec for frame in result.frames] == [10.0, 12.0]
+        assert [c.kwargs["file_path"] for c in mocks["storage"].ingest_raw_file.call_args_list] == [
+            str(raw_frames[0][1]), str(raw_frames[2][1])
+        ]
+        mocks["ffmpeg"].extract_raw_frames.assert_called_once_with(
+            video_path="vid.mp4", output_dir=Path("/tmp/onyx"), chunk=sample_chunk, fps=1
+        )
