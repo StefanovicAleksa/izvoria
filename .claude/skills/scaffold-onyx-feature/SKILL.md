@@ -74,4 +74,4 @@ Auto-generating the skeleton does **not** wire the feature in. After creating fi
 ## Notes
 
 - Never let a new feature import another feature's `data/` module directly — only import through the other feature's `service/*_api.py`.
-- If the feature loads a model, the `data/` adapter must implement `IModelLoader` and all acquisition must go through `ModelManagerOrchestrator` (see `CLAUDE.md`'s "Model management rules") — don't have the adapter load the model directly in `__init__`.
+- If the feature loads a model, the `data/` adapter must implement `IModelLoader` and all acquisition must go through `ModelManagerOrchestrator` (see `CLAUDE.md`'s "Model management rules") — don't have the adapter load the model directly in `__init__`. Follow the `onyx-model-lifecycle` skill for the adapter, API, Phase and pipeline patterns.

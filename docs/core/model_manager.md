@@ -34,3 +34,7 @@ Not a pipeline stage itself — every GPU-bound Phase (VAD, transcription, diari
 - No automatic idle-timeout unload exists — release is always explicit, either a new `acquire_model` evicting the old one, or a Phase's `finally` block calling `release_model`/`trigger_unload` once done.
 - VRAM budgets in `config.py` are *starting* estimates; the telemetry-refined "backpack" number grows more accurate the longer the process runs, so a freshly-added model's first few loads use a more conservative (safer, more likely to under-utilize available VRAM) estimate.
 - No multi-GPU/device-affinity concept exists anywhere in this module or in `config.py` — no `device_id`/`CUDA_VISIBLE_DEVICES`. This is the main gap for the target 2×RTX 3060 client hardware (see root `CLAUDE.md`).
+
+## See also
+
+`.claude/skills/onyx-model-lifecycle/SKILL.md` — step-by-step rules for writing a model adapter, feature API, Phase and pipeline integration against this module, with the matching unit-test patterns.
