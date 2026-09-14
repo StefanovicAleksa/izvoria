@@ -26,23 +26,36 @@ class PunctuationAdapter(IPunctuationAdapter):
                 raise FileNotFoundError(f"Punctuation model directory missing: {manifest.model_path}")
 
             # Initialize the Hugging Face token classification pipeline.
-            pipe = pipeline(
-                task="token-classification",
-                model=manifest.model_path,
-                tokenizer=manifest.model_path,
-                device=0 if torch.cuda.is_available() else -1,
-                aggregation_strategy="simple",
-                # ==========================================================
-                # CRITICAL FIX: Native Hugging Face GPU Chunking
-                # ==========================================================
-                # Forces the pipeline to chunk massive transcripts into 512-token
-                # windows with a 16-token overlap (stride). This prevents silent
-                # truncation and guarantees the entire video receives punctuation.
-                stride=16,
-                ignore_labels=["O"],
-                # ==========================================================
-                model_kwargs={"local_files_only": True}
-            )
+            # NOTE: local_files_only is enforced via HF_HUB_OFFLINE instead of a
+            # pipeline() kwarg. transformers>=5 never pops local_files_only out of
+            # its internal **kwargs, so passing it directly (top-level or via
+            # model_kwargs) leaks into the final pipeline_class(**kwargs) call and
+            # crashes TokenClassificationPipeline._sanitize_parameters(), which
+            # doesn't recognize it as a task parameter.
+            previous_offline_mode = os.environ.get("HF_HUB_OFFLINE")
+            os.environ["HF_HUB_OFFLINE"] = "1"
+            try:
+                pipe = pipeline(
+                    task="token-classification",
+                    model=manifest.model_path,
+                    tokenizer=manifest.model_path,
+                    device=0 if torch.cuda.is_available() else -1,
+                    aggregation_strategy="simple",
+                    # ==========================================================
+                    # CRITICAL FIX: Native Hugging Face GPU Chunking
+                    # ==========================================================
+                    # Forces the pipeline to chunk massive transcripts into 512-token
+                    # windows with a 16-token overlap (stride). This prevents silent
+                    # truncation and guarantees the entire video receives punctuation.
+                    stride=16,
+                    ignore_labels=["O"],
+                    # ==========================================================
+                )
+            finally:
+                if previous_offline_mode is None:
+                    os.environ.pop("HF_HUB_OFFLINE", None)
+                else:
+                    os.environ["HF_HUB_OFFLINE"] = previous_offline_mode
 
             return LoadedModel(manifest=manifest, model_instance=pipe)
 

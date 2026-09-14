@@ -12,6 +12,7 @@ pgvector>=0.2.5        # Added for PostgreSQL Vector Database Support
 # --- AI & Hardware Infrastructure ---
 torch>=2.6.0
 torchaudio>=2.6.0
+torchvision>=0.21.0  # Required by Qwen2-VL's AutoProcessor (video sub-processor import)
 numpy>=1.26.0,<2.0.0  # FIXED: Pinned <2.0.0 to prevent NeMo Diarization np.sctypes crash
 
 # --- Media Processing & AI Models ---
@@ -32,6 +33,7 @@ opencv-python-headless>=4.9.0.80
 # Native Hugging Face Inference Engine
 transformers>=4.40.0
 accelerate>=0.28.0
+bitsandbytes>=0.50.0  # 4-bit quantization for Qwen2-VL (Visual Analysis, Phase 12)
 
 # --- NLP & Text Processing ---
 wtpsplit>=1.2.0

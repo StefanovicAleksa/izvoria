@@ -1,6 +1,7 @@
 # Canvas: test_punctuation_adapter_v4
 # Path: tests/features/sentence_reconstruction/data/test_punctuation_adapter.py
 
+import os
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -29,10 +30,23 @@ class TestPunctuationAdapter:
         CRITICAL TEST: Ensures that the Hugging Face pipeline is strictly instantiated
         with stride=16 and ignore_labels=["O", "0"] to prevent the 512-token truncation bug
         that causes massive infinite run-on sentences.
+
+        NOTE: local_files_only is no longer passed as a pipeline() kwarg (directly or via
+        model_kwargs). transformers>=5 never pops local_files_only out of its internal
+        **kwargs, so passing it there leaks into the final pipeline_class(**kwargs) call
+        and crashes TokenClassificationPipeline._sanitize_parameters(), which doesn't
+        recognize it as a task parameter. Offline enforcement now happens via the
+        HF_HUB_OFFLINE env var instead, asserted below.
         """
         mock_exists.return_value = True
         mock_pipe_instance = MagicMock()
-        mock_pipeline.return_value = mock_pipe_instance
+        observed_offline_flag = {}
+
+        def capture_offline_flag(*args, **kwargs):
+            observed_offline_flag["value"] = os.environ.get("HF_HUB_OFFLINE")
+            return mock_pipe_instance
+
+        mock_pipeline.side_effect = capture_offline_flag
 
         adapter = PunctuationAdapter()
         loaded_model = adapter.load(manifest)
@@ -49,8 +63,12 @@ class TestPunctuationAdapter:
             aggregation_strategy="simple",
             stride=16,
             ignore_labels=["O"],
-            model_kwargs={"local_files_only": True}
         )
+
+        # Prove offline mode was enforced (via env var, not a pipeline() kwarg) during the call...
+        assert observed_offline_flag["value"] == "1"
+        # ...and cleaned up afterward so it doesn't leak into other adapters/tests.
+        assert os.environ.get("HF_HUB_OFFLINE") is None
 
     @patch("os.path.exists")
     def test_load_missing_file_raises_error(self, mock_exists, manifest):

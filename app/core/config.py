@@ -111,8 +111,14 @@ class Settings(BaseSettings):
     VISUAL_CUE_DETECTION_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
     VISUAL_CUE_DETECTION_VRAM_REQUIREMENT_MB: float = 5000.0
 
-    VISION_MODEL_PATH: str = "models/qwen2-vl-7b/Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
-    VISION_MMPROJ_PATH: str = "models/qwen2-vl-7b/Qwen2-VL-7B-Instruct-vision-encoder.gguf"
+    # Native Hugging Face directory, pre-quantized to 4-bit (bitsandbytes/nf4) and
+    # saved back to disk - NOT GGUF. llama.cpp's mtmd vision encoder has a confirmed
+    # unresolved CUDA crash specific to the Qwen-VL model family (see
+    # app/features/visual_analysis/data/vlm_adapter.py for details/upstream links).
+    # Pre-quantizing on disk (rather than quantizing at load time from full-precision
+    # weights) keeps this directory's size representative of real VRAM usage, which
+    # the Model Orchestrator's admission control relies on.
+    VISION_MODEL_PATH: str = "models/qwen2-vl-7b-hf-bnb4bit"
     VISION_VRAM_REQUIREMENT_MB: float = 7500.0
 
     VISUAL_HALLUCINATION_CORRECTION_MODEL_PATH: str = "models/qwen2.5-3b-instruct-q4_k_m.gguf"

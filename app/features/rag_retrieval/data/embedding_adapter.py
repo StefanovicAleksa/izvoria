@@ -18,19 +18,33 @@ class HuggingFacePromptAdapter(IPromptEmbeddingAdapter):
 
     @staticmethod
     def _get_embedding_model(model_path: str) -> Any:
-        # Prevent torchcodec from crashing the environment (same fix as batch ingestion)
-        sys.modules["torchcodec"] = None # type: ignore
+        # Prevent torchcodec from crashing the environment (same fix as batch ingestion).
+        #
+        # Scoped to just this call (and restored in `finally`): leaving this in
+        # sys.modules permanently broke every later `torchaudio.load()` in the same
+        # process (e.g. the VAD phase's NeMoVadAdapter), since torchaudio's own
+        # `import torchcodec` would then hit this poisoned entry too. See
+        # integration_tests/core/model_manager/test_torchcodec_environment_integration.py.
+        had_torchcodec = "torchcodec" in sys.modules
+        original_torchcodec = sys.modules.get("torchcodec")
+        sys.modules["torchcodec"] = None  # type: ignore
 
-        from sentence_transformers import SentenceTransformer
+        try:
+            from sentence_transformers import SentenceTransformer
 
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        model_kwargs = {"torch_dtype": torch.float16} if device == "cuda" else {}
-        return SentenceTransformer(
-            model_path,
-            device=device,
-            model_kwargs=model_kwargs,
-            local_files_only=True
-        )
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            model_kwargs = {"torch_dtype": torch.float16} if device == "cuda" else {}
+            return SentenceTransformer(
+                model_path,
+                device=device,
+                model_kwargs=model_kwargs,
+                local_files_only=True
+            )
+        finally:
+            if had_torchcodec:
+                sys.modules["torchcodec"] = original_torchcodec
+            else:
+                del sys.modules["torchcodec"]
 
     def load(self, manifest: ModelManifest) -> LoadedModel:
         try:
