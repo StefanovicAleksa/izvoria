@@ -34,6 +34,7 @@ Fixes from the full review of RAG retrieval/storage and the audio/video ingestio
 - **One malformed scrubber verdict no longer fails the whole query** (`RetrievalScrubberAPI`). A JSON parse failure on a chunk keeps that chunk (the prompt already says "when in doubt, accept") and records `ScrubAudit.evaluation_failed=True`; a non-object JSON verdict counts as a parse failure. Model/OOM errors still abort.
 - **Scrubber, QA and reranking phases only retain a model they own** (`release_after=loaded_model is None`). If a phase runs without a resolved preload, the feature API now releases the model it acquired instead of leaving it resident.
 - **Shared torchcodec import guard** (`core/model_manager/utils/torchcodec_guard.py`). The `sys.modules["torchcodec"]` workaround was duplicated in both embedders; it is now one context manager used by both embedders and the reranker.
+- **Integration tests create the full schema regardless of which tests run** (`integration_tests/conftest.py`). Hybrid search joins `video_clips`, but that table was only created if some collected test imported its model, so the live pipeline tests failed when run on their own. The conftest now imports every `app/**/data/models.py` before `create_all`.
 
 ### Batch 3 — Audio correctness
 

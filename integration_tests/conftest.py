@@ -26,6 +26,13 @@ from app.features.storage.data.models import SourceModel, FileModel  # noqa
 from app.core.jobs.data.models import JobModel  # noqa
 from app.features.rag_storage.data.models import VectorChunkModel # noqa
 
+# Register every feature's tables too. Otherwise a table exists only if some collected test file happens to
+# import its model (e.g. hybrid search joins `video_clips`, so live pipeline tests failed when run on their own).
+import importlib  # noqa: E402
+
+for _models_file in sorted(settings.BASE_DIR.glob("app/**/data/models.py")):
+    importlib.import_module(".".join(_models_file.relative_to(settings.BASE_DIR).with_suffix("").parts))
+
 
 @pytest.fixture(scope="session", autouse=True)
 def setup_test_database():
