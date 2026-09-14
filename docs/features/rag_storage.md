@@ -1,0 +1,27 @@
+# rag_storage
+
+`app/features/rag_storage/`
+
+## What it does
+
+Turns a finished `UnifiedTranscript` into a searchable knowledge base — embeds every chunk and writes it into the hybrid vector/full-text Postgres table that `rag_retrieval` later queries. This is where ingestion ends and the retrievable index begins.
+
+## How it does it
+
+`RAGStorageService.index_transcript(source_id, transcript: UnifiedTranscript, release_after=True)` wipes any prior rows for that source (`delete_by_source_id`, so re-indexing is idempotent/replace-in-place rather than additive), normalizes chunk text, acquires the `RAG_EMBEDDING` model via `ModelManagerOrchestrator`, calls `embed_batch()` (batch size 16, `normalize_embeddings=True`), releases the model if `release_after=True`, then bulk-inserts via `save_rag_chunks()`. Returns an `IngestionResult`/`IndexingTelemetry`.
+
+`HuggingFaceEmbeddingAdapter` (`data/hf_embedder.py`) wraps `sentence_transformers.SentenceTransformer`, running fp16 on CUDA. It does a scoped `sys.modules["torchcodec"] = None` hack inside `_get_embedding_model` (restored in `finally`) to stop torchvision/torchcodec's broken C++ codec bindings from crashing the model load — see Gotchas.
+
+`PostgresRagRepository` persists both a pgvector `embedding` column and an auto-generated `fts_document` (`tsvector`) computed column on the same table (`VectorChunkModel`/`vector_chunks`) — a single atomic table backs both dense (vector) and sparse (keyword) retrieval; there is no separate vector database.
+
+## Inputs / Outputs
+
+Input: `source_id`, `UnifiedTranscript`. Output: persisted rows in `vector_chunks` (embedding + fts_document + text_payload + timing + source linkage), plus an `IngestionResult`.
+
+## Where it fits
+
+Phase 16 (`RagIndexingPhase`) — the final ingestion phase, run concurrently with clip extraction. Feeds directly into `rag_retrieval`.
+
+## Gotchas / design notes
+
+The `sys.modules["torchcodec"] = None` scoping hack is *supposed* to be fully contained (restored in `finally`), but `integration_tests/core/model_manager/test_torchcodec_environment_integration.py` proves it can leak across features within one long-lived process — if the RAG embedder loads once, then `torchaudio.load()` runs later in the same process (e.g. a subsequent ingestion job), it can break with `ImportError: TorchCodec is required...`. Relevant to any long-running process (including a future RAG agent) that mixes retrieval and ingestion calls without process isolation.

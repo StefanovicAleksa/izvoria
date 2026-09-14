@@ -2,7 +2,15 @@
 
 **Onyx** is an enterprise-grade, fully on-premise AI Appliance engineered specifically for Law Firms and Hospitals.  
 Designed with absolute privacy in mind, Onyx provides a powerful audio intelligence and processing pipeline that operates securely on local hardware. No data ever leaves the premise, and organizations benefit from flat-rate, unlimited usage.  
-⚠️ **Development Status:** Onyx is currently in active development. **This README reflects only the features currently implemented in the codebase.** Advanced features (like Vision processing, Vector RAG, and User Chat) will be added to this document as they are integrated.
+⚠️ **Development Status:** Onyx is currently in active development. **This README reflects only the features currently implemented in the codebase.**
+
+## **📍 Current Status**
+
+The ingestion pipeline (transcription, diarization, visual analysis) and the RAG retrieval side (hybrid search, verified/hallucination-scrubbed search, cited QA generation) are both built and integrated into the engine. Current focus: building the conversational agent that sits on top of RAG for multi-turn, tool-using interaction.
+
+- **`CLAUDE.md`** — architecture, conventions, and how to add a new feature in coherence with the existing codebase.
+- **`CHANGELOG.md`** — feature-by-feature history of what's been built.
+- **`docs/`** — a dedicated write-up per feature/module: what it does, how it does it, and its gotchas.
 
 ## **🏗️ Current Features & Processing Pipeline**
 
@@ -38,17 +46,33 @@ Onyx operates autonomously, transforming raw media into highly accurate, domain-
 * **What it does:** Reconstructs fragmented acoustic text into readable sentences and corrects lingering phonetic mistakes.  
 * **How it works:** Uses the **SaT (Segment Any Text)** engine to fix grammar and sentence boundaries. Then, it uses a local LLM (**Qwen 2.5 7B Instruct**) cross-referenced against local domain glossaries to correct highly specific terms, maintaining a strict audit trail of any changes made.
 
+### **7\. Visual Analysis Branch**
+
+* **What it does:** For video sources, detects visually significant moments, extracts frames, and describes them in text grounded to the surrounding transcript.  
+* **How it works:** **Visual Cue Detection** flags moments worth analyzing, **Frame Extraction** pulls the relevant frames, and a **Qwen2-VL-7B** vision-language model (native Hugging Face Transformers, 4-bit pre-quantized — not GGUF, due to an unresolved llama.cpp crash in the Qwen-VL vision encoder) describes each frame using the transcript as context. **Visual Hallucination Correction** and **Visual Context Synthesis** then clean up and merge the result with the audio-derived transcript.
+
+### **8\. RAG Indexing & Storage**
+
+* **What it does:** Turns the finished, corrected transcript (audio + visual) into a searchable knowledge base.  
+* **How it works:** Chunks are embedded with **BGE-M3** (`sentence-transformers`) and stored in PostgreSQL/`pgvector`, alongside an auto-generated full-text search column — a single table backs both dense (vector) and sparse (keyword) retrieval.
+
+### **9\. RAG Retrieval, Verified Search & QA Generation (query time)**
+
+* **What it does:** Answers a user's question strictly from their own ingested data, with citations.  
+* **How it works:** A query is embedded and run as a **hybrid search** (pgvector cosine distance + Postgres full-text rank, combined via Reciprocal Rank Fusion) against the indexed chunks. For **Verified Search**, retrieved chunks are then passed through an SLM-based **hallucination scrubber** that drops anything judged irrelevant or unreliable. For a full chat answer, the surviving chunks are handed to a local **Gemma** model (via `llama.cpp`) which generates a response and cites the specific source chunks it drew from.
+
 ## **🧠 The Orchestrator (VRAM Management)**
 
-**The Challenge:** Onyx is designed to run locally. While target production hardware features 72GB of VRAM, our development environment is strictly constrained to **12GB VRAM** (e.g., RTX 3060). We cannot load the VAD, Whisper, Diarization, and Correction models simultaneously without crashing the system.  
-**The Solution:** The **Model Orchestrator**.  
-This core architectural component acts as a traffic controller for GPU memory, linking the features above together sequentially:
+**The Challenge:** Onyx is designed to run locally. Our development environment is strictly constrained to **12GB VRAM** (a single RTX 3060). Target client hardware is **2× RTX 3060 (24GB VRAM total)**, intended to be split so one GPU serves the ingestion pipeline and the other serves the LLM continuously for live chat — that GPU-affinity split does not exist in the code yet, so today everything still shares one VRAM budget on whichever single GPU is present. We cannot load the VAD, Whisper, Diarization, Correction, and RAG models simultaneously without crashing the system.  
+**The Solution:** The **Model Orchestrator** (`app/core/model_manager`).  
+This core architectural component acts as a traffic controller for GPU memory, linking every feature above together sequentially:
 
 1. **Job Queueing:** The Orchestrator takes a media file and locks it for sequential processing.  
 2. **Dynamic Swapping:** It loads MarbleNet (VAD) into VRAM, processes the audio, and **instantly unloads** it.  
-3. It then loads Whisper Tiny (Scout) \-\> Unloads \-\> Loads Whisper Large v3 (Transcribe) \-\> Unloads \-\> Loads TitaNet (Diarization) \-\> Unloads.  
-4. Finally, it loads Qwen 2.5 to do the text correction.  
-5. **Result:** By enforcing strict lifecycle control and just-in-time loading, the Orchestrator ensures Onyx never exceeds the 12GB VRAM budget, maintaining absolute system stability.
+3. It then loads Whisper Tiny (Scout) \-\> Unloads \-\> Loads Whisper Large v3 (Transcribe) \-\> Unloads \-\> Loads TitaNet (Diarization) \-\> Unloads, and so on through every remaining stage, including the vision, embedding, scrubbing, and QA-generation models at query time.  
+4. **Result:** By enforcing strict lifecycle control and just-in-time loading, the Orchestrator ensures Onyx never exceeds its VRAM budget, maintaining absolute system stability on constrained hardware.
+
+See `CLAUDE.md` for the full architecture (feature folder conventions, how to add a new feature, testing conventions) and `CHANGELOG.md` for build history.
 
 ## **🛠️ Setup Instructions**
 
@@ -56,25 +80,24 @@ Follow these instructions to set up the Onyx development environment. These step
 
 ### **1\. System Prerequisites & Dependencies**
 
-First, install the necessary OS-level packages, including FFmpeg for media processing and PostgreSQL for the relational database.  
+First, install the necessary OS-level packages, including FFmpeg for media processing and Docker for the databases.  
 sudo apt update  
 sudo apt install \-y python3.10 python3.10-venv python3-pip  
 sudo apt install \-y ffmpeg  
-sudo apt install \-y postgresql postgresql-contrib
+sudo apt install \-y docker.io docker-compose-plugin
 
 *Note: You must also have the **CUDA 12 Toolkit** and proprietary NVIDIA drivers installed. Refer to the official NVIDIA documentation.*
 
 ### **2\. Database Setup**
 
-Create the required PostgreSQL user and database to match the default Onyx configuration.  
-\# Log into the postgres prompt  
-sudo \-u postgres psql
+Onyx runs PostgreSQL + `pgvector` via Docker (`docker-compose.yaml` at the repo root) rather than a manually installed PostgreSQL — this is a single database used for both relational data (jobs, transcripts) and vector/RAG data (no separate vector store).  
+\# Start the dev database (port 5432, db `onyx\_dev\_db`)  
+docker compose up \-d db\_dev
 
-\# Run the following SQL commands:  
-CREATE DATABASE onyx\_v2\_db;  
-CREATE USER postgres WITH ENCRYPTED PASSWORD 'password';  
-GRANT ALL PRIVILEGES ON DATABASE onyx\_v2\_db TO postgres;  
-\\q
+\# Also start the test database (port 5433, db `onyx\_test\_db`) if you'll be running the test suite  
+docker compose up \-d db\_test
+
+Both containers are bootstrapped from `scripts/init.sql` (enables the `vector` extension). Credentials must match your `.env` file — see Step 4.
 
 ### **3\. Application Setup**
 
@@ -88,13 +111,13 @@ pip install \-r requirements.txt
 
 ### **4\. Environment Configuration**
 
-Create a .env file in the root directory. This must align with the parameters in app/core/config.py:  
+Create a .env file in the root directory. This must align both with `docker-compose.yaml`'s `db_dev` service and the parameters in app/core/config.py:  
 \# Database Configuration  
 POSTGRES\_SERVER=localhost  
 POSTGRES\_PORT=5432  
-POSTGRES\_DB=onyx\_v2\_db  
-POSTGRES\_USER=postgres  
-POSTGRES\_PASSWORD=password
+POSTGRES\_DB=onyx\_dev\_db  
+POSTGRES\_USER=aleksa  
+POSTGRES\_PASSWORD=Onyx16
 
 \# Appliance Configuration  
 ENV=development  
