@@ -176,12 +176,24 @@ class TestDomainPhoneticCorrectionAPI:
 
     @pytest.mark.parametrize("original, correction, expected", [
         ("high pole glycemia", "hypoglycemia", True),
-        ("the sea a grr", "the CAGR", True),
+        ("has a cute angina", "has acute angina", True),
         ("ebitda margin", "EBITDA margin", True),
+        ("the cagr", "the CAGR", True),
+        # A spelled-out acronym isn't letter-similar; rejected rather than risk writing words nobody said
+        ("the sea a grr", "the CAGR", False),
+        # Ordinary words turned into dictionary terms, as seen on a real ingestion
+        ("downside", "hypoglycemia", False),
+        ("the Bank of England decision", "the angina decision", False),
+        # Two unrelated edits are judged separately, not averaged over the words they share
+        ("buyers that come in on the release", "angina that come in on the hypoglycemia", False),
+        # Case-only change of a term that isn't acronym-like
+        ("the bunds", "the Bunds", False),
+        # Inserting a word nobody said
+        ("patient has pain", "patient has angina pain", False),
         ("angina pain", "angina pains", False),
         ("patient has", "patient had", False),
     ])
-    def test_introduces_dictionary_term(self, original: str, correction: str, expected: bool) -> None:
-        terms = ["hypoglycemia", "CAGR", "EBITDA", "angina"]
+    def test_is_grounded_patch(self, original: str, correction: str, expected: bool) -> None:
+        terms = ["hypoglycemia", "CAGR", "EBITDA", "angina", "acute angina", "Bunds"]
         patch_obj = DomainPhoneticPatch(original=original, correction=correction)
-        assert DomainPhoneticCorrectionAPI._introduces_dictionary_term(patch_obj, terms) is expected
+        assert DomainPhoneticCorrectionAPI._is_grounded_patch(patch_obj, terms) is expected

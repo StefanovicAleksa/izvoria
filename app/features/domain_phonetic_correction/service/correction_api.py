@@ -4,6 +4,7 @@
 import logging
 import re
 import uuid
+from difflib import SequenceMatcher
 from typing import List, Dict
 
 from app.core.config import settings
@@ -116,10 +117,11 @@ class DomainPhoneticCorrectionAPI:
                         domain_dictionary=domain_dictionary_str
                     )
 
-                    grounded_patches = [p for p in patches if self._introduces_dictionary_term(p, dictionary_terms)]
+                    grounded_patches = [p for p in patches if self._is_grounded_patch(p, dictionary_terms)]
                     if len(grounded_patches) != len(patches):
                         logger.info(
-                            f"Rejected {len(patches) - len(grounded_patches)} patch(es) that do not introduce a dictionary term."
+                            f"Rejected {len(patches) - len(grounded_patches)} ungrounded patch(es): no dictionary term "
+                            f"introduced, or the replaced words don't sound like the correction."
                         )
 
                     patched_chunk = self._apply_patches_to_chunk(chunk, grounded_patches, audit_records_map)
@@ -150,6 +152,53 @@ class DomainPhoneticCorrectionAPI:
     def _extract_dictionary_terms(domain_dictionary: str) -> List[str]:
         """Parses the '- term' lines produced by DictionaryLoader.build_prompt_dictionary."""
         return [line[2:].strip() for line in domain_dictionary.splitlines() if line.startswith("- ") and line[2:].strip()]
+
+    @staticmethod
+    def _is_grounded_patch(patch: DomainPhoneticPatch, dictionary_terms: List[str]) -> bool:
+        """
+        A patch fixes a mis-hearing, so it must (a) introduce a dictionary term and (b) only change words into
+        words that sound like them. Introducing a term alone let the model turn ordinary words into terms
+        ("Bank of England" -> "Onyx", "decision" -> "prognosis").
+
+        Every changed word region is judged on its own, so a patch with two unrelated edits can't pass on the
+        words they share: inserted or deleted words are rejected, a case-only change is accepted only for
+        acronym-like terms (at least two capitals), and anything else needs letters-only similarity of at least
+        PHONETIC_MIN_SIMILARITY. Spelled-out acronyms ("the sea a grr" -> "CAGR") are rejected as a result.
+        """
+        if not DomainPhoneticCorrectionAPI._introduces_dictionary_term(patch, dictionary_terms):
+            return False
+
+        heard_words = patch.original.split()
+        written_words = patch.correction.split()
+        regions = [op for op in SequenceMatcher(None, heard_words, written_words, autojunk=False).get_opcodes()
+                   if op[0] != "equal"]
+        if not regions:
+            return False
+
+        for _, heard_start, heard_end, written_start, written_end in regions:
+            heard = " ".join(heard_words[heard_start:heard_end])
+            written = " ".join(written_words[written_start:written_end])
+
+            if not heard or not written:
+                return False
+
+            if heard.lower() == written.lower():
+                if sum(1 for ch in written if ch.isupper()) < 2:
+                    return False
+                continue
+
+            similarity = SequenceMatcher(
+                None, DomainPhoneticCorrectionAPI._letters_only(heard),
+                DomainPhoneticCorrectionAPI._letters_only(written), autojunk=False
+            ).ratio()
+            if similarity < settings.PHONETIC_MIN_SIMILARITY:
+                return False
+
+        return True
+
+    @staticmethod
+    def _letters_only(text: str) -> str:
+        return re.sub(r"[^a-z0-9]", "", text.lower())
 
     @staticmethod
     def _introduces_dictionary_term(patch: DomainPhoneticPatch, dictionary_terms: List[str]) -> bool:

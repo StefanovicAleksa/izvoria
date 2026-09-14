@@ -41,7 +41,7 @@ class TestDomainPhoneticCorrectionAPIIntegration:
     def setup_medical_glossary(self) -> Generator[str, None, None]:
         project_root = Path(__file__).resolve().parent.parent.parent.parent
         resource_path = project_root / "integration_tests" / "resources" / "medical.json"
-        target_path = project_root / "data" / "glossaries" / "medical.json"
+        target_path = settings.GLOSSARY_DIR / "medical.json"
 
         if not resource_path.exists():
             resource_path.parent.mkdir(parents=True, exist_ok=True)

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # A speaker label the SLM echoed at the start of its answer: "[Speaker_0 @ 00:12:31]" (colon optional)
 # or "Speaker_0:". "Speaker_0 describes..." is real prose and is left untouched.
-_LEADING_SPEAKER_LABEL = re.compile(r"^\s*(?:\[[^\]\n]*@\s*\d{1,2}:\d{2}:\d{2}\]\s*:?|Speaker_\w+\s*:)\s*")
+_LEADING_SPEAKER_LABEL = re.compile(r"^\s*(?:\[[^\]\n]*@\s*\d{1,2}:\d{2}:\d{2}\]\s*:?|Speaker_\w+\s*:)\s*", re.IGNORECASE)
 
 
 class SLMContextAdapter(ISLMContextAdapter):

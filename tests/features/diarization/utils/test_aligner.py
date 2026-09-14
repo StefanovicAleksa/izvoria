@@ -80,6 +80,27 @@ def test_aligner_splits_segment_at_mid_segment_speaker_change():
     assert result.segments[1].avg_logprob == -0.3
 
 
+def test_aligner_split_keeps_whisper_continuation_tokens_attached():
+    """Rebuilt segment text must not turn "160.99" into "160 .99"."""
+    source_id = uuid.uuid4()
+    words = [_word(" Target", 0.0, 0.4), _word(" 160", 0.4, 0.8), _word(".99", 0.8, 1.2), _word(" Agreed.", 2.3, 2.8)]
+    transcript = Transcript(
+        source_id=source_id,
+        segments=[TranscriptSegment(start_sec=0.0, end_sec=2.8, text="Target 160.99 Agreed.", words=words)]
+    )
+    diarization_map = DiarizationMap(
+        source_id=source_id,
+        segments=[
+            DiarizationSegment(start_sec=0.0, end_sec=2.0, speaker_id="Speaker_0"),
+            DiarizationSegment(start_sec=2.0, end_sec=3.0, speaker_id="Speaker_1")
+        ]
+    )
+
+    result = align_transcript_with_diarization(transcript, diarization_map)
+
+    assert [s.text for s in result.segments] == ["Target 160.99", "Agreed."]
+
+
 def test_aligner_word_in_diarization_gap_takes_nearest_speaker():
     source_id = uuid.uuid4()
     transcript = Transcript(

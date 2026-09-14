@@ -8,12 +8,7 @@ Acts as a strict SLM gatekeeper that checks whether the VLM's per-frame visual d
 
 ## How it does it
 
-`VisualHallucinationCorrectionAPI.execute(source_id)` pulls the `ContextualizedTranscript`, is idempotent via `get_by_source_id`, and for every chunk with `needs_visual=True` fetches the associated visual-analysis record, concatenates all frame descriptions into a numbered evidence block, truncates to `MAX_CHARS=10000` (appending `"...[TRUNCATED TO PREVENT OOM]"`) as a context-window safeguard, and calls `IVisualHallucinationAdapter.evaluate_visual_match()`. The audit prompt defaults to accepting a description. It rejects only two cases:
-
-- the description is completely unrelated to the text;
-- the description contains no visual content and only restates or paraphrases the transcript. The VLM sees the transcript, so a restatement proves nothing about what was on screen.
-
-A description saying the discussed item is *not* visible counts as visual content and is accepted.
+`VisualHallucinationCorrectionAPI.execute(source_id)` pulls the `ContextualizedTranscript`, is idempotent via `get_by_source_id`, and for every chunk with `needs_visual=True` fetches the associated visual-analysis record, concatenates all frame descriptions into a numbered evidence block, truncates to `MAX_CHARS=10000` (appending `"...[TRUNCATED TO PREVENT OOM]"`) as a context-window safeguard, and calls `IVisualHallucinationAdapter.evaluate_visual_match()`. The audit prompt defaults to accepting a description and rejects only one that is completely unrelated to the text. A rule that also rejected descriptions merely restating the transcript was tried and removed: the 3B checker applied it to descriptions that matched their slides, rejecting 6 of 10 on the first real ingestion.
 
 The concrete `QwenHallucinationAdapter` (Qwen 2.5 3B via `llama_cpp`, `n_ctx=4096`) deliberately avoids strict JSON-schema constraints — a comment in the code notes this was "removed... because it caused thread locks" on this small model — and instead requests `{"type": "json_object"}` at `temperature=0.0`, with a regex fallback extraction (`re.search(r'\{.*}', ...)`) before `json.loads`, trading strict guarantees for robustness against a smaller, less reliable model.
 

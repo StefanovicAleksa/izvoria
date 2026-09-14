@@ -3,6 +3,7 @@
 
 import gc
 import os
+import re
 from typing import Any, Dict, List
 
 import torch
@@ -16,6 +17,9 @@ from app.features.sentence_reconstruction.exceptions.assembly import TokenMismat
 
 # Labels the fullstop model emits; "0" means "no punctuation after this word"
 _PUNCTUATION_LABELS = {".", ",", "?", "-", ":"}
+
+# Whisper punctuation removed before inference (deepmultilingualpunctuation's preprocessing); decimals are kept
+_MODEL_INPUT_PUNCTUATION = re.compile(r"(?<!\d)[.,;:!?](?!\d)")
 
 
 class PunctuationAdapter(IPunctuationAdapter):
@@ -78,7 +82,7 @@ class PunctuationAdapter(IPunctuationAdapter):
             device = components["device"]
             id2label = hf_model.config.id2label
 
-            texts = [w.word.strip() for w in words]
+            texts = [self._model_input(w.word) for w in words]
             tags = ["NONE"] * len(texts)
 
             start = 0
@@ -124,6 +128,16 @@ class PunctuationAdapter(IPunctuationAdapter):
 
         except Exception as e:
             raise map_sentence_error(e) from e
+
+    @staticmethod
+    def _model_input(word: str) -> str:
+        """
+        The word as the model sees it: Whisper's own punctuation removed, decimal points kept ("160.99", ".99").
+        Left in, "develop," ends in a "," subtoken whose label is "no punctuation", and that label erased the mark.
+        A word that is nothing but punctuation is passed through unchanged.
+        """
+        stripped = word.strip()
+        return _MODEL_INPUT_PUNCTUATION.sub("", stripped) or stripped
 
     @staticmethod
     def _normalize_label(label: str) -> str:

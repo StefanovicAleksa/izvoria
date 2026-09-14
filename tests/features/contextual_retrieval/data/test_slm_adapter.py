@@ -70,6 +70,8 @@ class TestSLMContextAdapter:
         ("[Speaker_0 @ 00:00:00]: The patient reports chest pain.", "The patient reports chest pain."),
         ("[Speaker_0 @ 00:00:00]", ""),
         ("Speaker_1: Dr. Smith explains the MRI.", "Dr. Smith explains the MRI."),
+        ("speaker_0: The Bund is testing support.", "The Bund is testing support."),
+        ("[speaker_0 @ 00:32:43]: The range holds.", "The range holds."),
         ("Speaker_0 describes chest pain during intake.", "Speaker_0 describes chest pain during intake."),
     ])
     def test_generate_context_strips_echoed_speaker_labels(self, manifest, raw_output, expected):

@@ -60,6 +60,16 @@ def _speaker_runs(words: List[TranscriptWord], index: _SpeakerIndex) -> List[Tup
     return runs
 
 
+def _join_words(words: List[TranscriptWord]) -> str:
+    """
+    Rebuilds text from Whisper words, which carry their own leading space: continuations such as ".99" in
+    "160.99" have none and must attach. Streams that don't use leading spaces are joined with spaces.
+    """
+    if sum(1 for w in words if w.word[:1].isspace()) * 2 >= len(words):
+        return "".join(w.word for w in words).strip()
+    return " ".join(w.word.strip() for w in words if w.word.strip())
+
+
 def align_transcript_with_diarization(transcript: Transcript, diarization_map: DiarizationMap) -> Transcript:
     """
     Aligns the 'What' (Whisper text) with the 'Who' (NeMo speakers) at WORD level.
@@ -92,7 +102,7 @@ def align_transcript_with_diarization(transcript: Transcript, diarization_map: D
                 "speaker_id": speaker,
                 "start_sec": words[0].start_sec,
                 "end_sec": words[-1].end_sec,
-                "text": " ".join(w.word.strip() for w in words if w.word.strip()),
+                "text": _join_words(words),
                 "words": words
             }))
 

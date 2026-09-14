@@ -27,9 +27,20 @@ def assemble_sentences(speaker_id: str, punctuated_words: List[PunctuatedWord]) 
     ATTACHED_PUNCTUATION = {".", "?", "!", ",", ":", ";", "-"}
     ATTACHED_CHARS = "".join(ATTACHED_PUNCTUATION)
 
-    for p_word in punctuated_words:
+    # Whisper marks sub-word continuations ("160" + ".99", "pre" + "-planning") by omitting the leading space.
+    # Only honour that when the stream actually uses leading spaces; other word sources may not.
+    uses_leading_spaces = sum(1 for p in punctuated_words if p.acoustic_word.word[:1].isspace()) * 2 >= len(punctuated_words)
+
+    def is_continuation(position: int) -> bool:
+        if not uses_leading_spaces or position >= len(punctuated_words):
+            return False
+        raw_word = punctuated_words[position].acoustic_word.word
+        return bool(raw_word) and not raw_word[:1].isspace()
+
+    for index, p_word in enumerate(punctuated_words):
         word_obj = p_word.acoustic_word
-        tag = p_word.punctuation_tag
+        # A word followed by a continuation never takes punctuation or ends a sentence (no "160." + "99")
+        tag = "NONE" if is_continuation(index + 1) else p_word.punctuation_tag
 
         # Always retain the unaltered acoustic word in the audit trail
         current_words.append(word_obj)
@@ -63,6 +74,8 @@ def assemble_sentences(speaker_id: str, punctuated_words: List[PunctuatedWord]) 
             # Capitalize the first letter of a new sentence without lowercasing the rest
             # (str.capitalize() turned "MRI" into "Mri" and "iPhone" into "Iphone")
             current_text_parts.append(clean_word[:1].upper() + clean_word[1:])
+        elif is_continuation(index):
+            current_text_parts[-1] = current_text_parts[-1] + clean_word
         else:
             current_text_parts.append(f" {clean_word}")
 

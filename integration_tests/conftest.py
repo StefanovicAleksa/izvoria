@@ -3,6 +3,7 @@
 import os
 import pytest
 import shutil
+import tempfile
 import time
 from pathlib import Path
 from contextlib import contextmanager
@@ -16,6 +17,11 @@ from sqlalchemy.exc import OperationalError
 # Force the application into 'test' mode BEFORE any app modules are imported.
 # This guarantees config.py evaluates ENV="test" on startup.
 os.environ["ENV"] = "test"
+
+# Glossaries are seeded into a throwaway directory. Copying test resources into data/glossaries overwrote the
+# application's real glossaries (e.g. the options-trading finance.json) on every run.
+_TEST_GLOSSARY_DIR = tempfile.mkdtemp(prefix="onyx_test_glossaries_")
+os.environ["GLOSSARY_PATH"] = _TEST_GLOSSARY_DIR
 
 from app.core.config import settings
 from app.core.database.service.manager import db_manager as core_db_manager
@@ -41,7 +47,7 @@ def setup_test_database():
     2. Forcefully drops the public schema to bypass Foreign Key deadlocks.
     3. Re-enables pgvector extension.
     4. Creates all tables (schema) required for the integration tests.
-    5. Seeds dummy glossaries for domain adaptation tests.
+    5. Seeds dummy glossaries into the throwaway GLOSSARY_PATH directory (never data/glossaries).
     """
     real_engine = core_db_manager._engine_wrapper._engine  # noqa
 
@@ -79,6 +85,8 @@ def setup_test_database():
             shutil.copy2(item, test_glossaries / item.name)
 
     yield
+
+    shutil.rmtree(_TEST_GLOSSARY_DIR, ignore_errors=True)
 
 
 @pytest.fixture(scope="function")

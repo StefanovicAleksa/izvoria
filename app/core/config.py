@@ -48,10 +48,14 @@ class Settings(BaseSettings):
         # onyx_data/development/vault or onyx_data/test/vault
         return os.path.join(self.DATA_DIR, self.ENV, "vault")
 
+    # Overrides the glossary directory. Integration tests point it at a throwaway directory so seeding test
+    # glossaries never overwrites the real ones in data/glossaries.
+    GLOSSARY_PATH: str = ""
+
     @property
     def GLOSSARY_DIR(self) -> Path:
         """Centralized location for industry-specific knowledge bases."""
-        path = self.BASE_DIR / "data" / "glossaries"
+        path = Path(self.GLOSSARY_PATH) if self.GLOSSARY_PATH else self.BASE_DIR / "data" / "glossaries"
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -122,6 +126,8 @@ class Settings(BaseSettings):
     # Below this many dictionary terms there is nothing to correct against; the LLM pass is skipped.
     # Patches must introduce a dictionary term, so even a small glossary cannot rewrite ordinary words.
     PHONETIC_MIN_DICTIONARY_TERMS: int = 1
+    # Letters-only similarity a phonetic patch needs between the words heard and the words it writes
+    PHONETIC_MIN_SIMILARITY: float = 0.6
 
     CONTEXTUAL_RETRIEVAL_MODEL_PATH: str = "models/llama-3.2-3b-instruct-q8_0.gguf"
     CONTEXTUAL_RETRIEVAL_VRAM_REQUIREMENT_MB: float = 3500.0

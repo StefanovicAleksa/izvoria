@@ -2,6 +2,31 @@
 
 This log tracks **feature-level milestones**, not every commit. It's written for humans (and future Claude Code sessions) trying to understand how the system got to its current shape — one entry per merged feature milestone, newest on top. See `CLAUDE.md` for the architecture these entries plug into.
 
+## Fixes from the first real ingestion
+
+The first full ingestion of a real 74-minute video (Axia Futures, ECB replay drills) ran in 547 s, 12% of its length, but the indexed text was damaged. The causes were traced in the stored data. The second through sixth items below were regressions from review batches 3 and 4.
+
+- **The appliance never used a trading glossary** (`APPLIANCE_INDUSTRY`, `data/glossaries/`).
+  - The industry has been `GENERAL` since the setting was introduced, and domain adaptation only chooses sub-domains inside the configured industry.
+  - A trading video therefore got legal/medical Whisper hotwords ("affidavit, plaintiff, diagnosis, cardiology") and a legal/medical phonetic dictionary.
+  - Fix: `.env` sets `APPLIANCE_INDUSTRY=PROP_TRADING_MACRO`, and the key is now listed in `.env.example`.
+  - The original options-trading `finance.json` is restored. It was deleted in `0e5b021` and replaced by the integration-test copy.
+- **Phonetic patches must sound like what was heard** (`domain_phonetic_correction/service/correction_api.py`, `PHONETIC_MIN_SIMILARITY`).
+  - The old rule only required a patch to introduce a dictionary term, which let the model turn ordinary words into terms. All 14 applied patches were wrong ("Bank of England"→"Onyx", "decision"→"prognosis").
+  - Each changed word region now needs letters-only similarity of at least 0.6. Inserted or deleted words are rejected, and case-only changes are allowed only for acronym-like terms.
+  - Regions are judged separately, so a two-edit patch can't pass on the words the edits share.
+  - Trade-off: spelled-out acronyms ("the sea a grr"→"CAGR") are now rejected.
+- **Whisper punctuation is stripped before the punctuation model** (`sentence_reconstruction/data/punctuation_adapter.py`). For "develop," the last subtoken was the comma itself, labelled "no punctuation", and the assembler also removed Whisper's mark. Periods and commas were erased, giving "sentences" of up to 5,184 characters.
+- **Numbers and hyphenated words stay intact** (`sentence_reconstruction/utils/deterministic_assembler.py`, `diarization/utils/aligner.py`).
+  - Whisper marks sub-word continuations ("160" + ".99", "pre" + "-planning") by omitting the leading space. Rejoining every word with a space produced "160 .99" and "pre -planning".
+  - Continuations now attach to the previous word, and the word before one never takes punctuation or ends a sentence.
+- **The visual hallucination check no longer rejects matching descriptions** (`visual_hallucination_correction/data/prompts.py`). The batch 4 "merely restates the transcript" rule made the 3B checker reject 6 of 10 descriptions that matched their slides. The rule is removed; temperature stays 0.0.
+- **Echoed speaker labels are stripped case-insensitively** (`contextual_retrieval/data/slm_adapter.py`). Diarization emits `speaker_0`, but the regex only matched `Speaker_`.
+- **Dev tooling.**
+  - `scripts/reset_dev_environment.sh` wipes the dev database and storage vault, replacing `reset_dev_db.sh`.
+  - `scripts/init.sql` used `#` comments, which aren't valid SQL, so re-applying it failed.
+  - Integration tests seed glossaries into a throwaway directory (new `GLOSSARY_PATH` setting, set by `integration_tests/conftest.py`). The conftest copied every test resource into `data/glossaries/`, overwriting the restored options `finance.json` on every run.
+
 ## Review fixes: stability, retrieval grounding, audio correctness, throughput
 
 Fixes from the full review of RAG retrieval/storage and the audio/video ingestion pipelines, delivered in four batches on `fix/review-pipeline-retrieval`. Each bullet is one change: what changed, why, and where.

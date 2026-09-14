@@ -83,6 +83,21 @@ class TestPunctuationAdapter:
         assert all(isinstance(r, PunctuatedWord) for r in result)
         assert [(r.acoustic_word.word, r.punctuation_tag) for r in result] == [(" Hello", "NONE"), (" world", ".")]
 
+    def test_whisper_punctuation_is_removed_before_inference_but_decimals_are_kept(self, manifest):
+        """For "develop," the last subtoken was "," itself; its "no punctuation" label erased the comma."""
+        tokenizer = MagicMock(return_value=FakeEncoding([None, 0, 1, 2, 3, None]))
+        hf_model = MagicMock()
+        hf_model.return_value.logits = _logits(["0", ",", "0", ".", "0", "0"])
+
+        result = PunctuationAdapter().predict_punctuation(
+            _loaded(manifest, tokenizer, hf_model), _words(" develop,", " 160", ".99", " ?")
+        )
+
+        tokenizer.assert_called_once_with(["develop", "160", ".99", "?"], is_split_into_words=True,
+                                          return_tensors="pt", truncation=False)
+        assert [r.punctuation_tag for r in result] == [",", "NONE", ".", "NONE"]
+        assert [r.acoustic_word.word for r in result] == [" develop,", " 160", ".99", " ?"]
+
     def test_multi_subtoken_word_takes_label_of_last_subtoken(self, manifest):
         """The model marks punctuation on a word's final piece; the first piece is usually '0'."""
         # "the" -> 1 token, "echocardiogram" -> 3 tokens (first two "0", last ".")

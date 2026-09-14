@@ -31,7 +31,7 @@ def setup_finance_glossary():
     """
     project_root = Path(__file__).resolve().parent.parent.parent.parent
     resource_path = project_root / "integration_tests" / "resources" / "finance.json"
-    target_path = project_root / "data" / "glossaries" / "finance.json"
+    target_path = settings.GLOSSARY_DIR / "finance.json"
 
     assert resource_path.exists(), f"Missing test glossary at {resource_path}"
 

@@ -89,3 +89,38 @@ def test_assemble_sentences_never_writes_non_punctuation_tags_into_text():
     sentences = assemble_sentences("Speaker_0", tagged_words)
 
     assert [s.text for s in sentences] == ["So we drill."]
+
+
+def _tagged(word: str, tag: str = "NONE", start: float = 0.0) -> PunctuatedWord:
+    return PunctuatedWord(
+        acoustic_word=TranscriptWord(start_sec=start, end_sec=start + 0.5, word=word), punctuation_tag=tag
+    )
+
+
+def test_assemble_sentences_rejoins_whisper_continuation_tokens():
+    """Whisper splits "160.99" into " 160" + ".99"; joining every word with a space produced "160 .99"."""
+    tagged_words = [
+        _tagged(" look", start=0.0), _tagged(" at", start=0.5), _tagged(" 160", start=1.0),
+        _tagged(".99", start=1.5), _tagged(" before", start=2.0), _tagged(" pre", start=2.5),
+        _tagged("-planning", ".", start=3.0),
+    ]
+
+    sentences = assemble_sentences("Speaker_0", tagged_words)
+
+    assert [s.text for s in sentences] == ["Look at 160.99 before pre-planning."]
+    assert len(sentences[0].words) == 7
+
+
+def test_assemble_sentences_never_ends_a_sentence_inside_a_split_number():
+    tagged_words = [_tagged(" target", start=0.0), _tagged(" 142", ".", start=0.5), _tagged(".30s.", ".", start=1.0)]
+
+    sentences = assemble_sentences("Speaker_0", tagged_words)
+
+    assert [s.text for s in sentences] == ["Target 142.30s."]
+
+
+def test_assemble_sentences_space_joins_streams_without_leading_spaces():
+    """Word sources that don't use Whisper's leading-space convention keep space-joined text."""
+    tagged_words = [_tagged("no", start=0.0), _tagged("spaces", start=0.5), _tagged("here", ".", start=1.0)]
+
+    assert [s.text for s in assemble_sentences("Speaker_0", tagged_words)] == ["No spaces here."]
