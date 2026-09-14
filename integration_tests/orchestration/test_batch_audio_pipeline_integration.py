@@ -21,6 +21,9 @@ from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
 from app.features.storage.service.storage_api import StorageAPI
 from app.features.storage.data.repositories import StorageRepository
 from app.features.scanner.service.scanner import FileScanner
+from app.features.audio_extractor.data.ffmpeg_adapter import FFmpegAdapter as AudioFFmpegAdapter
+from app.features.audio_extractor.data.repositories import AudioExtractionRepository
+from app.features.audio_extractor.service.extractor_api import AudioExtractorAPI
 
 from app.features.vad.data.repositories import VadRepository
 from app.features.vad.service.vad_api import VadAPI
@@ -76,6 +79,7 @@ from app.orchestration.service.phases.contextual_retrieval_phase import Contextu
 from app.orchestration.service.phases.context_unification_phase import ContextUnificationPhase
 from app.orchestration.service.phases.rag_indexing_phase import RagIndexingPhase
 
+from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPhase
 from app.orchestration.service.pipelines.batch_audio_pipeline import BatchAudioPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 
@@ -224,15 +228,22 @@ class TestBatchAudioPipelineIntegration:
             embedder=hf_embedder
         )
 
+        audio_extractor = AudioExtractorAPI(
+            ffmpeg_adapter=AudioFFmpegAdapter(timeout_seconds=300),
+            repository=AudioExtractionRepository(db_manager),
+            storage_api=storage_api
+        )
+
         pipeline = BatchAudioPipeline(
             scan_phase=ScanPhase(job_manager, scanner),
             ingest_phase=IngestPhase(job_manager, storage_api),
+            extract_audio_phase=ExtractAudioPhase(job_manager, audio_extractor),
             vad_phase=VadPhase(job_manager, vad_api, storage_api, async_service, vad_manifest, real_vad_adapter),
-            domain_adaptation_phase=DomainAdaptationPhase(job_manager, domain_adaptation_api, storage_api, vad_repo),
-            transcribe_phase=TranscribePhase(job_manager, transcription_api, storage_api, domain_repo, async_service,
+            domain_adaptation_phase=DomainAdaptationPhase(job_manager, domain_adaptation_api, audio_extractor, vad_repo),
+            transcribe_phase=TranscribePhase(job_manager, transcription_api, audio_extractor, domain_repo, async_service,
                                              transcribe_manifest, real_transcribe_adapter),
             hallucination_correction_phase=HallucinationCorrectionPhase(job_manager, correction_api),
-            diarize_phase=DiarizePhase(job_manager, diarization_api, storage_api, async_service, diarize_manifest,
+            diarize_phase=DiarizePhase(job_manager, diarization_api, audio_extractor, async_service, diarize_manifest,
                                        real_diarize_adapter),
             sentence_reconstruction_phase=SentenceReconstructionPhase(job_manager, reconstruction_api,
                                                                       transcription_api, async_service,
@@ -250,8 +261,7 @@ class TestBatchAudioPipelineIntegration:
                                                               visual_synthesis_repo=visual_synthesis_repo),
             rag_indexing_phase=RagIndexingPhase(job_manager=job_manager, rag_storage_service=rag_storage_service,
                                                 unified_repo=context_unification_repo,
-                                                async_model_service=async_service, loader=hf_embedder),
-            storage_api=storage_api
+                                                async_model_service=async_service, loader=hf_embedder)
         )
 
         yield pipeline
@@ -296,7 +306,9 @@ class TestBatchAudioPipelineIntegration:
             assert phase in results
             assert results[phase].status == PhaseStatus.COMPLETED
 
+        # Audio sources are normalized to 16 kHz mono WAV too
+        assert results[PipelinePhase.AUDIO_EXTRACTION].status == PhaseStatus.COMPLETED
+
         # Ensure Visual/Video phases are missing
-        assert PipelinePhase.AUDIO_EXTRACTION not in results
         assert PipelinePhase.VISUAL_ANALYSIS not in results
         assert PipelinePhase.CLIP_EXTRACTION not in results

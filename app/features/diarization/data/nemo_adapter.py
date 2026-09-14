@@ -168,7 +168,11 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
                                 "max_num_speakers": 20,
                                 "enhanced_count_thres": 80,
                                 "max_rp_threshold": 0.25,
-                                "sparse_search_volume": 30
+                                "sparse_search_volume": 30,
+                                # Long-form clustering (NeMo >= 1.20): clusters in chunks instead of
+                                # building one affinity matrix over every embedding of a multi-hour file
+                                "chunk_cluster_count": 50,
+                                "embeddings_per_chunk": 10000
                             }
                         }
                     }

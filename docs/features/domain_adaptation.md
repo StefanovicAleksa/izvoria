@@ -13,7 +13,7 @@ A two-stage "Scout then Route" pipeline that previews a media file's content to 
 - **Stage 1 ("Scout")**: `ScoutWhisperAdapter` runs a small faster-whisper model (`beam_size=1`, no timestamps) over just those slices to get a rough/dirty preview transcript (`ScoutResult`).
 - **Stage 2 ("Router")**: `LlamaAdapter` runs a quantized Llama 3.2 3B via `llama_cpp`, constrained by a GBNF grammar (`JSON_ARRAY_GRAMMAR`) to force strictly-valid JSON array output, classifying the scout text against candidate sub-domain labels loaded from a JSON glossary file (`GlossaryBuilder.get_candidate_labels`).
 
-`GlossaryBuilder.build_injection_payloads` then builds a Whisper `hotword_string` (format `"term:15.0, term:15.0..."`, capped at 40 anchor terms) and an `initial_prompt_string`. Both GPU models are acquired/released individually per stage (never held simultaneously) via `ModelManagerOrchestrator`.
+`GlossaryBuilder.build_injection_payloads` then builds a Whisper `hotword_string` — a plain comma-separated list (`"strike, theta, ..."`, capped at 40 anchor terms); faster-whisper inserts hotwords into the prompt as text and has no weighting syntax — and an `initial_prompt_string`, a natural sentence such as "This recording discusses Options Trading, including terms such as strike, theta." (at most 12 terms). Whisper doesn't follow instructions, so the prompt carries vocabulary, not directions. Both GPU models are acquired/released individually per stage (never held simultaneously) via `ModelManagerOrchestrator`.
 
 ## Inputs / Outputs
 

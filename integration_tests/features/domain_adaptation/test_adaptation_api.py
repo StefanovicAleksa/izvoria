@@ -36,11 +36,15 @@ def setup_finance_glossary():
     assert resource_path.exists(), f"Missing test glossary at {resource_path}"
 
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    original = target_path.read_bytes() if target_path.exists() else None
     shutil.copy(resource_path, target_path)
 
     yield
 
-    if target_path.exists():
+    # Restore the application's tracked glossary instead of deleting it
+    if original is not None:
+        target_path.write_bytes(original)
+    elif target_path.exists():
         target_path.unlink()
 
 
@@ -126,11 +130,12 @@ def test_full_domain_adaptation_pipeline(setup_finance_glossary, real_infrastruc
     assert "OPTIONS_TRADING" in glossary.sub_domains
 
     assert "strike" in glossary.hotword_string.lower() or "theta" in glossary.hotword_string.lower()
-    assert ":15.0" in glossary.hotword_string
+    # faster-whisper reads hotwords as plain prompt text: no "term:weight" syntax may leak in
+    assert ":15.0" not in glossary.hotword_string
 
     # Assert GlossaryBuilder properly used the newly decoupled prompts.py template
     assert "Options Trading" in glossary.initial_prompt_string
-    assert "Use proper capitalization and punctuation." in glossary.initial_prompt_string
+    assert glossary.initial_prompt_string.startswith("This recording discusses")
 
-    # Ensure anchor words are NO LONGER leaking into the initial prompt context window
-    assert "strike" not in glossary.initial_prompt_string.lower()
+    # Domain terms belong in the prompt as natural text, which is what biases Whisper toward their spelling
+    assert "strike" in glossary.initial_prompt_string.lower() or "theta" in glossary.initial_prompt_string.lower()

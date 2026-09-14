@@ -1,8 +1,9 @@
-# Canvas: test_punctuation_adapter_v4
+# Canvas: test_punctuation_adapter_v5
 # Path: tests/features/sentence_reconstruction/data/test_punctuation_adapter.py
 
-import os
 import pytest
+import torch
+from typing import List, Optional
 from unittest.mock import patch, MagicMock
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
@@ -11,6 +12,37 @@ from app.features.transcription.domain.entities import TranscriptWord
 from app.features.sentence_reconstruction.domain.entities import PunctuatedWord
 from app.features.sentence_reconstruction.data.punctuation_adapter import PunctuationAdapter
 from app.features.sentence_reconstruction.exceptions.model import PunctuationModelLoadError
+
+ID2LABEL = {0: "0", 1: ".", 2: ",", 3: "?", 4: "-", 5: ":"}
+LABEL2ID = {label: idx for idx, label in ID2LABEL.items()}
+
+
+class FakeEncoding(dict):
+    """Minimal stand-in for a fast-tokenizer BatchEncoding."""
+
+    def __init__(self, word_ids: List[Optional[int]]):
+        input_ids = torch.arange(len(word_ids)).unsqueeze(0)
+        super().__init__(input_ids=input_ids, attention_mask=torch.ones_like(input_ids))
+        self._word_ids = word_ids
+
+    def word_ids(self, batch_index: int = 0) -> List[Optional[int]]:
+        return self._word_ids
+
+
+def _logits(token_labels: List[str]) -> torch.Tensor:
+    logits = torch.zeros(1, len(token_labels), len(ID2LABEL))
+    for idx, label in enumerate(token_labels):
+        logits[0, idx, LABEL2ID[label]] = 10.0
+    return logits
+
+
+def _words(*texts: str) -> List[TranscriptWord]:
+    return [TranscriptWord(start_sec=i, end_sec=i + 0.5, word=t, probability=0.99) for i, t in enumerate(texts)]
+
+
+def _loaded(manifest, tokenizer, hf_model) -> LoadedModel:
+    hf_model.config.id2label = ID2LABEL
+    return LoadedModel(manifest=manifest, model_instance={"tokenizer": tokenizer, "model": hf_model, "device": "cpu"})
 
 
 class TestPunctuationAdapter:
@@ -22,114 +54,100 @@ class TestPunctuationAdapter:
             required_vram_mb=500.0
         )
 
-    @patch("app.features.sentence_reconstruction.data.punctuation_adapter.torch.cuda.is_available", return_value=True)
-    @patch("app.features.sentence_reconstruction.data.punctuation_adapter.pipeline")
-    @patch("os.path.exists")
-    def test_load_success_enforces_native_gpu_chunking(self, mock_exists, mock_pipeline, mock_cuda, manifest):
-        """
-        CRITICAL TEST: Ensures that the Hugging Face pipeline is strictly instantiated
-        with stride=16 and ignore_labels=["O", "0"] to prevent the 512-token truncation bug
-        that causes massive infinite run-on sentences.
+    @patch("os.path.exists", return_value=True)
+    @patch.object(PunctuationAdapter, "_load_components")
+    def test_load_success(self, mock_load_components, _, manifest):
+        components = {"tokenizer": MagicMock(), "model": MagicMock(), "device": "cpu"}
+        mock_load_components.return_value = components
 
-        NOTE: local_files_only is no longer passed as a pipeline() kwarg (directly or via
-        model_kwargs). transformers>=5 never pops local_files_only out of its internal
-        **kwargs, so passing it there leaks into the final pipeline_class(**kwargs) call
-        and crashes TokenClassificationPipeline._sanitize_parameters(), which doesn't
-        recognize it as a task parameter. Offline enforcement now happens via the
-        HF_HUB_OFFLINE env var instead, asserted below.
-        """
-        mock_exists.return_value = True
-        mock_pipe_instance = MagicMock()
-        observed_offline_flag = {}
-
-        def capture_offline_flag(*args, **kwargs):
-            observed_offline_flag["value"] = os.environ.get("HF_HUB_OFFLINE")
-            return mock_pipe_instance
-
-        mock_pipeline.side_effect = capture_offline_flag
-
-        adapter = PunctuationAdapter()
-        loaded_model = adapter.load(manifest)
+        loaded_model = PunctuationAdapter().load(manifest)
 
         assert loaded_model.manifest == manifest
-        assert loaded_model.model_instance == mock_pipe_instance
+        assert loaded_model.model_instance == components
+        mock_load_components.assert_called_once_with(manifest.model_path)
 
-        # Prove the pipeline was initialized with the native HF chunking arguments
-        mock_pipeline.assert_called_once_with(
-            task="token-classification",
-            model=manifest.model_path,
-            tokenizer=manifest.model_path,
-            device=0,
-            aggregation_strategy="simple",
-            stride=16,
-            ignore_labels=["O"],
+    @patch("os.path.exists", return_value=False)
+    def test_load_missing_file_raises_error(self, _, manifest):
+        with pytest.raises(PunctuationModelLoadError):
+            PunctuationAdapter().load(manifest)
+
+    def test_predict_punctuation_maps_zero_label_to_none(self, manifest):
+        tokenizer = MagicMock(return_value=FakeEncoding([None, 0, 1, None]))
+        hf_model = MagicMock()
+        hf_model.return_value.logits = _logits(["0", "0", ".", "0"])
+
+        result = PunctuationAdapter().predict_punctuation(_loaded(manifest, tokenizer, hf_model), _words(" Hello", " world"))
+
+        tokenizer.assert_called_once_with(["Hello", "world"], is_split_into_words=True, return_tensors="pt",
+                                          truncation=False)
+        assert all(isinstance(r, PunctuatedWord) for r in result)
+        assert [(r.acoustic_word.word, r.punctuation_tag) for r in result] == [(" Hello", "NONE"), (" world", ".")]
+
+    def test_multi_subtoken_word_takes_label_of_last_subtoken(self, manifest):
+        """The model marks punctuation on a word's final piece; the first piece is usually '0'."""
+        # "the" -> 1 token, "echocardiogram" -> 3 tokens (first two "0", last ".")
+        tokenizer = MagicMock(return_value=FakeEncoding([None, 0, 1, 1, 1, None]))
+        hf_model = MagicMock()
+        hf_model.return_value.logits = _logits(["0", "0", "0", "0", ".", "0"])
+
+        result = PunctuationAdapter().predict_punctuation(
+            _loaded(manifest, tokenizer, hf_model), _words("the", "echocardiogram")
         )
 
-        # Prove offline mode was enforced (via env var, not a pipeline() kwarg) during the call...
-        assert observed_offline_flag["value"] == "1"
-        # ...and cleaned up afterward so it doesn't leak into other adapters/tests.
-        assert os.environ.get("HF_HUB_OFFLINE") is None
+        assert [r.punctuation_tag for r in result] == ["NONE", "."]
 
-    @patch("os.path.exists")
-    def test_load_missing_file_raises_error(self, mock_exists, manifest):
-        mock_exists.return_value = False
-        adapter = PunctuationAdapter()
+    def test_unknown_labels_are_never_emitted(self, manifest):
+        tokenizer = MagicMock(return_value=FakeEncoding([None, 0, None]))
+        hf_model = MagicMock()
+        hf_model.config.id2label = {0: "LABEL_9"}
+        hf_model.return_value.logits = torch.zeros(1, 3, 1)
+        loaded = LoadedModel(manifest=manifest, model_instance={"tokenizer": tokenizer, "model": hf_model, "device": "cpu"})
 
-        with pytest.raises(PunctuationModelLoadError):
-            adapter.load(manifest)
+        result = PunctuationAdapter().predict_punctuation(loaded, _words("word"))
 
-    def test_predict_punctuation_success(self, manifest):
-        adapter = PunctuationAdapter()
-        mock_pipe_instance = MagicMock()
-        loaded_model = LoadedModel(manifest=manifest, model_instance=mock_pipe_instance)
-
-        # 1. Input: Exact acoustic words
-        input_words = [
-            TranscriptWord(start_sec=0.0, end_sec=0.5, word="Hello", probability=0.99),
-            TranscriptWord(start_sec=0.5, end_sec=1.0, word="world", probability=0.99)
-        ]
-
-        # 2. Mock Pipeline Output
-        mock_pipe_instance.return_value = [
-            {"entity_group": "0", "word": "Hello", "start": 0, "end": 5},
-            {"entity_group": ".", "word": "world", "start": 6, "end": 11}
-        ]
-
-        # 3. Execute
-        result = adapter.predict_punctuation(loaded_model, input_words)
-
-        # 4. Assertions
-        assert mock_pipe_instance.call_args[0][0] == "Hello world"
-
-        assert len(result) == 2
-        assert isinstance(result[0], PunctuatedWord)
-
-        # Verify "0" is correctly sanitized to "NONE"
-        assert result[0].acoustic_word.word == "Hello"
         assert result[0].punctuation_tag == "NONE"
 
-        # Verify terminal punctuation is captured
-        assert result[1].acoustic_word.word == "world"
-        assert result[1].punctuation_tag == "."
+    @patch.object(PunctuationAdapter, "OVERLAP_WORDS", 1)
+    @patch.object(PunctuationAdapter, "WINDOW_WORDS", 3)
+    def test_overlapping_windows_let_the_later_window_relabel_overlap_words(self, manifest):
+        windows_seen = []
 
-    def test_predict_punctuation_handles_subword_overlaps(self, manifest):
-        """Verifies our character-offset logic works even if Hugging Face returns weird subword bounds."""
-        adapter = PunctuationAdapter()
-        mock_pipe_instance = MagicMock()
-        loaded_model = LoadedModel(manifest=manifest, model_instance=mock_pipe_instance)
+        def tokenize(window, **kwargs):
+            windows_seen.append(list(window))
+            return FakeEncoding([None] + list(range(len(window))) + [None])
 
-        # Input: 1 long word
-        input_words = [TranscriptWord(start_sec=0.0, end_sec=1.0, word="Echocardiogram", probability=0.99)]
+        def forward(**kwargs):
+            token_count = kwargs["input_ids"].shape[1]
+            labels = ["0"] * token_count
+            labels[-2] = "."  # last word of every window
+            return MagicMock(logits=_logits(labels))
 
-        # Mock Pipeline Output: It predicts the tag only overlaps the last few characters
-        mock_pipe_instance.return_value = [
-            {"entity_group": "?", "word": "gram", "start": 10, "end": 14}
-        ]
+        tokenizer = MagicMock(side_effect=tokenize)
+        hf_model = MagicMock(side_effect=forward)
 
-        result = adapter.predict_punctuation(loaded_model, input_words)
+        result = PunctuationAdapter().predict_punctuation(
+            _loaded(manifest, tokenizer, hf_model), _words("w0", "w1", "w2", "w3", "w4")
+        )
 
-        assert len(result) == 1
-        assert result[0].acoustic_word.word == "Echocardiogram"
+        assert windows_seen == [["w0", "w1", "w2"], ["w2", "w3", "w4"]]
+        # w2 was "." at the end of window 1 but is re-labelled with right-hand context in window 2
+        assert [r.punctuation_tag for r in result] == ["NONE", "NONE", "NONE", "NONE", "."]
 
-        # Because chars 10-14 overlap with the acoustic word's 0-14 bounds, it should correctly map the "?"
-        assert result[0].punctuation_tag == "?"
+    @patch.object(PunctuationAdapter, "WINDOW_WORDS", 2)
+    def test_window_shrinks_instead_of_truncating_long_token_sequences(self, manifest):
+        def tokenize(window, **kwargs):
+            if len(window) > 1:
+                encoding = FakeEncoding([None] * 600)
+                return encoding
+            return FakeEncoding([None, 0, None])
+
+        tokenizer = MagicMock(side_effect=tokenize)
+        hf_model = MagicMock(return_value=MagicMock(logits=_logits(["0", ",", "0"])))
+
+        result = PunctuationAdapter().predict_punctuation(_loaded(manifest, tokenizer, hf_model), _words("a", "b"))
+
+        assert [r.punctuation_tag for r in result] == [",", ","]
+        assert hf_model.call_count == 2
+
+    def test_empty_input(self, manifest):
+        assert PunctuationAdapter().predict_punctuation(_loaded(manifest, MagicMock(), MagicMock()), []) == []

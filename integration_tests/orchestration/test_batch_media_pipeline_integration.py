@@ -343,11 +343,11 @@ class TestBatchMediaPipelineIntegration:
         ingest_phase = IngestPhase(job_manager, storage_api)
         extract_audio_phase = ExtractAudioPhase(job_manager, audio_extractor)
         vad_phase = VadPhase(job_manager, vad_api, storage_api, async_service, vad_manifest, real_vad_adapter)
-        domain_adaptation_phase = DomainAdaptationPhase(job_manager, domain_adaptation_api, storage_api, vad_repo)
-        transcribe_phase = TranscribePhase(job_manager, transcription_api, storage_api, domain_repo, async_service,
+        domain_adaptation_phase = DomainAdaptationPhase(job_manager, domain_adaptation_api, audio_extractor, vad_repo)
+        transcribe_phase = TranscribePhase(job_manager, transcription_api, audio_extractor, domain_repo, async_service,
                                            transcribe_manifest, real_transcribe_adapter)
         hallucination_correction_phase = HallucinationCorrectionPhase(job_manager, correction_api)
-        diarize_phase = DiarizePhase(job_manager, diarization_api, storage_api, async_service, diarize_manifest,
+        diarize_phase = DiarizePhase(job_manager, diarization_api, audio_extractor, async_service, diarize_manifest,
                                      real_diarize_adapter)
         sentence_phase = SentenceReconstructionPhase(job_manager, reconstruction_api, transcription_api, async_service,
                                                      punctuation_manifest, real_punctuation_adapter)

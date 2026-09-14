@@ -1,4 +1,4 @@
-# Canvas: test_glossary_builder_v2
+# Canvas: test_glossary_builder_v3
 # Path: tests/features/domain_adaptation/utils/test_glossary_builder.py
 
 import pytest
@@ -24,9 +24,7 @@ class TestGlossaryBuilder:
 
         labels = GlossaryBuilder.get_candidate_labels("FINANCE")
 
-        assert len(labels) == 2
-        assert "OPTIONS_TRADING" in labels
-        assert "M_AND_A" in labels
+        assert labels == ["OPTIONS_TRADING", "M_AND_A"]
 
     @patch.object(GlossaryBuilder, '_load_master_glossary')
     def test_build_injection_payloads_multi_domain(self, mock_load_glossary, mock_manifest_data):
@@ -37,12 +35,12 @@ class TestGlossaryBuilder:
             predicted_domains=["OPTIONS_TRADING", "M_AND_A"]
         )
 
-        assert "strike:15.0" in hotwords
-        assert "merger:15.0" in hotwords
-
-        # Verify the actual template string from prompts.py was formatted correctly
-        assert "The following dictation is a formal, professional transcript covering topics related to Options Trading, M And A" in initial_prompt
-        assert "Use proper capitalization and punctuation." in initial_prompt
+        # Plain comma-separated terms: faster-whisper has no "term:weight" syntax
+        assert hotwords == "strike, theta, merger, acquisition"
+        assert initial_prompt == (
+            "This recording discusses Options Trading, M And A, including terms such as "
+            "strike, theta, merger, acquisition."
+        )
 
     @patch.object(GlossaryBuilder, '_load_master_glossary')
     def test_build_injection_payloads_fallback_to_base(self, mock_load_glossary, mock_manifest_data):
@@ -54,6 +52,25 @@ class TestGlossaryBuilder:
             predicted_domains=["CRYPTO_TRADING"]
         )
 
-        assert "EBITDA:15.0" in hotwords
-        assert "The following dictation is a formal, professional transcript covering topics related to Crypto Trading" in initial_prompt
-        assert "Use proper capitalization and punctuation." in initial_prompt
+        assert hotwords == "EBITDA, CapEx"
+        assert initial_prompt == "This recording discusses Crypto Trading, including terms such as EBITDA, CapEx."
+
+    @patch.object(GlossaryBuilder, '_load_master_glossary')
+    def test_build_injection_payloads_without_terms(self, mock_load_glossary):
+        mock_load_glossary.return_value = {"base_terms": [], "sub_domains": {}}
+
+        hotwords, initial_prompt = GlossaryBuilder.build_injection_payloads(industry="GENERAL", predicted_domains=[])
+
+        assert hotwords == ""
+        assert initial_prompt == "This recording discusses General."
+
+    @patch.object(GlossaryBuilder, '_load_master_glossary')
+    def test_prompt_terms_are_capped(self, mock_load_glossary):
+        terms = [f"term{i}" for i in range(30)]
+        mock_load_glossary.return_value = {"base_terms": terms, "sub_domains": {}}
+
+        hotwords, initial_prompt = GlossaryBuilder.build_injection_payloads(industry="X", predicted_domains=[])
+
+        assert hotwords == ", ".join(terms)
+        assert initial_prompt.endswith("term11.")
+        assert "term12" not in initial_prompt

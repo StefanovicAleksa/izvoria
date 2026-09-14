@@ -14,7 +14,7 @@ from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.exceptions.base import ModelManagerError
 
 from app.features.diarization.service.diarization_api import DiarizationAPI
-from app.features.storage.service.storage_api import StorageAPI
+from app.features.audio_extractor.service.extractor_api import AudioExtractorAPI
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import PhaseBatchResult, HallucinationCorrectionJobResult, DiarizeJobResult
@@ -25,14 +25,14 @@ class DiarizePhase:
             self,
             job_manager: JobManager,
             diarization_api: DiarizationAPI,
-            storage_api: StorageAPI,
+            audio_extractor: AudioExtractorAPI,
             async_model_service: AsyncModelService,
             diarize_manifest: ModelManifest,
             diarize_adapter: IModelLoader
     ):
         self._job_manager = job_manager
         self._diarization_api = diarization_api
-        self._storage = storage_api
+        self._audio_extractor = audio_extractor
         self._async_service = async_model_service
         self._manifest = diarize_manifest
         self._adapter = diarize_adapter
@@ -78,10 +78,11 @@ class DiarizePhase:
 
                 source_id = item.source_id
 
-                # Fetch the original Source to find its linked audio file
-                source = self._storage.get_source(source_id)
-                if not source or not source.file:
-                    err_msg = f"Cannot diarize: Audio file for Source {source_id} missing."
+                # Diarize the normalized 16kHz mono WAV the VAD map was computed from
+                try:
+                    audio_path = self._audio_extractor.get_extracted_audio_path(source_id)
+                except Exception as e:
+                    err_msg = f"Cannot diarize: extracted audio for Source {source_id} missing. {e}"
                     results.append(DiarizeJobResult(source_id=source_id, success=False, error_message=err_msg))
                     errors.append(err_msg)
                     failed_count += 1
@@ -99,7 +100,7 @@ class DiarizePhase:
                         request,
                         self._diarization_api.process_audio,
                         source_id=source_id,
-                        audio_path=source.file.file_path,
+                        audio_path=audio_path,
                         release_after=False
                     )
 

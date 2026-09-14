@@ -60,17 +60,16 @@ def assemble_sentences(speaker_id: str, punctuated_words: List[PunctuatedWord]) 
 
         # 2. Append the clean word
         if not current_text_parts:
-            # Capitalize the first word of a new sentence
-            current_text_parts.append(clean_word.capitalize())
+            # Capitalize the first letter of a new sentence without lowercasing the rest
+            # (str.capitalize() turned "MRI" into "Mri" and "iPhone" into "Iphone")
+            current_text_parts.append(clean_word[:1].upper() + clean_word[1:])
         else:
             current_text_parts.append(f" {clean_word}")
 
-        # 3. Apply the Neural Punctuation Tag
-        if tag != "NONE":
-            if tag in ATTACHED_PUNCTUATION:
-                current_text_parts[-1] = current_text_parts[-1].rstrip() + tag
-            else:
-                current_text_parts.append(tag)
+        # 3. Apply the Neural Punctuation Tag. Only real punctuation marks are rendered: any other tag
+        # (e.g. the model's "0" = no punctuation) must never be appended to the text as a literal.
+        if tag in ATTACHED_PUNCTUATION:
+            current_text_parts[-1] = current_text_parts[-1].rstrip() + tag
 
         # 4. If we hit a terminal tag, seal the sentence instantly
         if tag in TERMINAL_PUNCTUATION:

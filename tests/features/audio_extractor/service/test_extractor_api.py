@@ -121,3 +121,39 @@ class TestAudioExtractorAPI:
 
         # CRITICAL VERIFICATION: Ensure the fallback cleanup mechanism ran directly on our mock!
         mock_temp_path.unlink.assert_called_once()
+
+    def test_extract_audio_normalizes_audio_sources_too(self, api, mock_ffmpeg, mock_repo, mock_storage):
+        """AUDIO sources get the same 16kHz mono WAV as videos so every phase reads identical samples."""
+        source_id = uuid.uuid4()
+        mock_repo.get_latest_by_source_id.return_value = None
+        mock_source = MagicMock()
+        mock_source.id = source_id
+        mock_source.source_type = SourceType.AUDIO
+        mock_source.file.file_path = "/vault/interview.m4a"
+        mock_storage.get_source.return_value = mock_source
+        mock_ffmpeg.extract_audio.return_value = Path("/tmp/onyx_audio_456.wav")
+        mock_storage.ingest_raw_file.return_value = MagicMock(id=uuid.uuid4())
+        mock_repo.create.side_effect = lambda x: x
+
+        result = api.extract_audio_from_video(source_id)
+
+        mock_ffmpeg.extract_audio.assert_called_once_with("/vault/interview.m4a")
+        assert result.source_id == source_id
+
+    def test_get_extracted_audio_path_returns_vaulted_wav(self, api, mock_repo, mock_storage):
+        source_id = uuid.uuid4()
+        extraction = AudioExtraction(id=uuid.uuid4(), source_id=source_id, extracted_file_id=uuid.uuid4())
+        mock_repo.get_latest_by_source_id.return_value = extraction
+        mock_storage.get_file_path.return_value = Path("/vault/2026/09/14/audio.wav")
+
+        assert api.get_extracted_audio_path(source_id) == "/vault/2026/09/14/audio.wav"
+        mock_repo.get_latest_by_source_id.assert_called_once_with(source_id)
+        mock_storage.get_file_path.assert_called_once_with(extraction.extracted_file_id)
+
+    def test_get_extracted_audio_path_requires_prior_extraction(self, api, mock_repo, mock_storage):
+        mock_repo.get_latest_by_source_id.return_value = None
+
+        with pytest.raises(AudioExtractorError, match="No extracted audio"):
+            api.get_extracted_audio_path(uuid.uuid4())
+
+        mock_storage.get_file_path.assert_not_called()

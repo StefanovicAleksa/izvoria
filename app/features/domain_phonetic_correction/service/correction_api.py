@@ -1,7 +1,8 @@
-# Canvas: domain_correction_api_v20
+# Canvas: domain_correction_api_v21
 # Path: app/features/domain_phonetic_correction/service/correction_api.py
 
 import logging
+import re
 import uuid
 from typing import List, Dict
 
@@ -58,8 +59,9 @@ class DomainPhoneticCorrectionAPI:
             if existing_record:
                 return existing_record
 
+            # A passthrough must be persisted too: the next phase loads this feature's output from the DB
             if not transcript.sentences:
-                return self._create_passthrough(transcript)
+                return self._repo.save(self._create_passthrough(transcript.source_id, []))
 
             # PRE-PROCESSING: Sanitize all rogue '0' tokens immediately before processing
             sanitized_sentences = []
@@ -69,6 +71,17 @@ class DomainPhoneticCorrectionAPI:
                     sanitized_sentences.append(s.model_copy(update={"text": clean_text}))
 
             domain_dictionary_str = DictionaryLoader.build_prompt_dictionary(industry, sub_domains)
+            dictionary_terms = self._extract_dictionary_terms(domain_dictionary_str)
+
+            # With (almost) no dictionary there is nothing to correct against, and a small LLM left
+            # free to "correct" ordinary words is a risk with no upside. Skip the model entirely.
+            if len(dictionary_terms) < settings.PHONETIC_MIN_DICTIONARY_TERMS:
+                logger.info(
+                    f"Domain dictionary for {industry}/{sub_domains} has {len(dictionary_terms)} terms "
+                    f"(< {settings.PHONETIC_MIN_DICTIONARY_TERMS}); skipping phonetic correction."
+                )
+                return self._repo.save(self._create_passthrough(transcript.source_id, sanitized_sentences))
+
             loaded_model = None
 
             audit_records_map: Dict[uuid.UUID, AppliedDomainCorrectionRecord] = {}
@@ -103,7 +116,13 @@ class DomainPhoneticCorrectionAPI:
                         domain_dictionary=domain_dictionary_str
                     )
 
-                    patched_chunk = self._apply_patches_to_chunk(chunk, patches, audit_records_map)
+                    grounded_patches = [p for p in patches if self._introduces_dictionary_term(p, dictionary_terms)]
+                    if len(grounded_patches) != len(patches):
+                        logger.info(
+                            f"Rejected {len(patches) - len(grounded_patches)} patch(es) that do not introduce a dictionary term."
+                        )
+
+                    patched_chunk = self._apply_patches_to_chunk(chunk, grounded_patches, audit_records_map)
 
                     for s in patched_chunk:
                         processed_sentences_map[s.sentence_id] = s
@@ -126,6 +145,25 @@ class DomainPhoneticCorrectionAPI:
 
         except Exception as e:
             raise map_phonetic_error(e, context="DomainPhoneticCorrectionAPI.execute") from e
+
+    @staticmethod
+    def _extract_dictionary_terms(domain_dictionary: str) -> List[str]:
+        """Parses the '- term' lines produced by DictionaryLoader.build_prompt_dictionary."""
+        return [line[2:].strip() for line in domain_dictionary.splitlines() if line.startswith("- ") and line[2:].strip()]
+
+    @staticmethod
+    def _introduces_dictionary_term(patch: DomainPhoneticPatch, dictionary_terms: List[str]) -> bool:
+        """
+        A patch is only trusted if its correction contains a dictionary term (case-insensitive) that
+        the original did not already contain in that exact spelling. This admits real fixes
+        ("high pole glycemia" -> "hypoglycemia", "ebitda" -> "EBITDA") and rejects the model
+        rewriting ordinary words that have nothing to do with the dictionary.
+        """
+        for term in dictionary_terms:
+            pattern = rf"(?<!\w){re.escape(term)}(?!\w)"
+            if re.search(pattern, patch.correction, re.IGNORECASE) and not re.search(pattern, patch.original):
+                return True
+        return False
 
     @staticmethod
     def _apply_patches_to_chunk(
@@ -170,9 +208,9 @@ class DomainPhoneticCorrectionAPI:
         return patched_sentences
 
     @staticmethod
-    def _create_passthrough(transcript: ReconstructedTranscript) -> DomainPhoneticCorrectedTranscript:
+    def _create_passthrough(source_id: uuid.UUID, sentences: List[ReconstructedSentence]) -> DomainPhoneticCorrectedTranscript:
         return DomainPhoneticCorrectedTranscript(
-            source_id=transcript.source_id,
-            sentences=transcript.sentences,
+            source_id=source_id,
+            sentences=sentences,
             audit_trail=[]
         )

@@ -7,7 +7,7 @@ from typing import List, Tuple
 
 from app.core.config import settings
 from app.features.domain_adaptation.exceptions.process import GlossaryManifestError
-from app.features.domain_adaptation.data.prompts import INITIAL_PROMPT_TEMPLATE
+from app.features.domain_adaptation.data.prompts import INITIAL_PROMPT_TEMPLATE, INITIAL_PROMPT_NO_TERMS_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
@@ -16,8 +16,8 @@ class GlossaryBuilder:
     Handles JSON glossary parsing and formats token-safe injection strings
     for the Whisper Large model to prevent CTranslate2 OOM crashes.
     """
-    HOTWORD_WEIGHT = 15.0
     MAX_ANCHOR_WORDS = 40
+    MAX_PROMPT_TERMS = 12
 
     @classmethod
     def build_injection_payloads(cls, industry: str, predicted_domains: List[str]) -> Tuple[str, str]:
@@ -48,10 +48,12 @@ class GlossaryBuilder:
 
         # 4. Build Payload B: Initial Prompt (from imported template)
         domain_names = ", ".join([d.replace("_", " ").title() for d in predicted_domains]) or "General"
+        prompt_terms = [term.strip() for term in safe_anchors[:cls.MAX_PROMPT_TERMS] if term.strip()]
 
-        initial_prompt = INITIAL_PROMPT_TEMPLATE.format(
-            domain_names=domain_names
-        )
+        if prompt_terms:
+            initial_prompt = INITIAL_PROMPT_TEMPLATE.format(domain_names=domain_names, terms=", ".join(prompt_terms))
+        else:
+            initial_prompt = INITIAL_PROMPT_NO_TERMS_TEMPLATE.format(domain_names=domain_names)
 
         return hotword_string, initial_prompt
 
@@ -62,7 +64,9 @@ class GlossaryBuilder:
 
     @classmethod
     def _format_hotwords(cls, terms: List[str]) -> str:
-        return ", ".join([f"{term.strip()}:{cls.HOTWORD_WEIGHT}" for term in terms])
+        # faster-whisper feeds `hotwords` into the decoder prompt as plain text; there is no weighting
+        # syntax, so "term:15.0" put literal ":15.0" noise into every window's prompt.
+        return ", ".join([term.strip() for term in terms if term.strip()])
 
     @staticmethod
     def _load_master_glossary(industry: str) -> dict:

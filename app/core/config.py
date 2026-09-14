@@ -85,9 +85,16 @@ class Settings(BaseSettings):
 
     VAD_MODEL_PATH: str = "models/vad_multilingual_marblenet.nemo"
     VAD_VRAM_REQUIREMENT_MB: float = 1200.0
+    # Windows scored per MarbleNet forward pass, and silence padding added around each speech segment
+    VAD_BATCH_SIZE: int = 512
+    VAD_PAD_SEC: float = 0.3
 
     WHISPER_MODEL_PATH: str = "models/faster-whisper-large-v3"
     WHISPER_VRAM_REQUIREMENT_MB: float = 3500.0
+    # Clips decoded in parallel by faster-whisper's BatchedInferencePipeline (1 = sequential only)
+    WHISPER_BATCH_SIZE: int = 8
+    # Spans shorter than this are widened (not skipped) so isolated one-word answers are transcribed
+    WHISPER_MIN_SLICE_SEC: float = 1.0
 
     DIARIZATION_MODEL_PATH: str = "models/titanet_large.nemo"
     DIARIZATION_VRAM_REQUIREMENT_MB: float = 500.0
@@ -112,6 +119,9 @@ class Settings(BaseSettings):
 
     DOMAIN_PHONETIC_CORRECTION_MODEL_PATH: str = "models/qwen2.5-3b-instruct-q4_k_m.gguf"
     DOMAIN_PHONETIC_CORRECTION_VRAM_REQUIREMENT_MB: float = 2500.0
+    # Below this many dictionary terms there is nothing to correct against; the LLM pass is skipped.
+    # Patches must introduce a dictionary term, so even a small glossary cannot rewrite ordinary words.
+    PHONETIC_MIN_DICTIONARY_TERMS: int = 1
 
     CONTEXTUAL_RETRIEVAL_MODEL_PATH: str = "models/llama-3.2-3b-instruct-q8_0.gguf"
     CONTEXTUAL_RETRIEVAL_VRAM_REQUIREMENT_MB: float = 3500.0

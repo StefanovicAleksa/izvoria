@@ -48,6 +48,7 @@ class TestDomainPhoneticCorrectionAPI:
     def test_execute_passthrough_empty_transcript(self, api: DomainPhoneticCorrectionAPI, mock_repo: MagicMock,
                                                   mock_orchestrator: MagicMock) -> None:
         mock_repo.get_by_source_id.return_value = None
+        mock_repo.save.side_effect = lambda x: x
 
         transcript_id = uuid.uuid4()
         dummy_transcript = ReconstructedTranscript(source_id=transcript_id, sentences=[])
@@ -56,6 +57,8 @@ class TestDomainPhoneticCorrectionAPI:
 
         assert result.source_id == transcript_id
         assert len(result.sentences) == 0
+        # Persisted: the next phase loads this feature's output from the repository
+        mock_repo.save.assert_called_once_with(result)
         mock_orchestrator.acquire_model.assert_not_called()
 
     @patch("app.features.domain_phonetic_correction.service.correction_api.DictionaryLoader")
@@ -65,7 +68,7 @@ class TestDomainPhoneticCorrectionAPI:
             mock_repo: MagicMock, mock_orchestrator: MagicMock, mock_adapter: MagicMock
     ) -> None:
         mock_repo.get_by_source_id.return_value = None
-        mock_dict_loader.build_prompt_dictionary.return_value = "- test dictionary term"
+        mock_dict_loader.build_prompt_dictionary.return_value = "- acute\n- angina\n- CAGR\n- EBITDA\n- hypoglycemia"
 
         transcript_id = uuid.uuid4()
         dummy_sentence = ReconstructedSentence(
@@ -127,3 +130,58 @@ class TestDomainPhoneticCorrectionAPI:
 
         assert result_2[0].text == "The patient has acute angina."
         assert len(audit_records_map[sentence_id].applied_patches) == 1
+
+    @patch("app.features.domain_phonetic_correction.service.correction_api.DictionaryLoader")
+    def test_execute_skips_model_when_dictionary_is_empty(
+            self, mock_dict_loader: MagicMock, api: DomainPhoneticCorrectionAPI, mock_repo: MagicMock,
+            mock_orchestrator: MagicMock, mock_adapter: MagicMock
+    ) -> None:
+        mock_repo.get_by_source_id.return_value = None
+        mock_repo.save.side_effect = lambda x: x
+        mock_dict_loader.build_prompt_dictionary.return_value = "No specific terms available."
+
+        sentence = ReconstructedSentence(sentence_id=uuid.uuid4(), start_sec=0.0, end_sec=1.0,
+                                         text="So0 we drill0 here.", speaker_id="S0", words=[])
+        transcript = ReconstructedTranscript(source_id=uuid.uuid4(), sentences=[sentence])
+
+        result = api.execute(transcript, "GENERAL", [])
+
+        mock_orchestrator.acquire_model.assert_not_called()
+        mock_adapter.generate_patches.assert_not_called()
+        assert [s.text for s in result.sentences] == ["So we drill here."]
+        assert result.audit_trail == []
+        mock_repo.save.assert_called_once_with(result)
+
+    @patch("app.features.domain_phonetic_correction.service.correction_api.DictionaryLoader")
+    def test_execute_rejects_patches_that_do_not_introduce_a_dictionary_term(
+            self, mock_dict_loader: MagicMock, api: DomainPhoneticCorrectionAPI, mock_repo: MagicMock,
+            mock_orchestrator: MagicMock, mock_adapter: MagicMock
+    ) -> None:
+        mock_repo.get_by_source_id.return_value = None
+        mock_repo.save.side_effect = lambda x: x
+        mock_dict_loader.build_prompt_dictionary.return_value = "- acute\n- angina\n- CAGR\n- EBITDA\n- hypoglycemia"
+
+        sentence = ReconstructedSentence(sentence_id=uuid.uuid4(), start_sec=0.0, end_sec=1.0,
+                                         text="The patient has high pole glycemia today.", speaker_id="S0", words=[])
+        transcript = ReconstructedTranscript(source_id=uuid.uuid4(), sentences=[sentence])
+        mock_adapter.generate_patches.return_value = [
+            DomainPhoneticPatch(original="The patient has", correction="The patient had"),
+            DomainPhoneticPatch(original="has high pole glycemia", correction="has hypoglycemia"),
+        ]
+
+        result = api.execute(transcript, "MEDICAL", [])
+
+        assert result.sentences[0].text == "The patient has hypoglycemia today."
+        assert [p.correction for p in result.audit_trail[0].applied_patches] == ["has hypoglycemia"]
+
+    @pytest.mark.parametrize("original, correction, expected", [
+        ("high pole glycemia", "hypoglycemia", True),
+        ("the sea a grr", "the CAGR", True),
+        ("ebitda margin", "EBITDA margin", True),
+        ("angina pain", "angina pains", False),
+        ("patient has", "patient had", False),
+    ])
+    def test_introduces_dictionary_term(self, original: str, correction: str, expected: bool) -> None:
+        terms = ["hypoglycemia", "CAGR", "EBITDA", "angina"]
+        patch_obj = DomainPhoneticPatch(original=original, correction=correction)
+        assert DomainPhoneticCorrectionAPI._introduces_dictionary_term(patch_obj, terms) is expected

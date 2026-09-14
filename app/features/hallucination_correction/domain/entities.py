@@ -14,7 +14,9 @@ class CorrectionConfig(BaseModel):
     # segment's duration contains actual human speech, we flag it.
     min_vad_overlap_ratio: float = Field(default=0.15)
 
-    # Metadata Thresholds
+    # Metadata Thresholds. A segment is only deleted when low average log-probability coincides with
+    # likely silence (no_speech_prob) or a repetition loop (compression_ratio), mirroring Whisper's
+    # own silence rule. Any single signal on its own only flags the segment as low confidence.
     max_no_speech_prob: float = Field(default=0.60)
     min_avg_logprob: float = Field(default=-1.0)
     max_compression_ratio: float = Field(default=2.4)
@@ -39,6 +41,7 @@ class CorrectionTelemetry(BaseModel):
     removed_by_vad: int = 0
     removed_by_metadata: int = 0
     removed_by_regex: int = 0
+    flagged_low_confidence: int = 0
 
     @property
     def total_surviving_segments(self) -> int:

@@ -282,11 +282,11 @@ class OnyxBootstrapper:
         ingest_phase = IngestPhase(job_manager, storage_api)
         extract_audio_phase = ExtractAudioPhase(job_manager, audio_extractor)
         vad_phase = VadPhase(job_manager, vad_api, storage_api, async_service, vad_manifest, real_vad_adapter)
-        domain_adaptation_phase = DomainAdaptationPhase(job_manager, domain_adaptation_api, storage_api, vad_repo)
-        transcribe_phase = TranscribePhase(job_manager, transcription_api, storage_api, domain_repo, async_service,
+        domain_adaptation_phase = DomainAdaptationPhase(job_manager, domain_adaptation_api, audio_extractor, vad_repo)
+        transcribe_phase = TranscribePhase(job_manager, transcription_api, audio_extractor, domain_repo, async_service,
                                            transcribe_manifest, real_transcribe_adapter)
         hallucination_correction_phase = HallucinationCorrectionPhase(job_manager, correction_api)
-        diarize_phase = DiarizePhase(job_manager, diarization_api, storage_api, async_service, diarize_manifest,
+        diarize_phase = DiarizePhase(job_manager, diarization_api, audio_extractor, async_service, diarize_manifest,
                                      real_diarize_adapter)
         sentence_phase = SentenceReconstructionPhase(job_manager, reconstruction_api, transcription_api, async_service,
                                                      punctuation_manifest, real_punctuation_adapter)
@@ -346,12 +346,13 @@ class OnyxBootstrapper:
         )
 
         audio_pipeline = BatchAudioPipeline(
-            scan_phase=scan_phase, ingest_phase=ingest_phase, vad_phase=vad_phase,
+            scan_phase=scan_phase, ingest_phase=ingest_phase, extract_audio_phase=extract_audio_phase,
+            vad_phase=vad_phase,
             domain_adaptation_phase=domain_adaptation_phase, transcribe_phase=transcribe_phase,
             hallucination_correction_phase=hallucination_correction_phase, diarize_phase=diarize_phase,
             sentence_reconstruction_phase=sentence_phase, domain_phonetic_correction_phase=domain_phonetic_phase,
             contextual_retrieval_phase=contextual_phase, context_unification_phase=context_unification_phase,
-            rag_indexing_phase=rag_indexing_phase, storage_api=storage_api
+            rag_indexing_phase=rag_indexing_phase
         )
 
         live_pipeline = LiveRetrievalPipeline(retrieval_phase=rag_retrieval_phase, reranking_phase=rag_reranking_phase)

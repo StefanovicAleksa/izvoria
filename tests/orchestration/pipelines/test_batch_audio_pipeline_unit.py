@@ -1,4 +1,4 @@
-# Canvas: test_batch_audio_pipeline_unit_v1
+# Canvas: test_batch_audio_pipeline_unit_v2
 # Path: tests/orchestration/pipelines/test_batch_audio_pipeline_unit.py
 
 import pytest
@@ -10,6 +10,7 @@ from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import (
     PhaseBatchResult,
     IngestJobResult,
+    AudioExtractionJobResult,
     VadJobResult,
     DomainAdaptationJobResult,
     TranscribeJobResult,
@@ -21,154 +22,109 @@ from app.orchestration.domain.entities import (
     ContextUnificationJobResult,
     RagIndexingJobResult
 )
-from app.features.storage.domain.entities import SourceType, Source
+from app.features.storage.domain.entities import SourceType
+
+PHASE_NAMES = [
+    "scan", "ingest", "extract_audio", "vad", "domain_adaptation", "transcribe", "hallucination_correction",
+    "diarize", "sentence", "phonetic", "contextual", "context_unification", "rag_indexing"
+]
 
 
 class TestBatchAudioPipelineUnit:
     @pytest.fixture
-    def mock_scan(self): return Mock()
+    def phases(self):
+        return {name: Mock() for name in PHASE_NAMES}
 
     @pytest.fixture
-    def mock_ingest(self): return Mock()
-
-    @pytest.fixture
-    def mock_vad(self): return Mock()
-
-    @pytest.fixture
-    def mock_domain_adaptation(self): return Mock()
-
-    @pytest.fixture
-    def mock_transcribe(self): return Mock()
-
-    @pytest.fixture
-    def mock_hallucination_correction(self): return Mock()
-
-    @pytest.fixture
-    def mock_diarize(self): return Mock()
-
-    @pytest.fixture
-    def mock_sentence(self): return Mock()
-
-    @pytest.fixture
-    def mock_phonetic(self): return Mock()
-
-    @pytest.fixture
-    def mock_contextual(self): return Mock()
-
-    @pytest.fixture
-    def mock_context_unification(self): return Mock()
-
-    @pytest.fixture
-    def mock_rag_indexing(self): return Mock()
-
-    @pytest.fixture
-    def mock_storage_api(self): return Mock()
-
-    @pytest.fixture
-    def pipeline(self,
-                 mock_scan, mock_ingest, mock_vad,
-                 mock_domain_adaptation, mock_transcribe, mock_hallucination_correction,
-                 mock_diarize, mock_sentence, mock_phonetic, mock_contextual,
-                 mock_context_unification, mock_rag_indexing, mock_storage_api):
+    def pipeline(self, phases):
         return BatchAudioPipeline(
-            scan_phase=mock_scan,
-            ingest_phase=mock_ingest,
-            vad_phase=mock_vad,
-            domain_adaptation_phase=mock_domain_adaptation,
-            transcribe_phase=mock_transcribe,
-            hallucination_correction_phase=mock_hallucination_correction,
-            diarize_phase=mock_diarize,
-            sentence_reconstruction_phase=mock_sentence,
-            domain_phonetic_correction_phase=mock_phonetic,
-            contextual_retrieval_phase=mock_contextual,
-            context_unification_phase=mock_context_unification,
-            rag_indexing_phase=mock_rag_indexing,
-            storage_api=mock_storage_api
+            scan_phase=phases["scan"],
+            ingest_phase=phases["ingest"],
+            extract_audio_phase=phases["extract_audio"],
+            vad_phase=phases["vad"],
+            domain_adaptation_phase=phases["domain_adaptation"],
+            transcribe_phase=phases["transcribe"],
+            hallucination_correction_phase=phases["hallucination_correction"],
+            diarize_phase=phases["diarize"],
+            sentence_reconstruction_phase=phases["sentence"],
+            domain_phonetic_correction_phase=phases["phonetic"],
+            contextual_retrieval_phase=phases["contextual"],
+            context_unification_phase=phases["context_unification"],
+            rag_indexing_phase=phases["rag_indexing"]
         )
 
-    def test_pipeline_happy_path_and_filtering(self, pipeline, mock_scan, mock_ingest, mock_vad,
-                                               mock_domain_adaptation, mock_transcribe, mock_hallucination_correction,
-                                               mock_diarize, mock_sentence, mock_phonetic, mock_contextual,
-                                               mock_context_unification, mock_rag_indexing, mock_storage_api):
-        target_dir = "/dummy/path"
-        source_id = uuid.uuid4()
-        file_id = uuid.uuid4()
+    @staticmethod
+    def _result(phase: PipelinePhase, item) -> PhaseBatchResult:
+        return PhaseBatchResult(phase=phase, status=PhaseStatus.COMPLETED, successful_count=1, items=[item])
 
-        # Mock Scan to return both an audio and a non-audio file to test filtering
-        mock_scan.execute.return_value = PhaseBatchResult(
+    def test_pipeline_normalizes_audio_before_vad_and_filters_non_audio(self, pipeline, phases):
+        source_id = uuid.uuid4()
+        extracted_file_id = uuid.uuid4()
+
+        phases["scan"].execute.return_value = PhaseBatchResult(
             phase=PipelinePhase.SCAN, status=PhaseStatus.COMPLETED, successful_count=2,
             items=["/dummy/path/audio.mp3", "/dummy/path/ignore.txt"]
         )
+        phases["ingest"].execute.return_value = self._result(
+            PipelinePhase.INGEST, IngestJobResult(source_id=source_id, success=True, file_path="/dummy/path/audio.mp3"))
+        extraction_item = AudioExtractionJobResult(source_id=source_id, success=True, extracted_file_id=extracted_file_id)
+        phases["extract_audio"].execute.return_value = self._result(PipelinePhase.AUDIO_EXTRACTION, extraction_item)
+        vad_item = VadJobResult(source_id=source_id, success=True)
+        phases["vad"].execute.return_value = self._result(PipelinePhase.VAD, vad_item)
+        phases["domain_adaptation"].execute.return_value = self._result(
+            PipelinePhase.DOMAIN_ADAPTATION, DomainAdaptationJobResult(source_id=source_id, success=True))
+        phases["transcribe"].execute.return_value = self._result(
+            PipelinePhase.TRANSCRIBE, TranscribeJobResult(source_id=source_id, success=True))
+        phases["hallucination_correction"].execute.return_value = self._result(
+            PipelinePhase.HALLUCINATION_CORRECTION,
+            HallucinationCorrectionJobResult(source_id=source_id, success=True, transcript_id=uuid.uuid4()))
+        phases["diarize"].execute.return_value = self._result(
+            PipelinePhase.DIARIZE, DiarizeJobResult(source_id=source_id, success=True))
+        phases["sentence"].execute.return_value = self._result(
+            PipelinePhase.SENTENCE_RECONSTRUCTION,
+            SentenceReconstructionJobResult(source_id=source_id, success=True, reconstructed_transcript_id=uuid.uuid4()))
+        phases["phonetic"].execute.return_value = self._result(
+            PipelinePhase.DOMAIN_PHONETIC_CORRECTION,
+            DomainPhoneticCorrectionJobResult(source_id=source_id, success=True, domain_phonetic_transcript_id=uuid.uuid4()))
+        phases["contextual"].execute.return_value = self._result(
+            PipelinePhase.CONTEXTUAL_RETRIEVAL,
+            ContextualRetrievalJobResult(source_id=source_id, success=True, contextual_transcript_id=uuid.uuid4()))
+        phases["context_unification"].execute.return_value = self._result(
+            PipelinePhase.CONTEXT_UNIFICATION,
+            ContextUnificationJobResult(source_id=source_id, success=True, unified_transcript_id=uuid.uuid4()))
+        phases["rag_indexing"].execute.return_value = self._result(
+            PipelinePhase.RAG_INDEXING,
+            RagIndexingJobResult(source_id=source_id, success=True, dense_vectors_saved=5, sparse_vectors_saved=5))
 
-        mock_ingest.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.INGEST, status=PhaseStatus.COMPLETED,
-            items=[IngestJobResult(source_id=source_id, success=True, file_path="/dummy/path/audio.mp3")]
-        )
+        results = pipeline.process_directory("/dummy/path")
 
-        # Mock Storage API for the Data Bridge
-        mock_source = Source(id=source_id, name="audio", source_type=SourceType.AUDIO, content_hash="123",
-                             file_id=file_id)
-        mock_storage_api.get_source.return_value = mock_source
+        phases["ingest"].execute.assert_called_once_with(["/dummy/path/audio.mp3"], SourceType.AUDIO)
+        phases["extract_audio"].execute.assert_called_once_with([source_id])
+        phases["vad"].preload_model.assert_called_once_with()
+        phases["vad"].execute.assert_called_once_with([extraction_item])
+        phases["domain_adaptation"].execute.assert_called_once_with([vad_item])
 
-        # Mock the rest of the phases
-        mock_vad.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.VAD, status=PhaseStatus.COMPLETED,
-            items=[VadJobResult(source_id=source_id, success=True)]
-        )
-        mock_domain_adaptation.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.DOMAIN_ADAPTATION, status=PhaseStatus.COMPLETED,
-            items=[DomainAdaptationJobResult(source_id=source_id, success=True)]
-        )
-        mock_transcribe.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.TRANSCRIBE, status=PhaseStatus.COMPLETED,
-            items=[TranscribeJobResult(source_id=source_id, success=True)]
-        )
-        mock_hallucination_correction.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.HALLUCINATION_CORRECTION, status=PhaseStatus.COMPLETED,
-            items=[HallucinationCorrectionJobResult(source_id=source_id, success=True, transcript_id=uuid.uuid4())]
-        )
-        mock_diarize.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.DIARIZE, status=PhaseStatus.COMPLETED,
-            items=[DiarizeJobResult(source_id=source_id, success=True)]
-        )
-        mock_sentence.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.SENTENCE_RECONSTRUCTION, status=PhaseStatus.COMPLETED, items=[
-                SentenceReconstructionJobResult(source_id=source_id, success=True,
-                                                reconstructed_transcript_id=uuid.uuid4())]
-        )
-        mock_phonetic.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.DOMAIN_PHONETIC_CORRECTION, status=PhaseStatus.COMPLETED, items=[
-                DomainPhoneticCorrectionJobResult(source_id=source_id, success=True,
-                                                  domain_phonetic_transcript_id=uuid.uuid4())]
-        )
-        mock_contextual.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.CONTEXTUAL_RETRIEVAL, status=PhaseStatus.COMPLETED, items=[
-                ContextualRetrievalJobResult(source_id=source_id, success=True, contextual_transcript_id=uuid.uuid4())]
-        )
-        mock_context_unification.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.CONTEXT_UNIFICATION, status=PhaseStatus.COMPLETED,
-            items=[ContextUnificationJobResult(source_id=source_id, success=True, unified_transcript_id=uuid.uuid4())]
-        )
-        mock_rag_indexing.execute.return_value = PhaseBatchResult(
-            phase=PipelinePhase.RAG_INDEXING, status=PhaseStatus.COMPLETED, items=[
-                RagIndexingJobResult(source_id=source_id, success=True, dense_vectors_saved=5, sparse_vectors_saved=5)]
-        )
-
-        results = pipeline.process_directory(target_dir)
-
-        # Assert correct filtering during ingest
-        mock_ingest.execute.assert_called_once_with(["/dummy/path/audio.mp3"], SourceType.AUDIO)
-
-        # Ensure we processed 12 specific phases (Audio bypasses all 7 visual/video phases)
-        assert len(results) == 12
-
-        assert PipelinePhase.AUDIO_EXTRACTION not in results
+        assert len(results) == 13
+        assert PipelinePhase.AUDIO_EXTRACTION in results
         assert PipelinePhase.VISUAL_ANALYSIS not in results
         assert PipelinePhase.CLIP_EXTRACTION not in results
-
-        assert PipelinePhase.SCAN in results
-        assert PipelinePhase.INGEST in results
-        assert PipelinePhase.VAD in results
         assert PipelinePhase.RAG_INDEXING in results
 
-        mock_rag_indexing.execute.assert_called_once()
+        for name in ("vad", "transcribe", "diarize", "sentence", "phonetic", "contextual", "rag_indexing"):
+            phases[name].discard_preload.assert_called_once_with()
+
+    def test_pipeline_stops_when_no_audio_could_be_normalized(self, pipeline, phases):
+        source_id = uuid.uuid4()
+        phases["scan"].execute.return_value = PhaseBatchResult(
+            phase=PipelinePhase.SCAN, status=PhaseStatus.COMPLETED, successful_count=1, items=["/d/a.wav"])
+        phases["ingest"].execute.return_value = self._result(
+            PipelinePhase.INGEST, IngestJobResult(source_id=source_id, success=True, file_path="/d/a.wav"))
+        phases["extract_audio"].execute.return_value = PhaseBatchResult(
+            phase=PipelinePhase.AUDIO_EXTRACTION, status=PhaseStatus.PARTIAL_SUCCESS,
+            items=[AudioExtractionJobResult(source_id=source_id, success=False, error_message="corrupt")])
+
+        results = pipeline.process_directory("/d")
+
+        assert PipelinePhase.VAD not in results
+        phases["vad"].execute.assert_not_called()
+        phases["vad"].discard_preload.assert_called_once_with()

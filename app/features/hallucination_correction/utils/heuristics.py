@@ -60,13 +60,13 @@ class CorrectionHeuristicsEngine:
         # ==========================================
         # STEP 2: WHISPER METADATA MATH
         # ==========================================
-        if segment.no_speech_prob is not None and segment.no_speech_prob > config.max_no_speech_prob:
-            return True, "metadata"
+        # Deleting on any single signal discarded real but hard-to-decode speech (accents, jargon,
+        # poor audio). Only delete when low confidence coincides with silence or a repetition loop.
+        low_logprob = segment.avg_logprob is not None and segment.avg_logprob < config.min_avg_logprob
+        likely_silence = segment.no_speech_prob is not None and segment.no_speech_prob > config.max_no_speech_prob
+        repetition_loop = segment.compression_ratio is not None and segment.compression_ratio > config.max_compression_ratio
 
-        if segment.avg_logprob is not None and segment.avg_logprob < config.min_avg_logprob:
-            return True, "metadata"
-
-        if segment.compression_ratio is not None and segment.compression_ratio > config.max_compression_ratio:
+        if low_logprob and (likely_silence or repetition_loop):
             return True, "metadata"
 
         # ==========================================
@@ -79,3 +79,12 @@ class CorrectionHeuristicsEngine:
 
         # Survived the gauntlet
         return False, ""
+
+    @staticmethod
+    def is_low_confidence(segment: TranscriptSegment, config: CorrectionConfig) -> bool:
+        """True when any single Whisper confidence signal crosses its threshold."""
+        return (
+            (segment.no_speech_prob is not None and segment.no_speech_prob > config.max_no_speech_prob)
+            or (segment.avg_logprob is not None and segment.avg_logprob < config.min_avg_logprob)
+            or (segment.compression_ratio is not None and segment.compression_ratio > config.max_compression_ratio)
+        )

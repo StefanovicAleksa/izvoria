@@ -61,3 +61,31 @@ def test_assemble_sentences_handles_orphaned_fragments():
     assert sentences[0].text == "Unfinished thought."
     assert sentences[0].start_sec == 0.0
     assert sentences[0].end_sec == 1.0
+
+
+def test_assemble_sentences_keeps_acronym_and_camel_case_capitalization():
+    """str.capitalize() turned "MRI" into "Mri" and "iPhone" into "Iphone"."""
+    tagged_words = [
+        PunctuatedWord(acoustic_word=TranscriptWord(start_sec=0.0, end_sec=0.5, word=" MRI"), punctuation_tag="NONE"),
+        PunctuatedWord(acoustic_word=TranscriptWord(start_sec=0.5, end_sec=1.0, word=" shows"), punctuation_tag="NONE"),
+        PunctuatedWord(acoustic_word=TranscriptWord(start_sec=1.0, end_sec=1.5, word=" damage"), punctuation_tag="."),
+        PunctuatedWord(acoustic_word=TranscriptWord(start_sec=1.5, end_sec=2.0, word=" iPhone"), punctuation_tag="NONE"),
+        PunctuatedWord(acoustic_word=TranscriptWord(start_sec=2.0, end_sec=2.5, word=" video"), punctuation_tag="."),
+    ]
+
+    sentences = assemble_sentences("Speaker_0", tagged_words)
+
+    assert [s.text for s in sentences] == ["MRI shows damage.", "IPhone video."]
+
+
+def test_assemble_sentences_never_writes_non_punctuation_tags_into_text():
+    """A leaked "0" tag used to produce text like "So0" and "drill0"."""
+    tagged_words = [
+        PunctuatedWord(acoustic_word=TranscriptWord(start_sec=0.0, end_sec=0.5, word="so"), punctuation_tag="0"),
+        PunctuatedWord(acoustic_word=TranscriptWord(start_sec=0.5, end_sec=1.0, word="we"), punctuation_tag="LABEL_7"),
+        PunctuatedWord(acoustic_word=TranscriptWord(start_sec=1.0, end_sec=1.5, word="drill"), punctuation_tag="."),
+    ]
+
+    sentences = assemble_sentences("Speaker_0", tagged_words)
+
+    assert [s.text for s in sentences] == ["So we drill."]

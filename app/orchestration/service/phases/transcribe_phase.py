@@ -16,7 +16,7 @@ from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.exceptions.base import ModelManagerError
 
 from app.features.transcription.service.transcription_api import TranscriptionAPI
-from app.features.storage.service.storage_api import StorageAPI
+from app.features.audio_extractor.service.extractor_api import AudioExtractorAPI
 from app.features.domain_adaptation.domain.interfaces import IDomainAdaptationRepository
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
@@ -28,7 +28,7 @@ class TranscribePhase:
             self,
             job_manager: JobManager,
             transcription_api: TranscriptionAPI,
-            storage_api: StorageAPI,
+            audio_extractor: AudioExtractorAPI,
             domain_repo: IDomainAdaptationRepository,
             async_model_service: AsyncModelService,
             transcribe_manifest: ModelManifest,
@@ -36,7 +36,7 @@ class TranscribePhase:
     ):
         self._job_manager = job_manager
         self._transcription_api = transcription_api
-        self._storage = storage_api
+        self._audio_extractor = audio_extractor
         self._domain_repo = domain_repo
         self._async_service = async_model_service
         self._manifest = transcribe_manifest
@@ -78,9 +78,10 @@ class TranscribePhase:
 
                 source_id = item.source_id
 
-                source = self._storage.get_source(source_id)
-                if not source or not source.file:
-                    err_msg = f"Cannot transcribe: Audio file for Source {source_id} missing."
+                try:
+                    audio_path = self._audio_extractor.get_extracted_audio_path(source_id)
+                except Exception as e:
+                    err_msg = f"Cannot transcribe: extracted audio for Source {source_id} missing. {e}"
                     results.append(TranscribeJobResult(source_id=source_id, success=False, error_message=err_msg))
                     errors.append(err_msg)
                     failed_count += 1
@@ -107,7 +108,7 @@ class TranscribePhase:
                         request,
                         self._transcription_api.process_audio,
                         source_id=source_id,
-                        audio_path=source.file.file_path,
+                        audio_path=audio_path,
                         language=language,
                         hotwords=hotwords,
                         initial_prompt=initial_prompt,

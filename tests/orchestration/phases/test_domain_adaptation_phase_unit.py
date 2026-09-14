@@ -1,12 +1,12 @@
-# Canvas: test_domain_adaptation_phase_unit_v2
-# Path: tests/orchestration/service/phases/test_domain_adaptation_phase_unit.py
+# Canvas: test_domain_adaptation_phase_unit_v3
+# Path: tests/orchestration/phases/test_domain_adaptation_phase_unit.py
 
 import pytest
 import uuid
 from unittest.mock import Mock
 
+from app.features.audio_extractor.exceptions.base import AudioExtractorError
 from app.features.domain_adaptation.domain.entities import DomainGlossary
-from app.features.storage.domain.entities import Source, File, SourceType
 from app.features.vad.domain.entities import VadMap
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import VadJobResult
@@ -21,75 +21,71 @@ class TestDomainAdaptationPhaseUnit:
     def mock_adaptation_api(self): return Mock()
 
     @pytest.fixture
-    def mock_storage(self): return Mock()
+    def mock_audio_extractor(self): return Mock()
 
     @pytest.fixture
     def mock_vad_repo(self): return Mock()
 
     @pytest.fixture
-    def phase(self, mock_job_manager, mock_adaptation_api, mock_storage, mock_vad_repo):
+    def phase(self, mock_job_manager, mock_adaptation_api, mock_audio_extractor, mock_vad_repo):
         return DomainAdaptationPhase(
             job_manager=mock_job_manager,
             adaptation_api=mock_adaptation_api,
-            storage_api=mock_storage,
+            audio_extractor=mock_audio_extractor,
             vad_repo=mock_vad_repo
         )
 
-    def test_execute_success(self, phase, mock_job_manager, mock_storage, mock_vad_repo):
-        """Scenario: Batch processes perfectly and returns glossary IDs."""
+    def test_execute_success_uses_extracted_wav(self, phase, mock_job_manager, mock_adaptation_api,
+                                                mock_audio_extractor, mock_vad_repo):
         source_id = uuid.uuid4()
-        file_id = uuid.uuid4()
+        vad_results = [VadJobResult(source_id=source_id, success=True, vad_map_id=uuid.uuid4())]
 
-        # 1. Setup Input
-        vad_results = [
-            VadJobResult(source_id=source_id, success=True, vad_map_id=uuid.uuid4())
-        ]
-
-        # 2. Setup Storage (Returns a Source with a nested File)
-        mock_file = File(id=file_id, file_path="/vault/audio.wav", file_name="a", file_size_bytes=1)
-        mock_source = Source(id=source_id, name="a", source_type=SourceType.VIDEO, content_hash="123", file_id=file_id, file=mock_file)
-        mock_storage.get_source.return_value = mock_source
-
-        # 3. Setup VAD Repository
+        mock_audio_extractor.get_extracted_audio_path.return_value = "/vault/extracted.wav"
         mock_vad_map = VadMap(id=uuid.uuid4(), source_id=source_id, segments=[])
         mock_vad_repo.get_map_by_source_id.return_value = mock_vad_map
 
-        # 4. Setup JobManager to return a fake DomainGlossary
-        # FIX: Updated to match the new DomainGlossary signature (sub_domains list and initial_prompt_string)
         fake_glossary = DomainGlossary(
             id=uuid.uuid4(),
             source_id=source_id,
             industry="FINANCE",
             sub_domains=["OPTIONS_TRADING"],
-            hotword_string="strike:15.0",
-            initial_prompt_string="The following dictation covers topics related to Options Trading."
+            hotword_string="strike, theta",
+            initial_prompt_string="This recording discusses Options Trading, including terms such as strike, theta."
         )
         mock_job_manager.run_job.return_value = fake_glossary
 
-        # Execute
         result = phase.execute(vad_results)
 
-        # Assertions
         assert result.phase == PipelinePhase.DOMAIN_ADAPTATION
         assert result.status == PhaseStatus.COMPLETED
         assert result.successful_count == 1
-        assert result.failed_count == 0
-
-        # Verify Job tracking triggered
-        mock_job_manager.run_job.assert_called_once()
         assert result.items[0].glossary_id == fake_glossary.id
 
-    def test_execute_skips_failed_vads(self, phase, mock_storage, mock_job_manager):
-        """Scenario: Items that failed Phase 4 should not be processed by Phase 4.5."""
-        vad_results = [
-            VadJobResult(source_id=uuid.uuid4(), success=False, error_message="CUDA OOM")
-        ]
+        request = mock_job_manager.run_job.call_args[0][0]
+        assert request.input_params == {"audio_path": "/vault/extracted.wav"}
+        mock_job_manager.run_job.assert_called_once_with(
+            request,
+            mock_adaptation_api.process_domain_adaptation,
+            source_id=source_id,
+            audio_path="/vault/extracted.wav",
+            vad_map=mock_vad_map
+        )
 
-        result = phase.execute(vad_results)
+    def test_execute_fails_item_when_extracted_audio_is_missing(self, phase, mock_job_manager, mock_audio_extractor):
+        mock_audio_extractor.get_extracted_audio_path.side_effect = AudioExtractorError("No extracted audio")
+
+        result = phase.execute([VadJobResult(source_id=uuid.uuid4(), success=True, vad_map_id=uuid.uuid4())])
+
+        assert result.status == PhaseStatus.FAILED
+        assert "No extracted audio" in result.errors[0]
+        mock_job_manager.run_job.assert_not_called()
+
+    def test_execute_skips_failed_vads(self, phase, mock_audio_extractor, mock_job_manager):
+        result = phase.execute([VadJobResult(source_id=uuid.uuid4(), success=False, error_message="CUDA OOM")])
 
         assert result.status == PhaseStatus.COMPLETED
         assert result.total_processed == 1
         assert result.successful_count == 0
         assert result.failed_count == 0
-        mock_storage.get_source.assert_not_called()
+        mock_audio_extractor.get_extracted_audio_path.assert_not_called()
         mock_job_manager.run_job.assert_not_called()

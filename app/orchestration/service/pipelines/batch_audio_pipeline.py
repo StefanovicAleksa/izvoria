@@ -1,12 +1,12 @@
-# Canvas: batch_audio_pipeline_v1
+# Canvas: batch_audio_pipeline_v2
 # Path: app/orchestration/service/pipelines/batch_audio_pipeline.py
 
 import logging
+import uuid
 from pathlib import Path
 from typing import Dict, List
 
 from app.features.storage.domain.entities import SourceType
-from app.features.storage.service.storage_api import StorageAPI
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import (
@@ -26,6 +26,7 @@ from app.orchestration.exceptions.workflow import WorkflowStateError, WorkflowEx
 
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
+from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPhase
 from app.orchestration.service.phases.vad_phase import VadPhase
 from app.orchestration.service.phases.domain_adaptation_phase import DomainAdaptationPhase
 from app.orchestration.service.phases.transcribe_phase import TranscribePhase
@@ -50,6 +51,7 @@ class BatchAudioPipeline:
             self,
             scan_phase: ScanPhase,
             ingest_phase: IngestPhase,
+            extract_audio_phase: ExtractAudioPhase,
             vad_phase: VadPhase,
             domain_adaptation_phase: DomainAdaptationPhase,
             transcribe_phase: TranscribePhase,
@@ -59,11 +61,11 @@ class BatchAudioPipeline:
             domain_phonetic_correction_phase: DomainPhoneticCorrectionPhase,
             contextual_retrieval_phase: ContextualRetrievalPhase,
             context_unification_phase: ContextUnificationPhase,
-            rag_indexing_phase: RagIndexingPhase,
-            storage_api: StorageAPI
+            rag_indexing_phase: RagIndexingPhase
     ):
         self._scan_phase = scan_phase
         self._ingest_phase = ingest_phase
+        self._extract_audio = extract_audio_phase
         self._vad_phase = vad_phase
         self._domain_adaptation_phase = domain_adaptation_phase
         self._transcribe_phase = transcribe_phase
@@ -74,7 +76,6 @@ class BatchAudioPipeline:
         self._contextual_retrieval_phase = contextual_retrieval_phase
         self._context_unification_phase = context_unification_phase
         self._rag_indexing_phase = rag_indexing_phase
-        self._storage_api = storage_api
 
     def _discard_pending_preloads(self) -> None:
         """
@@ -121,33 +122,34 @@ class BatchAudioPipeline:
                 raise WorkflowStateError(
                     f"Pipeline halted: Ingest phase failed entirely. Errors: {ingest_result.errors}")
 
-            # ==========================================
-            # DATA BRIDGE: INGEST -> VAD (SKIP AUDIO EXTRACTION)
-            # ==========================================
-            # VAD Phase expects an AudioExtractionJobResult. We bridge this by fetching the
-            # ingested physical file ID and mocking the extraction result format.
-            pseudo_extraction_items: List[AudioExtractionJobResult] = []
+            audio_source_ids: List[uuid.UUID] = [
+                item.source_id for item in ingest_result.items
+                if isinstance(item, IngestJobResult) and item.success and item.source_id is not None
+            ]
+            if not audio_source_ids:
+                return pipeline_results
 
-            for item in ingest_result.items:
-                if isinstance(item, IngestJobResult) and item.success and item.source_id is not None:
-                    source = self._storage_api.get_source(item.source_id)
-                    if source and source.file_id:
-                        pseudo_extraction_items.append(
-                            AudioExtractionJobResult(
-                                source_id=item.source_id,
-                                success=True,
-                                extracted_file_id=source.file_id
-                            )
-                        )
+            # ==========================================
+            # PHASE 3: AUDIO NORMALIZATION (CPU BOUND)
+            # ==========================================
+            # Audio files are converted to the same 16kHz mono WAV videos get, so every later
+            # phase reads identical, already-resampled samples instead of re-decoding the original.
+            self._vad_phase.preload_model()
+            extraction_result = self._extract_audio.execute(audio_source_ids)
+            pipeline_results[PipelinePhase.AUDIO_EXTRACTION] = extraction_result
+            if extraction_result.status == PhaseStatus.FAILED:
+                raise WorkflowStateError(
+                    f"Pipeline halted: Audio normalization failed. Errors: {extraction_result.errors}")
 
-            if not pseudo_extraction_items:
+            successful_extraction_items = [item for item in extraction_result.items if
+                                           isinstance(item, AudioExtractionJobResult) and item.success]
+            if not successful_extraction_items:
                 return pipeline_results
 
             # ==========================================
             # PHASE 4: VOICE ACTIVITY DETECTION (GPU BOUND)
             # ==========================================
-            self._vad_phase.preload_model()
-            vad_result = self._vad_phase.execute(pseudo_extraction_items)
+            vad_result = self._vad_phase.execute(successful_extraction_items)
             pipeline_results[PipelinePhase.VAD] = vad_result
 
             successful_vad_items = [item for item in vad_result.items if

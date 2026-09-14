@@ -1,4 +1,4 @@
-# Canvas: sentence_splitter_v2
+# Canvas: sentence_splitter_v3
 # Path: app/features/domain_phonetic_correction/utils/sentence_splitter.py
 
 import uuid
@@ -9,13 +9,40 @@ from app.features.sentence_reconstruction.domain.entities import ReconstructedSe
 
 logger = logging.getLogger(__name__)
 
+
+def _pack_tokens(tokens: List[str], max_chars: int) -> List[List[str]]:
+    """Greedily packs whitespace tokens into groups whose joined text fits `max_chars`."""
+    groups: List[List[str]] = []
+    current: List[str] = []
+    current_len = 0
+
+    for token in tokens:
+        # A single token longer than the limit can only be split by characters
+        pieces = [token[i:i + max_chars] for i in range(0, len(token), max_chars)] if len(token) > max_chars else [token]
+        for piece in pieces:
+            added = len(piece) + (1 if current else 0)
+            if current and current_len + added > max_chars:
+                groups.append(current)
+                current, current_len = [], 0
+                added = len(piece)
+            current.append(piece)
+            current_len += added
+
+    if current:
+        groups.append(current)
+    return groups
+
+
 def split_massive_sentences(
         sentences: List[ReconstructedSentence],
         max_chars: int = 1500  # LOWERED from 10000: Protects the LLM from runaway generations
 ) -> List[ReconstructedSentence]:
     """
-    Ruthlessly splits runaway sentences that exceed max_chars to guarantee the LLM never OOMs.
-    Interpolates timestamps and divides the word array proportionally to maintain the UI audit trail.
+    Splits runaway sentences that exceed max_chars to guarantee the LLM never OOMs.
+
+    Text is split at whitespace (never mid-word, unless a single token exceeds the limit), and the
+    acoustic word array is divided in proportion to the text tokens, so each piece's words and
+    timestamps still correspond to its text for the UI audit trail.
     """
     if not sentences:
         return []
@@ -23,41 +50,43 @@ def split_massive_sentences(
     safe_sentences = []
 
     for sentence in sentences:
-        text_len = len(sentence.text)
-        if text_len <= max_chars:
+        if len(sentence.text) <= max_chars:
             safe_sentences.append(sentence)
             continue
 
-        logger.warning(f"Massive sentence detected ({text_len} chars). Splitting at {max_chars} to protect LLM.")
+        logger.warning(f"Massive sentence detected ({len(sentence.text)} chars). Splitting at {max_chars} to protect LLM.")
 
-        text = sentence.text
+        groups = _pack_tokens(sentence.text.split(), max_chars)
+        total_tokens = sum(len(g) for g in groups)
         words = sentence.words
-
-        num_chunks = (text_len // max_chars) + 1
-        chars_per_chunk = text_len // num_chunks
-
-        words_per_chunk = max(1, len(words) // num_chunks) if words else 0
         duration = sentence.end_sec - sentence.start_sec
-        duration_per_chunk = duration / num_chunks
 
-        for i in range(num_chunks):
-            start_idx = i * chars_per_chunk
-            end_idx = text_len if i == num_chunks - 1 else (i + 1) * chars_per_chunk
+        consumed = 0
+        for group_idx, group in enumerate(groups):
+            is_last = group_idx == len(groups) - 1
+            start_frac = consumed / total_tokens
+            consumed += len(group)
+            end_frac = 1.0 if is_last else consumed / total_tokens
 
             chunk_words = []
             if words:
-                if i == num_chunks - 1:
-                    chunk_words = words[i * words_per_chunk:]
-                else:
-                    chunk_words = words[i * words_per_chunk: (i + 1) * words_per_chunk]
+                word_start = round(start_frac * len(words))
+                word_end = len(words) if is_last else round(end_frac * len(words))
+                chunk_words = words[word_start:word_end]
+
+            if chunk_words:
+                start_sec, end_sec = chunk_words[0].start_sec, chunk_words[-1].end_sec
+            else:
+                start_sec = sentence.start_sec + start_frac * duration
+                end_sec = sentence.start_sec + end_frac * duration
 
             safe_sentences.append(
                 ReconstructedSentence(
                     sentence_id=uuid.uuid4(),
-                    text=text[start_idx:end_idx].strip(),
+                    text=" ".join(group),
                     speaker_id=sentence.speaker_id,
-                    start_sec=sentence.start_sec + (i * duration_per_chunk),
-                    end_sec=sentence.start_sec + ((i + 1) * duration_per_chunk),
+                    start_sec=start_sec,
+                    end_sec=end_sec,
                     words=chunk_words
                 )
             )

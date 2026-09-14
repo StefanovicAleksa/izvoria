@@ -1,5 +1,5 @@
-# Canvas: test_transcribe_phase_unit_v3
-# Path: tests/orchestration/service/phases/test_transcribe_phase_unit.py
+# Canvas: test_transcribe_phase_unit_v4
+# Path: tests/orchestration/phases/test_transcribe_phase_unit.py
 
 import pytest
 import uuid
@@ -9,8 +9,8 @@ from unittest.mock import Mock
 from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.enums import ModelType
+from app.features.audio_extractor.exceptions.base import AudioExtractorError
 from app.features.transcription.domain.entities import Transcript
-from app.features.storage.domain.entities import Source, File, SourceType
 from app.features.domain_adaptation.domain.entities import DomainGlossary
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import VadJobResult
@@ -25,7 +25,7 @@ class TestTranscribePhaseUnit:
     def mock_transcription_api(self): return Mock()
 
     @pytest.fixture
-    def mock_storage(self): return Mock()
+    def mock_audio_extractor(self): return Mock()
 
     @pytest.fixture
     def mock_domain_repo(self): return Mock()
@@ -41,11 +41,12 @@ class TestTranscribePhaseUnit:
         return ModelManifest(model_type=ModelType.TRANSCRIPTION, model_path="fake_whisper", required_vram_mb=100)
 
     @pytest.fixture
-    def phase(self, mock_job_manager, mock_transcription_api, mock_storage, mock_domain_repo, mock_async_service, sample_manifest, mock_adapter):
+    def phase(self, mock_job_manager, mock_transcription_api, mock_audio_extractor, mock_domain_repo,
+              mock_async_service, sample_manifest, mock_adapter):
         return TranscribePhase(
             job_manager=mock_job_manager,
             transcription_api=mock_transcription_api,
-            storage_api=mock_storage,
+            audio_extractor=mock_audio_extractor,
             domain_repo=mock_domain_repo,
             async_model_service=mock_async_service,
             transcribe_manifest=sample_manifest,
@@ -62,79 +63,68 @@ class TestTranscribePhaseUnit:
         assert phase._preload_future == mock_future
         mock_async_service.trigger_preload.assert_called_once_with(sample_manifest, mock_adapter)
 
-    def test_execute_success_with_domain_hints(self, phase, mock_job_manager, mock_storage, mock_domain_repo, mock_async_service, mock_adapter, mock_transcription_api):
-        """Scenario: Batch processes perfectly, fetches domain hints, unloads at the end."""
+    def test_execute_transcribes_extracted_wav_with_domain_hints(
+            self, phase, mock_job_manager, mock_audio_extractor, mock_domain_repo, mock_async_service,
+            mock_adapter, mock_transcription_api
+    ):
         source_id = uuid.uuid4()
-        file_id = uuid.uuid4()
+        vad_results = [VadJobResult(source_id=source_id, success=True, vad_map_id=uuid.uuid4())]
 
-        # 1. Setup Input
-        vad_results = [
-            VadJobResult(source_id=source_id, success=True, vad_map_id=uuid.uuid4())
-        ]
-
-        # 2. Setup Async Model Future
         mock_future = concurrent.futures.Future()
         fake_loaded_model = LoadedModel(manifest=phase._manifest, model_instance="fake_whisper")
-        mock_future.set_result(fake_loaded_model)
         phase._preload_future = mock_future
         mock_async_service.resolve_preload.return_value = fake_loaded_model
 
-        # 3. Setup Storage (Returns a Source with a nested File)
-        mock_file = File(id=file_id, file_path="/vault/audio.wav", file_name="a", file_size_bytes=1)
-        mock_source = Source(id=source_id, name="a", source_type=SourceType.VIDEO, content_hash="123", file_id=file_id, file=mock_file)
-        mock_storage.get_source.return_value = mock_source
+        mock_audio_extractor.get_extracted_audio_path.return_value = "/vault/extracted_16k_mono.wav"
 
-        # 4. Setup Domain Repo to return hints
-        # FIX: Updated to match the new DomainGlossary signature
-        mock_glossary = DomainGlossary(
+        mock_domain_repo.get_glossary_by_source_id.return_value = DomainGlossary(
             id=uuid.uuid4(),
             source_id=source_id,
             industry="FINANCE",
             sub_domains=["GENERAL"],
-            hotword_string="EBITDA:15.0",
-            initial_prompt_string="General Finance Primer"
+            hotword_string="EBITDA, CapEx",
+            initial_prompt_string="This recording discusses General."
         )
-        mock_domain_repo.get_glossary_by_source_id.return_value = mock_glossary
 
-        # 5. Setup JobManager to return a fake Transcript
-        fake_transcript = Transcript(id=uuid.uuid4(), source_id=source_id, segments=[])
-        mock_job_manager.run_job.return_value = fake_transcript
+        mock_job_manager.run_job.return_value = Transcript(id=uuid.uuid4(), source_id=source_id, segments=[])
 
-        # Execute
         result = phase.execute(vad_results)
 
-        # Assertions
         assert result.phase == PipelinePhase.TRANSCRIBE
         assert result.status == PhaseStatus.COMPLETED
         assert result.successful_count == 1
-        assert result.failed_count == 0
 
-        # Verify Job tracking triggered and passed the domain hints exactly as expected
+        mock_audio_extractor.get_extracted_audio_path.assert_called_once_with(source_id)
         mock_job_manager.run_job.assert_called_once_with(
-            mock_job_manager.run_job.call_args[0][0], # request
+            mock_job_manager.run_job.call_args[0][0],
             mock_transcription_api.process_audio,
             source_id=source_id,
-            audio_path="/vault/audio.wav",
+            audio_path="/vault/extracted_16k_mono.wav",
             language=settings.APPLIANCE_LANGUAGE,
-            hotwords="EBITDA:15.0",
-            initial_prompt="General Finance Primer", # FIX: Added to assertion
+            hotwords="EBITDA, CapEx",
+            initial_prompt="This recording discusses General.",
             release_after=False
         )
-
-        # Verify model was released after batch loop finished
         mock_async_service.trigger_unload.assert_called_once_with(fake_loaded_model, mock_adapter, flush=True)
 
-    def test_execute_skips_failed_vads(self, phase, mock_storage, mock_job_manager):
-        """Scenario: Items that failed Phase 4 should not be processed by Phase 5."""
-        vad_results = [
-            VadJobResult(source_id=uuid.uuid4(), success=False, error_message="CUDA OOM")
-        ]
+    def test_execute_fails_item_when_extracted_audio_is_missing(self, phase, mock_job_manager, mock_audio_extractor):
+        source_id = uuid.uuid4()
+        mock_audio_extractor.get_extracted_audio_path.side_effect = AudioExtractorError("No extracted audio")
 
-        result = phase.execute(vad_results)
+        result = phase.execute([VadJobResult(source_id=source_id, success=True, vad_map_id=uuid.uuid4())])
+
+        assert result.status == PhaseStatus.FAILED
+        assert result.items[0].success is False
+        assert "No extracted audio" in result.items[0].error_message
+        mock_job_manager.run_job.assert_not_called()
+
+    def test_execute_skips_failed_vads(self, phase, mock_audio_extractor, mock_job_manager):
+        """Scenario: Items that failed Phase 4 should not be processed by Phase 5."""
+        result = phase.execute([VadJobResult(source_id=uuid.uuid4(), success=False, error_message="CUDA OOM")])
 
         assert result.status == PhaseStatus.COMPLETED
         assert result.total_processed == 1
         assert result.successful_count == 0
         assert result.failed_count == 0
-        mock_storage.get_source.assert_not_called()
+        mock_audio_extractor.get_extracted_audio_path.assert_not_called()
         mock_job_manager.run_job.assert_not_called()

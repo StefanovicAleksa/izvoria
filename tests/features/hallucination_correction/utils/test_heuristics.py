@@ -54,19 +54,40 @@ class TestCorrectionHeuristicsEngine:
         assert is_hallucination is True
         assert reason == "vad"
 
-    def test_evaluate_segment_fails_no_speech_prob(self, vad_map, config):
-        """Whisper admits it is likely silence."""
-        segment = TranscriptSegment(start_sec=1.5, end_sec=2.5, text="...", no_speech_prob=0.99)
+    def test_evaluate_segment_fails_likely_silence_with_low_logprob(self, vad_map, config):
+        """Whisper admits it is likely silence AND the decode was low-confidence (Whisper's own silence rule)."""
+        segment = TranscriptSegment(start_sec=1.5, end_sec=2.5, text="...", no_speech_prob=0.99, avg_logprob=-1.5)
         is_hallucination, reason = CorrectionHeuristicsEngine.evaluate_segment(segment, vad_map, config)
         assert is_hallucination is True
         assert reason == "metadata"
 
-    def test_evaluate_segment_fails_compression_ratio(self, vad_map, config):
-        """Whisper stuck in a stutter loop."""
-        segment = TranscriptSegment(start_sec=1.5, end_sec=2.5, text="Thank you thank you thank you", compression_ratio=3.5)
+    def test_evaluate_segment_fails_repetition_loop_with_low_logprob(self, vad_map, config):
+        """Whisper stuck in a low-confidence stutter loop."""
+        segment = TranscriptSegment(start_sec=1.5, end_sec=2.5, text="Thank you thank you thank you",
+                                    compression_ratio=3.5, avg_logprob=-1.2)
         is_hallucination, reason = CorrectionHeuristicsEngine.evaluate_segment(segment, vad_map, config)
         assert is_hallucination is True
         assert reason == "metadata"
+
+    @pytest.mark.parametrize("metadata", [
+        {"no_speech_prob": 0.99},
+        {"avg_logprob": -1.8},
+        {"compression_ratio": 3.5},
+        {"no_speech_prob": 0.99, "compression_ratio": 3.5},
+    ])
+    def test_single_confidence_signal_does_not_delete_real_speech(self, vad_map, config, metadata):
+        """Accented or jargon-heavy real speech often trips one signal; it must survive (flagged, not deleted)."""
+        segment = TranscriptSegment(start_sec=1.5, end_sec=2.5, text="The echocardiogram was clear.", **metadata)
+
+        is_hallucination, reason = CorrectionHeuristicsEngine.evaluate_segment(segment, vad_map, config)
+
+        assert (is_hallucination, reason) == (False, "")
+        assert CorrectionHeuristicsEngine.is_low_confidence(segment, config) is True
+
+    def test_confident_segment_is_not_low_confidence(self, config):
+        segment = TranscriptSegment(start_sec=1.5, end_sec=2.5, text="Clear.", no_speech_prob=0.1,
+                                    avg_logprob=-0.2, compression_ratio=1.1)
+        assert CorrectionHeuristicsEngine.is_low_confidence(segment, config) is False
 
     @pytest.mark.parametrize("bad_text", [
         "Please like and subscribe to my channel.",

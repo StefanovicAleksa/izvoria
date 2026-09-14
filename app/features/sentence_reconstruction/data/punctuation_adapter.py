@@ -1,10 +1,11 @@
-# Canvas: punctuation_adapter_v4
+# Canvas: punctuation_adapter_v5
 # Path: app/features/sentence_reconstruction/data/punctuation_adapter.py
 
+import gc
 import os
+from typing import Any, Dict, List
+
 import torch
-from typing import List
-from transformers import pipeline
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.features.transcription.domain.entities import TranscriptWord
@@ -13,51 +14,44 @@ from app.features.sentence_reconstruction.domain.interfaces import IPunctuationA
 from app.features.sentence_reconstruction.utils.error_mapper import map_sentence_error
 from app.features.sentence_reconstruction.exceptions.assembly import TokenMismatchError
 
+# Labels the fullstop model emits; "0" means "no punctuation after this word"
+_PUNCTUATION_LABELS = {".", ",", "?", "-", ":"}
+
 
 class PunctuationAdapter(IPunctuationAdapter):
     """
     Adapter for the 'fullstop-punctuation-multilingual-base' Token Classification model.
-    Executed strictly on the GPU. Assigns deterministic punctuation tags to acoustic words.
+    Assigns deterministic punctuation tags to acoustic words, exactly one per word.
+
+    Words are fed pre-split (`is_split_into_words=True`) in overlapping windows and each word takes
+    the label of its LAST subtoken — the model puts the punctuation mark on the final piece of a
+    word, as its reference implementation (deepmultilingualpunctuation) reads it. The previous
+    character-offset mapping over aggregated entity groups took the first overlapping group, which
+    dropped punctuation on multi-subtoken words and could leave a literal "0" tag in the text.
     """
+
+    WINDOW_WORDS = 230
+    OVERLAP_WORDS = 5
+    MAX_TOKENS = 512
+
+    @staticmethod
+    def _load_components(model_path: str) -> Dict[str, Any]:
+        """FACTORY METHOD & LAZY IMPORT"""
+        from transformers import AutoTokenizer, AutoModelForTokenClassification
+
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        tokenizer = AutoTokenizer.from_pretrained(model_path, local_files_only=True)
+        hf_model = AutoModelForTokenClassification.from_pretrained(model_path, local_files_only=True)
+        hf_model.to(device)
+        hf_model.eval()
+        return {"tokenizer": tokenizer, "model": hf_model, "device": device}
 
     def load(self, manifest: ModelManifest) -> LoadedModel:
         try:
             if not os.path.exists(manifest.model_path):
                 raise FileNotFoundError(f"Punctuation model directory missing: {manifest.model_path}")
 
-            # Initialize the Hugging Face token classification pipeline.
-            # NOTE: local_files_only is enforced via HF_HUB_OFFLINE instead of a
-            # pipeline() kwarg. transformers>=5 never pops local_files_only out of
-            # its internal **kwargs, so passing it directly (top-level or via
-            # model_kwargs) leaks into the final pipeline_class(**kwargs) call and
-            # crashes TokenClassificationPipeline._sanitize_parameters(), which
-            # doesn't recognize it as a task parameter.
-            previous_offline_mode = os.environ.get("HF_HUB_OFFLINE")
-            os.environ["HF_HUB_OFFLINE"] = "1"
-            try:
-                pipe = pipeline(
-                    task="token-classification",
-                    model=manifest.model_path,
-                    tokenizer=manifest.model_path,
-                    device=0 if torch.cuda.is_available() else -1,
-                    aggregation_strategy="simple",
-                    # ==========================================================
-                    # CRITICAL FIX: Native Hugging Face GPU Chunking
-                    # ==========================================================
-                    # Forces the pipeline to chunk massive transcripts into 512-token
-                    # windows with a 16-token overlap (stride). This prevents silent
-                    # truncation and guarantees the entire video receives punctuation.
-                    stride=16,
-                    ignore_labels=["O"],
-                    # ==========================================================
-                )
-            finally:
-                if previous_offline_mode is None:
-                    os.environ.pop("HF_HUB_OFFLINE", None)
-                else:
-                    os.environ["HF_HUB_OFFLINE"] = previous_offline_mode
-
-            return LoadedModel(manifest=manifest, model_instance=pipe)
+            return LoadedModel(manifest=manifest, model_instance=self._load_components(manifest.model_path))
 
         except Exception as e:
             raise map_sentence_error(e) from e
@@ -66,6 +60,9 @@ class PunctuationAdapter(IPunctuationAdapter):
         try:
             if hasattr(model, "model_instance"):
                 del model.model_instance
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             return True
         except Exception as e:
             raise map_sentence_error(e) from e
@@ -75,49 +72,48 @@ class PunctuationAdapter(IPunctuationAdapter):
             if not words:
                 return []
 
-            classifier_pipeline = model.model_instance
+            components = model.model_instance
+            tokenizer = components["tokenizer"]
+            hf_model = components["model"]
+            device = components["device"]
+            id2label = hf_model.config.id2label
 
-            # 1. Reconstruct a flat string and record exact character offsets for each acoustic word
-            flat_text = ""
-            word_offsets = []  # Stores tuples of (start_char, end_char, TranscriptWord)
+            texts = [w.word.strip() for w in words]
+            tags = ["NONE"] * len(texts)
 
-            for w in words:
-                start_char = len(flat_text)
-                flat_text += w.word
-                end_char = len(flat_text)
-
-                word_offsets.append((start_char, end_char, w))
-                flat_text += " "  # Add space for the model to read normally
-
-            flat_text = flat_text.strip()
-
-            # 2. Run the Neural Token Classifier (Zero hallucination text generation)
-            predictions = classifier_pipeline(flat_text)
-
-            # 3. Deterministic Offset Mapping
-            punctuated_words: List[PunctuatedWord] = []
-
-            # We iterate through our perfect Whisper acoustic words
-            for start_char, end_char, acoustic_word in word_offsets:
-                assigned_tag = "0"  # "0" is the 'fullstop' model's default tag for "No Punctuation"
-
-                # Find the pipeline prediction that corresponds to this exact character range
-                for pred in predictions:
-                    # If the predicted word overlaps significantly with our acoustic word's character space
-                    overlap_start = max(start_char, pred["start"])
-                    overlap_end = min(end_char, pred["end"])
-
-                    if overlap_end > overlap_start:
-                        assigned_tag = pred["entity_group"]
-
-                        if assigned_tag == "0":
-                            assigned_tag = "NONE"
+            start = 0
+            while start < len(texts):
+                window_size = self.WINDOW_WORDS
+                while True:
+                    window = texts[start:start + window_size]
+                    encoding = tokenizer(window, is_split_into_words=True, return_tensors="pt", truncation=False)
+                    if encoding["input_ids"].shape[1] <= self.MAX_TOKENS or window_size <= 1:
                         break
+                    # Unusually token-heavy words: shrink the window rather than truncating labels away
+                    window_size = max(1, int(window_size * 0.75))
 
-                punctuated_words.append(PunctuatedWord(
-                    acoustic_word=acoustic_word,
-                    punctuation_tag=assigned_tag
-                ))
+                with torch.inference_mode():
+                    inputs = {key: value.to(device) for key, value in encoding.items()}
+                    logits = hf_model(**inputs).logits[0]
+                predicted_ids = logits.argmax(dim=-1).tolist()
+
+                last_label_per_word: Dict[int, int] = {}
+                for token_idx, word_idx in enumerate(encoding.word_ids(0)):
+                    if word_idx is not None:
+                        last_label_per_word[word_idx] = predicted_ids[token_idx]
+
+                # Later windows overwrite the overlap words: there they have right-hand context,
+                # which is what decides the punctuation after a word.
+                for word_idx, label_id in last_label_per_word.items():
+                    tags[start + word_idx] = self._normalize_label(id2label.get(label_id, "0"))
+
+                if start + len(window) >= len(texts):
+                    break
+                start += max(1, len(window) - self.OVERLAP_WORDS)
+
+            punctuated_words = [
+                PunctuatedWord(acoustic_word=word, punctuation_tag=tag) for word, tag in zip(words, tags)
+            ]
 
             if len(punctuated_words) != len(words):
                 raise TokenMismatchError(
@@ -128,3 +124,7 @@ class PunctuationAdapter(IPunctuationAdapter):
 
         except Exception as e:
             raise map_sentence_error(e) from e
+
+    @staticmethod
+    def _normalize_label(label: str) -> str:
+        return label if label in _PUNCTUATION_LABELS else "NONE"

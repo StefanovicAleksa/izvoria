@@ -52,9 +52,13 @@ class TestDomainPhoneticCorrectionAPIIntegration:
             resource_path.write_text(json.dumps(mock_manifest))
 
         target_path.parent.mkdir(parents=True, exist_ok=True)
+        original = target_path.read_bytes() if target_path.exists() else None
         shutil.copy(resource_path, target_path)
         yield "MEDICAL"
-        if target_path.exists():
+        # Restore the application's tracked glossary instead of deleting it
+        if original is not None:
+            target_path.write_bytes(original)
+        elif target_path.exists():
             target_path.unlink()
 
     @pytest.fixture

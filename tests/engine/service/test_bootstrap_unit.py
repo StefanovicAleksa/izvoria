@@ -23,9 +23,14 @@ class TestOnyxBootstrapperUnit:
         except Exception as e:
             pytest.fail(f"Bootstrapper failed to assemble dependencies: {e}")
 
-        assert isinstance(engine, OnyxEngine)
-        assert engine._media_pipeline is not None
-        assert engine._audio_pipeline is not None
-        assert engine._live_pipeline is not None
-        assert engine._live_verified_pipeline is not None
-        assert engine._live_qa_pipeline is not None
+        try:
+            assert isinstance(engine, OnyxEngine)
+            assert engine._media_pipeline is not None
+            assert engine._audio_pipeline is not None
+            assert engine._live_pipeline is not None
+            assert engine._live_verified_pipeline is not None
+            assert engine._live_qa_pipeline is not None
+        finally:
+            # The container starts a real BackgroundModelWorker whose telemetry thread polls
+            # torch.cuda every 0.5s; left running, it leaks into later tests that patch torch.cuda.
+            engine._async_service.shutdown()

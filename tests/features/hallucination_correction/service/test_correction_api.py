@@ -96,3 +96,22 @@ class TestCorrectionAPI:
 
         with pytest.raises(CorrectionDatabaseError):
             api.process_transcript(source_id)
+
+    def test_process_transcript_flags_low_confidence_segments_instead_of_deleting(self, api, mocks):
+        source_id = uuid.uuid4()
+        seg_hard = TranscriptSegment(start_sec=1.0, end_sec=2.0, text="Sumatriptan fifty milligrams", avg_logprob=-1.4)
+        seg_clear = TranscriptSegment(start_sec=3.0, end_sec=4.0, text="Thank you", avg_logprob=-0.2)
+        input_transcript = Transcript(source_id=source_id, segments=[seg_hard, seg_clear])
+
+        mocks["transcript_repo"].get_by_source_id.return_value = input_transcript
+        mocks["vad_repo"].get_map_by_source_id.return_value = VadMap(
+            source_id=source_id, segments=[VadSegment(start_sec=0.0, end_sec=10.0, confidence=0.9)])
+        mocks["transcript_repo"].update.side_effect = lambda t: t
+
+        result_transcript, telemetry = api.process_transcript(source_id)
+
+        assert telemetry.removed_by_metadata == 0
+        assert telemetry.flagged_low_confidence == 1
+        assert [(s.text, s.low_confidence) for s in result_transcript.segments] == [
+            ("Sumatriptan fifty milligrams", True), ("Thank you", False)
+        ]

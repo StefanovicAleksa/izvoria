@@ -8,7 +8,7 @@ from app.core.jobs.domain.entities import JobRequest
 from app.core.jobs.domain.enums import JobType
 
 from app.features.domain_adaptation.service.adaptation_api import DomainAdaptationAPI
-from app.features.storage.service.storage_api import StorageAPI
+from app.features.audio_extractor.service.extractor_api import AudioExtractorAPI
 from app.features.vad.domain.interfaces import IVadRepository
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
@@ -20,12 +20,12 @@ class DomainAdaptationPhase:
             self,
             job_manager: JobManager,
             adaptation_api: DomainAdaptationAPI,
-            storage_api: StorageAPI,
+            audio_extractor: AudioExtractorAPI,
             vad_repo: IVadRepository
     ):
         self._job_manager = job_manager
         self._api = adaptation_api
-        self._storage = storage_api
+        self._audio_extractor = audio_extractor
         self._vad_repo = vad_repo
 
     def execute(self, vad_results: List[VadJobResult]) -> PhaseBatchResult:
@@ -43,10 +43,11 @@ class DomainAdaptationPhase:
 
             source_id = item.source_id
 
-            # Fetch the original Source to find its linked audio file
-            source = self._storage.get_source(source_id)
-            if not source or not source.file:
-                err_msg = f"Cannot adapt domain: Audio file for Source {source_id} missing."
+            # Sample the normalized 16kHz mono WAV the VAD map was computed from
+            try:
+                audio_path = self._audio_extractor.get_extracted_audio_path(source_id)
+            except Exception as e:
+                err_msg = f"Cannot adapt domain: extracted audio for Source {source_id} missing. {e}"
                 results.append(DomainAdaptationJobResult(source_id=source_id, success=False, error_message=err_msg))
                 errors.append(err_msg)
                 failed_count += 1
@@ -64,7 +65,7 @@ class DomainAdaptationPhase:
             request = JobRequest(
                 job_type=JobType.DOMAIN_ADAPTATION,
                 source_id=source_id,
-                input_params={"audio_path": source.file.file_path}
+                input_params={"audio_path": audio_path}
             )
 
             try:
@@ -74,7 +75,7 @@ class DomainAdaptationPhase:
                     request,
                     self._api.process_domain_adaptation,
                     source_id=source_id,
-                    audio_path=source.file.file_path,
+                    audio_path=audio_path,
                     vad_map=vad_map
                 )
 

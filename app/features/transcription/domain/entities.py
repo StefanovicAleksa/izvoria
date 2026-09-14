@@ -39,6 +39,10 @@ class TranscriptSegment(BaseModel):
     avg_logprob: Optional[float] = None
     compression_ratio: Optional[float] = None
 
+    # Set by hallucination correction when a single Whisper confidence signal looks bad but the
+    # segment is not a clear hallucination: kept, but marked for downstream consumers.
+    low_confidence: bool = Field(default=False)
+
     model_config = ConfigDict(frozen=True)
 
 

@@ -75,6 +75,9 @@ class CorrectionAPI(IHallucinationCorrectionAPI):
                         telemetry.removed_by_metadata += 1
                     elif reason == "regex":
                         telemetry.removed_by_regex += 1
+                elif CorrectionHeuristicsEngine.is_low_confidence(segment, self._config):
+                    telemetry.flagged_low_confidence += 1
+                    surviving_segments.append(segment.model_copy(update={"low_confidence": True}))
                 else:
                     surviving_segments.append(segment)
 
