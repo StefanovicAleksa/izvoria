@@ -1,7 +1,9 @@
 # Canvas: test_error_mapper_v3
 # Path: tests/features/qa_generation/utils/test_error_mapper.py
 
+import json
 import pytest
+from pydantic import ValidationError
 
 from app.core.model_manager.exceptions.base import ModelManagerError
 from app.features.qa_generation.utils.error_mapper import map_qa_error
@@ -12,6 +14,10 @@ class TestQAGenerationErrorMapper:
     @pytest.mark.parametrize(
         "input_exception, expected_output_type",
         [
+            # 0. Self-Critique JSON hallucinations
+            (json.JSONDecodeError("Expecting value", "", 0), exc.JSONCritiqueParseError),
+            (ValidationError.from_exception_data("Mock Error", []), exc.JSONCritiqueParseError),
+
             # 1. Hardware/VRAM limits
             (RuntimeError("CUDA out of memory"), exc.GemmaOOMError),
             (MemoryError("Out of memory"), exc.GemmaOOMError),

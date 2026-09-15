@@ -3,6 +3,7 @@
 
 import os
 import sys
+import uuid
 import logging
 
 # CRITICAL FIX: Ensure PyTorch uses expandable segments to prevent fragmentation crashes.
@@ -58,6 +59,57 @@ def print_search_results(results, mode_name: str):
         print("-" * 80)
 
 
+def print_deep_research_result(result):
+    if result.qa_response:
+        print(f"\n[ONYX AI - DEEP RESEARCH]\n{result.qa_response.generated_answer}")
+        print(f"\n[CITATIONS USED: {len(result.qa_response.citations)}]")
+        for cit in result.qa_response.citations:
+            print(f"  {cit.doc_id} {cit.physical_path or 'No physical file resolved'}")
+            print(f"         Timestamp: {cit.start_sec}s - {cit.end_sec}s")
+        if result.critique_unresolved:
+            print("\n[NOTE] Self-critique had unresolved concerns about this answer's grounding.")
+    else:
+        print(f"\n[ONYX AI - CLARIFICATION NEEDED]\n{result.clarification_question}")
+
+    print(f"\n[REASONING TRACE: {result.total_iterations} iteration(s)]")
+    for step in result.iteration_trace:
+        print(f"  Iter {step.iteration}: {step.decision} - {step.interim_analysis[:150]}")
+        if step.refined_query:
+            print(f"    -> refined query: {step.refined_query}")
+
+
+def run_deep_research_with_clarifications(engine, session_id, original_question, max_clarification_rounds=3):
+    """
+    chat_deep_research()'s intra-question state (evidence pool, decision history) is ephemeral
+    and discarded once the call returns, so a clarification round can't resume mid-loop — it
+    re-asks with the original question plus every clarification given so far appended, and lets
+    the Reasoner start its reasoning fresh with that fuller picture.
+    """
+    clarifications = []
+    for round_num in range(max_clarification_rounds + 1):
+        conversation = original_question
+        for i, clarification in enumerate(clarifications, 1):
+            conversation += f"\n\n[Clarification {i}] {clarification}"
+
+        print("\n[SYSTEM] Running Deep Research Reasoning Loop (this may take a while)...")
+        query = SearchQuery(prompt=conversation, limit=5)
+        result = engine.chat_deep_research(session_id, query)
+        print_deep_research_result(result)
+
+        if result.qa_response is not None:
+            return
+
+        if round_num >= max_clarification_rounds:
+            print(f"\n[SYSTEM] Reached the clarification limit ({max_clarification_rounds} rounds) without a grounded answer.")
+            return
+
+        answer = input("\n[Your clarification] > (leave blank to cancel) ").strip()
+        if not answer:
+            print("\n[SYSTEM] Cancelled.")
+            return
+        clarifications.append(answer)
+
+
 def main():
     print_header()
     print("[SYSTEM] Initializing hardware state and preloading UI models...")
@@ -69,6 +121,9 @@ def main():
         print(f"\n[FATAL STARTUP ERROR] Appliance failed to boot: {e}")
         sys.exit(1)
 
+    # One deep-research session per CLI run, so consecutive questions share conversational memory.
+    deep_research_session_id = uuid.uuid4()
+
     try:
         while True:
             print("\nAVAILABLE OPERATIONS:")
@@ -78,8 +133,9 @@ def main():
             print("  4. Verified Search [SLM Hallucination Scrubber]")
             print("  5. Chat with Data [RAG -> LLM Synthesis]")
             print("  6. Shutdown Appliance")
+            print("  7. Deep Research Chat [Multi-Pass Reasoning]")
 
-            choice = input("\n[Select Option 1-6] > ").strip()
+            choice = input("\n[Select Option 1-7] > ").strip()
 
             try:
                 if choice == '1':
@@ -123,6 +179,11 @@ def main():
                         for cit in response.citations:
                             print(f"  {cit.doc_id} {cit.physical_path or 'No physical file resolved'}")
                             print(f"         Timestamp: {cit.start_sec}s - {cit.end_sec}s")
+
+                elif choice == '7':
+                    prompt = input("[Enter your research question] > ").strip()
+                    if prompt:
+                        run_deep_research_with_clarifications(engine, deep_research_session_id, prompt)
 
                 elif choice == '6' or choice.lower() in ['exit', 'quit']:
                     print("\n[SYSTEM] Initiating graceful shutdown sequence...")

@@ -5,6 +5,7 @@ import uuid
 from typing import List, Optional, Any
 from pydantic import BaseModel, Field, ConfigDict
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
+from app.features.qa_generation.domain.entities import QAResponse
 
 class ScanJobResult(BaseModel):
     target_directory: str
@@ -181,6 +182,34 @@ class QAGenerationJobResult(BaseModel):
     generated_answer_preview: Optional[str] = None
     citations_count: int = 0
     error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
+# NEW: State tracker for one Deep Research Reasoner turn
+class ReasonerJobResult(BaseModel):
+    search_id: uuid.UUID
+    success: bool
+    decision: Optional[str] = None
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
+# NEW: Deep Research pipeline result — the engine returns this directly as chat_deep_research()'s
+# response type (mirrors how OnyxEngine.chat() already returns QAResponse, a feature entity,
+# unchanged; this lives in orchestration rather than app/engine/domain/entities.py so the
+# pipeline that builds it doesn't have to depend upward on the engine layer).
+class DeepResearchIterationTrace(BaseModel):
+    iteration: int
+    decision: str
+    interim_analysis: str
+    refined_query: Optional[str] = None
+    chunks_added: int = 0
+    model_config = ConfigDict(frozen=True)
+
+class DeepResearchResponse(BaseModel):
+    qa_response: Optional[QAResponse] = None
+    clarification_question: Optional[str] = None
+    iteration_trace: List[DeepResearchIterationTrace] = Field(default_factory=list)
+    critique_unresolved: bool = False
+    total_iterations: int = 0
     model_config = ConfigDict(frozen=True)
 
 class PhaseBatchResult(BaseModel):

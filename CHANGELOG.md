@@ -4,6 +4,14 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Deep Research: multi-pass reasoning chat, opt-in alongside `chat()`
+
+- **New `chat_deep_research()` entrypoint** (`app/features/qa_reasoning/` (new), `app/features/qa_generation/` (`critique_answer`/`generate_with_critique`, additive), `app/features/session_memory/` (new), `app/orchestration/service/phases/reasoner_phase.py` (new), `app/orchestration/service/phases/qa_generation_phase.py` (`execute_with_critique`, additive), `app/orchestration/service/pipelines/live_deep_research_pipeline.py` (new), `app/engine/service/onyx_engine.py`, `app/engine/service/bootstrap.py`, `app/main.py`).
+  - Implements the design in `AGENT_DESIGN.md`: a Qwen2.5-7B-Instruct Reasoner (`ModelType.QA_REASONER`, its own `ModelType` despite reusing the same GGUF file as `ASR_PHASE_3`/`VISUAL_CUE_DETECTION`) does chain-of-thought reasoning over an accumulating, chunk-id-deduped evidence pool and picks `ANSWER_READY` / `REFINE_QUERY` / `ASK_CLARIFICATION` each turn. `REFINE_QUERY` re-runs the existing, untouched retrieve → rerank → scrub stack. `ANSWER_READY` hands off to Gemma, which drafts an answer and immediately self-critiques it in the same model acquisition (`generate_with_critique`); a `NEEDS_MORE_EVIDENCE` verdict loops back to the Reasoner with the gap description, bounded by `DEEP_RESEARCH_MAX_ITERATIONS`/`DEEP_RESEARCH_MAX_CRITIQUE_RETRIES`.
+  - `LiveDeepResearchPipeline` is the first looping/branching pipeline in the codebase — every other `Live*Pipeline` runs its phases exactly once in a fixed sequence. It reuses the same `RagRetrievalPhase`/`RagRerankingPhase`/`RetrievalScrubberPhase`/`QAGenerationPhase` instances `LiveQAPipeline` already uses.
+  - Cross-question memory (what the user asked/was answered last turn, fed into the Reasoner's first iteration) is a new minimal `session_turns` table — one row per turn, only the most recent read back — separate from the intra-question evidence pool, which is ephemeral and discarded when the call returns.
+  - Nothing about `LiveQAPipeline`, `QA_SYSTEM_PROMPT`, or the existing single-pass `chat()`/`generate()`/`scrub_retrieved_chunks()`/`search()` call sites changed — this is purely additive, reached via CLI option 7 (`app/main.py`).
+
 ## Chat citations resolve to their clips
 
 - **Chat citations point to the same clips as search results** (`qa_generation/domain/entities.py`, `qa_generation/utils/citation_parser.py`, `engine/service/onyx_engine.py`, `app/main.py`).

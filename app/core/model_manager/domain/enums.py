@@ -39,3 +39,6 @@ class ModelType(str, Enum):
     RETRIEVAL_SCRUBBER = "retrieval_scrubber"
 
     QA_GENERATION = "qa_generation"
+
+    # NEW: Deep Research reasoning loop
+    QA_REASONER = "qa_reasoner"

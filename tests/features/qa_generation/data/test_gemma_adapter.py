@@ -1,11 +1,14 @@
 # Canvas: test_gemma_adapter_v4
 # Path: tests/features/qa_generation/data/test_gemma_adapter.py
 
+import json
 import pytest
 from unittest.mock import patch, MagicMock
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.enums import ModelType
 from app.features.qa_generation.data.gemma_adapter import GemmaGenerationAdapter
+from app.features.qa_generation.domain.enums import CritiqueVerdict
+from app.features.qa_generation.exceptions.pipeline import JSONCritiqueParseError
 
 
 class TestGemmaGenerationAdapter:
@@ -59,3 +62,42 @@ class TestGemmaGenerationAdapter:
 
         assert response == "The patient has a fracture."
         mock_llm.create_chat_completion.assert_called_once()
+
+    def test_critique_answer_sufficient(self, manifest):
+        adapter = GemmaGenerationAdapter()
+        mock_llm = MagicMock()
+        mock_llm.create_chat_completion.return_value = {
+            "choices": [{"message": {"content": json.dumps({"verdict": "sufficient", "gap_description": None})}}]
+        }
+        loaded = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        critique = adapter.critique_answer(loaded, "query", "draft answer", "evidence")
+
+        assert critique.verdict == CritiqueVerdict.SUFFICIENT
+        assert critique.gap_description is None
+
+    def test_critique_answer_needs_more_evidence(self, manifest):
+        adapter = GemmaGenerationAdapter()
+        mock_llm = MagicMock()
+        mock_llm.create_chat_completion.return_value = {
+            "choices": [{"message": {"content": json.dumps(
+                {"verdict": "needs_more_evidence", "gap_description": "Claim X is unsupported."}
+            )}}]
+        }
+        loaded = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        critique = adapter.critique_answer(loaded, "query", "draft answer", "evidence")
+
+        assert critique.verdict == CritiqueVerdict.NEEDS_MORE_EVIDENCE
+        assert critique.gap_description == "Claim X is unsupported."
+
+    def test_critique_answer_raises_on_unrecognized_verdict(self, manifest):
+        adapter = GemmaGenerationAdapter()
+        mock_llm = MagicMock()
+        mock_llm.create_chat_completion.return_value = {
+            "choices": [{"message": {"content": json.dumps({"verdict": "maybe", "gap_description": None})}}]
+        }
+        loaded = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        with pytest.raises(JSONCritiqueParseError):
+            adapter.critique_answer(loaded, "query", "draft answer", "evidence")

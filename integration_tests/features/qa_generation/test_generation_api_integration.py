@@ -179,3 +179,28 @@ class TestQAGenerationAPIIntegration:
         assert citation.physical_path == seeded_db_context["physical_path"]
         assert citation.start_sec == 540.0
         assert citation.end_sec == 550.0
+
+    def test_generate_with_critique_end_to_end(self, live_api: QAGenerationAPI, seeded_db_context: dict):
+        """Draft + self-critique in one model acquisition, against the same seeded evidence."""
+        retrieved_chunk = RetrievedChunk(
+            chunk_id=seeded_db_context["chunk_id"],
+            source_id=seeded_db_context["source_id"],
+            text_payload="The defendant wearing a red jacket entered the bank at exactly 09:00 AM.",
+            raw_text="[Speaker_0 @ 00:09:00]: The defendant wearing a red jacket entered the bank at exactly 09:00 AM.",
+            speaker_labels=["Speaker_0"],
+            start_sec=540.0,
+            end_sec=550.0,
+            relevance_score=0.95
+        )
+        object.__setattr__(retrieved_chunk, 'physical_path', seeded_db_context["physical_path"])
+
+        print("\n[DEBUG] Acquiring VRAM lock for Gemma 4 E4B draft + self-critique...")
+        response, critique = live_api.generate_with_critique(
+            user_query="What time did the defendant enter the bank, and what were they wearing?",
+            retrieved_chunks=[retrieved_chunk],
+            release_after=True
+        )
+
+        assert response.inference_time_ms > 0
+        assert "[Doc 1]" in response.generated_answer
+        assert critique.verdict is not None

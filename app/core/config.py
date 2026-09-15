@@ -190,6 +190,13 @@ class Settings(BaseSettings):
     QA_GENERATION_MODEL_PATH: str = "models/google_gemma-4-E4B-it-Q4_K_M.gguf"
     QA_GENERATION_VRAM_REQUIREMENT_MB: float = 4500.0
 
+    # Deep Research reasoning loop: reuses the same Qwen2.5-7B weights as ASR_PHASE_3/VISUAL_CUE_DETECTION,
+    # but under its own ModelType/n_ctx since residency is keyed on (model_type, model_path).
+    QA_REASONER_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+    QA_REASONER_VRAM_REQUIREMENT_MB: float = 5000.0
+    DEEP_RESEARCH_MAX_ITERATIONS: int = 3
+    DEEP_RESEARCH_MAX_CRITIQUE_RETRIES: int = 1
+
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,
         env_ignore_empty=True,

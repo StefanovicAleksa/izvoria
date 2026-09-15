@@ -40,3 +40,4 @@ class JobType(str, Enum):
     RAG_RERANKING = "rag_reranking"
     RETRIEVAL_SCRUBBING = "retrieval_scrubbing"
     QA_GENERATION = "qa_generation"
+    DEEP_RESEARCH_REASONING = "deep_research_reasoning"

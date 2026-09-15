@@ -24,14 +24,16 @@ from app.features.storage.service.storage_api import StorageAPI
 from app.features.storage.domain.entities import SourceType
 from app.features.rag_retrieval.domain.entities import SearchQuery, SearchResult
 from app.features.qa_generation.domain.entities import QAResponse
+from app.features.session_memory.service.session_memory_api import SessionMemoryAPI
 
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.service.pipelines.batch_audio_pipeline import BatchAudioPipeline
 from app.orchestration.service.pipelines.live_retrieval_pipeline import LiveRetrievalPipeline
 from app.orchestration.service.pipelines.live_verified_retrieval_pipeline import LiveVerifiedRetrievalPipeline
 from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
+from app.orchestration.service.pipelines.live_deep_research_pipeline import LiveDeepResearchPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
-from app.orchestration.domain.entities import PhaseBatchResult
+from app.orchestration.domain.entities import PhaseBatchResult, DeepResearchResponse
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +52,9 @@ class OnyxEngine(IOnyxEngine):
             live_pipeline: LiveRetrievalPipeline,
             live_verified_pipeline: LiveVerifiedRetrievalPipeline,
             live_qa_pipeline: LiveQAPipeline,
-            storage_api: StorageAPI
+            storage_api: StorageAPI,
+            live_deep_research_pipeline: Optional[LiveDeepResearchPipeline] = None,
+            session_memory_api: Optional[SessionMemoryAPI] = None
     ):
         self._async_service = async_model_service
         self._media_pipeline = media_pipeline
@@ -59,6 +63,8 @@ class OnyxEngine(IOnyxEngine):
         self._live_verified_pipeline = live_verified_pipeline
         self._live_qa_pipeline = live_qa_pipeline
         self._storage_api = storage_api
+        self._live_deep_research_pipeline = live_deep_research_pipeline
+        self._session_memory_api = session_memory_api
 
         self._state = EngineState.OFFLINE
         self._state_lock = threading.RLock()
@@ -228,6 +234,29 @@ class OnyxEngine(IOnyxEngine):
         except Exception as e:
             self._release_models_after_failure()
             raise map_engine_error(e, context=f"Chat QA Generation [{query.prompt}]")
+
+    def chat_deep_research(self, session_id: uuid.UUID, query: SearchQuery) -> DeepResearchResponse:
+        self._enforce_online_state()
+        if self._live_deep_research_pipeline is None or self._session_memory_api is None:
+            raise EngineOfflineError("Deep Research chat is not wired into this engine instance.")
+
+        try:
+            search_id = uuid.uuid4()
+            prior_context = self._session_memory_api.get_prior_context(session_id)
+            result = self._live_deep_research_pipeline.execute_deep_research(search_id, query, prior_context)
+
+            if result.qa_response is not None:
+                self._resolve_citation_paths(result.qa_response)
+                self._session_memory_api.record_turn(session_id, query.prompt, result.qa_response.generated_answer)
+            else:
+                self._session_memory_api.record_turn(
+                    session_id, query.prompt, f"[Clarification requested] {result.clarification_question}"
+                )
+
+            return result
+        except Exception as e:
+            self._release_models_after_failure()
+            raise map_engine_error(e, context=f"Deep Research Chat [{query.prompt}]")
 
     def _release_models_after_failure(self) -> None:
         """A failed live call must not leave a model resident for the next request to wait on."""

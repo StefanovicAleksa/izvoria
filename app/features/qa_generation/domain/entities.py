@@ -5,6 +5,8 @@ import uuid
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, ConfigDict
 
+from app.features.qa_generation.domain.enums import CritiqueVerdict
+
 
 class QACitation(BaseModel):
     """
@@ -43,5 +45,18 @@ class RAGContextBlock(BaseModel):
     """
     formatted_text: str = Field(..., description="The concatenated string of all surviving chunks with [Doc X] tags.")
     doc_mapping: Dict[str, uuid.UUID] = Field(..., description="Internal map connecting [Doc X] strings to chunk UUIDs.")
+
+    model_config = ConfigDict(frozen=True)
+
+
+class AnswerCritique(BaseModel):
+    """
+    The self-critique's verdict on a draft answer: does every claim match the text of the
+    chunk it cites, and does the draft fully address the original question?
+    """
+    verdict: CritiqueVerdict
+    gap_description: Optional[str] = Field(
+        default=None, description="Set iff verdict is NEEDS_MORE_EVIDENCE: what's missing or unsupported."
+    )
 
     model_config = ConfigDict(frozen=True)

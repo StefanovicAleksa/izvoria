@@ -8,11 +8,13 @@ from .inference import (
     ContextWindowExceededError,
     LLMInferenceCrashError
 )
+from .pipeline import JSONCritiqueParseError
 
 __all__ = [
     "QAGenerationError",
     "GenerationModelError",
     "GemmaOOMError",
     "ContextWindowExceededError",
-    "LLMInferenceCrashError"
+    "LLMInferenceCrashError",
+    "JSONCritiqueParseError"
 ]

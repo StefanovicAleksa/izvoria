@@ -5,6 +5,7 @@ from abc import ABC, abstractmethod
 
 from app.core.model_manager.domain.entities import LoadedModel, ModelManifest
 from app.core.model_manager.domain.interfaces import IModelLoader
+from app.features.qa_generation.domain.entities import AnswerCritique
 
 
 class IQAGenerationAdapter(IModelLoader, ABC):
@@ -34,5 +35,20 @@ class IQAGenerationAdapter(IModelLoader, ABC):
         """
         Executes the inference using the assembled strict context prompt.
         Returns the raw generated string containing citation tags.
+        """
+        pass
+
+    @abstractmethod
+    def critique_answer(
+        self,
+        model: LoadedModel,
+        user_query: str,
+        draft_answer: str,
+        evidence_block: str
+    ) -> AnswerCritique:
+        """
+        Asks the same loaded model whether every claim in draft_answer matches the text of the
+        chunk it cites, and whether the draft fully addresses user_query. Called on the same
+        LoadedModel immediately after generate_answer, within one model acquisition.
         """
         pass

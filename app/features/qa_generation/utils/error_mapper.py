@@ -1,7 +1,10 @@
 # Canvas: qa_generation_error_mapper_v1
 # Path: app/features/qa_generation/utils/error_mapper.py
 
+import json
 import logging
+from pydantic import ValidationError
+
 from app.core.model_manager.exceptions.base import ModelManagerError
 from app.features.qa_generation import exceptions as exc
 
@@ -16,6 +19,12 @@ def map_qa_error(e: Exception, context: str = "") -> exc.QAGenerationError:
         return e
 
     error_msg = str(e).lower()
+
+    if isinstance(e, (json.JSONDecodeError, ValidationError)) or "json" in error_msg:
+        return exc.JSONCritiqueParseError(
+            f"Self-critique verdict was unparseable JSON: {str(e)} | Context: {context}",
+            original_exception=e
+        )
 
     if "out of memory" in error_msg or "cuda_error_out_of_memory" in error_msg:
         return exc.GemmaOOMError(

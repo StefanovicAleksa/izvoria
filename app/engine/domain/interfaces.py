@@ -1,12 +1,14 @@
 # Canvas: engine_interfaces_v3
 # Path: app/engine/domain/interfaces.py
 
+import uuid
 from abc import ABC, abstractmethod
 
 from app.engine.domain.enums import EngineState
 from app.engine.domain.entities import IngestionReport
 from app.features.rag_retrieval.domain.entities import SearchQuery, SearchResult
 from app.features.qa_generation.domain.entities import QAResponse
+from app.orchestration.domain.entities import DeepResearchResponse
 
 class IOnyxEngine(ABC):
     """
@@ -63,6 +65,17 @@ class IOnyxEngine(ABC):
         """
         Executes an end-to-end Chat pipeline:
         Hybrid Search -> SLM Semantic Scrubbing -> LLM Final Generation.
+        """
+        pass
+
+    @abstractmethod
+    def chat_deep_research(self, session_id: uuid.UUID, query: SearchQuery) -> DeepResearchResponse:
+        """
+        Multi-pass reasoning chat: a Qwen2.5-7B Reasoner loops against retrieval/rerank/scrub
+        until ready to answer or in need of clarification, then Gemma drafts an answer and
+        immediately self-critiques it (same model acquisition), looping back for more evidence
+        if under-supported. Bounded by DEEP_RESEARCH_MAX_ITERATIONS / DEEP_RESEARCH_MAX_CRITIQUE_RETRIES.
+        Opt-in and purely additive to chat() — nothing about LiveQAPipeline changes.
         """
         pass
 

@@ -100,6 +100,12 @@ from app.features.retrieval_hallucination_scrubber.service.scrubber_api import R
 from app.features.qa_generation.data.gemma_adapter import GemmaGenerationAdapter
 from app.features.qa_generation.service.generation_api import QAGenerationAPI
 
+from app.features.qa_reasoning.data.qwen_reasoner_adapter import QwenReasonerAdapter
+from app.features.qa_reasoning.service.reasoning_api import ReasoningAPI
+
+from app.features.session_memory.data.repositories import SessionMemoryRepository
+from app.features.session_memory.service.session_memory_api import SessionMemoryAPI
+
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
 from app.orchestration.service.phases.extract_audio_phase import ExtractAudioPhase
@@ -123,12 +129,14 @@ from app.orchestration.service.phases.rag_retrieval_phase import RagRetrievalPha
 from app.orchestration.service.phases.rag_reranking_phase import RagRerankingPhase
 from app.orchestration.service.phases.retrieval_scrubber_phase import RetrievalScrubberPhase
 from app.orchestration.service.phases.qa_generation_phase import QAGenerationPhase
+from app.orchestration.service.phases.reasoner_phase import ReasonerPhase
 
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.service.pipelines.batch_audio_pipeline import BatchAudioPipeline
 from app.orchestration.service.pipelines.live_retrieval_pipeline import LiveRetrievalPipeline
 from app.orchestration.service.pipelines.live_verified_retrieval_pipeline import LiveVerifiedRetrievalPipeline
 from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
+from app.orchestration.service.pipelines.live_deep_research_pipeline import LiveDeepResearchPipeline
 
 from app.engine.domain.interfaces import IOnyxEngine
 from app.engine.service.onyx_engine import OnyxEngine
@@ -277,6 +285,13 @@ class OnyxBootstrapper:
         qa_adapter = GemmaGenerationAdapter()
         qa_api = QAGenerationAPI(adapter=qa_adapter, orchestrator=orchestrator)
 
+        # --- Feature: Deep Research (Reasoner + Session Memory) ---
+        reasoner_adapter = QwenReasonerAdapter()
+        reasoning_api = ReasoningAPI(adapter=reasoner_adapter, orchestrator=orchestrator)
+
+        session_memory_repo = SessionMemoryRepository(db_manager)
+        session_memory_api = SessionMemoryAPI(session_memory_repo)
+
         # --- Orchestration: Common Batch Phases ---
         scan_phase = ScanPhase(job_manager, scanner)
         ingest_phase = IngestPhase(job_manager, storage_api)
@@ -330,6 +345,7 @@ class OnyxBootstrapper:
         rag_reranking_phase = RagRerankingPhase(job_manager, rerank_api, async_service, reranker_adapter)
         retrieval_scrubber_phase = RetrievalScrubberPhase(job_manager, scrubber_api, async_service, scrubber_adapter)
         qa_generation_phase = QAGenerationPhase(job_manager, qa_api, async_service, qa_adapter)
+        reasoner_phase = ReasonerPhase(job_manager, reasoning_api, async_service, reasoner_adapter)
 
         # --- Orchestration: Pipelines ---
         media_pipeline = BatchMediaPipeline(
@@ -363,6 +379,16 @@ class OnyxBootstrapper:
                                           scrubber_phase=retrieval_scrubber_phase,
                                           qa_generation_phase=qa_generation_phase)
 
+        live_deep_research_pipeline = LiveDeepResearchPipeline(
+            reasoner_phase=reasoner_phase,
+            retrieval_phase=rag_retrieval_phase,
+            reranking_phase=rag_reranking_phase,
+            scrubber_phase=retrieval_scrubber_phase,
+            qa_generation_phase=qa_generation_phase,
+            max_iterations=settings.DEEP_RESEARCH_MAX_ITERATIONS,
+            max_critique_retries=settings.DEEP_RESEARCH_MAX_CRITIQUE_RETRIES,
+        )
+
         # --- Final Engine Assembly ---
         engine = OnyxEngine(
             async_model_service=async_service,
@@ -371,7 +397,9 @@ class OnyxBootstrapper:
             live_pipeline=live_pipeline,
             live_verified_pipeline=live_verified_pipeline,
             live_qa_pipeline=live_qa_pipeline,
-            storage_api=storage_api
+            storage_api=storage_api,
+            live_deep_research_pipeline=live_deep_research_pipeline,
+            session_memory_api=session_memory_api
         )
 
         logger.info("Onyx Bootstrapper successfully constructed the Engine container.")

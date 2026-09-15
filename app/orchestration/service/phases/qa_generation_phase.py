@@ -18,7 +18,7 @@ from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.exceptions.base import ModelManagerError
 
 from app.features.qa_generation.service.generation_api import QAGenerationAPI
-from app.features.qa_generation.domain.entities import QAResponse
+from app.features.qa_generation.domain.entities import QAResponse, AnswerCritique
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
@@ -131,6 +131,104 @@ class QAGenerationPhase:
                     job_result = QAGenerationJobResult(search_id=search_id, success=False, error_message=err_msg)
                     results.append((job_result, None))
                     errors.append(f"Failed QA Generation for Search ID {search_id}: {err_msg}")
+                    failed_count += 1
+
+        finally:
+            if loaded_model:
+                logger.info("Unloading QA Generation model to free VRAM...")
+                self._async_service.trigger_unload(
+                    loaded_model=loaded_model,
+                    loader=self._loader,
+                    flush=True
+                )
+
+        status = PhaseStatus.COMPLETED
+        if success_count == 0 and failed_count > 0:
+            status = PhaseStatus.FAILED
+        elif success_count > 0 and failed_count > 0:
+            status = PhaseStatus.PARTIAL_SUCCESS
+
+        return PhaseBatchResult(
+            phase=PipelinePhase.QA_GENERATION,
+            status=status,
+            total_processed=len(chat_requests),
+            successful_count=success_count,
+            failed_count=failed_count,
+            items=results,
+            errors=errors
+        )
+
+    def execute_with_critique(
+            self,
+            chat_requests: List[Tuple[uuid.UUID, str, List[RetrievedChunk], str]]
+    ) -> PhaseBatchResult:
+        """
+        Sibling to execute(): draft + self-critique in one model acquisition, for the Deep
+        Research pipeline. Takes (search_id, user_query, evidence_pool, extra_context) tuples;
+        execute() itself is unchanged, and LiveQAPipeline keeps calling it as before.
+        """
+        logger.info(f"Executing QA Generation+Critique Phase for {len(chat_requests)} queries...")
+
+        results: List[Tuple[QAGenerationJobResult, Optional[Tuple[QAResponse, AnswerCritique]]]] = []
+        errors: List[str] = []
+        success_count = 0
+        failed_count = 0
+        loaded_model: Optional[LoadedModel] = None
+
+        if self._preload_future:
+            future, self._preload_future = self._preload_future, None
+            try:
+                loaded_model = self._async_service.resolve_preload(future)
+                logger.info("Successfully resolved preloaded QA Generation LLM.")
+            except ModelManagerError as e:
+                logger.error(f"Failed to load QA Generation LLM: {e}")
+                return PhaseBatchResult(
+                    phase=PipelinePhase.QA_GENERATION,
+                    status=PhaseStatus.FAILED,
+                    errors=[f"Critical failure preloading QA Generation LLM: {str(e)}"]
+                )
+
+        try:
+            for search_id, user_query, chunks, extra_context in chat_requests:
+                job_type = getattr(JobType, "QA_GENERATION", JobType("qa_generation"))
+
+                request = JobRequest(
+                    job_type=job_type,
+                    source_id=None,
+                    input_params={"search_id": str(search_id)}
+                )
+
+                try:
+                    logger.info(f"Processing QA Generation+Critique for Search ID: {search_id}")
+
+                    qa_response, critique = self._job_manager.run_job(
+                        request,
+                        self._qa_api.generate_with_critique,
+                        user_query=user_query,
+                        retrieved_chunks=chunks,
+                        extra_context=extra_context,
+                        release_after=loaded_model is None
+                    )
+
+                    preview = qa_response.generated_answer[:50] + "..." if qa_response.generated_answer else ""
+
+                    job_result = QAGenerationJobResult(
+                        search_id=search_id,
+                        success=True,
+                        generated_answer_preview=preview,
+                        citations_count=len(qa_response.citations)
+                    )
+
+                    results.append((job_result, (qa_response, critique)))
+                    success_count += 1
+
+                except Exception as e:
+                    err_msg = str(e)
+                    logger.error(f"Job failed for Search ID {search_id}: {err_msg}")
+
+                    job_result = QAGenerationJobResult(search_id=search_id, success=False, error_message=err_msg)
+                    results.append((job_result, None))
+                    errors.append(f"Failed QA Generation+Critique for Search ID {search_id}: {err_msg}")
                     failed_count += 1
 
         finally:

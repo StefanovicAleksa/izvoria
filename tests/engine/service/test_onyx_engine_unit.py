@@ -12,7 +12,7 @@ from app.engine.exceptions.lifecycle import EngineOfflineError
 from app.features.rag_retrieval.domain.entities import SearchQuery
 from app.features.qa_generation.domain.entities import QAResponse, QACitation
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
-from app.orchestration.domain.entities import PhaseBatchResult
+from app.orchestration.domain.entities import PhaseBatchResult, DeepResearchResponse
 from app.features.storage.domain.entities import Source, SourceType
 
 
@@ -39,8 +39,15 @@ class TestOnyxEngineUnit:
     def mock_storage_api(self): return Mock()
 
     @pytest.fixture
+    def mock_live_deep_research_pipeline(self): return Mock()
+
+    @pytest.fixture
+    def mock_session_memory_api(self): return Mock()
+
+    @pytest.fixture
     def engine(self, mock_async_service, mock_media_pipeline, mock_audio_pipeline, mock_live_pipeline,
-               mock_live_verified_pipeline, mock_live_qa_pipeline, mock_storage_api):
+               mock_live_verified_pipeline, mock_live_qa_pipeline, mock_storage_api,
+               mock_live_deep_research_pipeline, mock_session_memory_api):
         return OnyxEngine(
             async_model_service=mock_async_service,
             media_pipeline=mock_media_pipeline,
@@ -48,7 +55,9 @@ class TestOnyxEngineUnit:
             live_pipeline=mock_live_pipeline,
             live_verified_pipeline=mock_live_verified_pipeline,
             live_qa_pipeline=mock_live_qa_pipeline,
-            storage_api=mock_storage_api
+            storage_api=mock_storage_api,
+            live_deep_research_pipeline=mock_live_deep_research_pipeline,
+            session_memory_api=mock_session_memory_api
         )
 
     @patch('app.engine.service.onyx_engine.db_manager')
@@ -252,3 +261,65 @@ class TestOnyxEngineUnit:
 
         with pytest.raises(Exception, match="DB down"):
             engine.search_standard(SearchQuery(prompt="test"))
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_chat_deep_research_happy_path_records_turn(
+            self, _, engine, mock_live_deep_research_pipeline, mock_session_memory_api
+    ):
+        engine.start()
+        session_id = uuid.uuid4()
+        qa_response = QAResponse(query="test", generated_answer="Grounded answer.", citations=[])
+        deep_result = DeepResearchResponse(qa_response=qa_response, total_iterations=2)
+        mock_live_deep_research_pipeline.execute_deep_research.return_value = deep_result
+        mock_session_memory_api.get_prior_context.return_value = "prior context"
+
+        result = engine.chat_deep_research(session_id, SearchQuery(prompt="test"))
+
+        assert result.qa_response.generated_answer == "Grounded answer."
+        mock_session_memory_api.get_prior_context.assert_called_once_with(session_id)
+        mock_session_memory_api.record_turn.assert_called_once_with(session_id, "test", "Grounded answer.")
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_chat_deep_research_clarification_records_placeholder_turn(
+            self, _, engine, mock_live_deep_research_pipeline, mock_session_memory_api
+    ):
+        engine.start()
+        session_id = uuid.uuid4()
+        deep_result = DeepResearchResponse(qa_response=None, clarification_question="Which incident?")
+        mock_live_deep_research_pipeline.execute_deep_research.return_value = deep_result
+
+        result = engine.chat_deep_research(session_id, SearchQuery(prompt="test"))
+
+        assert result.qa_response is None
+        assert result.clarification_question == "Which incident?"
+        mock_session_memory_api.record_turn.assert_called_once_with(
+            session_id, "test", "[Clarification requested] Which incident?"
+        )
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_chat_deep_research_raises_if_not_wired(self, _, mock_async_service, mock_media_pipeline,
+                                                     mock_audio_pipeline, mock_live_pipeline,
+                                                     mock_live_verified_pipeline, mock_live_qa_pipeline,
+                                                     mock_storage_api):
+        bare_engine = OnyxEngine(
+            async_model_service=mock_async_service, media_pipeline=mock_media_pipeline,
+            audio_pipeline=mock_audio_pipeline, live_pipeline=mock_live_pipeline,
+            live_verified_pipeline=mock_live_verified_pipeline, live_qa_pipeline=mock_live_qa_pipeline,
+            storage_api=mock_storage_api
+        )
+        bare_engine.start()
+
+        with pytest.raises(Exception):
+            bare_engine.chat_deep_research(uuid.uuid4(), SearchQuery(prompt="test"))
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_failed_chat_deep_research_releases_all_models(
+            self, _, engine, mock_live_deep_research_pipeline, mock_async_service
+    ):
+        engine.start()
+        mock_live_deep_research_pipeline.execute_deep_research.side_effect = RuntimeError("Reasoner crashed")
+
+        with pytest.raises(Exception):
+            engine.chat_deep_research(uuid.uuid4(), SearchQuery(prompt="test"))
+
+        mock_async_service.release_all.assert_called_once_with()
