@@ -10,7 +10,7 @@ Found on the second real ingestion of the 74-minute Axia video. Each change was 
 
 - **Phonetic correction only fixes mis-heard glossary terms** (`domain_phonetic_correction/utils/term_candidate_finder.py`, `utils/phonetic_key.py`, `utils/span_replacer.py`, `data/qwen_adapter.py`, `data/prompts.py`, `service/correction_api.py`, `PHONETIC_CANDIDATE_MIN_SIMILARITY`, `PHONETIC_LENGTH_RATIO_MIN/MAX`, `PHONETIC_MAX_WORD_PROBABILITY`; `PHONETIC_MIN_SIMILARITY` removed).
   - **Introduced in:** `a0c6772` (the free-rewrite `<orig>/<corr>` patch prompt) and `9a526c1` (the letters-only similarity gate, which passed "those 73s" → "those 73 Bunds" at exactly 0.6 because "73s" appears inside "73bunds").
-  - **Fixed in:** pending
+  - **Fixed in:** `7183566`.
   - **The problem.** Whisper had transcribed the speech correctly, and the model rewrote it towards written or glossary form. Both patches applied on the stored run were wrong ("in the bund" → "in Bunds" as well). An earlier run proposed "very first" → "initial", "Bank of England" → "BOE", "13.50.45 seconds" → "13:50:45" and "that level" → "142.27".
   - **Candidates come first, and they are deterministic.**
     - A span becomes a candidate only if it sounds like exactly one dictionary term: letters and a small sound key are compared, and every heard word and every term word must supply its letters.
