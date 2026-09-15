@@ -8,7 +8,7 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 - **Chat citations point to the same clips as search results** (`qa_generation/domain/entities.py`, `qa_generation/utils/citation_parser.py`, `engine/service/onyx_engine.py`, `app/main.py`).
   - **Introduced in:** `d25b030` (`parse_citations` wrote the placeholder "Unresolved Path") and `b8493d0` (`OnyxEngine._resolve_citation_paths`).
-  - **Fixed in:** pending
+  - **Fixed in:** `f607ccb`.
   - **The problem.** Every chat citation printed as `Unresolved Path (Doc [Doc 1])`, while standard search showed each chunk's clip path and time range.
   - **The causes.**
     - The parser stored the placeholder as the path.
