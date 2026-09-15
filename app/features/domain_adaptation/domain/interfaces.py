@@ -1,9 +1,9 @@
-# Canvas: domain_adaptation_interfaces_v4
+# Canvas: domain_adaptation_interfaces_v5
 # Path: app/features/domain_adaptation/domain/interfaces.py
 
 import uuid
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.domain.entities import LoadedModel
@@ -33,9 +33,12 @@ class ILlamaAdapter(IModelLoader, ABC):
         self,
         model: LoadedModel,
         scout_text: str,
-        candidate_labels: List[str]
+        candidate_labels: Dict[str, str]
     ) -> List[str]:
-        """Analyzes the dirty transcript and returns a list of relevant subdomains."""
+        """
+        Scores the dirty transcript against each candidate sub-domain (label -> short description) and returns
+        the relevant labels, most relevant first. Returns an empty list when no sub-domain is clearly discussed.
+        """
         pass
 
 class IDomainAdaptationRepository(ABC):

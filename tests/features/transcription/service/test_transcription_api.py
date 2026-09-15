@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from app.features.transcription.service.transcription_api import TranscriptionAPI
-from app.features.transcription.domain.entities import Transcript
+from app.features.transcription.domain.entities import Transcript, TranscriptSegment, TranscriptWord
 from app.features.vad.domain.entities import VadMap, VadSegment
 from app.features.transcription.exceptions.model import CTranslateEngineError
 
@@ -94,6 +94,30 @@ class TestTranscriptionAPI:
         mocks["orchestrator"].release_model.assert_called_once_with(
             loaded_model_mock, mocks["adapter"], flush=True
         )
+
+    def test_process_audio_removes_text_whisper_copied_from_its_hotwords(self, api, mocks):
+        """Whisper sometimes repeats its primed hotwords as if they were spoken; that text must never be saved."""
+        source_id = uuid.uuid4()
+        mocks["repo"].get_by_source_id.return_value = None
+        mocks["vad_repo"].get_map_by_source_id.return_value = VadMap(
+            source_id=source_id, segments=[VadSegment(start_sec=0, end_sec=9.0, confidence=0.99)]
+        )
+        mocks["repo"].save.side_effect = lambda transcript: transcript
+
+        def word(text: str, start: float) -> TranscriptWord:
+            return TranscriptWord(start_sec=start, end_sec=start + 0.4, word=text)
+
+        spoken = TranscriptSegment(start_sec=0.0, end_sec=1.6, text="The ECB held rates.",
+                                   words=[word(" The", 0.0), word(" ECB", 0.4), word(" held", 0.8), word(" rates.", 1.2)])
+        echoed = TranscriptSegment(start_sec=5.0, end_sec=7.0, text="ECB, Lagarde, Frankfurt, Bunds, BOE.",
+                                   words=[word(" ECB,", 5.0), word(" Lagarde,", 5.4), word(" Frankfurt,", 5.8),
+                                          word(" Bunds,", 6.2), word(" BOE.", 6.6)])
+        mocks["adapter"].transcribe.return_value = [spoken, echoed]
+
+        result = api.process_audio(source_id, "/dummy.wav", hotwords="ECB, Lagarde, Frankfurt, Bunds, BOE, Bailey")
+
+        assert [s.text for s in result.segments] == ["The ECB held rates."]
+        mocks["repo"].save.assert_called_once_with(result)
 
     def test_process_audio_guarantees_vram_release_on_crash(self, api, mocks):
         source_id = uuid.uuid4()

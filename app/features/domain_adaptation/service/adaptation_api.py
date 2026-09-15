@@ -64,7 +64,7 @@ class DomainAdaptationAPI:
                 return self._finalize_glossary(source_id, industry, [], "", "")
 
             # 4. GPU Phase 2: Router
-            candidate_labels = GlossaryBuilder.get_candidate_labels(industry)
+            candidate_labels = GlossaryBuilder.get_candidate_descriptions(industry)
             predicted_domains = self._execute_llm_routing(scout_result.combined_text, candidate_labels)
 
             # 5. Token-Safe Glossary Building
@@ -99,7 +99,7 @@ class DomainAdaptationAPI:
             if loaded_model:
                 self._orchestrator.release_model(loaded_model, self._scout_adapter, flush=True)
 
-    def _execute_llm_routing(self, text: str, candidate_labels: list):
+    def _execute_llm_routing(self, text: str, candidate_labels: dict):
         manifest = ModelManifest(
             model_type=ModelType.DOMAIN_CLASSIFIER,
             model_path=settings.DOMAIN_CLASSIFIER_MODEL_PATH,

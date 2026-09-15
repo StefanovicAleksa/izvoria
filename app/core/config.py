@@ -69,6 +69,8 @@ class Settings(BaseSettings):
     # APPLIANCE DOMAIN ADAPTATION
     # ==========================================
     APPLIANCE_INDUSTRY: str = "GENERAL"
+    # Sub-domains the router scores at least this high (0-10) feed Whisper hotwords and the phonetic dictionary
+    DOMAIN_ROUTER_MIN_SCORE: int = 5
     APPLIANCE_LANGUAGE: str = "en"
 
     # ==========================================
@@ -99,6 +101,8 @@ class Settings(BaseSettings):
     WHISPER_BATCH_SIZE: int = 8
     # Spans shorter than this are widened (not skipped) so isolated one-word answers are transcribed
     WHISPER_MIN_SLICE_SEC: float = 1.0
+    # Whisper repeats hotword/prompt text as if spoken: runs of at least this many consecutive injected words are removed
+    WHISPER_PROMPT_ECHO_MIN_TOKENS: int = 5
 
     DIARIZATION_MODEL_PATH: str = "models/titanet_large.nemo"
     DIARIZATION_VRAM_REQUIREMENT_MB: float = 500.0

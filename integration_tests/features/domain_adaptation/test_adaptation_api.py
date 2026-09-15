@@ -133,9 +133,9 @@ def test_full_domain_adaptation_pipeline(setup_finance_glossary, real_infrastruc
     # faster-whisper reads hotwords as plain prompt text: no "term:weight" syntax may leak in
     assert ":15.0" not in glossary.hotword_string
 
-    # Assert GlossaryBuilder properly used the newly decoupled prompts.py template
-    assert "Options Trading" in glossary.initial_prompt_string
-    assert glossary.initial_prompt_string.startswith("This recording discusses")
+    # No sentence prompt: Whisper copied "This recording discusses ..." into transcripts as if it had been said
+    assert glossary.initial_prompt_string == ""
 
-    # Domain terms belong in the prompt as natural text, which is what biases Whisper toward their spelling
-    assert "strike" in glossary.initial_prompt_string.lower() or "theta" in glossary.initial_prompt_string.lower()
+    # The router scores sub-domains instead of copying the whole label list; this clip is only about options
+    assert "UK_MARKETS" not in glossary.sub_domains
+    assert "MACROECONOMICS" not in glossary.sub_domains

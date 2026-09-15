@@ -2,30 +2,62 @@
 
 This log tracks **feature-level milestones**, not every commit. It's written for humans (and future Claude Code sessions) trying to understand how the system got to its current shape — one entry per merged feature milestone, newest on top. See `CLAUDE.md` for the architecture these entries plug into.
 
+**Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
+
+## Whisper prompt leakage and sub-domain router
+
+Found while inspecting the first real ingestion; both were verified on the stored run before any code changed.
+
+- **Whisper no longer gets a sentence prompt, and prompt text it repeats is removed** (`domain_adaptation/utils/glossary_builder.py`, `domain_adaptation/data/prompts.py`, `transcription/utils/prompt_echo_filter.py`, `transcription/service/transcription_api.py`, `WHISPER_PROMPT_ECHO_MIN_TOKENS`).
+  - **Introduced in:** `9bc403a` (review batch 3), which replaced the instruction prompt with "This recording discusses {domains}, including terms such as {terms}."
+  - **Fixed in:** pending
+  - faster-whisper feeds `hotwords` and `initial_prompt` to the model as "previous transcript" text. Whisper copied the prompt into the 74-minute video's transcript 5 times, at high confidence (no-speech ≈ 0.01, not flagged), and it reached 6 indexed chunks.
+  - `GlossaryBuilder` now returns an empty initial prompt; the hotword list carries the vocabulary bias.
+  - `TranscriptionAPI` removes any run of at least 5 consecutive words that appears, in order, in the hotwords or prompt, before the transcript is saved. On the stored run this removes exactly the 6 leaked runs (60 words). With the trading hotwords it removes nothing from real speech. At 3 words, real mentions of "Bank of England" would also be removed, hence 5.
+- **The sub-domain router scores topics instead of copying the label list** (`domain_adaptation/data/llama_adapter.py`, `domain_adaptation/data/prompts.py`, `domain_adaptation/utils/glossary_builder.py`, `DOMAIN_ROUTER_MIN_SCORE`).
+  - **Introduced in:** `251ec04` (router prompt with a bare label list) and `0921cd6` (grammar accepting any string).
+  - **Fixed in:** pending
+  - Asked for "the sub-domains", the 3B model returned every label in listed order: all 8 `PROP_TRADING_MACRO` labels for an ECB/BoE video. That put irrelevant names ("Macklem, Poloz, Loonie, Ueda") into Whisper's hotwords and 153 terms into the phonetic dictionary.
+  - It now rates every label 0–10 against a short description from the glossary. The grammar allows only real labels, and labels scoring at least 5 are kept, highest first.
+  - Checked results: the ECB/BoE video gets European Central Bank 9 and Central Bank Macro 8, rest 0. The options-trading test clip gets `OPTIONS_TRADING` 10 with `FINANCE`, and all 0 with `PROP_TRADING_MACRO`. An unrelated medical transcript gets all 0. A stricter "select only clearly discussed topics" list prompt returned nothing even for the video, so it wasn't used.
+  - **Known limit (follow-up):** Bank of England scored 0 on that video. The scout hears at most 2 minutes of speech from each of the start, middle and end, and those windows mostly cover the ECB part. Too few sub-domains only means fewer hotwords and fewer phonetic corrections, never wrong ones.
+
 ## Fixes from the first real ingestion
 
-The first full ingestion of a real 74-minute video (Axia Futures, ECB replay drills) ran in 547 s, 12% of its length, but the indexed text was damaged. The causes were traced in the stored data. The second through sixth items below were regressions from review batches 3 and 4.
+The first full ingestion of a real 74-minute video (Axia Futures, ECB replay drills) ran in 547 s, 12% of its length, but the indexed text was damaged. The causes were traced in the stored data. Each item names the commit that introduced the problem and the one that fixed it; most were regressions from review batches 3 and 4.
 
 - **The appliance never used a trading glossary** (`APPLIANCE_INDUSTRY`, `data/glossaries/`).
+  - **Introduced in:** `b85f6cb` (setting created as `GENERAL`); `0e5b021` deleted the options `finance.json`.
+  - **Fixed in:** `.env` (not tracked; key added to `.env.example` in `9a526c1`) and `2628585` (`finance.json` restored).
   - The industry has been `GENERAL` since the setting was introduced, and domain adaptation only chooses sub-domains inside the configured industry.
   - A trading video therefore got legal/medical Whisper hotwords ("affidavit, plaintiff, diagnosis, cardiology") and a legal/medical phonetic dictionary.
   - Fix: `.env` sets `APPLIANCE_INDUSTRY=PROP_TRADING_MACRO`, and the key is now listed in `.env.example`.
   - The original options-trading `finance.json` is restored. It was deleted in `0e5b021` and replaced by the integration-test copy.
 - **Phonetic patches must sound like what was heard** (`domain_phonetic_correction/service/correction_api.py`, `PHONETIC_MIN_SIMILARITY`).
+  - **Introduced in:** `9bc403a` (review batch 3: dictionary-term-only grounding, minimum dictionary size lowered to 1).
+  - **Fixed in:** `9a526c1`.
   - The old rule only required a patch to introduce a dictionary term, which let the model turn ordinary words into terms. All 14 applied patches were wrong ("Bank of England"→"Onyx", "decision"→"prognosis").
   - Each changed word region now needs letters-only similarity of at least 0.6. Inserted or deleted words are rejected, and case-only changes are allowed only for acronym-like terms.
   - Regions are judged separately, so a two-edit patch can't pass on the words the edits share.
   - Trade-off: spelled-out acronyms ("the sea a grr"→"CAGR") are now rejected.
 - **Whisper punctuation is stripped before the punctuation model** (`sentence_reconstruction/data/punctuation_adapter.py`). For "develop," the last subtoken was the comma itself, labelled "no punctuation", and the assembler also removed Whisper's mark. Periods and commas were erased, giving "sentences" of up to 5,184 characters.
+  - **Introduced in:** `9bc403a` (review batch 3 punctuation adapter rewrite).
+  - **Fixed in:** `9a526c1`.
 - **Numbers and hyphenated words stay intact** (`sentence_reconstruction/utils/deterministic_assembler.py`, `diarization/utils/aligner.py`).
+  - **Introduced in:** `2802326` (assembler joined every word with a space) and `9bc403a` (aligner rebuilt split segments the same way).
+  - **Fixed in:** `9a526c1`.
   - Whisper marks sub-word continuations ("160" + ".99", "pre" + "-planning") by omitting the leading space. Rejoining every word with a space produced "160 .99" and "pre -planning".
   - Continuations now attach to the previous word, and the word before one never takes punctuation or ends a sentence.
 - **The visual hallucination check no longer rejects matching descriptions** (`visual_hallucination_correction/data/prompts.py`). The batch 4 "merely restates the transcript" rule made the 3B checker reject 6 of 10 descriptions that matched their slides. The rule is removed; temperature stays 0.0.
+  - **Introduced in:** `112225e` (review batch 4).
+  - **Fixed in:** `9a526c1`.
 - **Echoed speaker labels are stripped case-insensitively** (`contextual_retrieval/data/slm_adapter.py`). Diarization emits `speaker_0`, but the regex only matched `Speaker_`.
+  - **Introduced in:** `36d4810` (review batch 2).
+  - **Fixed in:** `9a526c1`.
 - **Dev tooling.**
   - `scripts/reset_dev_environment.sh` wipes the dev database and storage vault, replacing `reset_dev_db.sh`.
-  - `scripts/init.sql` used `#` comments, which aren't valid SQL, so re-applying it failed.
-  - Integration tests seed glossaries into a throwaway directory (new `GLOSSARY_PATH` setting, set by `integration_tests/conftest.py`). The conftest copied every test resource into `data/glossaries/`, overwriting the restored options `finance.json` on every run.
+  - `scripts/init.sql` used `#` comments, which aren't valid SQL, so re-applying it failed. **Introduced in:** `0c88f9a`. **Fixed in:** `2628585`.
+  - Integration tests seed glossaries into a throwaway directory (new `GLOSSARY_PATH` setting, set by `integration_tests/conftest.py`). The conftest copied every test resource into `data/glossaries/`, overwriting the restored options `finance.json` on every run. **Introduced in:** `e240389`. **Fixed in:** `9a526c1`.
 
 ## Review fixes: stability, retrieval grounding, audio correctness, throughput
 

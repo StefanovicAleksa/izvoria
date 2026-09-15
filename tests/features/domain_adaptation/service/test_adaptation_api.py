@@ -69,18 +69,17 @@ class TestDomainAdaptationAPI:
 
         mocks["llama_adapter"].predict_subdomains.return_value = ["M_AND_A"]
 
-        mock_builder.get_candidate_labels.return_value = ["M_AND_A"]
+        mock_builder.get_candidate_descriptions.return_value = {"M_AND_A": "merger, acquisition"}
 
-        # Updated to reflect the new decoupled prompt structure
-        expected_prompt = "The following dictation is a formal, professional transcript covering topics related to M And A. Use proper capitalization and punctuation."
-        mock_builder.build_injection_payloads.return_value = ("merger:15.0", expected_prompt)
+        # No sentence prompt is built: Whisper copied it into transcripts as if it had been said
+        mock_builder.build_injection_payloads.return_value = ("merger, acquisition", "")
 
         saved_glossary = DomainGlossary(
             source_id=source_id,
             industry="FINANCE",
             sub_domains=["M_AND_A"],
-            hotword_string="merger:15.0",
-            initial_prompt_string=expected_prompt
+            hotword_string="merger, acquisition",
+            initial_prompt_string=""
         )
         mocks["repo"].save_glossary.return_value = saved_glossary
 
@@ -89,6 +88,12 @@ class TestDomainAdaptationAPI:
         assert result == saved_glossary
         assert mocks["orchestrator"].acquire_model.call_count == 2
         assert mocks["orchestrator"].release_model.call_count == 2
+        # The router scores sub-domains against their glossary descriptions
+        mock_builder.get_candidate_descriptions.assert_called_once_with("FINANCE")
+        mocks["llama_adapter"].predict_subdomains.assert_called_once_with(
+            loaded_llama_mock, "We are talking about mergers.", {"M_AND_A": "merger, acquisition"}
+        )
+        mock_builder.build_injection_payloads.assert_called_once_with(industry="FINANCE", predicted_domains=["M_AND_A"])
 
     @patch("app.features.domain_adaptation.service.adaptation_api.settings")
     def test_process_domain_adaptation_graceful_on_empty_scout_text(self, mock_settings, api, mocks):

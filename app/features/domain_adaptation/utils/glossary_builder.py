@@ -1,13 +1,12 @@
 # File: app/features/domain_adaptation/utils/glossary_builder.py
-# Canvas: glossary_builder_v3
+# Canvas: glossary_builder_v4
 
 import json
 import logging
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 from app.core.config import settings
 from app.features.domain_adaptation.exceptions.process import GlossaryManifestError
-from app.features.domain_adaptation.data.prompts import INITIAL_PROMPT_TEMPLATE, INITIAL_PROMPT_NO_TERMS_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
@@ -17,12 +16,16 @@ class GlossaryBuilder:
     for the Whisper Large model to prevent CTranslate2 OOM crashes.
     """
     MAX_ANCHOR_WORDS = 40
-    MAX_PROMPT_TERMS = 12
+    MAX_DESCRIPTION_TERMS = 10
 
     @classmethod
     def build_injection_payloads(cls, industry: str, predicted_domains: List[str]) -> Tuple[str, str]:
         """
         Returns: (hotword_string, initial_prompt_string)
+
+        The initial prompt is always empty. faster-whisper feeds hotwords and the initial prompt to the model as
+        "previous transcript", and the sentence prompt ("This recording discusses ..., including terms such as ...")
+        was copied into transcripts as if it had been spoken. The hotword list alone carries the vocabulary bias.
         """
         manifest_data = cls._load_master_glossary(industry)
         base_terms = manifest_data.get("base_terms", [])
@@ -43,24 +46,24 @@ class GlossaryBuilder:
         unique_anchors = list(dict.fromkeys(consolidated_anchors))
         safe_anchors = unique_anchors[:cls.MAX_ANCHOR_WORDS]
 
-        # 3. Build Payload A: Hotwords (Beam Search Bias)
-        hotword_string = cls._format_hotwords(safe_anchors)
-
-        # 4. Build Payload B: Initial Prompt (from imported template)
-        domain_names = ", ".join([d.replace("_", " ").title() for d in predicted_domains]) or "General"
-        prompt_terms = [term.strip() for term in safe_anchors[:cls.MAX_PROMPT_TERMS] if term.strip()]
-
-        if prompt_terms:
-            initial_prompt = INITIAL_PROMPT_TEMPLATE.format(domain_names=domain_names, terms=", ".join(prompt_terms))
-        else:
-            initial_prompt = INITIAL_PROMPT_NO_TERMS_TEMPLATE.format(domain_names=domain_names)
-
-        return hotword_string, initial_prompt
+        # 3. Hotwords (the only text injected into Whisper's prompt)
+        return cls._format_hotwords(safe_anchors), ""
 
     @classmethod
     def get_candidate_labels(cls, industry: str) -> List[str]:
         manifest_data = cls._load_master_glossary(industry)
         return list(manifest_data.get("sub_domains", {}).keys())
+
+    @classmethod
+    def get_candidate_descriptions(cls, industry: str) -> Dict[str, str]:
+        """Sub-domain label -> short description (its first anchor words and terms), used by the router to score topics."""
+        descriptions: Dict[str, str] = {}
+        for label, entry in cls._load_master_glossary(industry).get("sub_domains", {}).items():
+            vocabulary = entry.get("anchor_words", []) + entry.get("terms", []) if isinstance(entry, dict) else list(entry)
+            descriptions[label] = ", ".join(
+                term.strip() for term in vocabulary[:cls.MAX_DESCRIPTION_TERMS] if term.strip()
+            )
+        return descriptions
 
     @classmethod
     def _format_hotwords(cls, terms: List[str]) -> str:

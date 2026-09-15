@@ -1,6 +1,7 @@
-# Canvas: transcription_api_v6
+# Canvas: transcription_api_v7
 # Path: app/features/transcription/service/transcription_api.py
 
+import logging
 import uuid
 from typing import Optional
 
@@ -13,6 +14,9 @@ from app.features.transcription.domain.interfaces import ITranscriptionAdapter, 
 from app.features.vad.domain.interfaces import IVadRepository
 from app.features.transcription.domain.entities import Transcript
 from app.features.transcription.utils.error_mapper import map_transcription_error
+from app.features.transcription.utils.prompt_echo_filter import remove_prompt_echoes
+
+logger = logging.getLogger(__name__)
 
 
 class TranscriptionAPI:
@@ -74,6 +78,16 @@ class TranscriptionAPI:
                 hotwords=hotwords,
                 initial_prompt=initial_prompt # FIX: Passed down to FasterWhisperAdapter
             )
+
+            # 6. Whisper sometimes repeats the text it was primed with (hotwords/prompt) as if it had been said;
+            # that text must never reach the index.
+            segments, echoed_words = remove_prompt_echoes(
+                segments, [hotwords, initial_prompt], settings.WHISPER_PROMPT_ECHO_MIN_TOKENS
+            )
+            if echoed_words:
+                logger.warning(
+                    f"Removed {echoed_words} word(s) Whisper copied from its hotwords/prompt for source {source_id}."
+                )
 
             transcript = Transcript(source_id=source_id, segments=segments)
             return self._repo.save(transcript)
