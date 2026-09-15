@@ -4,17 +4,18 @@
 import gc
 import os
 from pathlib import Path
-from typing import Any, List
+from typing import Any, List, Optional
 
 import torch
 from PIL import Image
 
 from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
+from app.features.visual_analysis.domain.entities import FrameObservation
 from app.features.visual_analysis.domain.interfaces import IVisualLanguageModelAdapter
-from app.features.visual_analysis.data.prompts import VLM_SYSTEM_PROMPT, VLM_USER_PROMPT_TEMPLATE
+from app.features.visual_analysis.data.prompts import FRAME_BLOCK_TEMPLATE, VLM_SYSTEM_PROMPT, VLM_USER_PROMPT_TEMPLATE
 from app.features.visual_analysis.utils.error_mapper import map_visual_analysis_error
-from app.features.visual_analysis.utils.frame_description_parser import parse_frame_descriptions
+from app.features.visual_analysis.utils.frame_description_parser import parse_frame_observations
 
 # Bounds Qwen2-VL's dynamic-resolution vision tower so a single large frame can't
 # blow past the VRAM budget the Model Orchestrator reserved for this phase.
@@ -91,7 +92,7 @@ class QwenVLMAdapter(IVisualLanguageModelAdapter):
             image_paths: List[Path],
             original_text: str,
             context_string: str
-    ) -> List[str]:
+    ) -> List[Optional[FrameObservation]]:
         if not image_paths:
             return []
 
@@ -110,7 +111,7 @@ class QwenVLMAdapter(IVisualLanguageModelAdapter):
                 context_string=context_string,
                 original_text=original_text,
                 frame_count=frame_count,
-                frame_lines="\n".join(f"Frame {index}: <description>" for index in range(1, frame_count + 1))
+                frame_blocks="\n".join(FRAME_BLOCK_TEMPLATE.format(index=index) for index in range(1, frame_count + 1))
             )
 
             messages = [
@@ -139,7 +140,7 @@ class QwenVLMAdapter(IVisualLanguageModelAdapter):
                 generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
             )[0]
 
-            return parse_frame_descriptions(output_text, frame_count)
+            return parse_frame_observations(output_text, frame_count)
 
         except Exception as e:
             raise map_visual_analysis_error(

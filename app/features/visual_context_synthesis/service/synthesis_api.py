@@ -24,6 +24,7 @@ from app.features.visual_context_synthesis.domain.interfaces import (
 )
 from app.features.visual_context_synthesis.utils.fuzzy_grouper import build_fuzzy_visual_timeline
 from app.features.visual_context_synthesis.utils.error_mapper import map_visual_synthesis_error
+from app.features.visual_context_synthesis.utils.narrative_guard import fallback_narrative, narrative_is_supported
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,13 @@ class VisualSynthesisAPI:
                         model=loaded_model,
                         visual_events=timeline_events
                     )
+                    sources = [event["representative_description"] for event in timeline_events]
+                    if not narrative_is_supported(visual_narrative, sources):
+                        logger.warning(
+                            f"Visual synthesis for chunk {text_chunk.chunk_id} added numbers or quotes that no frame "
+                            f"description contains; using the descriptions instead."
+                        )
+                        visual_narrative = fallback_narrative(sources)
 
                     evidence_frames = []
                     for event in timeline_events:

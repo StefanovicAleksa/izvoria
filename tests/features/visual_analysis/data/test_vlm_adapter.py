@@ -9,6 +9,7 @@ from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.enums import ModelType
 from app.features.visual_analysis.data.vlm_adapter import QwenVLMAdapter
+from app.features.visual_analysis.domain.entities import FrameObservation
 from app.features.visual_analysis.exceptions.base import VisualAnalysisError
 
 MODULE = "app.features.visual_analysis.data.vlm_adapter"
@@ -63,7 +64,9 @@ class TestQwenVLMAdapter:
     @patch(f"{MODULE}.Image")
     @patch(f"{MODULE}.torch")
     def test_analyze_frames_single_frame(self, mock_torch, mock_image_module, mock_exists, manifest):
-        loaded_model, mock_hf_model, mock_processor = self._loaded_model(manifest, "Bar chart titled 'Q3 Revenue'.")
+        loaded_model, mock_hf_model, mock_processor = self._loaded_model(
+            manifest, 'Frame 1:\nSHOWS: bar chart\nTEXT: "Q3 Revenue"\nMARKS: NONE\nLINK: Q3'
+        )
         image = mock_image_module.open.return_value.__enter__.return_value.convert.return_value
 
         result = QwenVLMAdapter().analyze_frames(
@@ -73,7 +76,7 @@ class TestQwenVLMAdapter:
             context_string="Financial review."
         )
 
-        assert result == ["Bar chart titled 'Q3 Revenue'."]
+        assert result == [FrameObservation(shows="bar chart", legible_text=["Q3 Revenue"], speech_link="Q3")]
         image.resize.assert_not_called()
         mock_processor.assert_called_once_with(text=["<prompt>"], images=[image], return_tensors="pt")
         mock_hf_model.generate.assert_called_once_with(
@@ -83,8 +86,8 @@ class TestQwenVLMAdapter:
         messages = mock_processor.apply_chat_template.call_args[0][0]
         user_content = messages[1]["content"]
         assert user_content[0] == {"type": "image"}
-        assert "Speaker's Exact Words: Look at Q3." in user_content[1]["text"]
-        assert "Frame 1: <description>" in user_content[1]["text"]
+        assert "What the speaker says: Look at Q3." in user_content[1]["text"]
+        assert "Frame 1:\nSHOWS: <what is on screen>\nTEXT:" in user_content[1]["text"]
 
     @patch(f"{MODULE}.Path.exists", return_value=True)
     @patch(f"{MODULE}.Image")
@@ -93,7 +96,8 @@ class TestQwenVLMAdapter:
                                                                  manifest):
         loaded_model, mock_hf_model, mock_processor = self._loaded_model(
             manifest,
-            "Frame 1: Title slide reading 'Q3 Results'.\nFrame 2: Bar chart; the y-axis values are unreadable."
+            'Frame 1:\nSHOWS: title slide\nTEXT: "Q3 Results"\nMARKS: NONE\nLINK: NONE\n'
+            "Frame 2: A bar chart described without fields."
         )
         image = mock_image_module.open.return_value.__enter__.return_value.convert.return_value
         image.size = (1920, 1080)
@@ -105,7 +109,8 @@ class TestQwenVLMAdapter:
             context_string="Quarterly review."
         )
 
-        assert result == ["Title slide reading 'Q3 Results'.", "Bar chart; the y-axis values are unreadable."]
+        # An unstructured frame section carries no checkable evidence
+        assert result == [FrameObservation(shows="title slide", legible_text=["Q3 Results"]), None]
 
         # Each frame is downscaled to the shared multi-image pixel budget
         scale = (settings.VISION_MULTI_IMAGE_MAX_PIXELS / (1920 * 1080)) ** 0.5
@@ -118,6 +123,7 @@ class TestQwenVLMAdapter:
         user_content = mock_processor.apply_chat_template.call_args[0][0][1]["content"]
         assert user_content[:2] == [{"type": "image"}, {"type": "image"}]
         assert "You are given 2 frame(s)" in user_content[2]["text"]
+        assert "Frame 2:\nSHOWS: <what is on screen>" in user_content[2]["text"]
         mock_hf_model.generate.assert_called_once_with(
             max_new_tokens=settings.VISION_MAX_NEW_TOKENS_PER_FRAME * 2, do_sample=False
         )

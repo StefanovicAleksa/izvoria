@@ -160,8 +160,9 @@ class Settings(BaseSettings):
     VISION_MAX_IMAGES_PER_CALL: int = 4
     # Per-frame pixel cap inside a multi-image call (a lone frame keeps the adapter's larger cap)
     VISION_MULTI_IMAGE_MAX_PIXELS: int = 768 * 28 * 28
-    # Generation budget per frame; a 4-frame call may generate up to 4x this
-    VISION_MAX_NEW_TOKENS_PER_FRAME: int = 160
+    # Generation budget per frame (structured fields: what is shown, legible text, marks, speech link); a 4-frame
+    # call may generate up to 4x this
+    VISION_MAX_NEW_TOKENS_PER_FRAME: int = 200
 
     # Frame extraction: Laplacian-variance sharpness floor and the per-chunk cap on visually distinct frames
     FRAME_BLUR_THRESHOLD: float = 100.0
@@ -172,6 +173,9 @@ class Settings(BaseSettings):
 
     VISUAL_HALLUCINATION_CORRECTION_MODEL_PATH: str = "models/qwen2.5-3b-instruct-q4_k_m.gguf"
     VISUAL_HALLUCINATION_CORRECTION_VRAM_REQUIREMENT_MB: float = 2500.0
+    # Frames whose quoted on-screen text shares this many topic words (or one specific number such as "7-2") with the
+    # chunk are accepted without asking the text-only checker model, which rejected matching slides it couldn't see
+    VISUAL_CHECK_MIN_SHARED_TOPIC_WORDS: int = 2
 
     VISUAL_CONTEXT_SYNTHESIS_MODEL_PATH: str = "models/llama-3.2-3b-instruct-q8_0.gguf"
     VISUAL_CONTEXT_SYNTHESIS_VRAM_REQUIREMENT_MB: float = 3500.0

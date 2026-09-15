@@ -2,9 +2,23 @@
 # Path: app/features/visual_analysis/domain/entities.py
 
 import uuid
-from typing import List
+from typing import List, Optional
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field, ConfigDict
+
+
+class FrameObservation(BaseModel):
+    """
+    What the VLM reports it can see in one frame, field by field, before any prose is written.
+    Keeping what is legible apart from what the speaker refers to lets the description be rendered deterministically
+    and checked for visible evidence.
+    """
+    shows: str = Field(default="", description="What is on screen (slide, chart, trading ladder, speaker only, ...).")
+    legible_text: List[str] = Field(default_factory=list, description="Text read on the frame, exactly as written.")
+    marks: Optional[str] = Field(default=None, description="Drawn marks (arrows, lines, boxes, callouts) and what they point at.")
+    speech_link: Optional[str] = Field(default=None, description="The speaker's reference that the text or marks show.")
+
+    model_config = ConfigDict(frozen=True)
 
 
 class FrameAnalysis(BaseModel):

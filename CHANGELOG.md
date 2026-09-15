@@ -36,6 +36,55 @@ Found on the second real ingestion of the 74-minute Axia video. Each change was 
     - Oversized sentences are no longer split for the model; the verifier sees a window around each candidate.
     - Spelled-out acronyms ("E C B") are recovered again, reversing the trade-off noted in `9a526c1`.
     - The model is loaded only when a candidate exists.
+- **Frame descriptions come from what the VLM can read, not from the speech** (`visual_analysis/data/prompts.py`, `data/vlm_adapter.py`, `utils/frame_description_parser.py`, `utils/grounding_check.py`, `utils/observation_renderer.py`, `service/analysis_api.py`, `VISION_MAX_NEW_TOKENS_PER_FRAME`).
+  - **Introduced in:** `c557fe6` (free-text frame descriptions) and `112225e` (review batch 4 prompt: transcript in the prompt plus a free-form "describe each frame" instruction).
+  - **Fixed in:** pending
+  - **The problem.** 11 of the 20 stored descriptions paraphrased the speech ("The speaker explains the concept of a position squeeze…") and 9 were indexed. Yet every one of those frames showed a slide with legible text: "POSITION SQUEEZE" bullets, "BoE REVERSAL 22/3/18 / Result 7-2 for hike BUT", chart callouts. Values such as "142.10 → 142.70" came from the speech, not the screen.
+  - **Fields, not prose.** The VLM now reports `SHOWS`, `TEXT` (quoted legible text, at most 8 items), `MARKS` (drawn marks or pointers and what they point at) and `LINK` (the spoken reference they show). The stored description is rendered from those fields, with what is on screen and what the speaker refers to in separate sentences.
+  - **A frame is described only if visible evidence survives deterministic filters.** They remove:
+    - speaker-only frames;
+    - watermarks, player chrome and outline sidebars;
+    - text copied from the speech (content words sitting together in one stretch of speech, e.g. "160.84 if we can get back above 63", or the spoken sentence reported as text on an X-ray);
+    - marks aimed at nothing specific, or naming a spoken number;
+    - text or marks another frame of the same chunk already reported.
+  - **Measured on the 20 stored frames**, against ground truth written by viewing each frame (`scripts/eval/visual_labels.json`):
+
+    | | Stored | Now |
+    |---|---|---|
+    | Paraphrases | 11 | 0 |
+    | Anchored to legible text or numbers | 5 | 14 |
+    | Generic ("a ladder chart with columns") | 4 | 0 |
+    | No description | 0 | 6 |
+    | Slide title captured | 7 | 13 |
+    | Spoken numbers stated as visible | 2 frames | 0 |
+    | Visual analysis time | 71 s | 175 s |
+
+    - The 6 frames without a description repeat an earlier frame of their chunk, or show nothing legible.
+    - The scorer still flags one frame, but its "0" is the chart's own footer text ("0 in View").
+  - **Tried and dropped.**
+    - One image per call: 217 s, plus spoken numbers inside marks and repetition loops.
+    - Bare `...` placeholders in the format: the model copied them for frames with nothing legible.
+  - **Known limits.**
+    - In a multi-frame call the model sometimes gives one frame the text of another frame in the same chunk (403.4 s, 1107.3 s). The text is on screen during that chunk, but its frame is wrong.
+    - OCR slips survive ("W1" for "WVPOC").
+    - A slide bullet the speaker reads out word for word is dropped.
+    - The 4-bit 7B model's output shifts noticeably with small prompt changes, so re-run `scripts/eval/visual_eval.py` after any prompt edit.
+- **The visual check accepts on-screen text that shares the chunk's topic** (`visual_hallucination_correction/utils/topic_overlap.py`, `data/prompts.py`, `service/correction_api.py`, `VISUAL_CHECK_MIN_SHARED_TOPIC_WORDS`).
+  - **Introduced in:** not a regression. The text-only 3B checker (accept-biased prompt from `9a526c1`) can't see the frames.
+  - **Fixed in:** pending
+  - **The problem.** On the rendered descriptions it rejected 4–7 of 12 matching chunks between runs, with self-contradicting reasons ("text about a trading drill and ECB statements… completely unrelated to a slide about trading drills and ECB statements").
+  - **The change.** A chunk is accepted without the model when its quoted on-screen text shares at least 2 topic words, or one specific number such as "7-2", with the chunk's text and context. Only other chunks go to the model, which is loaded only when needed. The prompt now explains the description format.
+  - **Measured.**
+    - 10 of 12 real chunks accepted. The 2 rejections come from the model, on chunks with fewer than 2 shared words.
+    - Medical and legal descriptions tried against the same speech: all 24 rejected.
+    - An A/B "real frames or a decoy" checker was tried and dropped: it accepted 5 of 12 legal mismatches.
+- **Visual synthesis can't add numbers or quotes** (`visual_context_synthesis/data/prompts.py`, `utils/narrative_guard.py`, `service/synthesis_api.py`).
+  - **Introduced in:** `38b24e3` (synthesis prompt without grounding rules).
+  - **Fixed in:** pending
+  - **The change.** The prompt requires on-screen text and numbers to be copied exactly, and the speaker's reference to stay separate from what is on screen.
+  - **The guard.** A narrative with a number or quote that no frame description contains is replaced by the descriptions themselves. On the stored frames this happened for 2 of 10 narratives.
+  - **Limit.** The guard checks numbers and quotes only; editorial wording ("a series of cryptic phrases") can still appear.
+- **Ingestion time.** On the stored run, phonetic correction dropped from 64 s to about 12 s, while visual analysis rose from 71 s to 175 s and synthesis/check changed little. Expect roughly +50 s overall (about 530 s, 12% of the video's length). Confirm on the re-ingest.
 
 ## Whisper prompt leakage and sub-domain router
 

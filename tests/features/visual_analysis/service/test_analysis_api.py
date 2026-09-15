@@ -10,7 +10,7 @@ from app.core.model_manager.domain.entities import LoadedModel
 from app.features.contextual_retrieval.domain.entities import ContextualizedChunk
 from app.features.frame_extraction.domain.entities import ExtractedChunkFrames, ExtractedFrame
 from app.features.visual_analysis.service.analysis_api import VisualAnalysisAPI
-from app.features.visual_analysis.domain.entities import ChunkVisualAnalysis
+from app.features.visual_analysis.domain.entities import ChunkVisualAnalysis, FrameObservation
 
 MODULE = "app.features.visual_analysis.service.analysis_api"
 
@@ -84,7 +84,11 @@ class TestVisualAnalysisAPI:
         mocks["repo"].get_by_chunk_id.return_value = None
         mocks["repo"].save.side_effect = lambda x: x
         mocks["storage_api"].get_file_path.side_effect = [Path("/vault/a.jpg"), Path("/vault/b.jpg")]
-        mocks["vlm_adapter"].analyze_frames.return_value = ["A red line going up.", "A zoomed in view of the red line."]
+        mocks["vlm_adapter"].analyze_frames.return_value = [
+            FrameObservation(shows="line chart", legible_text=["Q3 Revenue"], marks="red line going up",
+                             speech_link="the red line"),
+            FrameObservation(shows="zoomed line chart", legible_text=["Q3 Revenue", "+4%"]),
+        ]
 
         result = api.process_chunk(source_id, chunk, extracted_frames, mock_model)
 
@@ -95,9 +99,11 @@ class TestVisualAnalysisAPI:
             context_string="Reviewing Q3 performance."
         )
         assert mocks["storage_api"].get_file_path.call_args_list == [call(frame_1.file_id), call(frame_2.file_id)]
+        # Rendered from the fields; text the first frame already reported isn't repeated for the second
         assert [(a.frame_id, a.description, a.timestamp_sec) for a in result.analyses] == [
-            (frame_1.frame_id, "A red line going up.", 1.0),
-            (frame_2.frame_id, "A zoomed in view of the red line.", 2.0),
+            (frame_1.frame_id, 'Line chart with on-screen text "Q3 Revenue". Marked on screen: red line going up. '
+                               "Speaker's reference: the red line.", 1.0),
+            (frame_2.frame_id, 'Zoomed line chart with on-screen text "+4%".', 2.0),
         ]
         mocks["repo"].save.assert_called_once()
 
@@ -112,7 +118,10 @@ class TestVisualAnalysisAPI:
         mocks["repo"].get_by_chunk_id.return_value = None
         mocks["repo"].save.side_effect = lambda x: x
         mocks["storage_api"].get_file_path.side_effect = lambda file_id: Path(f"/vault/{file_id}.jpg")
-        mocks["vlm_adapter"].analyze_frames.side_effect = [["first", "second"], ["third"]]
+        mocks["vlm_adapter"].analyze_frames.side_effect = [
+            [FrameObservation(shows="slide", legible_text=["first"]), FrameObservation(shows="slide", legible_text=["second"])],
+            [FrameObservation(shows="slide", legible_text=["third"])],
+        ]
 
         result = api.process_chunk(source_id, chunk, extracted_frames, MagicMock(spec=LoadedModel))
 
@@ -122,23 +131,36 @@ class TestVisualAnalysisAPI:
             [Path(f"/vault/{late.file_id}.jpg")],
         ]
         assert [(a.frame_id, a.description) for a in result.analyses] == [
-            (early.frame_id, "first"), (middle.frame_id, "second"), (late.frame_id, "third")
+            (early.frame_id, 'Slide with on-screen text "first".'),
+            (middle.frame_id, 'Slide with on-screen text "second".'),
+            (late.frame_id, 'Slide with on-screen text "third".'),
         ]
 
-    def test_process_chunk_skips_frames_without_a_description(self, api, mocks):
+    def test_process_chunk_stores_no_description_for_frames_without_visible_evidence(self, api, mocks):
         source_id = uuid.uuid4()
-        chunk = ContextualizedChunk(chunk_id=uuid.uuid4())
-        described, blank = _frame(1.0), _frame(2.0)
-        extracted_frames = ExtractedChunkFrames(source_id=source_id, chunk_id=chunk.chunk_id, frames=[described, blank])
+        chunk = ContextualizedChunk(chunk_id=uuid.uuid4(), original_text="The level is 142.27.")
+        frames = [_frame(1.0), _frame(2.0), _frame(3.0), _frame(4.0), _frame(5.0)]
+        extracted_frames = ExtractedChunkFrames(source_id=source_id, chunk_id=chunk.chunk_id, frames=frames)
 
         mocks["repo"].get_by_chunk_id.return_value = None
         mocks["repo"].save.side_effect = lambda x: x
         mocks["storage_api"].get_file_path.return_value = Path("/vault/frame.jpg")
-        mocks["vlm_adapter"].analyze_frames.return_value = [" A slide. ", "  "]
+        mocks["vlm_adapter"].analyze_frames.side_effect = [
+            [
+                FrameObservation(shows="slide", legible_text=["Exhibit A"]),
+                None,                                                          # unstructured answer
+                FrameObservation(shows="speaker only"),                        # talking head
+                FrameObservation(shows="chart", legible_text=["142.27 level"]),  # copied from the speech
+            ],
+            [FrameObservation(shows="slide", legible_text=["exhibit a"])],     # repeats an earlier frame
+        ]
 
         result = api.process_chunk(source_id, chunk, extracted_frames, MagicMock(spec=LoadedModel))
 
-        assert [(a.frame_id, a.description) for a in result.analyses] == [(described.frame_id, "A slide.")]
+        assert [(a.frame_id, a.description) for a in result.analyses] == [
+            (frames[0].frame_id, 'Slide with on-screen text "Exhibit A".')
+        ]
+        mocks["repo"].save.assert_called_once_with(result)
 
     def test_process_chunk_maps_storage_errors(self, api, mocks):
         source_id = uuid.uuid4()

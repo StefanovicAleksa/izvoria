@@ -16,6 +16,7 @@ from app.features.visual_hallucination_correction.domain.entities import (
     VisualHallucinationAudit
 )
 from app.features.visual_hallucination_correction.utils.error_mapper import map_hallucination_error
+from app.features.visual_hallucination_correction.utils.topic_overlap import shares_topic
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ class VisualHallucinationCorrectionAPI:
                 required_vram_mb=settings.VISUAL_HALLUCINATION_CORRECTION_VRAM_REQUIREMENT_MB
             )
 
-            loaded_model = self._orchestrator.acquire_model(manifest, self._adapter)
+            loaded_model = None
             audits: List[VisualHallucinationAudit] = []
 
             try:
@@ -64,10 +65,18 @@ class VisualHallucinationCorrectionAPI:
                     if not visual_record or not visual_record.analyses:
                         continue
 
+                    descriptions = [a.description for a in visual_record.analyses]
+
+                    # On-screen text that visibly belongs to the speech can't be "completely unrelated" to it
+                    if shares_topic(f"{chunk.original_text} {chunk.context_string}", descriptions,
+                                    settings.VISUAL_CHECK_MIN_SHARED_TOPIC_WORDS):
+                        audits.append(VisualHallucinationAudit(chunk_id=chunk.chunk_id, is_visual_accepted=True))
+                        continue
+
                     # Compile redundant frame descriptions using numerical index
                     combined_visual_evidence = "\n".join([
-                        f"- Frame {idx + 1}: {a.description}"
-                        for idx, a in enumerate(visual_record.analyses)
+                        f"- Frame {idx + 1}: {description}"
+                        for idx, description in enumerate(descriptions)
                     ])
 
                     # --- FIX: Context Window Truncation Safeguard ---
@@ -76,6 +85,9 @@ class VisualHallucinationCorrectionAPI:
                         logger.warning(f"Truncating visual context for chunk {chunk.chunk_id} to 10k chars.")
                         combined_visual_evidence = combined_visual_evidence[:MAX_CHARS] + "\n... [TRUNCATED TO PREVENT OOM]"
                     # ------------------------------------------------
+
+                    if loaded_model is None:
+                        loaded_model = self._orchestrator.acquire_model(manifest, self._adapter)
 
                     audit = self._adapter.evaluate_visual_match(
                         model=loaded_model,
@@ -96,7 +108,7 @@ class VisualHallucinationCorrectionAPI:
                 return evaluated_transcript
 
             finally:
-                if release_after:
+                if loaded_model and release_after:
                     self._orchestrator.release_model(loaded_model, self._adapter, flush=True)
 
         except Exception as e:

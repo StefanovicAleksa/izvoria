@@ -8,7 +8,7 @@ from pathlib import Path
 
 from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.domain.entities import LoadedModel
-from app.features.visual_analysis.domain.entities import ChunkVisualAnalysis
+from app.features.visual_analysis.domain.entities import ChunkVisualAnalysis, FrameObservation
 
 
 class IVisualLanguageModelAdapter(IModelLoader, ABC):
@@ -24,12 +24,12 @@ class IVisualLanguageModelAdapter(IModelLoader, ABC):
         image_paths: List[Path],
         original_text: str,
         context_string: str
-    ) -> List[str]:
+    ) -> List[Optional[FrameObservation]]:
         """
-        Describes a chunk's frames (in chronological order) in one multimodal call, using the surrounding
-        text only to decide what to look at.
-        Returns exactly one description per image, in order. An entry is empty when the model produced
-        nothing usable for that frame.
+        Reads a chunk's frames (in chronological order) in one multimodal call, using the surrounding text only to
+        decide what to look at.
+        Returns exactly one observation per image, in order. An entry is None when the model produced nothing
+        structured for that frame.
         """
         pass
 

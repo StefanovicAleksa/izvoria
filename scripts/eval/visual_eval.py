@@ -8,6 +8,7 @@ Modes:
   (with --checker / --synthesis) the visual hallucination check and visual context synthesis, all with in-memory
   repositories. Nothing is written to the database; results go to --out as JSON.
 - --score-file: re-scores a JSON written by --run without touching the GPU.
+- --rows-from: with --run, skips the VLM and feeds the descriptions saved in that JSON to --checker / --synthesis.
 
 Run from the repo root, in the foreground (GPU for --run):
     venv/bin/python -m scripts.eval.visual_eval [--run --checker --synthesis --out <path.json>] [--score-file <path>]
@@ -146,7 +147,7 @@ def _stored_rows(chunks: Dict[str, dict]) -> List[dict]:
             for cid, data in chunks.items() for a in data["stored"]]
 
 
-def _run(chunks: Dict[str, dict], with_checker: bool, with_synthesis: bool) -> dict:
+def _run(chunks: Dict[str, dict], with_checker: bool, with_synthesis: bool, rows_from: Optional[str] = None) -> dict:
     from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
     from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
     from app.features.contextual_retrieval.domain.entities import ContextualizedChunk, ContextualizedTranscript
@@ -175,10 +176,23 @@ def _run(chunks: Dict[str, dict], with_checker: bool, with_synthesis: bool) -> d
     transcript_chunks = [ContextualizedChunk(**data["chunk"]) for data in chunks.values()]
 
     result: dict = {"rows": [], "timings": {}}
-    started = time.perf_counter()
-    vlm = orchestrator.acquire_model(api.manifest, api.adapter)
-    try:
+    if rows_from:
+        from app.features.visual_analysis.domain.entities import ChunkVisualAnalysis, FrameAnalysis
+        saved = json.loads(Path(rows_from).read_text(encoding="utf-8"))["rows"]
         for chunk in transcript_chunks:
+            frames = chunks[str(chunk.chunk_id)]["frames"]
+            frame_analyses = []
+            for row in (r for r in saved if r["chunk_id"] == str(chunk.chunk_id)):
+                frame = min(frames, key=lambda f: abs(f["timestamp_sec"] - row["timestamp_sec"]))
+                frame_analyses.append(FrameAnalysis(frame_id=frame["frame_id"], description=row["description"],
+                                                    timestamp_sec=row["timestamp_sec"]))
+            analyses[chunk.chunk_id] = ChunkVisualAnalysis(source_id=source_id, chunk_id=chunk.chunk_id,
+                                                           analyses=frame_analyses)
+        result["rows"] = saved
+    started = time.perf_counter()
+    vlm = None if rows_from else orchestrator.acquire_model(api.manifest, api.adapter)
+    try:
+        for chunk in transcript_chunks if vlm else []:
             data = chunks[str(chunk.chunk_id)]
             frames = ExtractedChunkFrames.model_validate(
                 {"source_id": source_id, "chunk_id": chunk.chunk_id, "frames": data["frames"]}
@@ -188,7 +202,8 @@ def _run(chunks: Dict[str, dict], with_checker: bool, with_synthesis: bool) -> d
                 result["rows"].append({"chunk_id": str(chunk.chunk_id), "timestamp_sec": a.timestamp_sec,
                                        "description": a.description})
     finally:
-        orchestrator.release_model(vlm, api.adapter, flush=True)
+        if vlm:
+            orchestrator.release_model(vlm, api.adapter, flush=True)
     result["timings"]["visual_analysis_sec"] = round(time.perf_counter() - started, 1)
 
     transcript = ContextualizedTranscript(source_id=source_id, chunks=transcript_chunks)
@@ -250,6 +265,7 @@ def main() -> None:
     parser.add_argument("--synthesis", action="store_true")
     parser.add_argument("--out", default=None)
     parser.add_argument("--score-file", default=None)
+    parser.add_argument("--rows-from", default=None)
     args = parser.parse_args()
 
     labels = json.loads(LABELS_PATH.read_text(encoding="utf-8"))["frames"]
@@ -258,7 +274,7 @@ def main() -> None:
     if args.score_file:
         result = json.loads(Path(args.score_file).read_text(encoding="utf-8"))
     elif args.run:
-        result = _run(chunks, args.checker, args.synthesis)
+        result = _run(chunks, args.checker, args.synthesis, args.rows_from)
         if args.out:
             Path(args.out).write_text(json.dumps(result, indent=2), encoding="utf-8")
     else:

@@ -3,7 +3,7 @@
 
 import logging
 import uuid
-from typing import List
+from typing import List, Set
 
 from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
@@ -16,6 +16,12 @@ from app.features.storage.service.storage_api import StorageAPI
 from app.features.visual_analysis.domain.entities import ChunkVisualAnalysis, FrameAnalysis
 from app.features.visual_analysis.domain.interfaces import IVisualAnalysisRepository, IVisualLanguageModelAdapter
 from app.features.visual_analysis.utils.error_mapper import map_visual_analysis_error
+from app.features.visual_analysis.utils.grounding_check import (
+    drop_items_already_reported,
+    drop_marks_copied_from_other_frames,
+    ground_observation
+)
+from app.features.visual_analysis.utils.observation_renderer import render_observation
 
 logger = logging.getLogger(__name__)
 
@@ -78,33 +84,41 @@ class VisualAnalysisAPI:
                 return self._save_empty_result(source_id, chunk)
 
             frame_analyses: List[FrameAnalysis] = []
+            reported_items: Set[str] = set()
             frames = sorted(extracted_frames.frames, key=lambda f: f.timestamp_sec)
             frames_per_call = max(1, settings.VISION_MAX_IMAGES_PER_CALL)
 
-            # 3. Describe the frames chronologically, several per multimodal call: the shared prompt
-            # (system rules + chunk text) is encoded once per group instead of once per frame
+            # 3. Read the frames chronologically, several per multimodal call: the shared prompt
+            # (system rules + chunk text) is encoded once per group instead of once per frame.
+            # Only frames with visible evidence (legible text or drawn marks) get a description.
             for group_start in range(0, len(frames), frames_per_call):
                 group = frames[group_start:group_start + frames_per_call]
                 image_paths = [self._storage.get_file_path(frame.file_id) for frame in group]
 
                 logger.info(f"  -> VLM analyzing {len(group)} frame(s) for Chunk {chunk.chunk_id}...")
 
-                descriptions = self._vlm_adapter.analyze_frames(
+                observations = self._vlm_adapter.analyze_frames(
                     model=vlm_model,
                     image_paths=image_paths,
                     original_text=chunk.original_text,
                     context_string=chunk.context_string
                 )
 
-                for frame, description in zip(group, descriptions):
-                    if not description.strip():
-                        logger.warning(f"VLM produced no description for frame {frame.frame_id}; skipping it.")
+                grounded_group = drop_marks_copied_from_other_frames(
+                    [ground_observation(observation, chunk.original_text) for observation in observations]
+                )
+
+                for frame, grounded in zip(group, grounded_group):
+                    if grounded is not None:
+                        grounded = drop_items_already_reported(grounded, reported_items)
+                    if grounded is None:
+                        logger.info(f"Frame {frame.frame_id} shows no legible text or marks; no description stored.")
                         continue
 
                     frame_analyses.append(
                         FrameAnalysis(
                             frame_id=frame.frame_id,
-                            description=description.strip(),
+                            description=render_observation(grounded),
                             timestamp_sec=frame.timestamp_sec
                         )
                     )

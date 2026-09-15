@@ -2,9 +2,11 @@
 # Path: integration_tests/features/visual_analysis/test_analysis_api_integration.py
 
 import os
+import re
 import uuid
 import pytest
 from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
 from sqlalchemy import text as sa_text
 
 from app.core.config import settings
@@ -86,87 +88,93 @@ class TestVisualAnalysisAPIIntegration:
             storage_api=storage_api
         )
 
-    def test_process_chunk_end_to_end_vlm_inference(
-            self,
-            isolated_setup: uuid.UUID,
-            real_image_file: str,
-            live_api: VisualAnalysisAPI
-    ):
-        source_id = isolated_setup
+    def _run_single_frame(self, live_api: VisualAnalysisAPI, source_id: uuid.UUID, image_path: str,
+                          original_text: str, context_string: str) -> ChunkVisualAnalysis:
         chunk_id = uuid.uuid4()
-
-        # 1. Vault the physical image using the Storage feature
-        vaulted_file = live_api._storage.ingest_raw_file(real_image_file, delete_original=False)
-
-        # 2. Construct the logical domain entities simulating Phase 9 and Phase 9.5
-        chunk = ContextualizedChunk(
-            chunk_id=chunk_id,
-            original_text="As you can see right here, there appears to be a shadow in the lower lobe.",
-            context_string="Two medical professionals are reviewing a patient's chest scan.",
-            needs_visual=True
-        )
-
+        vaulted_file = live_api._storage.ingest_raw_file(image_path, delete_original=False)
+        chunk = ContextualizedChunk(chunk_id=chunk_id, original_text=original_text, context_string=context_string,
+                                    needs_visual=True)
         extracted_frames = ExtractedChunkFrames(
             source_id=source_id,
             chunk_id=chunk_id,
-            frames=[
-                ExtractedFrame(
-                    frame_id=uuid.uuid4(),
-                    file_id=vaulted_file.id,
-                    timestamp_sec=15.5,
-                    phash_value="medical_hash_01",
-                    quality_score=100.0
-                )
-            ]
+            frames=[ExtractedFrame(frame_id=uuid.uuid4(), file_id=vaulted_file.id, timestamp_sec=15.5,
+                                   phash_value="frame_hash_01", quality_score=100.0)]
         )
-
-        # 3. Setup the Orchestrator and Manifest
         manifest = ModelManifest(
             model_type=ModelType.VISION,
             model_path=settings.VISION_MODEL_PATH,
             required_vram_mb=settings.VISION_VRAM_REQUIREMENT_MB
         )
-
-        vram_monitor = PyTorchVramMonitor()
-        orchestrator = ModelManagerOrchestrator(vram_monitor)
+        orchestrator = ModelManagerOrchestrator(PyTorchVramMonitor())
         loaded_model = None
-
         try:
-            print("\n[DEBUG] Loading Qwen2-VL 7B into VRAM... This will take a few seconds.")
             loaded_model = orchestrator.acquire_model(manifest, live_api._vlm_adapter)
-
-            # 4. Execute the actual pipeline orchestration
-            print("[DEBUG] Executing Multimodal Inference on the vaulted frame...")
             visual_analysis = live_api.process_chunk(
-                source_id=source_id,
-                chunk=chunk,
-                extracted_frames=extracted_frames,
-                vlm_model=loaded_model
+                source_id=source_id, chunk=chunk, extracted_frames=extracted_frames, vlm_model=loaded_model
             )
-
-            # 5. Verify the Domain Object
-            assert isinstance(visual_analysis, ChunkVisualAnalysis)
-            assert visual_analysis.chunk_id == chunk_id
-            assert len(visual_analysis.analyses) == 1
-
-            description = visual_analysis.analyses[0].description
-            print(f"\n[DEBUG] Qwen-VL Generated Description:\n{description}")
-
-            # Ensure the model actually generated text
-            assert len(description) > 5
-
-            # 6. Verify AI Intelligence (Did it actually see the medical context?)
-            description_lower = description.lower()
-            has_medical_context = any(
-                word in description_lower for word in ["x-ray", "xray", "chest", "scan", "lung", "doctor", "pointing"])
-            assert has_medical_context is True, f"Qwen-VL failed to identify medical context. Output: {description}"
-
-            # 7. Verify Database Persistence
-            db_record = live_api._repo.get_by_chunk_id(chunk_id)
-            assert db_record is not None
-            assert db_record.chunk_id == chunk_id
-            assert db_record.analyses[0].description == description
-
         finally:
             if loaded_model:
                 orchestrator.release_model(loaded_model, live_api._vlm_adapter, flush=True)
+
+        assert isinstance(visual_analysis, ChunkVisualAnalysis)
+        assert visual_analysis.chunk_id == chunk_id
+        db_record = live_api._repo.get_by_chunk_id(chunk_id)
+        assert db_record is not None
+        assert [a.description for a in db_record.analyses] == [a.description for a in visual_analysis.analyses]
+        for analysis in visual_analysis.analyses:
+            print(f"\n[DEBUG] Qwen-VL description: {analysis.description}")
+        return visual_analysis
+
+    def test_speech_is_never_stored_as_on_screen_text(
+            self,
+            isolated_setup: uuid.UUID,
+            real_image_file: str,
+            live_api: VisualAnalysisAPI
+    ):
+        """
+        An X-ray held up by a doctor has no legible text. The frame may get no description at all (nothing legible
+        and no specific mark reported), but the spoken sentence must never be stored as text read off the frame.
+        """
+        spoken = "As you can see right here, there appears to be a shadow in the lower lobe."
+        visual_analysis = self._run_single_frame(
+            live_api, isolated_setup, real_image_file, spoken,
+            "Two medical professionals are reviewing a patient's chest scan."
+        )
+
+        assert len(visual_analysis.analyses) <= 1
+        for analysis in visual_analysis.analyses:
+            on_screen = " ".join(re.findall(r'"([^"]+)"', analysis.description.split("Speaker's reference:")[0]))
+            assert "shadow in the lower lobe" not in on_screen.lower(), analysis.description
+            assert any(word in analysis.description.lower() for word in ["x-ray", "xray", "chest", "scan", "lung"])
+
+    def test_legible_slide_text_is_read_and_rendered_as_on_screen_text(
+            self,
+            isolated_setup: uuid.UUID,
+            live_api: VisualAnalysisAPI,
+            tmp_path: Path
+    ):
+        """A rendered slide with large legible text: its title and figures must come back quoted as on-screen text."""
+        font_path = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
+        if not font_path.exists():
+            pytest.skip(f"Font for the synthetic slide missing at {font_path}")
+
+        image = Image.new("RGB", (1280, 720), "white")
+        draw = ImageDraw.Draw(image)
+        draw.text((80, 80), "EXHIBIT 12", fill="black", font=ImageFont.truetype(str(font_path), 96))
+        body_font = ImageFont.truetype(str(font_path), 56)
+        draw.text((80, 300), "Contract signed 14 March 2019", fill="black", font=body_font)
+        draw.text((80, 420), "Late delivery penalty: 4.5%", fill="black", font=body_font)
+        image_path = tmp_path / "exhibit_slide.jpg"
+        image.save(image_path)
+
+        visual_analysis = self._run_single_frame(
+            live_api, isolated_setup, str(image_path),
+            "If you look at this exhibit, the penalty for late delivery is spelled out in the contract.",
+            "Counsel is walking the court through the supply contract."
+        )
+
+        assert len(visual_analysis.analyses) == 1
+        description = visual_analysis.analyses[0].description
+        assert "on-screen text" in description
+        assert "exhibit 12" in description.lower()
+        assert "4.5%" in description or "14 march 2019" in description.lower()
