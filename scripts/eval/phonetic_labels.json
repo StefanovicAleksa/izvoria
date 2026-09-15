@@ -1,0 +1,57 @@
+{
+  "_about": "Frozen labelled set for scripts/eval/phonetic_eval.py. Negatives are the full stored transcripts (read from the DB at run time): every edit there is a false positive except the positives listed below. 'real_nohotword' positives are genuine Whisper mis-hearings found by re-transcribing the 74-minute video without hotwords (scripts/eval/retranscribe_without_hotwords.py) and aligning it to the stored transcript; their probability is Whisper's. 'synthetic' positives are hand-written plausible ASR confusions for terms that never occur in the video (probability unknown). split: tune = thresholds may be chosen on it, heldout = report only.",
+  "industry": "PROP_TRADING_MACRO",
+  "sub_domains": ["CENTRAL_BANK_MACRO", "EUROPEAN_CENTRAL_BANK"],
+  "positives": [
+    {"source": "real_nohotword", "split": "tune", "text": "So, in terms of your charts and make notes, these levels will keep the chart safe chart picture and what we've seen in the burn is quite a clear downtrend coming into this ECB meeting.", "heard": "burn", "expected": "Bund", "probabilities": {"burn": 0.18}},
+    {"source": "real_nohotword", "split": "heldout", "text": "So reasonably hawkish situation, certainly in terms of pricing for the burns.", "heard": "burns", "expected": "Bunds", "probabilities": {"burns": 0.89}},
+    {"source": "real_nohotword", "split": "heldout", "text": "So again showing that there is still a little bit of weakness in the front.", "heard": "front", "expected": "Bund", "probabilities": {"front": 0.08}},
+    {"source": "real_nohotword", "split": "tune", "text": "And then really 161.17 is the sort of key pivot area that I think the boom could target on a move higher.", "heard": "boom", "expected": "Bund", "probabilities": {"boom": 0.26}},
+    {"source": "synthetic", "split": "tune", "text": "So, as I mentioned before, this is where Mario Draggy can use the questions to inform the market.", "heard": "Mario Draggy", "expected": "Mario Draghi"},
+    {"source": "synthetic", "split": "heldout", "text": "We're going to be looking at an E C B press conference and specifically at the questioning.", "heard": "E C B", "expected": "ECB"},
+    {"source": "synthetic", "split": "tune", "text": "Christine la guard said the council stands ready to adjust all of its instruments.", "heard": "Christine la guard", "expected": "Christine Lagarde"},
+    {"source": "synthetic", "split": "heldout", "text": "What we've seen in the bunts is quite a clear downtrend coming into this meeting.", "heard": "bunts", "expected": "Bunds"},
+    {"source": "synthetic", "split": "tune", "text": "The for word guidance was left unchanged at the January meeting.", "heard": "for word guidance", "expected": "Forward Guidance"},
+    {"source": "synthetic", "split": "heldout", "text": "Nobody wants a repeat of the paper tantrum in bond markets.", "heard": "paper tantrum", "expected": "Taper Tantrum"},
+    {"source": "synthetic", "split": "tune", "text": "The market was waiting for details of the new T L T R O programme.", "heard": "T L T R O", "expected": "TLTRO"},
+    {"source": "synthetic", "split": "heldout", "text": "Isabel Snabel pushed back against further easing.", "heard": "Isabel Snabel", "expected": "Isabel Schnabel"},
+    {"source": "synthetic", "split": "tune", "text": "Lewis de Guindos gave the opening remarks.", "heard": "Lewis de Guindos", "expected": "Luis de Guindos"},
+    {"source": "synthetic", "split": "heldout", "text": "The risk here is stack flation rather than a recession.", "heard": "stack flation", "expected": "stagflation"},
+    {"source": "synthetic", "split": "tune", "text": "Everyone is watching the F O M C meeting next week.", "heard": "F O M C", "expected": "FOMC"},
+    {"source": "synthetic", "split": "heldout", "text": "It was a slightly more hawk ish decision than expected.", "heard": "hawk ish", "expected": "hawkish"},
+    {"source": "synthetic", "split": "tune", "text": "The tone of the press conference was quite dove ish.", "heard": "dove ish", "expected": "dovish"},
+    {"source": "synthetic", "split": "heldout", "text": "They extended the quantitive easing programme until December.", "heard": "quantitive easing", "expected": "Quantitative Easing"},
+    {"source": "synthetic", "split": "tune", "text": "The statement was released from Frank Fort at 13.45.", "heard": "Frank Fort", "expected": "Frankfurt"},
+    {"source": "synthetic", "split": "heldout", "text": "They left the depot sit rate unchanged at minus 0.4 percent.", "heard": "depot sit rate", "expected": "Deposit Rate"}
+  ],
+  "synthetic_negatives": [
+    {"text": "So what I'd like you to do is read through the E.C.B. statements from October.", "why": "formatting of a correct term, not a mis-hearing"},
+    {"text": "They left the deposit rates unchanged.", "why": "plural of a correct term"},
+    {"text": "The non farm payrolls number came in strong.", "why": "correct term without its hyphen"},
+    {"text": "Philip Lane talked about the yield curve.", "why": "correct terms"},
+    {"text": "The bond market burned through the lows and the boom in equities continued.", "why": "ordinary words near 'Bunds' in a non-Bund context"},
+    {"text": "Up front, you have technical plays.", "why": "ordinary word 'front'"},
+    {"text": "You want to set your replay for 9th March, starting at 13.50.45 seconds.", "why": "number shorthand must not change"},
+    {"text": "You have the fade from the top of the range up at those 73s.", "why": "number shorthand must not change (bad patch from the stored run)"},
+    {"text": "So again showing that there is still a little bit of weakness in the bund.", "why": "correct singular of 'Bunds' (bad patch from the stored run)"},
+    {"text": "This is where you can start leaning on your structure in the 20s.", "why": "number shorthand"},
+    {"text": "Past three days and including the morning of the Bank of England decision, the market has rallied.", "why": "earlier run rewrote Bank of England to BOE"},
+    {"text": "First idea is going to be a move back through the scene of the crime, so the very first move.", "why": "earlier run rewrote 'very first' to 'initial'"},
+    {"text": "You're going to be trading Bund, so FGBL, M7 so M for June contract.", "why": "earlier run rewrote 'you're going to' to 'you will'"},
+    {"text": "That takes you through that level and that's where people are then rushing to buy.", "why": "earlier run invented '142.27' for 'that level'"}
+  ],
+  "uncertain": [
+    {"text": "So hopefully, by trading those sources, you've prepped yourself a little bit and certainly become accustomed to how the bull moves on some of these events.", "heard": "bull", "maybe": "Bund", "probabilities": {"bull": 0.18}}
+  ],
+  "old_patch_negatives": [
+    {"original": "fade from the top of the range up at those 73s", "correction": "fade from the top of the range up at those 73 Bunds"},
+    {"original": "showing that there is still a little bit of weakness in the bund", "correction": "showing that there is still a little bit of weakness in Bunds"},
+    {"original": "the very first move", "correction": "the initial move"},
+    {"original": "you're going to be trading", "correction": "you will be trading"},
+    {"original": "the Bank of England decision", "correction": "the BOE decision"},
+    {"original": "starting at 13.50.45 seconds", "correction": "starting at 13:50:45"},
+    {"original": "through that level and", "correction": "through 142.27 and"},
+    {"original": "the move back through", "correction": "the price move back through"},
+    {"original": "doing something of acting in a certain way", "correction": "preparation"}
+  ]
+}
