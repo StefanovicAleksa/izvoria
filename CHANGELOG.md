@@ -10,13 +10,13 @@ Found while inspecting the first real ingestion; both were verified on the store
 
 - **Whisper no longer gets a sentence prompt, and prompt text it repeats is removed** (`domain_adaptation/utils/glossary_builder.py`, `domain_adaptation/data/prompts.py`, `transcription/utils/prompt_echo_filter.py`, `transcription/service/transcription_api.py`, `WHISPER_PROMPT_ECHO_MIN_TOKENS`).
   - **Introduced in:** `9bc403a` (review batch 3), which replaced the instruction prompt with "This recording discusses {domains}, including terms such as {terms}."
-  - **Fixed in:** pending
+  - **Fixed in:** `05ed5f4`.
   - faster-whisper feeds `hotwords` and `initial_prompt` to the model as "previous transcript" text. Whisper copied the prompt into the 74-minute video's transcript 5 times, at high confidence (no-speech ≈ 0.01, not flagged), and it reached 6 indexed chunks.
   - `GlossaryBuilder` now returns an empty initial prompt; the hotword list carries the vocabulary bias.
   - `TranscriptionAPI` removes any run of at least 5 consecutive words that appears, in order, in the hotwords or prompt, before the transcript is saved. On the stored run this removes exactly the 6 leaked runs (60 words). With the trading hotwords it removes nothing from real speech. At 3 words, real mentions of "Bank of England" would also be removed, hence 5.
 - **The sub-domain router scores topics instead of copying the label list** (`domain_adaptation/data/llama_adapter.py`, `domain_adaptation/data/prompts.py`, `domain_adaptation/utils/glossary_builder.py`, `DOMAIN_ROUTER_MIN_SCORE`).
   - **Introduced in:** `251ec04` (router prompt with a bare label list) and `0921cd6` (grammar accepting any string).
-  - **Fixed in:** pending
+  - **Fixed in:** `05ed5f4`.
   - Asked for "the sub-domains", the 3B model returned every label in listed order: all 8 `PROP_TRADING_MACRO` labels for an ECB/BoE video. That put irrelevant names ("Macklem, Poloz, Loonie, Ueda") into Whisper's hotwords and 153 terms into the phonetic dictionary.
   - It now rates every label 0–10 against a short description from the glossary. The grammar allows only real labels, and labels scoring at least 5 are kept, highest first.
   - Checked results: the ECB/BoE video gets European Central Bank 9 and Central Bank Macro 8, rest 0. The options-trading test clip gets `OPTIONS_TRADING` 10 with `FINANCE`, and all 0 with `PROP_TRADING_MACRO`. An unrelated medical transcript gets all 0. A stricter "select only clearly discussed topics" list prompt returned nothing even for the video, so it wasn't used.
