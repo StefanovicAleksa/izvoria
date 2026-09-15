@@ -9,7 +9,7 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 - **A preload waits for the GPU as long as the phase using it runs** (`core/model_manager/service/orchestrator.py`, `core/config.py`, `core/model_manager/exceptions/`; `MODEL_WAIT_FOR_CLEAR_TIMEOUT_SEC` and `ModelAcquireTimeoutError` removed).
   - **Introduced in:** `3bfde2d` (review batch 1). It capped `acquire_model(wait_for_clear=True)` at 120 s, so that a leaked model could not park the caller forever.
   - **Exposed by:** `2e49ade`. Visual analysis of the 74-minute video grew from 71 s to 174 s.
-  - **Fixed in:** pending
+  - **Fixed in:** `cc7f34b`.
   - **What happened on the re-ingest.**
     1. The visual hallucination preload is queued before visual analysis. It gave up after 120 s while the VLM was still working, so that phase failed.
     2. The synthesis preload, already queued, then loaded with no phase left to release it.
@@ -18,7 +18,7 @@ This log tracks **feature-level milestones**, not every commit. It's written for
   - **Why removing it is safe.** The leak the limit guarded against was already fixed in `3bfde2d` itself: every pipeline discards unused preloads in `finally`, and the engine releases all models after an ingestion or a failed live call. The wait itself (`ce4374d`) stays, because a preload must never evict a model in use.
 - **A halted visual branch's preloads are released before the embedder preload** (`orchestration/service/pipelines/batch_media_pipeline.py`).
   - **Introduced in:** `14cd969` (synthesis preload queued before visual hallucination correction) and `e6738a7` (visual hallucination preload queued before visual analysis).
-  - **Fixed in:** pending
+  - **Fixed in:** `cc7f34b`.
   - **The problem.** If a visual phase fails or has nothing to do, preloads already triggered for later phases still load and stay resident until `finally`. With no wait limit the embedder preload would wait behind them forever.
   - **The fix.** `_discard_pending_preloads()` now runs right before the embedder preload; every earlier phase has already run by then. A unit test covers a failed visual hallucination correction.
 
