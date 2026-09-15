@@ -1,5 +1,3 @@
-# File: tests/features/domain_phonetic_correction/utils/test_dictionary_loader.py
-# Canvas: test_dictionary_loader_v6
 # Path: tests/features/domain_phonetic_correction/utils/test_dictionary_loader.py
 
 import json
@@ -22,7 +20,7 @@ class TestDictionaryLoader:
                     "terms": ["Gamma"]
                 },
                 "M_AND_A": {
-                    "anchor_words": ["merger"],
+                    "anchor_words": ["merger", " strike "],
                     "terms": ["synergy"]
                 }
             }
@@ -31,72 +29,56 @@ class TestDictionaryLoader:
     @patch("app.features.domain_phonetic_correction.utils.dictionary_loader.settings")
     @patch("app.features.domain_phonetic_correction.utils.dictionary_loader.Path.exists")
     @patch("builtins.open")
-    def test_build_prompt_dictionary_success_single(self, mock_file_open, mock_path_exists, mock_settings,
-                                                    mock_manifest_data):
-        """Verifies it correctly merges and formats base terms with a single sub-domain."""
+    def test_load_terms_single_subdomain(self, mock_file_open, mock_path_exists, mock_settings, mock_manifest_data):
+        """Base terms plus one sub-domain's anchor words and terms, sorted."""
         mock_settings.GLOSSARY_DIR = Path("/mock/glossaries")
         mock_path_exists.return_value = True
         mock_file_open.return_value = mock_open(read_data=json.dumps(mock_manifest_data)).return_value
 
-        result = DictionaryLoader.build_prompt_dictionary(industry="FINANCE", sub_domains=["OPTIONS_TRADING"])
+        result = DictionaryLoader.load_terms(industry="FINANCE", sub_domains=["OPTIONS_TRADING"])
 
-        expected_terms = sorted(["EBITDA", "Revenue", "strike", "theta", "Gamma"])
-        expected_output = "\n".join([f"- {term}" for term in expected_terms])
-
-        assert result == expected_output
+        assert result == sorted(["EBITDA", "Revenue", "strike", "theta", "Gamma"])
 
     @patch("app.features.domain_phonetic_correction.utils.dictionary_loader.settings")
     @patch("app.features.domain_phonetic_correction.utils.dictionary_loader.Path.exists")
     @patch("builtins.open")
-    def test_build_prompt_dictionary_multiple_subdomains(self, mock_file_open, mock_path_exists, mock_settings,
-                                                         mock_manifest_data):
-        """Verifies aggregation across multiple sub-domains works correctly."""
+    def test_load_terms_multiple_subdomains_are_stripped_and_deduplicated(
+            self, mock_file_open, mock_path_exists, mock_settings, mock_manifest_data):
         mock_settings.GLOSSARY_DIR = Path("/mock/glossaries")
         mock_path_exists.return_value = True
         mock_file_open.return_value = mock_open(read_data=json.dumps(mock_manifest_data)).return_value
 
-        result = DictionaryLoader.build_prompt_dictionary(industry="FINANCE",
-                                                          sub_domains=["OPTIONS_TRADING", "M_AND_A"])
+        result = DictionaryLoader.load_terms(industry="FINANCE", sub_domains=["OPTIONS_TRADING", "M_AND_A"])
 
-        all_terms = ["EBITDA", "Revenue", "strike", "theta", "Gamma", "merger", "synergy"]
-        expected_output = "\n".join([f"- {term}" for term in sorted(all_terms)])
-
-        assert result == expected_output
+        assert result == sorted(["EBITDA", "Revenue", "strike", "theta", "Gamma", "merger", "synergy"])
 
     @patch("app.features.domain_phonetic_correction.utils.dictionary_loader.settings")
     @patch("app.features.domain_phonetic_correction.utils.dictionary_loader.Path.exists")
     @patch("builtins.open")
-    def test_build_prompt_dictionary_unknown_subdomain(self, mock_file_open, mock_path_exists, mock_settings,
-                                                       mock_manifest_data):
-        """If a requested sub-domain isn't in the JSON, it returns base terms."""
+    def test_load_terms_unknown_subdomain_returns_base_terms(self, mock_file_open, mock_path_exists, mock_settings,
+                                                             mock_manifest_data):
         mock_settings.GLOSSARY_DIR = Path("/mock/glossaries")
         mock_path_exists.return_value = True
         mock_file_open.return_value = mock_open(read_data=json.dumps(mock_manifest_data)).return_value
 
-        result = DictionaryLoader.build_prompt_dictionary(industry="FINANCE", sub_domains=["UNKNOWN"])
+        result = DictionaryLoader.load_terms(industry="FINANCE", sub_domains=["UNKNOWN"])
 
-        assert result == "- EBITDA\n- Revenue"
+        assert result == ["EBITDA", "Revenue"]
 
     @patch("app.features.domain_phonetic_correction.utils.dictionary_loader.settings")
     @patch("app.features.domain_phonetic_correction.utils.dictionary_loader.Path.exists")
-    def test_build_prompt_dictionary_file_not_found(self, mock_path_exists, mock_settings):
-        """If the industry file doesn't exist, it returns an empty string."""
+    def test_load_terms_file_not_found(self, mock_path_exists, mock_settings):
         mock_settings.GLOSSARY_DIR = Path("/mock/glossaries")
         mock_path_exists.return_value = False
 
-        result = DictionaryLoader.build_prompt_dictionary(industry="GHOST", sub_domains=["GENERAL"])
-
-        assert result == ""
+        assert DictionaryLoader.load_terms(industry="GHOST", sub_domains=["GENERAL"]) == []
 
     @patch("app.features.domain_phonetic_correction.utils.dictionary_loader.settings")
     @patch("app.features.domain_phonetic_correction.utils.dictionary_loader.Path.exists")
     @patch("builtins.open")
-    def test_build_prompt_dictionary_corrupted_json(self, mock_file_open, mock_path_exists, mock_settings):
-        """If the JSON is corrupted, it handles the exception."""
+    def test_load_terms_corrupted_json(self, mock_file_open, mock_path_exists, mock_settings):
         mock_settings.GLOSSARY_DIR = Path("/mock/glossaries")
         mock_path_exists.return_value = True
         mock_file_open.return_value = mock_open(read_data="{ bad json {").return_value
 
-        result = DictionaryLoader.build_prompt_dictionary(industry="FINANCE", sub_domains=["GENERAL"])
-
-        assert result == ""
+        assert DictionaryLoader.load_terms(industry="FINANCE", sub_domains=["GENERAL"]) == []

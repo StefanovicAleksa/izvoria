@@ -2,11 +2,26 @@
 # Path: app/features/domain_phonetic_correction/domain/entities.py
 
 import uuid
-from typing import List
+from typing import List, Optional
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field, ConfigDict
 
 from app.features.sentence_reconstruction.domain.entities import ReconstructedSentence
+
+class PhoneticCandidate(BaseModel):
+    """
+    A span of a sentence that sounds like a dictionary term it isn't already spelled as.
+    Only a candidate: it is applied only if the verifier confirms the speaker said the term.
+    """
+    start: int = Field(description="Character offset in the sentence text where the heard span starts.")
+    end: int = Field(description="Character offset where the heard span ends (exclusive).")
+    heard: str = Field(description="The heard span, exactly as it appears in the sentence text.")
+    term: str = Field(description="The dictionary term the span sounds like, as spelled in the glossary.")
+    replacement: str = Field(description="The text written instead of the span: the term, in the heard singular/plural form.")
+    score: float = Field(description="Sound/spelling similarity between the span and the term, 0-1.")
+    min_probability: Optional[float] = Field(default=None, description="Lowest Whisper word probability in the span, if known.")
+
+    model_config = ConfigDict(frozen=True)
 
 class DomainPhoneticPatch(BaseModel):
     """

@@ -1,19 +1,24 @@
-# Canvas: domain_qwen_adapter_v21
 # Path: app/features/domain_phonetic_correction/data/qwen_adapter.py
 
 import os
 import gc
-from typing import List, Any, Dict
 import logging
+from typing import List, Any, Dict
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.features.domain_phonetic_correction.domain.interfaces import IDomainPhoneticPatchAdapter
-from app.features.domain_phonetic_correction.domain.entities import DomainPhoneticPatch
-from app.features.domain_phonetic_correction.data.prompts import QWEN_PHONETIC_SYSTEM_PROMPT
+from app.features.domain_phonetic_correction.domain.entities import PhoneticCandidate
+from app.features.domain_phonetic_correction.data.prompts import (
+    PHONETIC_VERIFY_SYSTEM_PROMPT,
+    PHONETIC_VERIFY_USER_TEMPLATE
+)
 from app.features.domain_phonetic_correction.utils.error_mapper import map_phonetic_error
-from app.features.domain_phonetic_correction.utils.xml_parser import parse_xml_patches
 
 logger = logging.getLogger(__name__)
+
+# Characters of the sentence kept on each side of a candidate, so run-on sentences stay inside the context window
+CONTEXT_CHARS = 600
+_CHOICE_GRAMMAR = 'root ::= "A" | "B"\n'
 
 
 class QwenDomainAdapter(IDomainPhoneticPatchAdapter):
@@ -27,6 +32,11 @@ class QwenDomainAdapter(IDomainPhoneticPatchAdapter):
             flash_attn=True,
             verbose=False
         )
+
+    @staticmethod
+    def _get_grammar(grammar_str: str) -> Any:
+        from llama_cpp import LlamaGrammar
+        return LlamaGrammar.from_string(grammar_str)
 
     def load(self, manifest: ModelManifest) -> LoadedModel:
         try:
@@ -49,41 +59,55 @@ class QwenDomainAdapter(IDomainPhoneticPatchAdapter):
         except Exception as e:
             raise map_phonetic_error(e, context="Unload Qwen 2.5 Model") from e
 
-    def generate_patches(
+    def verify_candidates(
             self,
             model: LoadedModel,
-            text_chunk: str,
-            domain_dictionary: str
-    ) -> List[DomainPhoneticPatch]:
+            sentence_text: str,
+            previous_text: str,
+            candidates: List[PhoneticCandidate],
+            domain: str
+    ) -> List[bool]:
+        """
+        A candidate is confirmed only if the model picks the version with the term both when it is shown first and
+        when it is shown second. Either order alone let a position bias accept ordinary words ("bond" -> "Bund").
+        """
+        if not candidates:
+            return []
+
         try:
             llm: Any = model.model_instance
-            system_content = QWEN_PHONETIC_SYSTEM_PROMPT.format(domain_dictionary=domain_dictionary)
+            grammar = self._get_grammar(_CHOICE_GRAMMAR)
+            system_content = PHONETIC_VERIFY_SYSTEM_PROMPT.format(domain=domain)
+            verdicts: List[bool] = []
 
-            messages: List[Dict[str, str]] = [
-                {"role": "system", "content": system_content},
-                {"role": "user", "content": f"<INPUT_TEXT>\n{text_chunk}\n</INPUT_TEXT>"}
-            ]
+            for candidate in candidates:
+                heard_version = self._marked_window(sentence_text, candidate, candidate.heard)
+                term_version = self._marked_window(sentence_text, candidate, candidate.replacement)
+                term_first = self._choose(llm, grammar, system_content, previous_text, term_version, heard_version) == "A"
+                term_second = self._choose(llm, grammar, system_content, previous_text, heard_version, term_version) == "B"
+                verdicts.append(term_first and term_second)
 
-            # FIX: Removed the buggy continuation loop.
-            # Gave the LLM a healthy max_tokens of 800.
-            response = llm.create_chat_completion(
-                messages=messages,
-                temperature=0.1,
-                max_tokens=800
-            )
-
-            choice = response["choices"][0]
-            final_raw_output = choice["message"].get("content", "")
-            finish_reason = choice.get("finish_reason", "stop")
-
-            if finish_reason == "length":
-                logger.warning(
-                    "LLM hit max_tokens limit. Regex Parser will salvage completed patches and ignore the truncated tail.")
-
-            # Strip C++ null terminators safely
-            final_raw_output = final_raw_output.replace('\x00', '')
-
-            return parse_xml_patches(final_raw_output)
+            return verdicts
 
         except Exception as e:
-            raise map_phonetic_error(e, context="Generate Qwen XML Patches") from e
+            raise map_phonetic_error(e, context="Verify Phonetic Candidates") from e
+
+    @staticmethod
+    def _choose(llm: Any, grammar: Any, system_content: str, previous_text: str, version_a: str, version_b: str) -> str:
+        messages: List[Dict[str, str]] = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": PHONETIC_VERIFY_USER_TEMPLATE.format(
+                previous_text=previous_text or "(none)", version_a=version_a, version_b=version_b
+            )}
+        ]
+        response = llm.create_chat_completion(messages=messages, temperature=0.0, max_tokens=1, grammar=grammar)
+        return response["choices"][0]["message"].get("content", "").replace('\x00', '').strip()
+
+    @staticmethod
+    def _marked_window(text: str, candidate: PhoneticCandidate, written: str) -> str:
+        """The sentence around the candidate, with the candidate span replaced by `written` in [brackets]."""
+        start = max(0, candidate.start - CONTEXT_CHARS)
+        end = min(len(text), candidate.end + CONTEXT_CHARS)
+        prefix = ("…" if start > 0 else "") + text[start:candidate.start]
+        suffix = text[candidate.end:end] + ("…" if end < len(text) else "")
+        return f"{prefix}[{written}]{suffix}"

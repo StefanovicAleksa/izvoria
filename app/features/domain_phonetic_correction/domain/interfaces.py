@@ -1,4 +1,3 @@
-# Canvas: domain_phonetic_interfaces_v2
 # Path: app/features/domain_phonetic_correction/domain/interfaces.py
 
 import uuid
@@ -9,18 +8,24 @@ from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.domain.entities import LoadedModel
 
 from app.features.domain_phonetic_correction.domain.entities import (
-    DomainPhoneticPatch,
-    DomainPhoneticCorrectedTranscript
+    DomainPhoneticCorrectedTranscript,
+    PhoneticCandidate
 )
 
 class IDomainPhoneticPatchAdapter(IModelLoader, ABC):
     @abstractmethod
-    def generate_patches(
+    def verify_candidates(
         self,
         model: LoadedModel,
-        text_chunk: str,
-        domain_dictionary: str
-    ) -> List[DomainPhoneticPatch]:
+        sentence_text: str,
+        previous_text: str,
+        candidates: List[PhoneticCandidate],
+        domain: str
+    ) -> List[bool]:
+        """
+        Judges, for each candidate, whether the speaker said the dictionary term and the transcript mis-heard it.
+        Returns exactly one verdict per candidate, in order; anything unusable counts as False (not a mis-hearing).
+        """
         pass
 
 class IDomainPhoneticRepository(ABC):

@@ -127,11 +127,15 @@ class Settings(BaseSettings):
 
     DOMAIN_PHONETIC_CORRECTION_MODEL_PATH: str = "models/qwen2.5-3b-instruct-q4_k_m.gguf"
     DOMAIN_PHONETIC_CORRECTION_VRAM_REQUIREMENT_MB: float = 2500.0
-    # Below this many dictionary terms there is nothing to correct against; the LLM pass is skipped.
-    # Patches must introduce a dictionary term, so even a small glossary cannot rewrite ordinary words.
+    # Below this many dictionary terms there is nothing to correct against; the pass is skipped.
     PHONETIC_MIN_DICTIONARY_TERMS: int = 1
-    # Letters-only similarity a phonetic patch needs between the words heard and the words it writes
-    PHONETIC_MIN_SIMILARITY: float = 0.6
+    # A heard span becomes a candidate for a dictionary term only if its letters or sound key are at least this similar
+    PHONETIC_CANDIDATE_MIN_SIMILARITY: float = 0.7
+    # Allowed letter-length ratio between the heard span and the term
+    PHONETIC_LENGTH_RATIO_MIN: float = 0.6
+    PHONETIC_LENGTH_RATIO_MAX: float = 1.67
+    # A span whose Whisper words were all heard at least this confidently is never a candidate
+    PHONETIC_MAX_WORD_PROBABILITY: float = 0.95
 
     CONTEXTUAL_RETRIEVAL_MODEL_PATH: str = "models/llama-3.2-3b-instruct-q8_0.gguf"
     CONTEXTUAL_RETRIEVAL_VRAM_REQUIREMENT_MB: float = 3500.0

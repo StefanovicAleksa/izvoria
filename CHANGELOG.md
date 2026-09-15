@@ -4,6 +4,39 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Phonetic over-correction and weakly grounded visual descriptions
+
+Found on the second real ingestion of the 74-minute Axia video. Each change was measured offline on the stored run before and after with `scripts/eval/` (nothing written to the database).
+
+- **Phonetic correction only fixes mis-heard glossary terms** (`domain_phonetic_correction/utils/term_candidate_finder.py`, `utils/phonetic_key.py`, `utils/span_replacer.py`, `data/qwen_adapter.py`, `data/prompts.py`, `service/correction_api.py`, `PHONETIC_CANDIDATE_MIN_SIMILARITY`, `PHONETIC_LENGTH_RATIO_MIN/MAX`, `PHONETIC_MAX_WORD_PROBABILITY`; `PHONETIC_MIN_SIMILARITY` removed).
+  - **Introduced in:** `a0c6772` (the free-rewrite `<orig>/<corr>` patch prompt) and `9a526c1` (the letters-only similarity gate, which passed "those 73s" → "those 73 Bunds" at exactly 0.6 because "73s" appears inside "73bunds").
+  - **Fixed in:** pending
+  - **The problem.** Whisper had transcribed the speech correctly, and the model rewrote it towards written or glossary form. Both patches applied on the stored run were wrong ("in the bund" → "in Bunds" as well). An earlier run proposed "very first" → "initial", "Bank of England" → "BOE", "13.50.45 seconds" → "13:50:45" and "that level" → "142.27".
+  - **Candidates come first, and they are deterministic.**
+    - A span becomes a candidate only if it sounds like exactly one dictionary term: letters and a small sound key are compared, and every heard word and every term word must supply its letters.
+    - A span is never a candidate if it contains a digit, is already the term up to case, hyphens or plural, holds a correctly written term, is an ordinary word matched to an acronym, or would turn a plural into a singular or a verb form into a noun.
+    - Spans whose Whisper words were all heard with probability ≥ 0.95 are skipped.
+  - **The model only confirms.** Qwen 3B picks between the sentence as transcribed and the sentence with the term (A/B, under a grammar), in both orders. A candidate is applied only if the term wins both times.
+    - Asked for true/false verdicts in a batch, it rejected all 18 real mis-hearings.
+    - With a single order, position bias accepted 2–3 ordinary words ("bond" → "Bund").
+  - **The edit is deterministic.** Only the exact span is replaced, with the term in the heard singular/plural form. The model never writes text, so it can't paraphrase, insert, delete or change digits.
+  - **Measured on the stored transcript** (334 real sentences) plus 20 labelled mis-hearings, with the real model:
+
+    | | Before | After |
+    |---|---|---|
+    | Precision | 0.80 | 1.00 (held-out half: 1.00) |
+    | Recall | 0.60 | 0.85 (held-out half: 0.90) |
+    | False edits on real speech | 2 | 0 |
+    | Digit changes | 0 | 0 |
+    | Time | 83 s | 12 s |
+
+    - Four of the mis-hearings are genuine: re-transcribing the video without hotwords gave "burn", "burns", "front" and "boom" for "Bund(s)". Whisper heard ECB, Draghi and Bank of England correctly even without hotwords. The other 16 are plausible hand-written confusions.
+  - **Trade-offs.**
+    - Mis-hearings that neither look nor sound like the term ("front" or "boom" for "Bund") aren't found.
+    - Oversized sentences are no longer split for the model; the verifier sees a window around each candidate.
+    - Spelled-out acronyms ("E C B") are recovered again, reversing the trade-off noted in `9a526c1`.
+    - The model is loaded only when a candidate exists.
+
 ## Whisper prompt leakage and sub-domain router
 
 Found while inspecting the first real ingestion; both were verified on the stored run before any code changed.

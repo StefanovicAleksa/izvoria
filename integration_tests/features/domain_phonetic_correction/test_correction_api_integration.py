@@ -61,6 +61,21 @@ class TestDomainPhoneticCorrectionAPIIntegration:
         elif target_path.exists():
             target_path.unlink()
 
+    @pytest.fixture(scope="module")
+    def setup_trading_glossary(self) -> Generator[str, None, None]:
+        source_path = settings.BASE_DIR / "data" / "glossaries" / "prop_trading_macro.json"
+        if not source_path.exists():
+            pytest.skip(f"Trading glossary missing at {source_path}")
+        target_path = settings.GLOSSARY_DIR / "prop_trading_macro.json"
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        original = target_path.read_bytes() if target_path.exists() else None
+        shutil.copy(source_path, target_path)
+        yield "PROP_TRADING_MACRO"
+        if original is not None:
+            target_path.write_bytes(original)
+        elif target_path.exists():
+            target_path.unlink()
+
     @pytest.fixture
     def real_transcript(self) -> ReconstructedTranscript:
         integration_tests_dir = Path(__file__).resolve().parent.parent.parent
@@ -208,7 +223,45 @@ class TestDomainPhoneticCorrectionAPIIntegration:
         assert "angina0" not in patched_text.lower()
         assert len(corrected_transcript.audit_trail) >= 1
 
-    def test_massive_sentence_splitting_and_chunking(
+    def test_trading_speech_is_left_alone_and_a_real_mishearing_is_fixed(
+            self,
+            isolated_setup: None,
+            live_api: DomainPhoneticCorrectionAPI,
+            setup_trading_glossary: str
+    ) -> None:
+        # Natural speech from the 74-minute Axia video that the old free-rewrite pass damaged, plus one mis-hearing
+        untouched = [
+            "So again showing that there is still a little bit of weakness in the bund.",
+            "Looking at a chart, your first thought is: well, you have the fade from the top of the range up at those 73s.",
+            "You want to set your replay for 9th March, starting at 13.50.45 seconds.",
+            "Past three days and including the morning of the Bank of England decision, the market has rallied.",
+        ]
+        misheard = "So, as I mentioned before, this is where Mario Draggy can use the questions to inform the market."
+        sentences = [
+            ReconstructedSentence(sentence_id=uuid.uuid4(), start_sec=float(i), end_sec=i + 1.0, text=text,
+                                  speaker_id="speaker_0", words=[])
+            for i, text in enumerate(untouched + [misheard])
+        ]
+        transcript = ReconstructedTranscript(source_id=uuid.uuid4(), sentences=sentences)
+
+        try:
+            corrected = live_api.execute(
+                transcript=transcript,
+                industry=setup_trading_glossary,
+                sub_domains=["CENTRAL_BANK_MACRO", "EUROPEAN_CENTRAL_BANK"],
+                release_after=True
+            )
+        except Exception as e:
+            if "cuda" in str(e).lower() or "vram" in str(e).lower():
+                pytest.skip(f"Skipping test due to insufficient VRAM: {e}")
+            raise e
+
+        assert [s.text for s in corrected.sentences] == untouched + [misheard.replace("Mario Draggy", "Mario Draghi")]
+        assert [(p.original, p.correction) for r in corrected.audit_trail for p in r.applied_patches] == [
+            ("Mario Draggy", "Mario Draghi")
+        ]
+
+    def test_oversized_sentence_is_corrected_in_place(
             self,
             isolated_setup: None,
             live_api: DomainPhoneticCorrectionAPI,
@@ -229,10 +282,11 @@ class TestDomainPhoneticCorrectionAPIIntegration:
 
         assert isinstance(corrected_transcript, DomainPhoneticCorrectedTranscript)
 
-        assert len(corrected_transcript.sentences) > 5
+        # Sentences are no longer split for the model: the verifier sees a window around each candidate
+        assert len(corrected_transcript.sentences) == 1
 
         patched_text = " ".join([s.text for s in corrected_transcript.sentences])
 
-        assert "acute angina" in patched_text.lower(), "Phonetic patch failed on the pre-split sentence!"
+        assert "acute angina" in patched_text.lower(), "Phonetic patch failed on the oversized sentence!"
         assert "a cute angina" not in patched_text.lower()
         assert len(corrected_transcript.audit_trail) >= 1
