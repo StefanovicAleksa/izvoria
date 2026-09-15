@@ -38,7 +38,7 @@ Found on the second real ingestion of the 74-minute Axia video. Each change was 
     - The model is loaded only when a candidate exists.
 - **Frame descriptions come from what the VLM can read, not from the speech** (`visual_analysis/data/prompts.py`, `data/vlm_adapter.py`, `utils/frame_description_parser.py`, `utils/grounding_check.py`, `utils/observation_renderer.py`, `service/analysis_api.py`, `VISION_MAX_NEW_TOKENS_PER_FRAME`).
   - **Introduced in:** `c557fe6` (free-text frame descriptions) and `112225e` (review batch 4 prompt: transcript in the prompt plus a free-form "describe each frame" instruction).
-  - **Fixed in:** pending
+  - **Fixed in:** `2e49ade`.
   - **The problem.** 11 of the 20 stored descriptions paraphrased the speech ("The speaker explains the concept of a position squeeze…") and 9 were indexed. Yet every one of those frames showed a slide with legible text: "POSITION SQUEEZE" bullets, "BoE REVERSAL 22/3/18 / Result 7-2 for hike BUT", chart callouts. Values such as "142.10 → 142.70" came from the speech, not the screen.
   - **Fields, not prose.** The VLM now reports `SHOWS`, `TEXT` (quoted legible text, at most 8 items), `MARKS` (drawn marks or pointers and what they point at) and `LINK` (the spoken reference they show). The stored description is rendered from those fields, with what is on screen and what the speaker refers to in separate sentences.
   - **A frame is described only if visible evidence survives deterministic filters.** They remove:
@@ -71,7 +71,7 @@ Found on the second real ingestion of the 74-minute Axia video. Each change was 
     - The 4-bit 7B model's output shifts noticeably with small prompt changes, so re-run `scripts/eval/visual_eval.py` after any prompt edit.
 - **The visual check accepts on-screen text that shares the chunk's topic** (`visual_hallucination_correction/utils/topic_overlap.py`, `data/prompts.py`, `service/correction_api.py`, `VISUAL_CHECK_MIN_SHARED_TOPIC_WORDS`).
   - **Introduced in:** not a regression. The text-only 3B checker (accept-biased prompt from `9a526c1`) can't see the frames.
-  - **Fixed in:** pending
+  - **Fixed in:** `2e49ade`.
   - **The problem.** On the rendered descriptions it rejected 4–7 of 12 matching chunks between runs, with self-contradicting reasons ("text about a trading drill and ECB statements… completely unrelated to a slide about trading drills and ECB statements").
   - **The change.** A chunk is accepted without the model when its quoted on-screen text shares at least 2 topic words, or one specific number such as "7-2", with the chunk's text and context. Only other chunks go to the model, which is loaded only when needed. The prompt now explains the description format.
   - **Measured.**
@@ -80,7 +80,7 @@ Found on the second real ingestion of the 74-minute Axia video. Each change was 
     - An A/B "real frames or a decoy" checker was tried and dropped: it accepted 5 of 12 legal mismatches.
 - **Visual synthesis can't add numbers or quotes** (`visual_context_synthesis/data/prompts.py`, `utils/narrative_guard.py`, `service/synthesis_api.py`).
   - **Introduced in:** `38b24e3` (synthesis prompt without grounding rules).
-  - **Fixed in:** pending
+  - **Fixed in:** `2e49ade`.
   - **The change.** The prompt requires on-screen text and numbers to be copied exactly, and the speaker's reference to stay separate from what is on screen.
   - **The guard.** A narrative with a number or quote that no frame description contains is replaced by the descriptions themselves. On the stored frames this happened for 2 of 10 narratives.
   - **Limit.** The guard checks numbers and quotes only; editorial wording ("a series of cryptic phrases") can still appear.
