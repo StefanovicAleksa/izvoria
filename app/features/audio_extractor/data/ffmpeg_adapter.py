@@ -39,6 +39,7 @@ class FFmpegAdapter(IFFmpegAdapter):
         # Explicitly typing as list[str] and using os.fspath() for Python < 3.12 Windows compatibility
         command: list[str] = [
             "ffmpeg",
+            "-nostdin",
             "-i", os.fspath(src),
             "-vn",
             "-acodec", "pcm_s16le",
@@ -60,6 +61,9 @@ class FFmpegAdapter(IFFmpegAdapter):
             # 3. Execute extraction
             subprocess.run(
                 command,
+                # FFmpeg reads the terminal for interactive keys and switches it to raw mode; with clip
+                # extraction running beside RAG indexing it left the CLI unable to read input.
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -86,6 +90,7 @@ class FFmpegAdapter(IFFmpegAdapter):
                 "-of", "csv=p=0",
                 os.fspath(src)
             ],
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

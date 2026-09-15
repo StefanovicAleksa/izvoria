@@ -79,7 +79,7 @@ class FFmpegSceneAdapter(IFFmpegSceneAdapter):
         # Prefix the files with the window index to avoid overwriting files between loops
         output_pattern = out_dir / f"w{window_idx}_frame_%04d.jpg"
 
-        command: list[str] = ["ffmpeg"]
+        command: list[str] = ["ffmpeg", "-nostdin"]
 
         # FAST SEEKING: Must be placed BEFORE -i to skip decoding
         if start_sec > 0:
@@ -99,6 +99,9 @@ class FFmpegSceneAdapter(IFFmpegSceneAdapter):
         try:
             result = subprocess.run(
                 command,
+                # FFmpeg reads the terminal for interactive keys and switches it to raw mode; with clip
+                # extraction running beside RAG indexing it left the CLI unable to read input.
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,

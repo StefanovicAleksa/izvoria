@@ -37,6 +37,7 @@ class FFmpegVideoAdapter(IFFmpegVideoAdapter):
         # -c copy avoids expensive CPU re-encoding by just copying the stream.
         command: list[str] = [
             "ffmpeg",
+            "-nostdin",
             "-ss", str(start_sec),
             "-i", os.fspath(src),
             "-t", f"{duration_sec:.3f}",
@@ -49,6 +50,9 @@ class FFmpegVideoAdapter(IFFmpegVideoAdapter):
             # 3. Execute
             subprocess.run(
                 command,
+                # FFmpeg reads the terminal for interactive keys and switches it to raw mode; with clip
+                # extraction running beside RAG indexing it left the CLI unable to read input.
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,

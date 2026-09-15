@@ -39,9 +39,10 @@ class TestFFmpegAdapter:
             "ffprobe", "-v", "error", "-select_streams", "a",
             "-show_entries", "stream=index", "-of", "csv=p=0", str(source_file)
         ]
+        assert all(call.kwargs["stdin"] == subprocess.DEVNULL for call in mock_run.call_args_list)
         ffmpeg_args = mock_run.call_args_list[1][0][0]
         assert ffmpeg_args == [
-            "ffmpeg", "-i", str(source_file), "-vn", "-acodec", "pcm_s16le",
+            "ffmpeg", "-nostdin", "-i", str(source_file), "-vn", "-acodec", "pcm_s16le",
             "-ar", "16000", "-ac", "1", "-y", str(result_path)
         ]
 

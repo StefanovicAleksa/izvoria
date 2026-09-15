@@ -28,7 +28,7 @@ Runs a vision-language model over each extracted frame to produce a text descrip
 - `ground_observation` drops a frame that shows only the speaker. It also removes:
   - website addresses, watermarks, video player chrome ("16 / 31", "PREV") and outline sidebars (3+ short numbered entries);
   - repeated items;
-  - text items holding a number whose content words sit together in one stretch of the speech ("160.84 if we can get back above 63");
+  - text items holding a number whose content words sit together in one stretch of the speech ("160.84 if we can get back above 63"), and bare numbers the speaker says ("142.04" listed for a chart whose axis is unreadable);
   - generic marks ("arrows pointing to different parts of the chart");
   - marks naming a spoken number that the frame's own text doesn't show.
 - A `LINK` with a number the speaker never said is removed.

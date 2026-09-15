@@ -31,8 +31,10 @@ class TestFFmpegVideoAdapter:
         mock_run.assert_called_once()
         called_args = mock_run.call_args[0][0]
 
+        assert mock_run.call_args.kwargs["stdin"] == subprocess.DEVNULL
         assert called_args == [
             "ffmpeg",
+            "-nostdin",
             "-ss", "15.0",
             "-i", str(source_file),
             "-t", "15.000",

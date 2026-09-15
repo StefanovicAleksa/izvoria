@@ -37,7 +37,7 @@ class FFmpegExtractionAdapter(IFFmpegExtractionAdapter):
 
         output_dir = Path(output_dir)
         cmd = [
-            "ffmpeg", "-y",
+            "ffmpeg", "-nostdin", "-y",
             *_RESILIENCE_FLAGS,
             "-ss", f"{start_sec:.3f}",
             "-i", str(video_path),
@@ -52,6 +52,9 @@ class FFmpegExtractionAdapter(IFFmpegExtractionAdapter):
         try:
             subprocess.run(
                 cmd,
+                # FFmpeg reads the terminal for interactive keys and switches it to raw mode; with clip
+                # extraction running beside RAG indexing it left the CLI unable to read input.
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -85,7 +88,7 @@ class FFmpegExtractionAdapter(IFFmpegExtractionAdapter):
         Returns True if successful, False otherwise.
         """
         cmd = [
-            "ffmpeg", "-y",
+            "ffmpeg", "-nostdin", "-y",
             *_RESILIENCE_FLAGS,
             "-ss", str(timestamp_sec),
             "-i", str(video_path),
@@ -97,6 +100,9 @@ class FFmpegExtractionAdapter(IFFmpegExtractionAdapter):
         try:
             subprocess.run(
                 cmd,
+                # FFmpeg reads the terminal for interactive keys and switches it to raw mode; with clip
+                # extraction running beside RAG indexing it left the CLI unable to read input.
+                stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,

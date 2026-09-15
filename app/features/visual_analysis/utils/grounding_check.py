@@ -76,6 +76,10 @@ def _copied_from_speech(item: str, transcript_tokens: List[str]) -> bool:
     evidence but never adds a false one.
     """
     tokens = _content_tokens(item)
+    if _NUMBER.search(item) and len(tokens) < 2:
+        # A bare value such as "142.04" listed on a chart whose axis is unreadable: the speaker says it, the frame
+        # doesn't show it legibly. A spoken value that really is on screen loses nothing but this one item.
+        return _numbers(item) <= _numbers(" ".join(transcript_tokens))
     if len(tokens) < (2 if _NUMBER.search(item) else 3):
         return False
     needed = set(tokens)

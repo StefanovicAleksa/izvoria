@@ -4,6 +4,23 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Frozen CLI after ingestion and spoken prices indexed as on-screen text
+
+Found on the re-ingest of the 74-minute video after `4319c65`.
+
+- **FFmpeg no longer takes over the terminal** (`clip_extractor/data/ffmpeg_video_adapter.py`, `audio_extractor/data/ffmpeg_adapter.py`, `frame_extraction/data/ffmpeg_adapter.py`, `legacy_features/scene_detector/data/ffmpeg_scene_adapter.py`).
+  - **Introduced in:** `c94dd34` (FFmpeg adapters run without closing stdin) and `7f7015f` (clip extraction runs alongside RAG indexing).
+  - **Fixed in:** pending
+  - **The problem.** After a successful ingestion the menu prompt accepted no input. The terminal was left in raw mode (`-icanon -echo -icrnl`): Enter sent a carriage return that `input()` never saw as a line end, and typing wasn't echoed.
+  - **The cause.** FFmpeg reads the terminal for its interactive keys and switches it to raw mode while it runs; overlapping or interrupted runs leave it that way.
+  - **The fix.** Every FFmpeg/FFprobe call now passes `-nostdin` and `stdin=subprocess.DEVNULL`.
+  - **Not a model leak.** The 280 MiB the process kept on the GPU after the run is CUDA runtime overhead (PyTorch, cuBLAS/cuDNN, llama.cpp), released only when the process exits. A bare process that just touches CUDA already uses 122 MiB, and the smallest model Onyx loads is over 1 GB.
+- **A bare number the speaker says is not accepted as on-screen text** (`visual_analysis/utils/grounding_check.py`).
+  - **Introduced in:** `2e49ade`. The speech-copy filter only looked at text items of two or more content words.
+  - **Fixed in:** pending
+  - **The problem.** On two frames of the "BoE REVERSAL 22/3/18" chart (1337.8 s and 1415.1 s) the axis labels are unreadable, but the VLM listed "141.90", "142.04" and "141.46", all prices the speaker says. They were indexed as `[Visual Context: … referencing specific price levels ("141.90", "142.04", "141.46") …]`.
+  - **The fix.** A text item that is only a number, or a number plus one word, is dropped when the speech contains it. A spoken value that really is on screen loses only that one item.
+
 ## Model preload wait limit removed
 
 - **A preload waits for the GPU as long as the phase using it runs** (`core/model_manager/service/orchestrator.py`, `core/config.py`, `core/model_manager/exceptions/`; `MODEL_WAIT_FOR_CLEAR_TIMEOUT_SEC` and `ModelAcquireTimeoutError` removed).

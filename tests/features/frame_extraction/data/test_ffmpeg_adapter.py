@@ -35,7 +35,7 @@ class TestFFmpegExtractionAdapter:
 
         mock_run.assert_called_once()
         assert mock_run.call_args[0][0] == [
-            "ffmpeg", "-y",
+            "ffmpeg", "-nostdin", "-y",
             "-err_detect", "ignore_err", "-fflags", "+discardcorrupt",
             "-ss", "10.000",
             "-i", "video.mp4",
@@ -47,6 +47,7 @@ class TestFFmpegExtractionAdapter:
             str(tmp_path / "frame_%05d.jpg")
         ]
         assert mock_run.call_args.kwargs["timeout"] == 60.0
+        assert mock_run.call_args.kwargs["stdin"] == subprocess.DEVNULL
         assert frames == [
             (10.0, tmp_path / "frame_00000.jpg"),
             (11.0, tmp_path / "frame_00001.jpg"),
@@ -109,7 +110,7 @@ class TestFFmpegExtractionAdapter:
         assert result is True
         mock_run.assert_called_once()
         assert mock_run.call_args[0][0] == [
-            "ffmpeg", "-y",
+            "ffmpeg", "-nostdin", "-y",
             "-err_detect", "ignore_err", "-fflags", "+discardcorrupt",
             "-ss", "10.5",
             "-i", "corrupted_video.mp4",

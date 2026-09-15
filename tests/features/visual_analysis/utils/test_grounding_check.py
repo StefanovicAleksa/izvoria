@@ -105,6 +105,18 @@ class TestGroundObservation:
 
         assert ground_observation(observation, TRANSCRIPT).legible_text == ["TRADING DRILL"]
 
+    def test_a_bare_spoken_number_reported_as_text_is_a_speech_copy(self) -> None:
+        # Slide 13 of the Axia video: the chart's axis is unreadable, the speaker names these prices
+        transcript = ("Previous highs, remember, were 142.22. Your point of confirmation is when it breaks the lows "
+                      "at 141.90. Maintain your stop above the previous day's high, above 142.04.")
+        observation = FrameObservation(shows="trading chart", legible_text=[
+            "BoE REVERSAL 22/3/18", "Spike up on no major change", "141.90", "142.04", "1.4146"
+        ])
+
+        assert ground_observation(observation, transcript).legible_text == [
+            "BoE REVERSAL 22/3/18", "Spike up on no major change", "1.4146"
+        ]
+
     def test_a_spoken_sentence_reported_as_text_is_a_speech_copy(self) -> None:
         transcript = "As you can see right here, there appears to be a shadow in the lower lobe."
         observation = FrameObservation(shows="X-ray image", legible_text=["There appears to be a shadow in the lower lobe."],
