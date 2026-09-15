@@ -8,7 +8,6 @@ import time
 from pathlib import Path
 from typing import Dict, Optional
 
-from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.interfaces import IVramMonitor, IModelLoader
 from app.core.model_manager import exceptions as exc
@@ -41,26 +40,25 @@ class ModelManagerOrchestrator:
                 return active_model
         return None
 
-    def _wait_until_clear(self, manifest: ModelManifest, timeout_sec: float) -> None:
-        deadline = time.monotonic() + timeout_sec
+    def _wait_until_clear(self, manifest: ModelManifest) -> None:
+        """
+        Waits, without a time limit, until no model is resident (or this manifest's model is). A resident model
+        belongs to a phase that is still working, and batch phases run as long as their input needs: a limit
+        here failed a 74-minute ingestion whose visual analysis took 174 s. Leaks are prevented where they
+        start instead: every pipeline discards unused preloads and the engine releases all models after a run.
+        """
         logger.info("Background preloader parking politely until active models clear VRAM...")
         while True:
             with self._lock:
                 if not self._active_models or self._find_resident(manifest):
                     return
-            if time.monotonic() >= deadline:
-                raise exc.ModelAcquireTimeoutError(
-                    f"Timed out after {timeout_sec:.0f}s waiting for VRAM to clear before loading "
-                    f"{manifest.model_type.value}. A resident model was never released."
-                )
             time.sleep(self.WAIT_POLL_INTERVAL_SEC)
 
     def acquire_model(
             self,
             manifest: ModelManifest,
             loader: IModelLoader,
-            wait_for_clear: bool = False,
-            wait_timeout_sec: Optional[float] = None
+            wait_for_clear: bool = False
     ) -> LoadedModel:
         # 1. Idempotency Check
         with self._lock:
@@ -70,8 +68,7 @@ class ModelManagerOrchestrator:
 
         # 2. Prevent Race Conditions: Background preloads must wait for active inference to finish
         if wait_for_clear:
-            timeout = wait_timeout_sec if wait_timeout_sec is not None else settings.MODEL_WAIT_FOR_CLEAR_TIMEOUT_SEC
-            self._wait_until_clear(manifest, timeout)
+            self._wait_until_clear(manifest)
 
         with self._lock:
             # Double check idempotency after acquiring lock

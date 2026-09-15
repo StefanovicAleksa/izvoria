@@ -282,6 +282,10 @@ class BatchMediaPipeline:
             # ==========================================
             # PHASE 15: CONTEXT UNIFICATION (CPU BOUND / NO-VRAM)
             # ==========================================
+            # A visual branch that stopped early (no frames, a failed phase) leaves the preloads of the phases it
+            # skipped loading or loaded, with no phase left to release them; the embedder preload would wait behind
+            # them for the rest of the run. Every phase before this point has already run, so this only releases those.
+            self._discard_pending_preloads()
             self._rag_indexing_phase.preload_model()
 
             unification_result = self._context_unification_phase.execute(successful_contextual_items)

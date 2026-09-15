@@ -4,6 +4,24 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Model preload wait limit removed
+
+- **A preload waits for the GPU as long as the phase using it runs** (`core/model_manager/service/orchestrator.py`, `core/config.py`, `core/model_manager/exceptions/`; `MODEL_WAIT_FOR_CLEAR_TIMEOUT_SEC` and `ModelAcquireTimeoutError` removed).
+  - **Introduced in:** `3bfde2d` (review batch 1). It capped `acquire_model(wait_for_clear=True)` at 120 s, so that a leaked model could not park the caller forever.
+  - **Exposed by:** `2e49ade`. Visual analysis of the 74-minute video grew from 71 s to 174 s.
+  - **Fixed in:** pending
+  - **What happened on the re-ingest.**
+    1. The visual hallucination preload is queued before visual analysis. It gave up after 120 s while the VLM was still working, so that phase failed.
+    2. The synthesis preload, already queued, then loaded with no phase left to release it.
+    3. The embedder preload waited behind that model, timed out too, and indexing produced 0 vectors.
+  - **Why the limit was wrong.** Nothing had leaked: every model was released when its phase finished. A resident model belongs to a phase that is still working, and batch phases run as long as the video needs. Any video about twice as long would have failed the same way before `2e49ade`.
+  - **Why removing it is safe.** The leak the limit guarded against was already fixed in `3bfde2d` itself: every pipeline discards unused preloads in `finally`, and the engine releases all models after an ingestion or a failed live call. The wait itself (`ce4374d`) stays, because a preload must never evict a model in use.
+- **A halted visual branch's preloads are released before the embedder preload** (`orchestration/service/pipelines/batch_media_pipeline.py`).
+  - **Introduced in:** `14cd969` (synthesis preload queued before visual hallucination correction) and `e6738a7` (visual hallucination preload queued before visual analysis).
+  - **Fixed in:** pending
+  - **The problem.** If a visual phase fails or has nothing to do, preloads already triggered for later phases still load and stay resident until `finally`. With no wait limit the embedder preload would wait behind them forever.
+  - **The fix.** `_discard_pending_preloads()` now runs right before the embedder preload; every earlier phase has already run by then. A unit test covers a failed visual hallucination correction.
+
 ## Phonetic over-correction and weakly grounded visual descriptions
 
 Found on the second real ingestion of the 74-minute Axia video. Each change was measured offline on the stored run before and after with `scripts/eval/` (nothing written to the database).

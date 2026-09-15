@@ -32,13 +32,13 @@ Read the matching reference file before writing the new one, and copy its shape.
 | `PyTorchVramMonitor` | `data/vram_monitor.py` | Free/total VRAM and the deep flush (`gc` → `synchronize` → `empty_cache` → `ipc_collect` → `gc`). |
 | `block_torchcodec_import()` | `utils/torchcodec_guard.py` | Context manager required around sentence-transformers imports/construction. |
 
-`ModelType` lives in `domain/enums.py`. Model exceptions live in `exceptions/`: `ModelManagerError` is the base, with `OutOfVramError`, `CudaCrashError`, `ModelNotFoundError`, `ModelLoadError` and `ModelAcquireTimeoutError` beneath it.
+`ModelType` lives in `domain/enums.py`. Model exceptions live in `exceptions/`: `ModelManagerError` is the base, with `OutOfVramError`, `CudaCrashError`, `ModelNotFoundError` and `ModelLoadError` beneath it.
 
 ## 2. What actually happens
 
-### `acquire_model(manifest, loader, wait_for_clear=False, wait_timeout_sec=None)`
+### `acquire_model(manifest, loader, wait_for_clear=False)`
 1. **Residency check.** If a model with the same **`(model_type, model_path)`** is resident, it is returned as-is and nothing is loaded. The same weights file under a different `ModelType` is *not* shared: adapters load identical GGUFs with different settings (e.g. `n_ctx`).
-2. **Optional wait** (`wait_for_clear=True`). The call polls until no model is resident, or its own model is. After `MODEL_WAIT_FOR_CLEAR_TIMEOUT_SEC` (120 s) it raises `ModelAcquireTimeoutError`.
+2. **Optional wait** (`wait_for_clear=True`). The call polls until no model is resident, or its own model is. There is **no time limit**: the resident model belongs to a phase that is still working, and a batch phase takes as long as its input needs. (A 120 s limit, added in `3bfde2d` and removed again, failed a 74-minute ingestion whose visual analysis took 174 s.)
 3. **Swap.** Every other resident model is released. This makes the pool effectively single-slot: acquiring model B evicts model A.
 4. **Deep flush** of CUDA memory.
 5. **Admission control.** `required = on-disk size of model_path + learned backpack + 500 MB`, checked against free VRAM; if it doesn't fit, `OutOfVramError` is raised.
@@ -157,7 +157,7 @@ Rules:
 - **Which acquire to use:**
   - **Ingestion / batch APIs** use the default `acquire_model(manifest, adapter)`, which evicts whatever is loaded. Batch pipelines own the GPU while they run.
   - **Live query APIs** (`RetrievalAPI`, `RerankAPI`, `RetrievalScrubberAPI`, `QAGenerationAPI`) use `wait_for_clear=True`, so a live call never evicts a model that is in use.
-  - Consequence for `wait_for_clear=True` callers: if something else is still loaded and nobody releases it (e.g. an earlier call ran with `release_after=False` outside a Phase), the call **waits up to 120 s and then raises `ModelAcquireTimeoutError`**. Anything that composes these APIs directly, such as an agent, must release each model before calling the next API.
+  - Consequence for `wait_for_clear=True` callers: if something else is still loaded and nobody releases it (e.g. an earlier call ran with `release_after=False` outside a Phase), the call **waits forever**. Anything that composes these APIs directly, such as an agent, must release each model before calling the next API.
 - **Optional models** (weights may be absent) expose `is_available()` (the manifest path exists) and degrade instead of failing. `RerankAPI.rerank` returns chunks in RRF order without loading anything.
 - **Let model errors through.** The feature's `utils/error_mapper.py` must return or re-raise `ModelManagerError` unchanged, never wrap it (see `rag_reranking`, `visual_analysis`, `qa_generation`). Phases and the engine rely on catching `ModelManagerError`.
 
@@ -219,7 +219,8 @@ Rules:
   - VAD preload → audio extraction;
   - VLM preload → frame extraction;
   - embedder preload → context unification.
-- **Preloading ahead of a GPU phase is also safe.** A preload triggered while the current phase's model is loaded waits until that phase unloads, and never evicts it (e.g. `visual_hallucination_correction_phase.preload_model()` runs before `visual_analysis_phase.execute(...)`).
+- **Preloading ahead of a GPU phase is also safe.** A preload triggered while the current phase's model is loaded waits until that phase unloads, however long it runs, and never evicts it (e.g. `visual_hallucination_correction_phase.preload_model()` runs before `visual_analysis_phase.execute(...)`).
+- **Release a halted branch's preloads before the next preload.** If a phase fails or has nothing to do, the preloads already triggered for the phases after it still load, and nothing releases them until `finally`. Any later preload would wait behind them for the rest of the run, so call `_discard_pending_preloads()` before it (`batch_media_pipeline.py` does this right before the embedder preload).
 - **Live pipelines preload every phase up front** (`preload_models()`). The worker then loads them one at a time, as each earlier phase unloads.
 - **Discard in `finally`.** Every GPU phase must be listed in the pipeline's `_discard_pending_preloads()`, which is called in `finally`. It covers every early return and exception, so no preload outlives the run. A new GPU phase that isn't in this list leaks its model whenever the pipeline stops before reaching it.
 
@@ -244,7 +245,8 @@ Rules:
 - A Phase that doesn't clear `_preload_future`, lacks `discard_preload()`, or isn't registered in the pipeline's `_discard_pending_preloads()`.
 - Unloading through the worker queue instead of `trigger_unload`.
 - Wrapping `ModelManagerError` inside a feature exception.
-- Calling a `wait_for_clear=True` live API while your own model is still loaded: it waits 120 s and then times out.
+- Calling a `wait_for_clear=True` live API while your own model is still loaded: it waits forever.
+- Triggering a preload while a halted branch's preload is still loaded, without discarding it first: the new preload waits forever.
 - Downloading at runtime: always use `local_files_only=True` and local paths.
 
 ## 9. Tests

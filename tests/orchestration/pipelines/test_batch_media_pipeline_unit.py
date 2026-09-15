@@ -119,14 +119,14 @@ class TestBatchMediaPipelineUnit:
             rag_indexing_phase=mock_rag_indexing
         )
 
-    def test_pipeline_happy_path(self, pipeline, mock_scan, mock_ingest, mock_extract, mock_vad,
-                                 mock_domain_adaptation, mock_transcribe, mock_hallucination_correction,
-                                 mock_diarize, mock_sentence, mock_phonetic, mock_contextual,
-                                 mock_visual_cue, mock_frame_extraction, mock_visual_analysis,
-                                 mock_visual_hallucination_correction, mock_visual_context_synthesis,
-                                 mock_context_unification, mock_clip_extraction, mock_rag_indexing):
-        target_dir = "/dummy/path"
-        source_id = uuid.uuid4()
+    @staticmethod
+    def _configure_successful_run(source_id, mock_scan, mock_ingest, mock_extract, mock_vad,
+                                  mock_domain_adaptation, mock_transcribe, mock_hallucination_correction,
+                                  mock_diarize, mock_sentence, mock_phonetic, mock_contextual,
+                                  mock_visual_cue, mock_frame_extraction, mock_visual_analysis,
+                                  mock_visual_hallucination_correction, mock_visual_context_synthesis,
+                                  mock_context_unification, mock_clip_extraction, mock_rag_indexing):
+        """Every phase succeeds for one video source."""
 
         # Mock all 19 responses
         mock_scan.execute.return_value = PhaseBatchResult(phase=PipelinePhase.SCAN, status=PhaseStatus.COMPLETED,
@@ -195,6 +195,16 @@ class TestBatchMediaPipelineUnit:
                 RagIndexingJobResult(source_id=source_id, success=True, dense_vectors_saved=5, sparse_vectors_saved=5)]
         )
 
+    def test_pipeline_happy_path(self, pipeline, mock_scan, mock_ingest, mock_extract, mock_vad,
+                                 mock_domain_adaptation, mock_transcribe, mock_hallucination_correction,
+                                 mock_diarize, mock_sentence, mock_phonetic, mock_contextual,
+                                 mock_visual_cue, mock_frame_extraction, mock_visual_analysis,
+                                 mock_visual_hallucination_correction, mock_visual_context_synthesis,
+                                 mock_context_unification, mock_clip_extraction, mock_rag_indexing):
+        target_dir = "/dummy/path"
+        source_id = uuid.uuid4()
+        self._configure_successful_run(source_id, mock_scan, mock_ingest, mock_extract, mock_vad, mock_domain_adaptation, mock_transcribe, mock_hallucination_correction, mock_diarize, mock_sentence, mock_phonetic, mock_contextual, mock_visual_cue, mock_frame_extraction, mock_visual_analysis, mock_visual_hallucination_correction, mock_visual_context_synthesis, mock_context_unification, mock_clip_extraction, mock_rag_indexing)
+
         results = pipeline.process_directory(target_dir, SourceType.VIDEO)
 
         assert len(results) == 19  # All 19 phases
@@ -203,4 +213,26 @@ class TestBatchMediaPipelineUnit:
         assert PipelinePhase.RAG_INDEXING in results
 
         mock_clip_extraction.execute.assert_called_once()
+        mock_rag_indexing.execute.assert_called_once()
+
+    def test_preloads_left_by_a_halted_visual_branch_are_released_before_the_embedder_preload(
+            self, pipeline, mock_scan, mock_ingest, mock_extract, mock_vad, mock_domain_adaptation, mock_transcribe, mock_hallucination_correction, mock_diarize, mock_sentence, mock_phonetic, mock_contextual, mock_visual_cue, mock_frame_extraction, mock_visual_analysis, mock_visual_hallucination_correction, mock_visual_context_synthesis, mock_context_unification, mock_clip_extraction, mock_rag_indexing):
+        """
+        The synthesis preload is triggered before visual hallucination correction runs. When that phase fails, the
+        synthesis model loads with no phase left to release it, so it must be discarded before the embedder preload
+        queues behind it (the preload wait has no limit).
+        """
+        source_id = uuid.uuid4()
+        self._configure_successful_run(source_id, mock_scan, mock_ingest, mock_extract, mock_vad, mock_domain_adaptation, mock_transcribe, mock_hallucination_correction, mock_diarize, mock_sentence, mock_phonetic, mock_contextual, mock_visual_cue, mock_frame_extraction, mock_visual_analysis, mock_visual_hallucination_correction, mock_visual_context_synthesis, mock_context_unification, mock_clip_extraction, mock_rag_indexing)
+        mock_visual_hallucination_correction.execute.return_value = PhaseBatchResult(
+            phase=PipelinePhase.VISUAL_HALLUCINATION_CORRECTION, status=PhaseStatus.FAILED, items=[])
+        events = []
+        mock_visual_context_synthesis.discard_preload.side_effect = lambda: events.append("discard synthesis")
+        mock_rag_indexing.preload_model.side_effect = lambda: events.append("preload embedder")
+
+        pipeline.process_directory("/dummy/path", SourceType.VIDEO)
+
+        mock_visual_context_synthesis.preload_model.assert_called_once()
+        mock_visual_context_synthesis.execute.assert_not_called()
+        assert events[:2] == ["discard synthesis", "preload embedder"]
         mock_rag_indexing.execute.assert_called_once()

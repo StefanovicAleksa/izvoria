@@ -74,13 +74,6 @@ class Settings(BaseSettings):
     APPLIANCE_LANGUAGE: str = "en"
 
     # ==========================================
-    # MODEL MANAGER
-    # ==========================================
-    # Upper bound for `acquire_model(wait_for_clear=True)`. A leaked resident model
-    # must surface as an error instead of parking the caller forever.
-    MODEL_WAIT_FOR_CLEAR_TIMEOUT_SEC: float = 120.0
-
-    # ==========================================
     # MODEL PATHS & VRAM REQUIREMENTS
     # ==========================================
     DISCOVERY_SCOUT_MODEL_PATH: str = "models/whisper-tiny-en"

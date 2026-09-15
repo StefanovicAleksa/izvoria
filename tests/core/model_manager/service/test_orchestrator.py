@@ -1,3 +1,6 @@
+import time
+from concurrent.futures import ThreadPoolExecutor
+
 import pytest
 from unittest.mock import MagicMock, patch
 
@@ -132,10 +135,13 @@ class TestModelManagerOrchestrator:
         second_loader.load.assert_called_once_with(other_manifest)
         first_loader.unload.assert_called_once_with(first_loaded)
 
-    def test_wait_for_clear_times_out_on_leaked_model(self, mock_monitor, mock_loader, sample_manifest):
-        """A resident model that is never released must raise instead of parking forever."""
+    def test_wait_for_clear_waits_as_long_as_the_resident_model_is_in_use(self, mock_monitor, mock_loader,
+                                                                          sample_manifest):
+        """A preload never evicts a model in use and never gives up on it: it loads once that model is released."""
         orchestrator = ModelManagerOrchestrator(mock_monitor)
-        mock_loader.load.return_value = LoadedModel(manifest=sample_manifest, model_instance="leaked")
+        orchestrator.WAIT_POLL_INTERVAL_SEC = 0.01
+        resident = LoadedModel(manifest=sample_manifest, model_instance="in use")
+        mock_loader.load.return_value = resident
         orchestrator.acquire_model(sample_manifest, mock_loader)
 
         other_manifest = ModelManifest(
@@ -144,12 +150,20 @@ class TestModelManagerOrchestrator:
             required_vram_mb=1000.0
         )
         other_loader = MagicMock()
+        other_loaded = LoadedModel(manifest=other_manifest, model_instance="next")
+        other_loader.load.return_value = other_loaded
 
-        with pytest.raises(exc.ModelAcquireTimeoutError, match="transcription"):
-            orchestrator.acquire_model(other_manifest, other_loader, wait_for_clear=True, wait_timeout_sec=0.2)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            preload = pool.submit(orchestrator.acquire_model, other_manifest, other_loader, wait_for_clear=True)
+            time.sleep(0.3)
+            assert not preload.done()
+            other_loader.load.assert_not_called()
+            mock_loader.unload.assert_not_called()
 
-        other_loader.load.assert_not_called()
-        mock_loader.unload.assert_not_called()
+            orchestrator.release_model(resident, mock_loader)
+
+            assert preload.result(timeout=5) == other_loaded
+        other_loader.load.assert_called_once_with(other_manifest)
 
     def test_wait_for_clear_returns_resident_of_same_manifest_immediately(
             self, mock_monitor, mock_loader, sample_manifest
@@ -159,7 +173,7 @@ class TestModelManagerOrchestrator:
         mock_loader.load.return_value = loaded
         orchestrator.acquire_model(sample_manifest, mock_loader)
 
-        result = orchestrator.acquire_model(sample_manifest, mock_loader, wait_for_clear=True, wait_timeout_sec=0.2)
+        result = orchestrator.acquire_model(sample_manifest, mock_loader, wait_for_clear=True)
 
         assert result == loaded
         assert mock_loader.load.call_count == 1
