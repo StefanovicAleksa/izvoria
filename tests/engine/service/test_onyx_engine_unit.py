@@ -171,18 +171,15 @@ class TestOnyxEngineUnit:
     def test_chat_resolves_citation_paths(self, _, engine, mock_live_qa_pipeline, mock_storage_api):
         engine.start()
 
-        # Instantiate with valid schema properties only (empty string for path)
+        # An audio-only chunk has no extracted clip, so its citation points at the source file
+        mock_source_id = uuid.uuid4()
         real_citation = QACitation(
             doc_id="[Doc 1]",
             chunk_id=uuid.uuid4(),
+            source_id=mock_source_id,
             start_sec=0.0,
-            end_sec=5.0,
-            physical_path=""
+            end_sec=5.0
         )
-
-        # Inject source_id dynamically so the Engine's getattr logic can map it to storage
-        mock_source_id = uuid.uuid4()
-        object.__setattr__(real_citation, 'source_id', mock_source_id)
 
         mock_qa_response = QAResponse(
             query="test",
@@ -206,7 +203,26 @@ class TestOnyxEngineUnit:
         result = engine.chat(SearchQuery(prompt="test"))
 
         assert len(result.citations) == 1
-        assert getattr(result.citations[0], 'physical_path') == "/vault/video_clip.mp4"
+        assert result.citations[0].physical_path == "/vault/video_clip.mp4"
+        mock_storage_api.get_source.assert_called_once_with(mock_source_id)
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_chat_resolves_citations_to_their_extracted_clip_like_search(self, _, engine, mock_live_qa_pipeline,
+                                                                         mock_storage_api):
+        engine.start()
+        clip_id = uuid.uuid4()
+        citation = QACitation(doc_id="[Doc 1]", chunk_id=uuid.uuid4(), source_id=uuid.uuid4(),
+                              extracted_file_id=clip_id, start_sec=1415.1, end_sec=1510.8)
+        mock_live_qa_pipeline.execute_chat.return_value = QAResponse(
+            query="test", generated_answer="Answer [Doc 1].", citations=[citation]
+        )
+        mock_storage_api.get_file_path.return_value = "/vault/clips/clip_1415.mp4"
+
+        result = engine.chat(SearchQuery(prompt="test"))
+
+        assert result.citations[0].physical_path == "/vault/clips/clip_1415.mp4"
+        mock_storage_api.get_file_path.assert_called_once_with(clip_id)
+        mock_storage_api.get_source.assert_not_called()
 
     @patch('app.engine.service.onyx_engine.db_manager')
     def test_ingestion_cleanup_releases_all_models(self, _, engine, mock_media_pipeline, mock_async_service):

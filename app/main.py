@@ -120,9 +120,9 @@ def main():
 
                         print(f"\n[ONYX AI]\n{response.generated_answer}")
                         print(f"\n[CITATIONS USED: {len(response.citations)}]")
-                        for i, cit in enumerate(response.citations, 1):
-                            path = getattr(cit, 'physical_path', 'No physical file resolved')
-                            print(f"  {i}. {path} (Doc {cit.doc_id})")
+                        for cit in response.citations:
+                            print(f"  {cit.doc_id} {cit.physical_path or 'No physical file resolved'}")
+                            print(f"         Timestamp: {cit.start_sec}s - {cit.end_sec}s")
 
                 elif choice == '6' or choice.lower() in ['exit', 'quit']:
                     print("\n[SYSTEM] Initiating graceful shutdown sequence...")

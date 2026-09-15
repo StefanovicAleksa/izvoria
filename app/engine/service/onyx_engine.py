@@ -8,7 +8,7 @@ import sys
 import os
 import uuid
 import gc
-from typing import Dict
+from typing import Dict, Optional
 
 from app.core.database.service.manager import db_manager
 from app.core.database.data.engine import Base
@@ -243,38 +243,32 @@ class OnyxEngine(IOnyxEngine):
             if self._state == EngineState.INGESTING:
                 raise EngineBusyError("Hardware is locked for batch ingestion. Inference paused.")
 
+    def _physical_path(self, extracted_file_id: Optional[uuid.UUID], source_id: uuid.UUID) -> Optional[str]:
+        """The chunk's extracted clip if there is one, otherwise the ingested source file (e.g. audio-only)."""
+        if extracted_file_id:
+            return str(self._storage_api.get_file_path(extracted_file_id))
+        source = self._storage_api.get_source(source_id)
+        return str(source.file.file_path) if source and source.file else None
+
     def _resolve_physical_paths(self, search_result: SearchResult) -> None:
         """Hydrates chunks with physical file paths before sending to the UI."""
         for chunk in search_result.results:
             try:
-                if chunk.extracted_file_id:
-                    path = self._storage_api.get_file_path(chunk.extracted_file_id)
-                    object.__setattr__(chunk, 'physical_path', str(path))
-                else:
-                    source = self._storage_api.get_source(chunk.source_id)
-                    if source and source.file:
-                        object.__setattr__(chunk, 'physical_path', str(source.file.file_path))
+                path = self._physical_path(chunk.extracted_file_id, chunk.source_id)
+                if path:
+                    object.__setattr__(chunk, 'physical_path', path)
             except Exception as e:
                 logger.warning(f"Failed to resolve physical path for chunk {chunk.chunk_id}: {e}")
 
     def _resolve_citation_paths(self, response: QAResponse) -> None:
-        """Hydrates citation evidence with physical file paths before sending to the UI."""
+        """Hydrates citations with the same clip (or source) paths a search result gets, before sending to the UI."""
         for citation in response.citations:
             try:
-                physical_path = getattr(citation, 'physical_path', None)
-                source_id_raw = getattr(citation, 'source_id', None)
-
-                if not physical_path and source_id_raw:
-                    # Convert to strict UUID to satisfy type checker
-                    valid_source_id = source_id_raw if isinstance(source_id_raw, uuid.UUID) else uuid.UUID(
-                        str(source_id_raw))
-                    source = self._storage_api.get_source(valid_source_id)
-
-                    if source and source.file:
-                        object.__setattr__(citation, 'physical_path', str(source.file.file_path))
+                path = self._physical_path(citation.extracted_file_id, citation.source_id)
+                if path:
+                    object.__setattr__(citation, 'physical_path', path)
             except Exception as e:
-                chunk_id = getattr(citation, 'chunk_id', 'Unknown')
-                logger.warning(f"Failed to resolve physical path for citation {chunk_id}: {e}")
+                logger.warning(f"Failed to resolve physical path for citation {citation.chunk_id}: {e}")
 
     # ==========================================
     # UTILITIES & CLI
@@ -367,7 +361,8 @@ class OnyxEngine(IOnyxEngine):
                     print(f"\n--- Onyx AI ---\n{response.generated_answer}")
                     print(f"\n[Citations Used: {len(response.citations)}]")
                     for idx, citation in enumerate(response.citations, 1):
-                        print(f"  {idx}. {getattr(citation, 'physical_path', 'Unknown')} (Doc ID: {citation.doc_id})")
+                        print(f"  {citation.doc_id} {citation.physical_path or 'Unresolved path'} "
+                              f"({citation.start_sec}s - {citation.end_sec}s)")
                     input("\nPress Enter...")
                 elif choice == "6":
                     self.stop()

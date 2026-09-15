@@ -48,6 +48,18 @@ class TestCitationParser:
         assert citations[0].doc_id == "[Doc 1]"
         assert citations[0].start_sec == 10.0
 
+    def test_parse_citations_carries_storage_links_and_no_placeholder_path(self, sample_chunks):
+        clip_id = uuid.uuid4()
+        object.__setattr__(sample_chunks[0], 'extracted_file_id', clip_id)
+        doc_mapping = {"[Doc 1]": sample_chunks[0].chunk_id, "[Doc 2]": sample_chunks[1].chunk_id}
+
+        citations = parse_citations("Claim [Doc 2] and another [Doc 1].", sample_chunks, doc_mapping)
+
+        assert [(c.doc_id, c.chunk_id, c.source_id, c.extracted_file_id, c.physical_path) for c in citations] == [
+            ("[Doc 1]", sample_chunks[0].chunk_id, sample_chunks[0].source_id, clip_id, None),
+            ("[Doc 2]", sample_chunks[1].chunk_id, sample_chunks[1].source_id, None, None),
+        ]
+
     def test_context_block_shows_only_raw_transcript_with_time_range(self):
         chunk = RetrievedChunk(
             chunk_id=uuid.uuid4(), source_id=uuid.uuid4(),

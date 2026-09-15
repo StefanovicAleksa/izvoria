@@ -4,6 +4,22 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Chat citations resolve to their clips
+
+- **Chat citations point to the same clips as search results** (`qa_generation/domain/entities.py`, `qa_generation/utils/citation_parser.py`, `engine/service/onyx_engine.py`, `app/main.py`).
+  - **Introduced in:** `d25b030` (`parse_citations` wrote the placeholder "Unresolved Path") and `b8493d0` (`OnyxEngine._resolve_citation_paths`).
+  - **Fixed in:** pending
+  - **The problem.** Every chat citation printed as `Unresolved Path (Doc [Doc 1])`, while standard search showed each chunk's clip path and time range.
+  - **The causes.**
+    - The parser stored the placeholder as the path.
+    - The engine only resolved an empty path, so the placeholder counted as resolved.
+    - Even then the engine read a `source_id` that `QACitation` didn't have.
+    - The unit test hid this by attaching `source_id` to a citation by hand.
+  - **The fix.**
+    - `QACitation` carries the chunk's `source_id` and `extracted_file_id`, and its `physical_path` starts empty.
+    - The engine resolves citations with the same helper as search: the extracted clip, otherwise the source file.
+    - Both CLIs print `[Doc N] <path>` with the citation's time range.
+
 ## Frozen CLI after ingestion and spoken prices indexed as on-screen text
 
 Found on the re-ingest of the 74-minute video after `4319c65`.

@@ -2,7 +2,7 @@
 # Path: app/features/qa_generation/domain/entities.py
 
 import uuid
-from typing import Dict, List
+from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, ConfigDict
 
 
@@ -12,7 +12,13 @@ class QACitation(BaseModel):
     """
     doc_id: str = Field(..., description="The strict citation tag used by the LLM (e.g., '[Doc 1]').")
     chunk_id: uuid.UUID = Field(..., description="The database ID of the retrieved chunk.")
-    physical_path: str = Field(..., description="The local OS path to the extracted .mp4 clip.")
+    source_id: uuid.UUID = Field(..., description="The ingested source the chunk came from.")
+    extracted_file_id: Optional[uuid.UUID] = Field(
+        default=None, description="The vaulted .mp4 clip of this chunk, if one was extracted."
+    )
+    physical_path: Optional[str] = Field(
+        default=None, description="The local OS path to the clip (or source file); resolved by the engine."
+    )
     start_sec: float = Field(..., description="Start time of the clip in seconds.")
     end_sec: float = Field(..., description="End time of the clip in seconds.")
 

@@ -28,7 +28,7 @@ Public API surface:
 - `ingest_videos(target_path) -> IngestionReport` / `ingest_audios(target_path) -> IngestionReport` — locks the engine into `INGESTING` (raises `EngineBusyError`/`EngineOfflineError` otherwise), delegates to `BatchMediaPipeline.process_directory()` / `BatchAudioPipeline.process_directory()`, aggregates per-phase results into scanned/success/failed/vectors/clips metrics plus a per-phase error dict, evicts every resident model (`AsyncModelService.release_all`) and always unlocks in `finally`.
 - `search_standard(query) -> SearchResult` — delegates to `LiveRetrievalPipeline`, then hydrates `physical_path` on each result chunk via `StorageAPI`.
 - `search_verified(query) -> SearchResult` — delegates to `LiveVerifiedRetrievalPipeline` (adds SLM hallucination scrubbing on top of standard search).
-- `chat(query) -> QAResponse` — delegates to `LiveQAPipeline`, hydrates citation physical paths.
+- `chat(query) -> QAResponse` — delegates to `LiveQAPipeline`, then hydrates each citation's `physical_path` the same way as search results (extracted clip via `extracted_file_id`, otherwise the source file).
 - If any live call fails, the engine calls `release_all()` before re-raising, so the next request never waits on a model the failed call left resident.
 - `interactive_cli()` — a blocking terminal REPL (menu: video ingest, audio ingest, standard search, verified search, chat, shutdown) — the current dev/demo entry point, invoked by `app/main.py`.
 

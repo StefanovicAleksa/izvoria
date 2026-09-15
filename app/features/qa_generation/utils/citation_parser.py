@@ -65,13 +65,14 @@ def parse_citations(
         if chunk_id and chunk_id in chunk_lookup:
             chunk = chunk_lookup[chunk_id]
 
-            # The physical path is dynamically injected by the Engine during the Live Pipeline
-            physical_path = getattr(chunk, 'physical_path', 'Unresolved Path')
-
+            # The engine resolves the clip path from these storage links after the pipeline returns. A
+            # placeholder string here used to count as "already resolved", so no citation ever got a path.
             citations.append(QACitation(
                 doc_id=tag,
                 chunk_id=chunk_id,
-                physical_path=physical_path,
+                source_id=chunk.source_id,
+                extracted_file_id=chunk.extracted_file_id,
+                physical_path=getattr(chunk, 'physical_path', None),
                 start_sec=chunk.start_sec,
                 end_sec=chunk.end_sec
             ))
