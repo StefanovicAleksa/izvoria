@@ -23,6 +23,7 @@ Measured with the new `scripts/eval/rag_eval.py`. It runs 28 answerable, 6 unans
   - **Tried and reverted.** Having the scrubber judge `raw_text` instead of the contextualized payload made the 3B stricter (57% survival).
 - **Deep Research can no longer overflow the context window** (`qa_generation/utils/context_packer.py` (new), `generation_api.py`, `gemma_adapter.py`, `qa_reasoning/utils/evidence_formatter.py`, `reasoning_api.py`, `qwen_reasoner_adapter.py`).
   - **Introduced in:** `8052035`.
+  - **Fixed in:** `75f333c`.
   - **The problem.** The evidence pool grew without a limit (3 passes × 10 chunks, about 12k tokens), while Gemma and the reasoner run at `n_ctx=8192` and nothing counted tokens. llama.cpp raised `Requested tokens exceed context window`, and the call failed.
   - **The fix.**
     - Both models count tokens with their own tokenizer. Evidence is kept best-first while it fits what's left after the prompts, the question, and the answer, critique and reasoning budgets.
