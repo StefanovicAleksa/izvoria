@@ -64,6 +64,31 @@ class ReasonerPhase:
             future, self._preload_future = self._preload_future, None
             self._async_service.discard_preload(future, self._loader)
 
+    def rewrite_query(self, search_id: uuid.UUID, question: str, prior_session_context: Optional[str]) -> str:
+        """
+        Standalone search query for a follow-up question. A failed rewrite only costs search quality, so it
+        falls back to the question itself rather than halting the pipeline.
+        """
+        if not prior_session_context:
+            return question
+
+        request = JobRequest(
+            job_type=JobType.DEEP_RESEARCH_REASONING,
+            source_id=None,
+            input_params={"search_id": str(search_id), "step": "query_rewrite"}
+        )
+        try:
+            return self._job_manager.run_job(
+                request,
+                self._reasoning_api.rewrite_query,
+                question=question,
+                prior_session_context=prior_session_context,
+                release_after=True
+            )
+        except Exception as e:
+            logger.error(f"Query rewrite failed for Search ID {search_id}; searching with the question as asked: {e}")
+            return question
+
     def execute(
             self,
             reasoning_requests: List[Tuple[

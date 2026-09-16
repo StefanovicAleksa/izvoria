@@ -1,0 +1,45 @@
+{
+  "_comment": "Questions over the dev DB source 'UNIT 5 - ECB- Replay Skill Development Drills and Test.mp4'. relevant = chunk ids (prefixes) that contain the answer; any one of them is enough to answer. Unanswerable questions have no relevant chunks and must be refused.",
+  "answerable": [
+    {"id": "a01", "question": "What date and time should the replay be set to for the ECB drill?", "relevant": ["24528228"]},
+    {"id": "a02", "question": "Which futures contract is traded in the ECB drill?", "relevant": ["24528228"]},
+    {"id": "a03", "question": "Which ECB statements should be read before doing the drill?", "relevant": ["1bd9d0fe"]},
+    {"id": "a04", "question": "What is the key pivot area the Bund could target on a move higher?", "relevant": ["0af5128a"]},
+    {"id": "a05", "question": "Which volume references were given as downside levels for the Bund?", "relevant": ["0af5128a"]},
+    {"id": "a06", "question": "Where does the Bund downtrend line come in?", "relevant": ["25f705ed", "0af5128a"]},
+    {"id": "a07", "question": "What is the clue to get out of the trade, remembered from the 2012 ECB preparation?", "relevant": ["24528228", "e2a7051a"]},
+    {"id": "a08", "question": "Why was there still a trade even though the ECB press conference gave no new information?", "relevant": ["e2a7051a", "5a9f8558"]},
+    {"id": "a09", "question": "What are the two types of position squeeze described?", "relevant": ["5a9f8558", "2358a233", "b43fa15c"]},
+    {"id": "a10", "question": "How far did the pound rally going into the Bank of England decision?", "relevant": ["9a05e589"]},
+    {"id": "a11", "question": "What was the vote result when the pound had rallied into the Bank of England decision?", "relevant": ["630e66f4", "00a71d3d"]},
+    {"id": "a12", "question": "What was expected from the Bank of England before the 7-2 vote?", "relevant": ["b00a191e"]},
+    {"id": "a13", "question": "What downside targets were given after the 7-2 vote?", "relevant": ["630e66f4", "8b609503", "60515f84"]},
+    {"id": "a14", "question": "How long did the second wave trade take and how big was the move?", "relevant": ["8b609503"]},
+    {"id": "a15", "question": "What confirms the passive continuation short and where should the stop be placed?", "relevant": ["60515f84"]},
+    {"id": "a16", "question": "Between which prices had the pound been consolidating before the August 2018 decision?", "relevant": ["7f4b8714"]},
+    {"id": "a17", "question": "At what price did the inside day and the wedge break?", "relevant": ["7f4b8714", "3c94a26b"]},
+    {"id": "a18", "question": "Where would traders who shorted the wedge break have placed their stops?", "relevant": ["3c19c365"]},
+    {"id": "a19", "question": "What vote was expected in August 2018 and what was the actual result?", "relevant": ["61b1814d"]},
+    {"id": "a20", "question": "Why did the pound turn back down after the August 2018 rate hike?", "relevant": ["61b1814d", "895f4730"]},
+    {"id": "a21", "question": "What bank rate did the market rate path imply in three years' time?", "relevant": ["f19ab495", "895f4730"]},
+    {"id": "a22", "question": "What range established after the 9-0 decision?", "relevant": ["895f4730", "3c94a26b", "ce3a4b16"]},
+    {"id": "a23", "question": "How long did the market trade sideways before the next leg of the move?", "relevant": ["d974314f", "7545a18a"]},
+    {"id": "a24", "question": "What does trading back through the scene of the crime mean?", "relevant": ["d5fb575c", "780f6208"]},
+    {"id": "a25", "question": "Why was the fade at the top of the range difficult to execute on the ladder?", "relevant": ["3c94a26b"]},
+    {"id": "a26", "question": "How many ticks higher could a squeeze in the pound reach?", "relevant": ["bb27823e"]},
+    {"id": "a27", "question": "What is the exit clue for the passive trade toward the 130.60 to 50 range?", "relevant": ["b1dc0fe3"]},
+    {"id": "a28", "question": "What is the risk of fading a move when the central bank delivers something binary?", "relevant": ["d5fb575c"]}
+  ],
+  "unanswerable": [
+    {"id": "u01", "question": "What did the doctor say about the MRI results?"},
+    {"id": "u02", "question": "What did the Federal Reserve decide in March 2017?"},
+    {"id": "u03", "question": "What exactly did Mario Draghi say in his answer to the reporter's question?"},
+    {"id": "u04", "question": "What stop-loss size in ticks is recommended for the ECB drill?"},
+    {"id": "u05", "question": "What is the presenter's name?"},
+    {"id": "u06", "question": "What was the Bund's closing price on 9th March 2017?"}
+  ],
+  "followups": [
+    {"id": "f01", "prior_question": "What happened at the Bank of England decision in August 2018?", "prior_answer": "The Bank of England hiked rates with a 9-0 vote [Doc 1].", "question": "Why did the market reverse after that?", "relevant": ["61b1814d", "895f4730"]},
+    {"id": "f02", "prior_question": "Which contract is traded in the ECB drill?", "prior_answer": "The drill trades the Bund June contract, FGBL M7 [Doc 2].", "question": "And for how long should it be traded?", "relevant": ["24528228"]}
+  ]
+}

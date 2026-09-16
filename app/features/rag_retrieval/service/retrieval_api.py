@@ -3,13 +3,14 @@
 
 import time
 import logging
+from typing import List
 
 from app.core.config import settings
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.domain.entities import ModelManifest
 from app.core.model_manager.domain.enums import ModelType
 
-from app.features.rag_retrieval.domain.entities import SearchQuery, SearchResult
+from app.features.rag_retrieval.domain.entities import SearchQuery, SearchResult, RetrievedChunk
 from app.features.rag_retrieval.domain.interfaces import IRetrievalRepository, IPromptEmbeddingAdapter
 from app.features.rag_retrieval.utils.error_mapper import map_retrieval_error
 
@@ -76,3 +77,25 @@ class RetrievalAPI:
 
         except Exception as e:
             raise map_retrieval_error(e, context=f"Processing search query: '{query.prompt}'") from e
+
+    def expand_neighbors(self, chunks: List[RetrievedChunk], top_k: int) -> List[RetrievedChunk]:
+        """
+        Appends the chunks on either side of the `top_k` best chunks (small-to-big retrieval): a transcript
+        answer often starts in one chunk and finishes in the next. Neighbours go after every given chunk, so
+        a context budget drops them first. Needs no model.
+        """
+        if top_k <= 0 or not chunks:
+            return list(chunks)
+
+        try:
+            anchors = [chunk.chunk_id for chunk in chunks[:top_k]]
+            present = {chunk.chunk_id for chunk in chunks}
+            neighbors = [n for n in self._search_repo.fetch_neighbors(anchors) if n.chunk_id not in present]
+            neighbors.sort(key=lambda n: (str(n.source_id), n.start_sec))
+
+            if neighbors:
+                logger.info(f"Added {len(neighbors)} neighbouring chunks around the top {len(anchors)} results.")
+            return list(chunks) + neighbors
+
+        except Exception as e:
+            raise map_retrieval_error(e, context="Expanding results with neighbouring chunks") from e

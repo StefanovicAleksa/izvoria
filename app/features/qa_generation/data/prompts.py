@@ -17,6 +17,9 @@ Lines start with a speaker label and timestamp, e.g. "[Speaker_0 @ 00:12:31]: ..
 5. CITATION PLACEMENT: Place the citation tag immediately after the factual claim it supports, before the sentence's period. Do not group all citations at the end of the response.
 </CRITICAL_RULES>"""
 
+# The answer rule 1 of QA_SYSTEM_PROMPT prescribes; returned directly when there is no evidence to show the model
+NO_EVIDENCE_ANSWER = "I cannot answer this based on the provided context."
+
 QA_USER_TEMPLATE = """
 [RETRIEVED CONTEXT]
 {context_block}

@@ -14,7 +14,7 @@ from app.orchestration.exceptions.workflow import WorkflowStateError
 from app.features.rag_retrieval.domain.entities import SearchQuery, SearchResult, RetrievedChunk
 from app.features.qa_generation.domain.entities import QAResponse, AnswerCritique
 from app.features.qa_generation.domain.enums import CritiqueVerdict
-from app.features.qa_reasoning.domain.entities import ReasonerDecision
+from app.features.qa_reasoning.domain.entities import ReasonerDecision, EvidenceLink
 from app.features.qa_reasoning.domain.enums import ReasonerDecisionType
 
 
@@ -29,7 +29,8 @@ def _reasoner_result(search_id, decision: ReasonerDecision, status=PhaseStatus.C
 
 def _answer_ready(interim="Fully supported.", links=None):
     return ReasonerDecision(
-        decision=ReasonerDecisionType.ANSWER_READY, chain_of_thought="cot", interim_analysis=interim
+        decision=ReasonerDecisionType.ANSWER_READY, chain_of_thought="cot", interim_analysis=interim,
+        evidence_links=links or []
     )
 
 
@@ -68,15 +69,42 @@ def _stub_retrieval_pass(mock_retrieval_phase, mock_reranking_phase, mock_scrubb
     )
 
 
+def _echo_rerank(retrieval_results, top_n):
+    """Reranking stub that keeps the given order, so tests that don't care about ordering see their input."""
+    return PhaseBatchResult(
+        phase=PipelinePhase.RAG_RERANKING, status=PhaseStatus.COMPLETED,
+        items=[(RagRerankingJobResult(search_id=job.search_id, success=True), result)
+               for job, result in retrieval_results]
+    )
+
+
+def _sufficient_generation(search_id, answer="Answer."):
+    return PhaseBatchResult(
+        phase=PipelinePhase.QA_GENERATION, status=PhaseStatus.COMPLETED,
+        items=[(QAGenerationJobResult(search_id=search_id, success=True),
+                (QAResponse(query="Q", generated_answer=answer, citations=[]),
+                 AnswerCritique(verdict=CritiqueVerdict.SUFFICIENT)))]
+    )
+
+
 class TestLiveDeepResearchPipelineUnit:
     @pytest.fixture
-    def mock_reasoner_phase(self): return Mock()
+    def mock_reasoner_phase(self):
+        phase = Mock()
+        phase.rewrite_query.side_effect = lambda search_id, question, prior: question
+        return phase
 
     @pytest.fixture
-    def mock_retrieval_phase(self): return Mock()
+    def mock_retrieval_phase(self):
+        phase = Mock()
+        phase.expand_neighbors.side_effect = lambda chunks: list(chunks)
+        return phase
 
     @pytest.fixture
-    def mock_reranking_phase(self): return Mock()
+    def mock_reranking_phase(self):
+        phase = Mock()
+        phase.execute.side_effect = _echo_rerank
+        return phase
 
     @pytest.fixture
     def mock_scrubber_phase(self): return Mock()
@@ -406,3 +434,123 @@ class TestLiveDeepResearchPipelineUnit:
         second_call_args = mock_reasoner_phase.execute.call_args_list[1][0][0][0]
         assert first_call_args[4] == "prior turn"
         assert second_call_args[4] is None
+
+    def test_follow_up_is_searched_as_rewritten_but_reasoned_about_as_asked(
+            self, pipeline, mock_reasoner_phase, mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase,
+            mock_qa_generation_phase, raw_chunk
+    ):
+        search_id = uuid.uuid4()
+        _stub_retrieval_pass(mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase, search_id, [raw_chunk])
+        mock_reasoner_phase.rewrite_query.side_effect = None
+        mock_reasoner_phase.rewrite_query.return_value = "Why did the pound reverse after the hike?"
+        mock_reasoner_phase.execute.return_value = _reasoner_result(search_id, _answer_ready())
+        mock_qa_generation_phase.execute_with_critique.return_value = _sufficient_generation(search_id)
+
+        pipeline.execute_deep_research(search_id, SearchQuery(prompt="Why after that?"), prior_session_context="prior")
+
+        mock_reasoner_phase.rewrite_query.assert_called_once_with(search_id, "Why after that?", "prior")
+        searched = mock_retrieval_phase.execute.call_args[0][0][0][1]
+        assert searched.prompt == "Why did the pound reverse after the hike?"
+        assert mock_reasoner_phase.execute.call_args[0][0][0][1] == "Why after that?"
+        assert mock_qa_generation_phase.execute_with_critique.call_args[0][0][0][1] == "Why after that?"
+
+    def test_refined_query_fallback_is_the_rewritten_query(
+            self, pipeline, mock_reasoner_phase, mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase,
+            mock_qa_generation_phase
+    ):
+        search_id = uuid.uuid4()
+        _stub_retrieval_pass(mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase, search_id)
+        mock_reasoner_phase.rewrite_query.side_effect = None
+        mock_reasoner_phase.rewrite_query.return_value = "standalone"
+        mock_reasoner_phase.execute.side_effect = [
+            _reasoner_result(search_id, _refine_query(None)),
+            _reasoner_result(search_id, _answer_ready()),
+        ]
+        mock_qa_generation_phase.execute_with_critique.return_value = _sufficient_generation(search_id)
+
+        pipeline.execute_deep_research(search_id, SearchQuery(prompt="follow-up"), prior_session_context="prior")
+
+        searched = [call[0][0][0][1].prompt for call in mock_retrieval_phase.execute.call_args_list]
+        assert searched == ["standalone", "standalone"]
+
+    def test_each_retrieval_pass_adds_neighbouring_chunks(
+            self, pipeline, mock_reasoner_phase, mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase,
+            mock_qa_generation_phase, raw_chunk
+    ):
+        search_id = uuid.uuid4()
+        neighbour = RetrievedChunk(chunk_id=uuid.uuid4(), source_id=raw_chunk.source_id, text_payload="Before",
+                                   start_sec=0, end_sec=0.5, relevance_score=0.0)
+        _stub_retrieval_pass(mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase, search_id, [raw_chunk])
+        mock_retrieval_phase.expand_neighbors.side_effect = lambda chunks: list(chunks) + [neighbour]
+        mock_reasoner_phase.execute.return_value = _reasoner_result(search_id, _answer_ready())
+        mock_qa_generation_phase.execute_with_critique.return_value = _sufficient_generation(search_id)
+
+        pipeline.execute_deep_research(search_id, SearchQuery(prompt="Q"))
+
+        mock_retrieval_phase.expand_neighbors.assert_called_once_with([raw_chunk])
+        pool_seen = mock_reasoner_phase.execute.call_args[0][0][0][2]
+        assert [c.chunk_id for c in pool_seen] == [raw_chunk.chunk_id, neighbour.chunk_id]
+
+    def test_answer_evidence_is_reranked_on_the_original_question_with_linked_chunks_first(
+            self, pipeline, mock_reasoner_phase, mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase,
+            mock_qa_generation_phase, raw_chunk
+    ):
+        search_id = uuid.uuid4()
+        second = RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload="Second",
+                                start_sec=5, end_sec=6, relevance_score=0.5)
+        third = RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload="Third",
+                               start_sec=7, end_sec=8, relevance_score=0.4)
+        _stub_retrieval_pass(mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase, search_id,
+                             [raw_chunk, second, third])
+
+        pool_rerank_calls = []
+
+        def rerank(retrieval_results, top_n):
+            job, result = retrieval_results[0]
+            if result.query == "What did the defendant say?":
+                pool_rerank_calls.append((result.results, top_n))
+                result = result.model_copy(update={"results": [third, raw_chunk, second]})
+            return PhaseBatchResult(
+                phase=PipelinePhase.RAG_RERANKING, status=PhaseStatus.COMPLETED,
+                items=[(RagRerankingJobResult(search_id=job.search_id, success=True), result)]
+            )
+
+        mock_reranking_phase.execute.side_effect = rerank
+        link = EvidenceLink(chunk_id=second.chunk_id, claim="The defendant spoke.")
+        mock_reasoner_phase.execute.return_value = _reasoner_result(
+            search_id, _answer_ready(interim="Model-written analysis.", links=[link])
+        )
+        mock_qa_generation_phase.execute_with_critique.return_value = _sufficient_generation(search_id)
+
+        pipeline.execute_deep_research(search_id, SearchQuery(prompt="What did the defendant say?"))
+
+        assert pool_rerank_calls == [([raw_chunk, second, third], 3)]
+        request = mock_qa_generation_phase.execute_with_critique.call_args[0][0][0]
+        # Only (search_id, question, evidence): the reasoner's prose is not passed to the answer model
+        assert len(request) == 3
+        assert [c.chunk_id for c in request[2]] == [second.chunk_id, third.chunk_id, raw_chunk.chunk_id]
+
+    def test_failed_pool_rerank_keeps_gathering_order(
+            self, pipeline, mock_reasoner_phase, mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase,
+            mock_qa_generation_phase, raw_chunk
+    ):
+        search_id = uuid.uuid4()
+        second = RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload="Second",
+                                start_sec=5, end_sec=6, relevance_score=0.5)
+        _stub_retrieval_pass(mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase, search_id,
+                             [raw_chunk, second])
+        def rerank(retrieval_results, top_n):
+            # The retrieval stub's results carry query "q"; the pool rerank uses the user's question "Q"
+            if retrieval_results[0][1].query == "Q":
+                return PhaseBatchResult(phase=PipelinePhase.RAG_RERANKING, status=PhaseStatus.FAILED, errors=["OOM"])
+            return _echo_rerank(retrieval_results, top_n)
+
+        mock_reranking_phase.execute.side_effect = rerank
+        mock_reasoner_phase.execute.return_value = _reasoner_result(search_id, _answer_ready())
+        mock_qa_generation_phase.execute_with_critique.return_value = _sufficient_generation(search_id)
+
+        result = pipeline.execute_deep_research(search_id, SearchQuery(prompt="Q"))
+
+        assert result.qa_response is not None
+        request = mock_qa_generation_phase.execute_with_critique.call_args[0][0][0]
+        assert [c.chunk_id for c in request[2]] == [raw_chunk.chunk_id, second.chunk_id]

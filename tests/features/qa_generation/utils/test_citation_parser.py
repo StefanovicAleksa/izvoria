@@ -4,7 +4,9 @@
 import uuid
 import pytest
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
-from app.features.qa_generation.utils.citation_parser import build_context_block, parse_citations
+from app.features.qa_generation.utils.citation_parser import (
+    build_context_block, parse_citations, normalize_citation_tags
+)
 
 
 class TestCitationParser:
@@ -76,3 +78,66 @@ class TestCitationParser:
     def test_context_block_falls_back_to_payload_without_raw_text(self, sample_chunks):
         block = build_context_block(sample_chunks[:1])
         assert block.formatted_text == "[Doc 1] (00:00:10–00:00:15)\nX-ray shows a broken rib.\n"
+
+    def test_context_block_orders_by_source_then_time_and_drops_repeated_overlap(self):
+        source_a, source_b = uuid.uuid4(), uuid.uuid4()
+        later_a = RetrievedChunk(
+            chunk_id=uuid.uuid4(), source_id=source_a, text_payload="p",
+            raw_text="[Speaker_0 @ 00:01:08]: The level is 160.84 on the chart. Beyond there we look at 161.17.",
+            start_sec=68.0, end_sec=155.0, relevance_score=0.9
+        )
+        other_b = RetrievedChunk(
+            chunk_id=uuid.uuid4(), source_id=source_b, text_payload="p", raw_text="[Speaker_1 @ 00:00:05]: Other.",
+            start_sec=5.0, end_sec=9.0, relevance_score=0.8
+        )
+        earlier_a = RetrievedChunk(
+            chunk_id=uuid.uuid4(), source_id=source_a, text_payload="p",
+            raw_text="[Speaker_0 @ 00:00:03]: We start here. The level is 160.84 on the chart.",
+            start_sec=3.0, end_sec=85.0, relevance_score=0.7
+        )
+
+        # Best-first input: source A leads (its best chunk ranks first), and inside A time order wins
+        block = build_context_block([later_a, other_b, earlier_a])
+
+        assert block.doc_mapping == {
+            "[Doc 1]": earlier_a.chunk_id, "[Doc 2]": later_a.chunk_id, "[Doc 3]": other_b.chunk_id
+        }
+        assert block.formatted_text == (
+            "[Doc 1] (00:00:03–00:01:25)\n[Speaker_0 @ 00:00:03]: We start here. The level is 160.84 on the chart.\n\n"
+            "[Doc 2] (00:01:08–00:02:35)\n[Speaker_0 @ 00:01:08]: Beyond there we look at 161.17.\n\n"
+            "[Doc 3] (00:00:05–00:00:09)\n[Speaker_1 @ 00:00:05]: Other.\n"
+        )
+
+
+class TestNormalizeCitationTags:
+    @pytest.mark.parametrize("text, doc_count, expected", [
+        ("Fact [Doc 1].", 3, "Fact [Doc 1]."),
+        ("Fact [doc 2].", 3, "Fact [Doc 2]."),
+        ("Fact [Doc 1, Doc 3].", 3, "Fact [Doc 1][Doc 3]."),
+        ("Fact [Doc 1, 3].", 3, "Fact [Doc 1][Doc 3]."),
+        ("Fact [Docs 1-3].", 3, "Fact [Doc 1][Doc 2][Doc 3]."),
+        ("Fact [Doc 1–2].", 3, "Fact [Doc 1][Doc 2]."),
+        ("Fact [Doc 2 and 3].", 3, "Fact [Doc 2][Doc 3]."),
+        ("Fact [Doc 1; Doc 1].", 3, "Fact [Doc 1]."),
+        ("Fact [Doc 2, 9].", 3, "Fact [Doc 2]."),
+        ("Fact [Doc 7].", 3, "Fact ."),
+        ("Fact [Doc 1-500].", 3, "Fact [Doc 1]."),
+        ("See [Documentation] and [Doc 1: page 4].", 3, "See [Documentation] and [Doc 1: page 4]."),
+        ("[Speaker_0 @ 00:01:02] said so [Doc 1].", 3, "[Speaker_0 @ 00:01:02] said so [Doc 1]."),
+    ])
+    def test_normalizes_citation_groups(self, text, doc_count, expected):
+        assert normalize_citation_tags(text, doc_count) == expected
+
+    def test_parse_citations_finds_every_document_in_a_group(self):
+        chunks = [
+            RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload=f"t{i}",
+                           start_sec=float(i), end_sec=float(i + 1), relevance_score=1.0)
+            for i in range(3)
+        ]
+        doc_mapping = {f"[Doc {i + 1}]": c.chunk_id for i, c in enumerate(chunks)}
+
+        citations = parse_citations("Both happened [Doc 1, 3].", chunks, doc_mapping)
+
+        assert [(c.doc_id, c.chunk_id) for c in citations] == [
+            ("[Doc 1]", chunks[0].chunk_id), ("[Doc 3]", chunks[2].chunk_id)
+        ]

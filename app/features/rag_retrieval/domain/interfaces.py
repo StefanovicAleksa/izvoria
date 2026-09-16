@@ -37,3 +37,11 @@ class IRetrievalRepository(ABC):
         merges them using Reciprocal Rank Fusion (RRF), and returns the top results.
         """
         pass
+
+    @abstractmethod
+    def fetch_neighbors(self, chunk_ids: List[uuid.UUID]) -> List[RetrievedChunk]:
+        """
+        For each given chunk, the chunks immediately before and after it (by start time) in the same source.
+        The given chunks themselves are not returned unless they neighbour another given chunk.
+        """
+        pass

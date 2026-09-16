@@ -4,7 +4,7 @@
 import pytest
 import uuid
 import concurrent.futures
-from unittest.mock import Mock, ANY
+from unittest.mock import Mock, ANY, patch
 
 from app.orchestration.service.phases.rag_retrieval_phase import RagRetrievalPhase
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
@@ -78,3 +78,19 @@ class TestRagRetrievalPhaseUnit:
 
         assert result.status == PhaseStatus.FAILED
         assert "Critical failure preloading Embedder model" in result.errors[0]
+    def test_expand_neighbors_uses_configured_top_k(self, phase, mock_retrieval_api):
+        chunks = [Mock(), Mock()]
+        mock_retrieval_api.expand_neighbors.return_value = chunks + [Mock()]
+
+        with patch("app.orchestration.service.phases.rag_retrieval_phase.settings") as mock_settings:
+            mock_settings.RAG_NEIGHBOR_EXPANSION_TOP_K = 2
+            result = phase.expand_neighbors(chunks)
+
+        assert result == mock_retrieval_api.expand_neighbors.return_value
+        mock_retrieval_api.expand_neighbors.assert_called_once_with(chunks, 2)
+
+    def test_expand_neighbors_failure_keeps_the_chunks(self, phase, mock_retrieval_api):
+        chunks = [Mock()]
+        mock_retrieval_api.expand_neighbors.side_effect = RuntimeError("db down")
+
+        assert phase.expand_neighbors(chunks) == chunks

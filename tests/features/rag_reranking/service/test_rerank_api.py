@@ -96,3 +96,19 @@ class TestRerankAPI:
     def test_empty_candidates_return_empty(self, api, mocks):
         assert api.rerank("q", [], top_n=5) == []
         mocks["orchestrator"].acquire_model.assert_not_called()
+
+    @pytest.mark.parametrize("min_score, expected_scores", [
+        (None, [0.9, 0.5, 0.05]),
+        (0.1, [0.9, 0.5]),
+        (0.95, [0.9]),  # the best candidate always survives the floor
+    ])
+    @patch("app.features.rag_reranking.service.rerank_api.os.path.exists", return_value=True)
+    def test_optional_score_floor(self, _, api, mocks, min_score, expected_scores):
+        chunks = [_chunk("a", 0.3), _chunk("b", 0.2), _chunk("c", 0.1)]
+        mocks["adapter"].score.return_value = [0.05, 0.9, 0.5]
+
+        with patch("app.features.rag_reranking.service.rerank_api.settings") as mock_settings:
+            mock_settings.RAG_RERANK_MIN_SCORE = min_score
+            result = api.rerank("q", chunks, top_n=3)
+
+        assert [c.rerank_score for c in result] == expected_scores

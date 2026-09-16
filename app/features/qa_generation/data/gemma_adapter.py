@@ -9,10 +9,14 @@ import logging
 from typing import Any, List, Dict
 from pathlib import Path
 
+from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.features.qa_generation.domain.interfaces import IQAGenerationAdapter
 from app.features.qa_generation.domain.entities import AnswerCritique
 from app.features.qa_generation.domain.enums import CritiqueVerdict
+from app.features.qa_generation.data.prompts import (
+    QA_SYSTEM_PROMPT, QA_USER_TEMPLATE, CRITIQUE_SYSTEM_PROMPT, CRITIQUE_USER_TEMPLATE
+)
 from app.features.qa_generation.exceptions.pipeline import JSONCritiqueParseError
 from app.features.qa_generation.utils.error_mapper import map_qa_error
 
@@ -24,13 +28,17 @@ class GemmaGenerationAdapter(IQAGenerationAdapter):
     Adapter for executing Gemma Instruct GGUF via llama.cpp for the Final QA Generation phase.
     """
 
+    CRITIQUE_MAX_TOKENS = 200
+    # Chat-template role markers and rounding in the per-document estimate
+    TEMPLATE_MARGIN_TOKENS = 64
+
     @staticmethod
     def _get_llama_model(absolute_model_path: str) -> Any:
         from llama_cpp import Llama
         return Llama(
             model_path=absolute_model_path,
             n_gpu_layers=-1,
-            n_ctx=8192,  # 8K context for RAG
+            n_ctx=settings.QA_GENERATION_N_CTX,
             flash_attn=True,
             verbose=False
         )
@@ -60,6 +68,38 @@ class GemmaGenerationAdapter(IQAGenerationAdapter):
         except Exception as e:
             raise map_qa_error(e, context="Unload Gemma Model") from e
 
+    def count_tokens(self, model: LoadedModel, text: str) -> int:
+        try:
+            llm: Any = model.model_instance
+            return len(llm.tokenize(text.encode("utf-8"), add_bos=False, special=True))
+        except Exception as e:
+            raise map_qa_error(e, context="Counting tokens") from e
+
+    def get_context_token_budget(self, model: LoadedModel, user_query: str, include_critique: bool) -> int:
+        """
+        Tokens left for the context block. The answer prompt holds the block plus the answer being generated;
+        the critique prompt holds the same block plus the full draft plus its own verdict, so with a critique
+        the block must fit the smaller of the two.
+        """
+        try:
+            llm: Any = model.model_instance
+            n_ctx = llm.n_ctx()
+            answer_tokens = settings.QA_GENERATION_MAX_ANSWER_TOKENS
+            fixed = self.count_tokens(model, QA_SYSTEM_PROMPT + QA_USER_TEMPLATE.format(
+                context_block="", user_query=user_query))
+            budget = n_ctx - fixed - answer_tokens - self.TEMPLATE_MARGIN_TOKENS
+
+            if include_critique:
+                critique_fixed = self.count_tokens(model, CRITIQUE_SYSTEM_PROMPT + CRITIQUE_USER_TEMPLATE.format(
+                    user_query=user_query, evidence_block="", draft_answer=""))
+                critique_budget = (n_ctx - critique_fixed - answer_tokens - self.CRITIQUE_MAX_TOKENS
+                                   - self.TEMPLATE_MARGIN_TOKENS)
+                budget = min(budget, critique_budget)
+
+            return max(budget, 0)
+        except Exception as e:
+            raise map_qa_error(e, context="Computing the context token budget") from e
+
     def generate_answer(
             self,
             model: LoadedModel,
@@ -70,7 +110,6 @@ class GemmaGenerationAdapter(IQAGenerationAdapter):
         try:
             llm: Any = model.model_instance
 
-            from app.features.qa_generation.data.prompts import QA_USER_TEMPLATE
             user_content = QA_USER_TEMPLATE.format(
                 context_block=context_block,
                 user_query=user_query
@@ -84,7 +123,7 @@ class GemmaGenerationAdapter(IQAGenerationAdapter):
             response = llm.create_chat_completion(
                 messages=messages,
                 temperature=0.1,
-                max_tokens=1024
+                max_tokens=settings.QA_GENERATION_MAX_ANSWER_TOKENS
             )
 
             choice = response["choices"][0]
@@ -115,7 +154,6 @@ class GemmaGenerationAdapter(IQAGenerationAdapter):
         try:
             llm: Any = model.model_instance
 
-            from app.features.qa_generation.data.prompts import CRITIQUE_SYSTEM_PROMPT, CRITIQUE_USER_TEMPLATE
             user_content = CRITIQUE_USER_TEMPLATE.format(
                 user_query=user_query,
                 evidence_block=evidence_block,
@@ -131,7 +169,7 @@ class GemmaGenerationAdapter(IQAGenerationAdapter):
                 messages=messages,
                 response_format={"type": "json_object"},
                 temperature=0.0,
-                max_tokens=200
+                max_tokens=self.CRITIQUE_MAX_TOKENS
             )
 
             raw_content = response["choices"][0]["message"]["content"]

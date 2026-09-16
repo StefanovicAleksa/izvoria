@@ -18,7 +18,7 @@ from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.exceptions.base import ModelManagerError
 
 from app.features.rag_retrieval.service.retrieval_api import RetrievalAPI
-from app.features.rag_retrieval.domain.entities import SearchQuery, SearchResult
+from app.features.rag_retrieval.domain.entities import SearchQuery, SearchResult, RetrievedChunk
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import PhaseBatchResult, RagRetrievalJobResult
@@ -57,6 +57,17 @@ class RagRetrievalPhase:
         if self._preload_future:
             future, self._preload_future = self._preload_future, None
             self._async_service.discard_preload(future, self._loader)
+
+    def expand_neighbors(self, chunks: List[RetrievedChunk]) -> List[RetrievedChunk]:
+        """
+        Adds the chunks around the best `RAG_NEIGHBOR_EXPANSION_TOP_K` chunks. Extra context is optional, so a
+        failed lookup keeps the chunks as they are instead of failing the answer.
+        """
+        try:
+            return self._retrieval_api.expand_neighbors(chunks, settings.RAG_NEIGHBOR_EXPANSION_TOP_K)
+        except Exception as e:
+            logger.error(f"Neighbour expansion failed; continuing with the retrieved chunks only: {e}")
+            return list(chunks)
 
     def execute(self, queries: List[Tuple[uuid.UUID, SearchQuery]]) -> PhaseBatchResult:
         logger.info(f"Executing RAG Retrieval Phase for {len(queries)} queries...")

@@ -160,11 +160,11 @@ class QAGenerationPhase:
 
     def execute_with_critique(
             self,
-            chat_requests: List[Tuple[uuid.UUID, str, List[RetrievedChunk], str]]
+            chat_requests: List[Tuple[uuid.UUID, str, List[RetrievedChunk]]]
     ) -> PhaseBatchResult:
         """
         Sibling to execute(): draft + self-critique in one model acquisition, for the Deep
-        Research pipeline. Takes (search_id, user_query, evidence_pool, extra_context) tuples;
+        Research pipeline. Takes (search_id, user_query, evidence_pool) tuples, evidence best-first;
         execute() itself is unchanged, and LiveQAPipeline keeps calling it as before.
         """
         logger.info(f"Executing QA Generation+Critique Phase for {len(chat_requests)} queries...")
@@ -189,7 +189,7 @@ class QAGenerationPhase:
                 )
 
         try:
-            for search_id, user_query, chunks, extra_context in chat_requests:
+            for search_id, user_query, chunks in chat_requests:
                 job_type = getattr(JobType, "QA_GENERATION", JobType("qa_generation"))
 
                 request = JobRequest(
@@ -206,7 +206,6 @@ class QAGenerationPhase:
                         self._qa_api.generate_with_critique,
                         user_query=user_query,
                         retrieved_chunks=chunks,
-                        extra_context=extra_context,
                         release_after=loaded_model is None
                     )
 

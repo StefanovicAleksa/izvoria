@@ -109,10 +109,16 @@ class LiveQAPipeline:
             qa_inputs: List[Tuple[uuid.UUID, str, List[RetrievedChunk]]] = []
             for job_result, surviving_chunks in scrub_result.items:
                 if isinstance(job_result, RetrievalScrubbingJobResult) and job_result.success:
-                    qa_inputs.append((search_id, query.prompt, surviving_chunks))
+                    # Transcript on either side of the best survivors, for answers that cross a chunk boundary
+                    qa_inputs.append((search_id, query.prompt, self._retrieval_phase.expand_neighbors(surviving_chunks)))
 
             if not qa_inputs:
                 raise WorkflowStateError("Pipeline halted: No chunks survived the SLM scrubber.")
+
+            if not any(chunks for _, _, chunks in qa_inputs):
+                # Nothing to answer from: generation returns the refusal without a model, so don't keep
+                # (or finish) loading one in the background
+                self._qa_generation_phase.discard_preload()
 
             # ==========================================
             # STAGE 4: QA GENERATION (LLM)

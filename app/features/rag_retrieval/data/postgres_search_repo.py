@@ -71,7 +71,62 @@ _HYBRID_SEARCH_SQL = text("""
 """)
 
 
+# For each anchor chunk, the chunk that starts just before it and the one that starts just after it in the same
+# source: the transcript on either side of a hit, for answers that cross a chunk boundary.
+_NEIGHBORS_SQL = text("""
+    WITH anchors AS (
+        SELECT chunk_id, source_id, start_sec
+        FROM vector_chunks
+        WHERE chunk_id = ANY(CAST(:chunk_ids AS uuid[]))
+    )
+    SELECT DISTINCT ON (n.chunk_id)
+           n.chunk_id, n.source_id, n.text_payload, n.raw_text, n.speaker_labels, n.start_sec, n.end_sec,
+           vc.extracted_file_id
+    FROM anchors a
+    CROSS JOIN LATERAL (
+        (SELECT v.* FROM vector_chunks v
+         WHERE v.source_id = a.source_id AND v.start_sec < a.start_sec
+         ORDER BY v.start_sec DESC LIMIT 1)
+        UNION ALL
+        (SELECT v.* FROM vector_chunks v
+         WHERE v.source_id = a.source_id AND v.start_sec > a.start_sec
+         ORDER BY v.start_sec ASC LIMIT 1)
+    ) n
+    LEFT JOIN video_clips vc ON vc.chunk_id = n.chunk_id
+    ORDER BY n.chunk_id
+""")
+
+
 class PostgresSearchRepository(IRetrievalRepository):
+
+    def fetch_neighbors(self, chunk_ids: List[uuid.UUID]) -> List[RetrievedChunk]:
+        if not chunk_ids:
+            return []
+
+        try:
+            with db_manager.session() as session:
+                rows = session.execute(
+                    _NEIGHBORS_SQL, {"chunk_ids": [str(chunk_id) for chunk_id in chunk_ids]}
+                ).mappings().all()
+
+                return [
+                    RetrievedChunk(
+                        chunk_id=row["chunk_id"],
+                        source_id=row["source_id"],
+                        text_payload=row["text_payload"],
+                        raw_text=row["raw_text"],
+                        speaker_labels=list(row["speaker_labels"] or []),
+                        start_sec=float(row["start_sec"]),
+                        end_sec=float(row["end_sec"]),
+                        # Neighbours were not ranked; they are context for the chunk that was
+                        relevance_score=0.0,
+                        extracted_file_id=row["extracted_file_id"]
+                    )
+                    for row in rows
+                ]
+
+        except Exception as e:
+            raise map_retrieval_error(e, context="Fetching neighbouring chunks") from e
 
     def execute_hybrid_search(
             self,

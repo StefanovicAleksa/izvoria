@@ -101,3 +101,47 @@ class TestGemmaGenerationAdapter:
 
         with pytest.raises(JSONCritiqueParseError):
             adapter.critique_answer(loaded, "query", "draft answer", "evidence")
+    def test_count_tokens_uses_model_tokenizer_without_bos(self, manifest):
+        adapter = GemmaGenerationAdapter()
+        mock_llm = MagicMock()
+        mock_llm.tokenize.return_value = [1, 2, 3]
+        loaded = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        assert adapter.count_tokens(loaded, "héllo") == 3
+        mock_llm.tokenize.assert_called_once_with("héllo".encode("utf-8"), add_bos=False, special=True)
+
+    @patch("app.features.qa_generation.data.gemma_adapter.settings")
+    def test_context_budget_reserves_prompt_answer_and_margin(self, mock_settings, manifest):
+        mock_settings.QA_GENERATION_MAX_ANSWER_TOKENS = 1000
+        adapter = GemmaGenerationAdapter()
+        mock_llm = MagicMock()
+        mock_llm.n_ctx.return_value = 8192
+        mock_llm.tokenize.return_value = [0] * 300
+        loaded = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        budget = adapter.get_context_token_budget(loaded, "What happened?", include_critique=False)
+
+        assert budget == 8192 - 300 - 1000 - adapter.TEMPLATE_MARGIN_TOKENS
+
+    @patch("app.features.qa_generation.data.gemma_adapter.settings")
+    def test_context_budget_with_critique_also_fits_draft_and_verdict(self, mock_settings, manifest):
+        mock_settings.QA_GENERATION_MAX_ANSWER_TOKENS = 1000
+        adapter = GemmaGenerationAdapter()
+        mock_llm = MagicMock()
+        mock_llm.n_ctx.return_value = 8192
+        # Answer prompt 300 tokens, critique prompt 400 tokens
+        mock_llm.tokenize.side_effect = [[0] * 300, [0] * 400]
+        loaded = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        budget = adapter.get_context_token_budget(loaded, "Q", include_critique=True)
+
+        assert budget == 8192 - 400 - 1000 - adapter.CRITIQUE_MAX_TOKENS - adapter.TEMPLATE_MARGIN_TOKENS
+
+    def test_context_budget_never_negative(self, manifest):
+        adapter = GemmaGenerationAdapter()
+        mock_llm = MagicMock()
+        mock_llm.n_ctx.return_value = 512
+        mock_llm.tokenize.return_value = [0] * 600
+        loaded = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        assert adapter.get_context_token_budget(loaded, "Q", include_critique=True) == 0

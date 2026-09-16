@@ -4,6 +4,50 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Retrieval and answering: evidence kept, context budgeted, citations complete
+
+Measured with the new `scripts/eval/rag_eval.py`. It runs 28 answerable, 6 unanswerable and 2 follow-up questions (`rag_labels.json`) against the dev DB. The labels name chunk ids, so they only fit that DB.
+
+- **A RAG eval exists** (`scripts/eval/rag_eval.py`, `rag_labels.json`).
+  - `--stage retrieval` reports hit@k/MRR after RRF and after rerank, and how often a relevant chunk survives the scrubber. `--cache` reruns only the scrubber.
+  - `--stage answer --mode chat|deep` runs the real engine and reports:
+    - how many answerable questions got an answer, and whether it cites a relevant chunk;
+    - uncited answers;
+    - whether unanswerable questions were refused.
+- **The relevance scrubber no longer throws away most answers** (`app/core/config.py`).
+  - **The problem.** Retrieval and rerank were strong: the right chunk was ranked first for 87% of questions and was always in the top 10. But the Qwen2.5-3B scrubber then dropped the chunk that answers the question for about 1 question in 4, e.g. calling a chunk that contains the "7-2 vote" and its price targets "not related". Chat then had nothing to answer from.
+  - **The fix.**
+    - `RETRIEVAL_SCRUBBER_MODEL_PATH` now points at the Qwen2.5-7B weights already on disk: a relevant chunk survives 25/28 times, against 21/28 for the 3B.
+    - The new `RAG_RERANK_MIN_SCORE=0.1` drops about 45% of non-answering candidates before the slow judge; every answering chunk scored at least 0.12.
+    - Overall, a relevant chunk now survives 28/32 times (was 22/30), and the retrieval eval runs in 495 s (was 862 s).
+  - **Tried and reverted.** Having the scrubber judge `raw_text` instead of the contextualized payload made the 3B stricter (57% survival).
+- **Deep Research can no longer overflow the context window** (`qa_generation/utils/context_packer.py` (new), `generation_api.py`, `gemma_adapter.py`, `qa_reasoning/utils/evidence_formatter.py`, `reasoning_api.py`, `qwen_reasoner_adapter.py`).
+  - **Introduced in:** `8052035`.
+  - **The problem.** The evidence pool grew without a limit (3 passes × 10 chunks, about 12k tokens), while Gemma and the reasoner run at `n_ctx=8192` and nothing counted tokens. llama.cpp raised `Requested tokens exceed context window`, and the call failed.
+  - **The fix.**
+    - Both models count tokens with their own tokenizer. Evidence is kept best-first while it fits what's left after the prompts, the question, and the answer, critique and reasoning budgets.
+    - The new settings are `QA_GENERATION_N_CTX`, `QA_GENERATION_MAX_ANSWER_TOKENS` and `QA_REASONER_N_CTX`.
+    - Gemma now runs at a 16K context (about 4.6 GB VRAM instead of 4.1 GB at 8K), so a full Deep Research pool fits. The reasoner stays at 8K.
+- **The answer model reads evidence as a timeline.** `[Doc N]` blocks are grouped by recording and ordered by time. The sentence the chunker repeats between neighbouring chunks is shown once.
+- **Grouped citations are no longer lost** (`citation_parser.py`).
+  - `[Doc 1, 3]`, `[Docs 1-2]` and `[Doc 2 and 3]` are rewritten to `[Doc 1][Doc 3]` in the answer text, and all of them get clip links.
+  - Tags pointing at documents that don't exist are removed.
+- **Only evidence reaches the answer model.**
+  - `generate_with_critique` no longer appends the reasoner's `interim_analysis` to the question. That model-written text could be repeated with a `[Doc N]` tag, the same leak `build_context_block` already prevents for generated context.
+  - Instead, Deep Research reranks the whole pool once against the user's question and moves the chunks the reasoner linked its claims to the front.
+- **The reasoner cites `[E1]…[En]`, not UUIDs.** Links to tags that aren't in the pool are dropped instead of stored as well-formed but wrong chunk ids.
+- **Follow-up questions are searched as standalone queries** (`ReasoningAPI.rewrite_query`, `ReasonerPhase.rewrite_query`).
+  - "And for how long should it be traded?" is searched as "For how long should the Bund June contract FGBL M7 be traded?", which moves its answer from RRF rank 18 to rank 1.
+  - The reasoner and Gemma still read the user's words.
+  - Session memory strips `[Doc N]` tags, which pointed at other chunks in the next turn.
+- **The transcript around the best hits is included** (`PostgresSearchRepository.fetch_neighbors`, `RetrievalAPI.expand_neighbors`, `RAG_NEIGHBOR_EXPANSION_TOP_K=3`). Both chat pipelines add the chunks before and after the top 3 survivors, for answers that cross a chunk boundary. The context budget drops these first.
+- **Measured end to end** (`--stage answer`, before → after):
+  - `chat`: answered 22/28 → 26/28; cites a relevant chunk 21/28 → 25/28; unanswerable questions refused 6/6 → 5/6; about 32 s → 24 s per question.
+    - The one miss (u03, "what exactly did Draghi say") is not a hallucination: the answer cites and summarises the chunk that says to watch Draghi's answer on the replay.
+  - Deep Research: answered 12/30 → 19/30; clarification requests 24 → 17; 4225 s → 3206 s.
+    - It still asks for clarification on about half of the answerable questions, as its prompt instructs ("prefer ask_clarification").
+- **No model load just to refuse.** With no surviving evidence, `generate`/`generate_with_critique` return the prompt's refusal directly, and `LiveQAPipeline` discards the Gemma preload.
+
 ## Deep Research: multi-pass reasoning chat, opt-in alongside `chat()`
 
 - **New `chat_deep_research()` entrypoint** (`app/features/qa_reasoning/` (new), `app/features/qa_generation/` (`critique_answer`/`generate_with_critique`, additive), `app/features/session_memory/` (new), `app/orchestration/service/phases/reasoner_phase.py` (new), `app/orchestration/service/phases/qa_generation_phase.py` (`execute_with_critique`, additive), `app/orchestration/service/pipelines/live_deep_research_pipeline.py` (new), `app/engine/service/onyx_engine.py`, `app/engine/service/bootstrap.py`, `app/main.py`).

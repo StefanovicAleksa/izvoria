@@ -75,6 +75,12 @@ class RerankAPI:
             ranked = sorted(zip(chunks, scores), key=lambda pair: pair[1], reverse=True)
             reranked = [chunk.model_copy(update={"rerank_score": float(score)}) for chunk, score in ranked[:top_n]]
 
+            min_score = settings.RAG_RERANK_MIN_SCORE
+            if min_score is not None:
+                # The best candidate always stays, so the downstream judge (not this cut-off) decides a query
+                # has no answer
+                reranked = reranked[:1] + [c for c in reranked[1:] if c.rerank_score >= min_score]
+
             logger.info(f"Reranked {len(chunks)} candidates down to {len(reranked)}.")
             return reranked
 

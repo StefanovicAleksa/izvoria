@@ -4,6 +4,7 @@ import os
 import uuid
 import pytest
 import torch
+from unittest.mock import patch
 
 from app.core.config import settings
 from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
@@ -43,8 +44,22 @@ class TestRerankAPIIntegration:
         distractor = self._chunk("[Speaker_1 @ 00:01:00]: The cafeteria serves pizza on Fridays.", rrf=0.033)
         relevant = self._chunk("[Speaker_0 @ 00:04:10]: I prescribed 50mg of sumatriptan for her migraines.", rrf=0.016)
 
-        result = live_api.rerank("What medication was prescribed for the migraines?", [distractor, relevant], top_n=2)
+        # Ordering only: with the score floor on, the distractor would not be returned at all
+        with patch.object(settings, "RAG_RERANK_MIN_SCORE", None):
+            result = live_api.rerank("What medication was prescribed for the migraines?", [distractor, relevant],
+                                     top_n=2)
 
         assert [c.chunk_id for c in result] == [relevant.chunk_id, distractor.chunk_id]
         assert result[0].rerank_score is not None
         assert result[0].rerank_score > result[1].rerank_score
+
+    def test_score_floor_drops_an_off_topic_distractor(self, live_api: RerankAPI):
+        distractor = self._chunk("[Speaker_1 @ 00:01:00]: The cafeteria serves pizza on Fridays.", rrf=0.033)
+        relevant = self._chunk("[Speaker_0 @ 00:04:10]: I prescribed 50mg of sumatriptan for her migraines.", rrf=0.016)
+
+        with patch.object(settings, "RAG_RERANK_MIN_SCORE", 0.1):
+            result = live_api.rerank("What medication was prescribed for the migraines?", [distractor, relevant],
+                                     top_n=2)
+
+        assert [c.chunk_id for c in result] == [relevant.chunk_id]
+        assert result[0].rerank_score >= 0.1

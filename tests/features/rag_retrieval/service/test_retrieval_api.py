@@ -91,3 +91,35 @@ class TestRetrievalAPI:
             limit=settings.RAG_RETRIEVAL_CANDIDATES,
             source_id_filter=source_id
         )
+
+    @staticmethod
+    def _chunk(source_id=None, start=0.0) -> RetrievedChunk:
+        return RetrievedChunk(chunk_id=uuid.uuid4(), source_id=source_id or uuid.uuid4(), text_payload="t",
+                              start_sec=start, end_sec=start + 1, relevance_score=0.5)
+
+    def test_expand_neighbors_appends_new_neighbours_of_the_top_chunks(self, api, mocks):
+        source = uuid.uuid4()
+        chunks = [self._chunk(source, 50), self._chunk(source, 60), self._chunk(source, 90)]
+        after, before = self._chunk(source, 70), self._chunk(source, 40)
+        # chunks[1] is itself a neighbour of chunks[0] and must not be added twice
+        mocks["search_repo"].fetch_neighbors.return_value = [after, chunks[1], before]
+
+        result = api.expand_neighbors(chunks, top_k=2)
+
+        mocks["search_repo"].fetch_neighbors.assert_called_once_with([chunks[0].chunk_id, chunks[1].chunk_id])
+        assert result == chunks + [before, after]
+        mocks["orchestrator"].acquire_model.assert_not_called()
+
+    @pytest.mark.parametrize("top_k, chunk_count", [(0, 2), (3, 0)])
+    def test_expand_neighbors_noop_cases_skip_the_database(self, api, mocks, top_k, chunk_count):
+        chunks = [self._chunk() for _ in range(chunk_count)]
+
+        assert api.expand_neighbors(chunks, top_k=top_k) == chunks
+        mocks["search_repo"].fetch_neighbors.assert_not_called()
+
+    def test_expand_neighbors_maps_errors(self, api, mocks):
+        mocks["search_repo"].fetch_neighbors.side_effect = RuntimeError("db down")
+
+        with pytest.raises(Exception) as exc_info:
+            api.expand_neighbors([self._chunk()], top_k=1)
+        assert "neighbouring" in str(exc_info.value)

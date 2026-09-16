@@ -107,3 +107,25 @@ class TestReasonerPhaseUnit:
         job_res, decision = result.items[0]
         assert job_res.success is False
         assert decision is None
+
+    def test_rewrite_query_without_prior_context_returns_question_without_a_job(self, phase, mock_job_manager):
+        assert phase.rewrite_query(uuid.uuid4(), "What happened?", None) == "What happened?"
+        mock_job_manager.run_job.assert_not_called()
+
+    def test_rewrite_query_runs_as_tracked_job(self, phase, mock_job_manager, mock_reasoning_api):
+        search_id = uuid.uuid4()
+        mock_job_manager.run_job.return_value = "standalone query"
+
+        assert phase.rewrite_query(search_id, "And after that?", "prior") == "standalone query"
+
+        request = mock_job_manager.run_job.call_args.args[0]
+        assert request.input_params == {"search_id": str(search_id), "step": "query_rewrite"}
+        mock_job_manager.run_job.assert_called_once_with(
+            ANY, mock_reasoning_api.rewrite_query, question="And after that?", prior_session_context="prior",
+            release_after=True
+        )
+
+    def test_rewrite_query_failure_falls_back_to_question(self, phase, mock_job_manager):
+        mock_job_manager.run_job.side_effect = RuntimeError("Reasoner OOM")
+
+        assert phase.rewrite_query(uuid.uuid4(), "And after that?", "prior") == "And after that?"

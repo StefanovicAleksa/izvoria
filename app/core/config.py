@@ -3,6 +3,7 @@
 
 import os
 from pathlib import Path
+from typing import Optional
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -183,17 +184,32 @@ class Settings(BaseSettings):
 
     RAG_RERANKER_MODEL_PATH: str = "models/bge-reranker-v2-m3"
     RAG_RERANKER_VRAM_REQUIREMENT_MB: float = 1500.0
+    # Cross-encoder score floor (sigmoid 0..1): candidates below it never reach the (slow) scrubber; the best
+    # candidate is always kept, and unset keeps every top-N candidate. On the dev-DB eval every chunk that answered
+    # a question scored >= 0.12, while about 45% of non-answering candidates scored below 0.1.
+    RAG_RERANK_MIN_SCORE: Optional[float] = 0.1
+    # Chat pipelines add the chunks before and after this many of the best surviving chunks (0 disables)
+    RAG_NEIGHBOR_EXPANSION_TOP_K: int = 3
 
-    RETRIEVAL_SCRUBBER_MODEL_PATH: str = "models/qwen2.5-3b-instruct-q4_k_m.gguf"
-    RETRIEVAL_SCRUBBER_VRAM_REQUIREMENT_MB: float = 2500.0
+    # Qwen2.5-7B (same weights as the reasoner): on the dev-DB eval (scripts/eval/rag_eval.py) the 3B judge kept the
+    # chunk that answers the question for 75% of questions, the 7B for 89%
+    RETRIEVAL_SCRUBBER_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+    RETRIEVAL_SCRUBBER_VRAM_REQUIREMENT_MB: float = 5000.0
 
     QA_GENERATION_MODEL_PATH: str = "models/google_gemma-4-E4B-it-Q4_K_M.gguf"
     QA_GENERATION_VRAM_REQUIREMENT_MB: float = 4500.0
+    # Context window of the answer model. Retrieved evidence is packed to fit what's left after the prompts,
+    # the question and the answer/critique generation budget, so no chunk count can overflow it.
+    # 16K measured at ~4.6 GB VRAM on the dev box (8K: ~4.1 GB).
+    QA_GENERATION_N_CTX: int = 16384
+    QA_GENERATION_MAX_ANSWER_TOKENS: int = 1024
 
     # Deep Research reasoning loop: reuses the same Qwen2.5-7B weights as ASR_PHASE_3/VISUAL_CUE_DETECTION,
     # but under its own ModelType/n_ctx since residency is keyed on (model_type, model_path).
     QA_REASONER_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
     QA_REASONER_VRAM_REQUIREMENT_MB: float = 5000.0
+    # Context window of the reasoner; its evidence block is cut to fit alongside the prompt and a 1000-token reply
+    QA_REASONER_N_CTX: int = 8192
     DEEP_RESEARCH_MAX_ITERATIONS: int = 3
     DEEP_RESEARCH_MAX_CRITIQUE_RETRIES: int = 1
 

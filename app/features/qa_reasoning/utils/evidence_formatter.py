@@ -1,29 +1,57 @@
 # Path: app/features/qa_reasoning/utils/evidence_formatter.py
 
-from typing import List
+import logging
+import uuid
+from typing import Callable, Dict, List, Optional
 
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
-from app.features.qa_reasoning.domain.entities import ReasonerDecision
+from app.features.qa_reasoning.domain.entities import ReasonerDecision, EvidenceBlock
+
+logger = logging.getLogger(__name__)
 
 _MAX_CHARS_PER_CHUNK = 3000
+_SEPARATOR_TOKENS = 2
+_EMPTY_POOL_TEXT = "(No evidence gathered yet.)"
 
 
-def build_evidence_block(evidence_pool: List[RetrievedChunk]) -> str:
+def build_evidence_block(
+        evidence_pool: List[RetrievedChunk],
+        token_budget: Optional[int] = None,
+        count_tokens: Optional[Callable[[str], int]] = None
+) -> EvidenceBlock:
     """
-    Formats every surviving chunk for the Reasoner's prompt, tagged by its literal chunk_id
-    (not a synthetic [Doc N] tag) so ReasonerDecision.evidence_links can reference it directly
-    for traceability across iterations.
+    Formats the evidence pool for the Reasoner's prompt, tagging chunks [E1]..[En]. A 7B model copies a short
+    tag reliably where it garbled 36-character UUIDs; the returned mapping turns tags back into chunk ids.
+
+    The pool arrives best-first. With a token budget, chunks that don't fit are left out (a later, shorter
+    chunk may still fit), so a growing Deep Research pool can never overflow the context window.
     """
     if not evidence_pool:
-        return "(No evidence gathered yet.)"
+        return EvidenceBlock(formatted_text=_EMPTY_POOL_TEXT, tag_mapping={})
 
     parts = []
+    tag_mapping: Dict[str, uuid.UUID] = {}
+    used = 0
     for chunk in evidence_pool:
         source_text = chunk.raw_text or chunk.text_payload
-        safe_text = source_text[:_MAX_CHARS_PER_CHUNK]
-        parts.append(f"[{chunk.chunk_id}] ({chunk.start_sec:.1f}s-{chunk.end_sec:.1f}s):\n{safe_text}")
+        tag = f"E{len(parts) + 1}"
+        part = f"[{tag}] ({chunk.start_sec:.1f}s-{chunk.end_sec:.1f}s):\n{source_text[:_MAX_CHARS_PER_CHUNK]}"
 
-    return "\n\n".join(parts)
+        if token_budget is not None and count_tokens is not None:
+            cost = count_tokens(part) + _SEPARATOR_TOKENS
+            if used + cost > token_budget:
+                continue
+            used += cost
+
+        parts.append(part)
+        tag_mapping[tag] = chunk.chunk_id
+
+    if not parts:
+        return EvidenceBlock(formatted_text=_EMPTY_POOL_TEXT, tag_mapping={})
+    if len(parts) < len(evidence_pool):
+        logger.info(f"Reasoner evidence budget of {token_budget} tokens fits {len(parts)} of {len(evidence_pool)} chunks.")
+
+    return EvidenceBlock(formatted_text="\n\n".join(parts), tag_mapping=tag_mapping)
 
 
 def build_decision_history_block(decision_history: List[ReasonerDecision]) -> str:

@@ -4,15 +4,19 @@ import os
 import gc
 import json
 import re
+import uuid
 import logging
 from typing import Any, Dict, List
 from pathlib import Path
 
+from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.features.qa_reasoning.domain.interfaces import IReasonerAdapter
 from app.features.qa_reasoning.domain.entities import ReasonerDecision, EvidenceLink
 from app.features.qa_reasoning.domain.enums import ReasonerDecisionType
-from app.features.qa_reasoning.data.prompts import REASONER_SYSTEM_PROMPT, REASONER_USER_TEMPLATE
+from app.features.qa_reasoning.data.prompts import (
+    REASONER_SYSTEM_PROMPT, REASONER_USER_TEMPLATE, QUERY_REWRITE_SYSTEM_PROMPT, QUERY_REWRITE_USER_TEMPLATE
+)
 from app.features.qa_reasoning.exceptions.pipeline import JSONReasonerParseError
 from app.features.qa_reasoning.utils.error_mapper import map_reasoner_error
 
@@ -27,13 +31,17 @@ class QwenReasonerAdapter(IReasonerAdapter):
     control-flow branches (see JSONReasonerParseError).
     """
 
+    REASON_MAX_TOKENS = 1000
+    REWRITE_MAX_TOKENS = 120
+    TEMPLATE_MARGIN_TOKENS = 64
+
     @staticmethod
     def _get_llama_model(model_path: str) -> Any:
         from llama_cpp import Llama
         return Llama(
             model_path=model_path,
             n_gpu_layers=-1,
-            n_ctx=8192,
+            n_ctx=settings.QA_REASONER_N_CTX,
             flash_attn=True,
             verbose=False
         )
@@ -60,6 +68,65 @@ class QwenReasonerAdapter(IReasonerAdapter):
         except Exception as e:
             raise map_reasoner_error(e, context="Unload Reasoner Adapter") from e
 
+    @staticmethod
+    def _user_content(original_question: str, evidence_block: str, decision_history_block: str,
+                      prior_session_context: str, extra_context: str) -> str:
+        return REASONER_USER_TEMPLATE.format(
+            original_question=original_question,
+            evidence_block=evidence_block,
+            decision_history_block=decision_history_block,
+            prior_session_context=prior_session_context or "(None — this is a new conversation.)",
+            extra_context=extra_context or "(None.)",
+        )
+
+    def count_tokens(self, model: LoadedModel, text: str) -> int:
+        try:
+            llm: Any = model.model_instance
+            return len(llm.tokenize(text.encode("utf-8"), add_bos=False, special=True))
+        except Exception as e:
+            raise map_reasoner_error(e, context="Counting tokens") from e
+
+    def get_evidence_token_budget(
+        self,
+        model: LoadedModel,
+        original_question: str,
+        decision_history_block: str,
+        prior_session_context: str,
+        extra_context: str,
+    ) -> int:
+        try:
+            llm: Any = model.model_instance
+            fixed = self.count_tokens(model, REASONER_SYSTEM_PROMPT + self._user_content(
+                original_question, "", decision_history_block, prior_session_context, extra_context))
+            return max(llm.n_ctx() - fixed - self.REASON_MAX_TOKENS - self.TEMPLATE_MARGIN_TOKENS, 0)
+        except Exception as e:
+            raise map_reasoner_error(e, context="Computing the evidence token budget") from e
+
+    def rewrite_query(self, model: LoadedModel, question: str, prior_session_context: str) -> str:
+        try:
+            llm: Any = model.model_instance
+            messages = [
+                {"role": "system", "content": QUERY_REWRITE_SYSTEM_PROMPT},
+                {"role": "user", "content": QUERY_REWRITE_USER_TEMPLATE.format(
+                    prior_session_context=prior_session_context, question=question)}
+            ]
+            response = llm.create_chat_completion(
+                messages=messages,
+                response_format={"type": "json_object"},
+                temperature=0.0,
+                max_tokens=self.REWRITE_MAX_TOKENS
+            )
+            raw_content = response["choices"][0]["message"]["content"]
+            json_match = re.search(r'\{.*}', raw_content, re.DOTALL)
+            parsed_data = json.loads(json_match.group(0)) if json_match else json.loads(raw_content)
+
+            rewritten = parsed_data.get("standalone_query") if isinstance(parsed_data, dict) else None
+            if not isinstance(rewritten, str) or not rewritten.strip():
+                raise JSONReasonerParseError(f"Query rewrite returned no standalone_query: {raw_content[:200]!r}")
+            return rewritten.strip()
+        except Exception as e:
+            raise map_reasoner_error(e, context="Rewriting a follow-up into a standalone query") from e
+
     def reason(
         self,
         model: LoadedModel,
@@ -68,16 +135,13 @@ class QwenReasonerAdapter(IReasonerAdapter):
         decision_history_block: str,
         prior_session_context: str,
         extra_context: str,
+        evidence_tags: Dict[str, uuid.UUID],
     ) -> ReasonerDecision:
         try:
             llm: Any = model.model_instance
 
-            user_content = REASONER_USER_TEMPLATE.format(
-                original_question=original_question,
-                evidence_block=evidence_block,
-                decision_history_block=decision_history_block,
-                prior_session_context=prior_session_context or "(None — this is a new conversation.)",
-                extra_context=extra_context or "(None.)",
+            user_content = self._user_content(
+                original_question, evidence_block, decision_history_block, prior_session_context, extra_context
             )
 
             messages = [
@@ -91,7 +155,7 @@ class QwenReasonerAdapter(IReasonerAdapter):
                 # Deterministic: the decision must follow from the evidence actually gathered,
                 # not from decoding randomness flip-flopping between near-identical inputs.
                 temperature=0.0,
-                max_tokens=1000
+                max_tokens=self.REASON_MAX_TOKENS
             )
 
             raw_content = response["choices"][0]["message"]["content"]
@@ -105,13 +169,15 @@ class QwenReasonerAdapter(IReasonerAdapter):
             if not isinstance(parsed_data, dict):
                 raise JSONReasonerParseError(f"Reasoner verdict is not a JSON object: {raw_content[:200]!r}")
 
-            return self._to_decision(parsed_data, raw_content)
+            return self._to_decision(parsed_data, raw_content, evidence_tags)
 
         except Exception as e:
             raise map_reasoner_error(e, context="Executing Reasoner turn") from e
 
     @staticmethod
-    def _to_decision(parsed_data: Dict[str, Any], raw_content: str) -> ReasonerDecision:
+    def _to_decision(
+        parsed_data: Dict[str, Any], raw_content: str, evidence_tags: Dict[str, uuid.UUID]
+    ) -> ReasonerDecision:
         decision_raw = parsed_data.get("decision")
         try:
             decision = ReasonerDecisionType(decision_raw)
@@ -124,7 +190,13 @@ class QwenReasonerAdapter(IReasonerAdapter):
         evidence_links: List[EvidenceLink] = []
         for raw_link in parsed_data.get("evidence_links", []) or []:
             try:
-                evidence_links.append(EvidenceLink(chunk_id=raw_link["chunk_id"], claim=raw_link["claim"]))
+                tag = str(raw_link["evidence_id"]).strip().strip("[]").upper()
+                chunk_id = evidence_tags.get(tag)
+                if chunk_id is None:
+                    # A tag that isn't in this turn's evidence pool links the claim to nothing real
+                    logger.warning(f"Dropping evidence_link to unknown evidence tag {tag!r}")
+                    continue
+                evidence_links.append(EvidenceLink(chunk_id=chunk_id, claim=raw_link["claim"]))
             except Exception as link_err:
                 # Fail open for this sub-field only: one malformed evidence link doesn't invalidate
                 # the whole turn's decision.

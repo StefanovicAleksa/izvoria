@@ -49,3 +49,18 @@ class TestSessionMemoryAPI:
 
         assert result == expected
         mock_repo.record_turn.assert_called_once_with(session_id, "Q", "A")
+
+    def test_record_turn_strips_citation_tags(self, api, mock_repo):
+        session_id = uuid.uuid4()
+
+        api.record_turn(session_id, "Q", "It rose [Doc 1] and then fell [Doc 2, 3].")
+
+        mock_repo.record_turn.assert_called_once_with(session_id, "Q", "It rose and then fell.")
+
+    def test_get_prior_context_strips_tags_from_previously_stored_answers(self, api, mock_repo):
+        mock_repo.get_last_turn.return_value = SessionTurn(
+            id=uuid.uuid4(), session_id=uuid.uuid4(), question="Q?",
+            answer_text="Vote was 9-0 [Doc 1].", created_at="2026-01-01T00:00:00Z"
+        )
+
+        assert api.get_prior_context(uuid.uuid4()) == "[PRIOR TURN]\nQ: Q?\nA: Vote was 9-0."

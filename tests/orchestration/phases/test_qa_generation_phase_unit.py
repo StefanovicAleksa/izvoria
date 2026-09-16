@@ -92,7 +92,7 @@ class TestQAGenerationPhaseUnit:
                                start_sec=0, end_sec=1, relevance_score=1.0)
         user_query = "What is the context?"
 
-        inputs = [(search_id, user_query, [chunk], "reasoner analysis")]
+        inputs = [(search_id, user_query, [chunk])]
 
         mock_future = Mock(spec=concurrent.futures.Future)
         phase._preload_future = mock_future
@@ -118,8 +118,7 @@ class TestQAGenerationPhaseUnit:
         assert critique == mock_critique
 
         mock_job_manager.run_job.assert_called_once_with(
-            ANY, ANY, user_query=user_query, retrieved_chunks=[chunk], extra_context="reasoner analysis",
-            release_after=False
+            ANY, ANY, user_query=user_query, retrieved_chunks=[chunk], release_after=False
         )
         mock_async_service.trigger_unload.assert_called_once_with(
             loaded_model=mock_loaded_model, loader=mock_loader, flush=True
@@ -129,7 +128,7 @@ class TestQAGenerationPhaseUnit:
         search_id = uuid.uuid4()
         mock_job_manager.run_job.side_effect = RuntimeError("Gemma crashed")
 
-        result = phase.execute_with_critique([(search_id, "Q", [], "")])
+        result = phase.execute_with_critique([(search_id, "Q", [])])
 
         assert result.status == PhaseStatus.FAILED
         job_res, payload = result.items[0]

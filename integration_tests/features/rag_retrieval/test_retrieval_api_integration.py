@@ -146,3 +146,57 @@ class TestRetrievalAPIIntegration:
         assert len(result.results) == 1
         dense_only_rank_one = 1.0 / (settings.RAG_RRF_K_CONSTANT + 1)
         assert result.results[0].relevance_score > dense_only_rank_one
+
+
+class TestNeighborFetchIntegration:
+    """Live PostgreSQL only: the neighbour query needs no model."""
+
+    @pytest.fixture(autouse=True)
+    def setup_database(self):
+        engine = db_manager._engine_wrapper._engine
+        Base.metadata.create_all(bind=engine)
+        yield
+
+    @pytest.fixture
+    def seeded_timeline(self):
+        source_id, other_source_id = uuid.uuid4(), uuid.uuid4()
+        chunk_ids = [uuid.uuid4() for _ in range(4)]
+        other_chunk_id = uuid.uuid4()
+
+        with db_manager.session() as session:
+            session.execute(
+                sa_text("ALTER TABLE vector_chunks DROP CONSTRAINT IF EXISTS vector_chunks_source_id_fkey;"))
+            for index, chunk_id in enumerate(chunk_ids):
+                session.add(VectorChunkModel(
+                    source_id=source_id, chunk_id=chunk_id, start_sec=100.0 * index, end_sec=100.0 * index + 110.0,
+                    text_payload=f"payload {index}", raw_text=f"[Speaker_0 @ 00:00:0{index}]: part {index}",
+                    speaker_labels=["Speaker_0"], embedding=[0.01] * 1024
+                ))
+            # Starts between chunk 1 and chunk 2, but in another recording: never a neighbour
+            session.add(VectorChunkModel(
+                source_id=other_source_id, chunk_id=other_chunk_id, start_sec=150.0, end_sec=160.0,
+                text_payload="other", raw_text="[Speaker_1 @ 00:02:30]: other", speaker_labels=["Speaker_1"],
+                embedding=[0.01] * 1024
+            ))
+            session.commit()
+
+        yield chunk_ids
+
+        with db_manager.session() as session:
+            session.execute(sa_text("DELETE FROM vector_chunks WHERE source_id IN (:a, :b)"),
+                            {"a": str(source_id), "b": str(other_source_id)})
+            session.commit()
+
+    def test_fetch_neighbors_returns_adjacent_chunks_of_the_same_source(self, seeded_timeline):
+        repo = PostgresSearchRepository()
+
+        middle = repo.fetch_neighbors([seeded_timeline[1]])
+        first = repo.fetch_neighbors([seeded_timeline[0]])
+        both = repo.fetch_neighbors([seeded_timeline[1], seeded_timeline[2]])
+
+        assert sorted(c.chunk_id for c in middle) == sorted([seeded_timeline[0], seeded_timeline[2]])
+        assert [c.chunk_id for c in first] == [seeded_timeline[1]]
+        assert first[0].raw_text == "[Speaker_0 @ 00:00:01]: part 1"
+        assert first[0].relevance_score == 0.0
+        # Anchors that neighbour each other are returned once each, alongside the outer neighbours
+        assert sorted(c.chunk_id for c in both) == sorted(seeded_timeline)

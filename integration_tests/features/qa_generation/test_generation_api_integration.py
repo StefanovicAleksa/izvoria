@@ -204,3 +204,38 @@ class TestQAGenerationAPIIntegration:
         assert response.inference_time_ms > 0
         assert "[Doc 1]" in response.generated_answer
         assert critique.verdict is not None
+    def test_generate_with_critique_fits_an_oversized_evidence_pool(self, live_api: QAGenerationAPI):
+        """
+        A Deep Research pool of 30 transcript-sized chunks (well over the 8K context) used to overflow llama.cpp's
+        context window. The evidence is now cut to the budget, so the call succeeds and only packed chunks are cited.
+        """
+        source_id = uuid.uuid4()
+        filler = " ".join(["The witness described the lobby layout and the queue at the counter in detail."] * 25)
+        chunks = [
+            RetrievedChunk(
+                chunk_id=uuid.uuid4(),
+                source_id=source_id,
+                text_payload=filler,
+                raw_text=f"[Speaker_0 @ 00:{i:02d}:00]: " + (
+                    "The defendant wearing a red jacket entered the bank at exactly 09:00 AM. " if i == 0 else ""
+                ) + filler,
+                speaker_labels=["Speaker_0"],
+                start_sec=60.0 * i,
+                end_sec=60.0 * i + 55.0,
+                relevance_score=1.0 - i / 100
+            )
+            for i in range(30)
+        ]
+
+        response, critique = live_api.generate_with_critique(
+            user_query="What was the defendant wearing when entering the bank?",
+            retrieved_chunks=chunks,
+            release_after=True
+        )
+
+        assert "red jacket" in response.generated_answer.lower()
+        assert critique.verdict is not None
+        cited = {c.chunk_id for c in response.citations}
+        assert chunks[0].chunk_id in cited
+        # Only chunks that fit the budget can be cited; the lowest-ranked ones were dropped
+        assert chunks[-1].chunk_id not in cited

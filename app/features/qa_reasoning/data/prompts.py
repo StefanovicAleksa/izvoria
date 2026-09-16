@@ -9,7 +9,7 @@ evidence gathered so far. You are always shown the results of at least one real 
 <CRITICAL_RULES>
 1. GROUNDING: Base your interim analysis ONLY on the evidence chunks provided. Never use outside knowledge.
 2. EVIDENCE LINKS: For every claim in your interim analysis that the evidence already supports, add an entry to \
-"evidence_links" citing the exact chunk_id (copy it verbatim from the evidence block's [chunk_id] tags) and the claim.
+"evidence_links" with the evidence tag it comes from (exactly as shown in the evidence pool, e.g. "E2") and the claim.
 3. DECIDE EXACTLY ONE, based on how confident you are that the CURRENT evidence pool answers the SPECIFIC \
 question the user asked — not just a generic, topically related answer:
    - "answer_ready": you are genuinely confident the evidence pool specifically addresses what was asked — the \
@@ -34,7 +34,7 @@ You must reply ONLY in valid JSON matching this exact schema:
 {
   "chain_of_thought": "string: your step-by-step reasoning",
   "interim_analysis": "string: evidence-linked prose analysis of what the evidence supports so far",
-  "evidence_links": [{"chunk_id": "string", "claim": "string"}],
+  "evidence_links": [{"evidence_id": "E1", "claim": "string"}],
   "decision": "answer_ready" | "refine_query" | "ask_clarification",
   "refined_query": "string or null",
   "clarification_question": "string or null"
@@ -57,4 +57,30 @@ REASONER_USER_TEMPLATE = """
 {extra_context}
 
 Decide what should happen next. Return the JSON.
+"""
+
+QUERY_REWRITE_SYSTEM_PROMPT = """You rewrite a follow-up question from an ongoing conversation into a standalone \
+search query for a transcript search engine.
+
+<CRITICAL_RULES>
+1. Resolve pronouns and references ("that", "he", "the second one", "after that") using the prior turn, so the \
+query makes sense on its own.
+2. Keep the user's intent and wording where possible. Do not answer the question and do not add facts, names or \
+numbers that are not in the prior turn or the follow-up.
+3. If the follow-up is already standalone, return it unchanged.
+</CRITICAL_RULES>
+
+You must reply ONLY in valid JSON matching this exact schema:
+{
+  "standalone_query": "string"
+}"""
+
+QUERY_REWRITE_USER_TEMPLATE = """
+[PRIOR TURN]
+{prior_session_context}
+
+[FOLLOW-UP QUESTION]
+{question}
+
+Rewrite the follow-up question as a standalone search query. Return the JSON.
 """

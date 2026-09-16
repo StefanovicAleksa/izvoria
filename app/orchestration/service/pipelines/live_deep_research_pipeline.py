@@ -123,7 +123,35 @@ class LiveDeepResearchPipeline:
         for job_result, survivors in scrub_result.items:
             if isinstance(job_result, RetrievalScrubbingJobResult) and job_result.success and survivors:
                 chunks.extend(survivors)
-        return chunks
+        return self._retrieval_phase.expand_neighbors(chunks)
+
+    def _order_for_answer(
+            self,
+            search_id: uuid.UUID,
+            question: str,
+            evidence_pool: List[RetrievedChunk],
+            final_decision: Optional[ReasonerDecision],
+    ) -> List[RetrievedChunk]:
+        """
+        Best-first evidence for the answer model, whose context budget keeps only the front of the list.
+        The pool mixes passes searched with different (refined) queries, so it is reranked once against the
+        question the user actually asked; chunks the Reasoner's final turn linked its claims to go first.
+        The Reasoner's prose itself is never shown to the answer model.
+        """
+        ordered = evidence_pool
+        if len(evidence_pool) > 1:
+            pool_result = SearchResult(query=question, results=evidence_pool)
+            job = RagRetrievalJobResult(search_id=search_id, success=True, retrieved_chunks_count=len(evidence_pool))
+            self._reranking_phase.preload_model()
+            rerank_result = self._reranking_phase.execute([(job, pool_result)], top_n=len(evidence_pool))
+            _, reranked = _extract_single(rerank_result, RagRerankingJobResult)
+            if rerank_result.status == PhaseStatus.COMPLETED and reranked is not None:
+                ordered = reranked.results
+            else:
+                logger.warning(f"Reranking the evidence pool failed; keeping gathering order. {rerank_result.errors}")
+
+        linked = {link.chunk_id for link in final_decision.evidence_links} if final_decision else set()
+        return [c for c in ordered if c.chunk_id in linked] + [c for c in ordered if c.chunk_id not in linked]
 
     @staticmethod
     def _merge_new_chunks(
@@ -198,6 +226,9 @@ class LiveDeepResearchPipeline:
             # The Reasoner must never judge confidence blind: always try the raw question
             # against the real data first, so ASK_CLARIFICATION/ANSWER_READY on the very first
             # reasoning turn is already grounded in a real search, not just the question text.
+            # A follow-up ("what did they say after that?") is searched as a standalone query; the Reasoner and
+            # the answer model still read the user's own words
+            current_query = self._reasoner_phase.rewrite_query(search_id, query.prompt, prior_session_context)
             initial_chunks = self._run_retrieval_pass(search_id, current_query, query.limit)
             evidence_pool, _ = self._merge_new_chunks(evidence_pool, initial_chunks)
             iteration_count = 1
@@ -276,10 +307,12 @@ class LiveDeepResearchPipeline:
                     # loop back to the top of this while, which preloads and calls the reasoner again
 
                 # ================= Generation + Self-Critique =================
+                answer_evidence = self._order_for_answer(
+                    search_id, query.prompt, evidence_pool, decision_history[-1] if decision_history else None
+                )
                 self._qa_generation_phase.preload_model()
-                reasoner_analysis = decision_history[-1].interim_analysis if decision_history else ""
                 qa_result = self._qa_generation_phase.execute_with_critique(
-                    [(search_id, query.prompt, evidence_pool, reasoner_analysis)]
+                    [(search_id, query.prompt, answer_evidence)]
                 )
                 if qa_result.status == PhaseStatus.FAILED:
                     raise WorkflowStateError(

@@ -49,12 +49,15 @@ class TestQwenReasonerAdapter:
     def test_reason_answer_ready(self, manifest):
         adapter = QwenReasonerAdapter()
         mock_llm = MagicMock()
-        chunk_id = str(uuid.uuid4())
+        chunk_id = uuid.uuid4()
         mock_llm.create_chat_completion.return_value = {
             "choices": [{"message": {"content": json.dumps({
                 "chain_of_thought": "thinking...",
                 "interim_analysis": "The evidence supports X.",
-                "evidence_links": [{"chunk_id": chunk_id, "claim": "X happened"}],
+                "evidence_links": [
+                    {"evidence_id": "E2", "claim": "X happened"},
+                    {"evidence_id": "E9", "claim": "Y happened"},  # not in the pool: dropped
+                ],
                 "decision": "answer_ready",
                 "refined_query": None,
                 "clarification_question": None
@@ -62,12 +65,12 @@ class TestQwenReasonerAdapter:
         }
         loaded = LoadedModel(manifest=manifest, model_instance=mock_llm)
 
-        decision = adapter.reason(loaded, "What happened?", "evidence block", "history block", "", "")
+        decision = adapter.reason(loaded, "What happened?", "evidence block", "history block", "", "",
+                                  {"E1": uuid.uuid4(), "E2": chunk_id})
 
         assert decision.decision == ReasonerDecisionType.ANSWER_READY
         assert decision.interim_analysis == "The evidence supports X."
-        assert len(decision.evidence_links) == 1
-        assert str(decision.evidence_links[0].chunk_id) == chunk_id
+        assert [(link.chunk_id, link.claim) for link in decision.evidence_links] == [(chunk_id, "X happened")]
 
     def test_reason_refine_query(self, manifest):
         adapter = QwenReasonerAdapter()
@@ -84,7 +87,7 @@ class TestQwenReasonerAdapter:
         }
         loaded = LoadedModel(manifest=manifest, model_instance=mock_llm)
 
-        decision = adapter.reason(loaded, "What happened?", "evidence", "history", "", "")
+        decision = adapter.reason(loaded, "What happened?", "evidence", "history", "", "", {})
 
         assert decision.decision == ReasonerDecisionType.REFINE_QUERY
         assert decision.refined_query == "narrower search"
@@ -102,7 +105,7 @@ class TestQwenReasonerAdapter:
         loaded = LoadedModel(manifest=manifest, model_instance=mock_llm)
 
         with pytest.raises(JSONReasonerParseError):
-            adapter.reason(loaded, "Q", "evidence", "history", "", "")
+            adapter.reason(loaded, "Q", "evidence", "history", "", "", {})
 
     def test_reason_skips_malformed_evidence_link_but_keeps_decision(self, manifest):
         adapter = QwenReasonerAdapter()
@@ -110,13 +113,71 @@ class TestQwenReasonerAdapter:
         mock_llm.create_chat_completion.return_value = {
             "choices": [{"message": {"content": json.dumps({
                 "chain_of_thought": "x", "interim_analysis": "y",
-                "evidence_links": [{"chunk_id": "abc"}],  # missing "claim"
+                "evidence_links": [{"evidence_id": "E1"}],  # missing "claim"
                 "decision": "answer_ready", "refined_query": None, "clarification_question": None
             })}}]
         }
         loaded = LoadedModel(manifest=manifest, model_instance=mock_llm)
 
-        decision = adapter.reason(loaded, "Q", "evidence", "history", "", "")
+        decision = adapter.reason(loaded, "Q", "evidence", "history", "", "", {})
 
         assert decision.decision == ReasonerDecisionType.ANSWER_READY
         assert decision.evidence_links == []
+
+    @pytest.mark.parametrize("raw_tag", ["E1", "[E1]", " e1 "])
+    def test_reason_accepts_tag_spelling_variants(self, manifest, raw_tag):
+        adapter = QwenReasonerAdapter()
+        mock_llm = MagicMock()
+        chunk_id = uuid.uuid4()
+        mock_llm.create_chat_completion.return_value = {
+            "choices": [{"message": {"content": json.dumps({
+                "chain_of_thought": "x", "interim_analysis": "y",
+                "evidence_links": [{"evidence_id": raw_tag, "claim": "c"}],
+                "decision": "answer_ready", "refined_query": None, "clarification_question": None
+            })}}]
+        }
+        loaded = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        decision = adapter.reason(loaded, "Q", "evidence", "history", "", "", {"E1": chunk_id})
+
+        assert [link.chunk_id for link in decision.evidence_links] == [chunk_id]
+
+    def test_evidence_budget_reserves_prompt_reply_and_margin(self, manifest):
+        adapter = QwenReasonerAdapter()
+        mock_llm = MagicMock()
+        mock_llm.n_ctx.return_value = 8192
+        mock_llm.tokenize.return_value = [0] * 900
+        loaded = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        budget = adapter.get_evidence_token_budget(loaded, "Q", "history", "prior", "gap")
+
+        assert budget == 8192 - 900 - adapter.REASON_MAX_TOKENS - adapter.TEMPLATE_MARGIN_TOKENS
+        counted = mock_llm.tokenize.call_args.args[0].decode("utf-8")
+        assert "history" in counted and "prior" in counted and "gap" in counted
+
+    def test_rewrite_query_returns_standalone_query(self, manifest):
+        adapter = QwenReasonerAdapter()
+        mock_llm = MagicMock()
+        mock_llm.create_chat_completion.return_value = {
+            "choices": [{"message": {"content": json.dumps({"standalone_query": " Why did the pound reverse? "})}}]
+        }
+        loaded = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        rewritten = adapter.rewrite_query(loaded, "Why did it reverse?", "[PRIOR TURN]\nQ: pound?\nA: It rose.")
+
+        assert rewritten == "Why did the pound reverse?"
+        call_kwargs = mock_llm.create_chat_completion.call_args.kwargs
+        assert call_kwargs["temperature"] == 0.0
+        assert call_kwargs["max_tokens"] == adapter.REWRITE_MAX_TOKENS
+        assert "Why did it reverse?" in call_kwargs["messages"][1]["content"]
+        assert "It rose." in call_kwargs["messages"][1]["content"]
+
+    @pytest.mark.parametrize("content", ['{"standalone_query": ""}', '{"other": "x"}', '["x"]'])
+    def test_rewrite_query_raises_parse_error_without_a_query(self, manifest, content):
+        adapter = QwenReasonerAdapter()
+        mock_llm = MagicMock()
+        mock_llm.create_chat_completion.return_value = {"choices": [{"message": {"content": content}}]}
+        loaded = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        with pytest.raises(JSONReasonerParseError):
+            adapter.rewrite_query(loaded, "Q", "prior")

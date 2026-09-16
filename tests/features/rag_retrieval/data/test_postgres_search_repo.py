@@ -5,7 +5,9 @@ import uuid
 import pytest
 from unittest.mock import MagicMock, patch
 
-from app.features.rag_retrieval.data.postgres_search_repo import PostgresSearchRepository, _HYBRID_SEARCH_SQL
+from app.features.rag_retrieval.data.postgres_search_repo import (
+    PostgresSearchRepository, _HYBRID_SEARCH_SQL, _NEIGHBORS_SQL
+)
 from app.features.rag_retrieval.exceptions.base import RetrievalError
 
 
@@ -91,3 +93,48 @@ class TestPostgresSearchRepository:
 
         with pytest.raises(RetrievalError):
             PostgresSearchRepository().execute_hybrid_search([0.1], "q", limit=5)
+
+    @patch("app.features.rag_retrieval.data.postgres_search_repo.db_manager")
+    def test_fetch_neighbors_maps_rows_as_unranked_chunks(self, mock_db_manager):
+        session_mock = MagicMock()
+        mock_db_manager.session.return_value.__enter__.return_value = session_mock
+        anchor_ids = [uuid.uuid4(), uuid.uuid4()]
+        row = {
+            "chunk_id": uuid.uuid4(), "source_id": uuid.uuid4(), "text_payload": "payload",
+            "raw_text": "[Speaker_0 @ 00:00:01]: Before.", "speaker_labels": None,
+            "start_sec": 1, "end_sec": 9, "extracted_file_id": None,
+        }
+        session_mock.execute.return_value.mappings.return_value.all.return_value = [row]
+
+        neighbors = PostgresSearchRepository().fetch_neighbors(anchor_ids)
+
+        session_mock.execute.assert_called_once_with(
+            _NEIGHBORS_SQL, {"chunk_ids": [str(anchor_ids[0]), str(anchor_ids[1])]}
+        )
+        assert len(neighbors) == 1
+        assert neighbors[0].chunk_id == row["chunk_id"]
+        assert neighbors[0].raw_text == "[Speaker_0 @ 00:00:01]: Before."
+        assert neighbors[0].speaker_labels == []
+        assert (neighbors[0].start_sec, neighbors[0].end_sec) == (1.0, 9.0)
+        assert neighbors[0].relevance_score == 0.0
+        assert neighbors[0].rerank_score is None
+
+    @patch("app.features.rag_retrieval.data.postgres_search_repo.db_manager")
+    def test_fetch_neighbors_without_anchors_skips_the_database(self, mock_db_manager):
+        assert PostgresSearchRepository().fetch_neighbors([]) == []
+        mock_db_manager.session.assert_not_called()
+
+    def test_neighbors_query_takes_one_chunk_each_side_within_the_source(self):
+        sql = str(_NEIGHBORS_SQL)
+
+        assert "v.source_id = a.source_id AND v.start_sec < a.start_sec" in sql
+        assert "v.source_id = a.source_id AND v.start_sec > a.start_sec" in sql
+        assert sql.count("LIMIT 1") == 2
+        assert "DISTINCT ON (n.chunk_id)" in sql
+
+    @patch("app.features.rag_retrieval.data.postgres_search_repo.db_manager")
+    def test_fetch_neighbors_maps_errors(self, mock_db_manager):
+        mock_db_manager.session.return_value.__enter__.side_effect = RuntimeError("connection refused")
+
+        with pytest.raises(RetrievalError):
+            PostgresSearchRepository().fetch_neighbors([uuid.uuid4()])
