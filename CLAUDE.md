@@ -76,7 +76,9 @@ All GPU/VRAM-consuming code must go through `app/core/model_manager/`:
 
 ## Tech stack
 
-- **Language / runtime:** Python, no web framework — `app/main.py` is a CLI entrypoint (`OnyxEngine.interactive_cli()`).
+- **Language / runtime:** Python, no web framework and no server anywhere — `app/main.py` is a CLI entrypoint
+  (`OnyxEngine.interactive_cli()`), and `frontend/main.py` is a PySide6 (Qt6) desktop app that drives the same
+  `OnyxEngine` **in-process** on a background thread. See `docs/frontend.md` and `frontend/README.md`.
 - **Storage:** PostgreSQL + `pgvector`, a **single database for both relational and vector data** (jobs, transcripts, and the `vector_chunks` table with both an `embedding` column and an auto-generated `fts_document` tsvector column live side by side). Run via Docker: `docker-compose.yaml` defines `db_dev` (port 5432, `pgvector/pgvector:pg15`) and `db_test` (port 5433), both bootstrapped from `scripts/init.sql`. **There is no application Dockerfile** — only the databases are containerized; the app itself runs from a local venv.
 - **ORM / DB access:** SQLAlchemy + `psycopg2-binary` (sync, not async).
 - **Audio pipeline:** PyTorch, NVIDIA NeMo (VAD via MarbleNet, diarization via TitaNet), faster-whisper (domain-adaptation draft pass + main transcription).
@@ -93,7 +95,12 @@ All GPU/VRAM-consuming code must go through `app/core/model_manager/`:
   Run: `pytest tests`
 - **`integration_tests/` (integration)** — flat, one or two files per feature (no internal layering split), plus a root `conftest.py`, plus a `resources/` folder of real fixture media (audio/video/images/JSON transcripts). Uses a **real** Dockerized Postgres (`db_test`, port 5433): a session-scoped `autouse` fixture waits for Docker to be reachable, drops/recreates the schema, re-enables the `vector` extension, and runs `Base.metadata.create_all()`; a function-scoped `db_manager` fixture wraps each test in a real transaction + SAVEPOINT that's rolled back afterward for isolation. Real models/GPU are used where available; tests that need hardware or weights not present on the current machine call `pytest.skip(...)` with a descriptive reason rather than failing. Marked with `@pytest.mark.integration` (registered in `pytest.ini`).
   Run: `docker compose up -d db_test`, then `pytest integration_tests -m integration`
-- **Both:** bare `pytest` runs everything (`pytest.ini`'s `testpaths = tests integration_tests`).
+- **`frontend/tests/` (desktop unit)** — mirrors `frontend/onyx_desktop/`, fully mocked, run headless under
+  `QT_QPA_PLATFORM=offscreen`. Deliberately has **no `__init__.py` files**: a package named `tests` there would
+  shadow the root `tests` package and break collection of the whole existing suite, so filenames carry a `_unit`
+  suffix to stay globally unique.
+  Run: `QT_QPA_PLATFORM=offscreen pytest frontend/tests`
+- **Both:** bare `pytest` runs everything (`pytest.ini`'s `testpaths = tests integration_tests frontend/tests`).
 - No CI is configured yet — these commands must be run manually.
 - When adding a feature: write unit tests immediately (mirrored directory, mocked). Add an integration test if the feature touches the DB or loads a real model, and make it self-skip gracefully when the resource isn't available rather than failing hard.
 

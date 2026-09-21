@@ -145,3 +145,89 @@ class TestJobManager:
         manager.run_job(JobRequest(job_type=JobType.DIRECTORY_SCAN), lambda: ("cleaned", "telemetry"))
 
         mock_repo.finish_job.assert_called_once_with(job.id, {"result_type": "tuple"})
+
+
+class TestJobManagerProgressListener:
+    """
+    The progress listener is how a long-running caller (the desktop app) observes a batch run.
+    Every Phase routes its per-file work through run_job, so this one hook covers every file of
+    every phase -- which is the only reason batch progress is visible at all.
+    """
+
+    @pytest.fixture
+    def mock_repo(self):
+        repo = Mock()
+        job = Job(
+            id=uuid.uuid4(),
+            job_type=JobType.TRANSCRIBE,
+            status=JobStatus.PENDING,
+            created_at=datetime.now(timezone.utc),
+        )
+        repo.create_job.return_value = job
+        repo.start_job.return_value = job
+        return repo
+
+    @pytest.fixture
+    def source_id(self):
+        return uuid.uuid4()
+
+    def test_listener_is_optional(self, mock_repo):
+        """The CLI constructs JobManager with no listener and must be unaffected."""
+        manager = JobManager(mock_repo)
+        req = JobRequest(job_type=JobType.TRANSCRIBE)
+
+        assert manager.run_job(req, lambda: "done") == "done"
+
+    def test_reports_started_then_completed_with_the_phase_and_source(self, mock_repo, source_id):
+        events = []
+        manager = JobManager(mock_repo, progress_listener=lambda *args: events.append(args))
+        req = JobRequest(job_type=JobType.TRANSCRIBE, source_id=source_id)
+
+        manager.run_job(req, lambda: "transcript")
+
+        assert events == [
+            ("transcribe", "started", source_id, None),
+            ("transcribe", "completed", source_id, None),
+        ]
+
+    def test_reports_failed_with_the_error_message_and_still_raises(self, mock_repo, source_id):
+        events = []
+        manager = JobManager(mock_repo, progress_listener=lambda *args: events.append(args))
+        req = JobRequest(job_type=JobType.TRANSCRIBE, source_id=source_id)
+
+        def exploding_task():
+            raise ValueError("CUDA out of memory")
+
+        with pytest.raises(ValueError):
+            manager.run_job(req, exploding_task)
+
+        assert events == [
+            ("transcribe", "started", source_id, None),
+            ("transcribe", "failed", source_id, "CUDA out of memory"),
+        ]
+
+    def test_a_raising_listener_cannot_fail_the_job(self, mock_repo, source_id):
+        """
+        Progress reporting is observation. If a listener throws -- a disconnected Qt signal, say --
+        the pipeline must carry on rather than losing an hour of transcription to a UI bug.
+        """
+        def bad_listener(*_args):
+            raise RuntimeError("the UI went away")
+
+        manager = JobManager(mock_repo, progress_listener=bad_listener)
+        req = JobRequest(job_type=JobType.TRANSCRIBE, source_id=source_id)
+
+        assert manager.run_job(req, lambda: "transcript") == "transcript"
+        mock_repo.finish_job.assert_called_once()
+
+    def test_no_progress_is_reported_when_the_job_cannot_be_locked(self, mock_repo):
+        """A job that never started must not report that it did."""
+        events = []
+        mock_repo.start_job.return_value = None
+        manager = JobManager(mock_repo, progress_listener=lambda *args: events.append(args))
+        req = JobRequest(job_type=JobType.TRANSCRIBE)
+
+        with pytest.raises(JobExecutionFailed):
+            manager.run_job(req, lambda: "never runs")
+
+        assert events == []

@@ -3,11 +3,12 @@
 
 import uuid
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import List, Optional
 
 from app.engine.domain.enums import EngineState
 from app.engine.domain.entities import IngestionReport
-from app.features.rag_retrieval.domain.entities import SearchQuery, SearchResult
+from app.features.rag_retrieval.domain.entities import RetrievedChunk, SearchQuery, SearchResult
+from app.features.storage.domain.entities import Source
 from app.features.qa_generation.domain.entities import QAResponse
 from app.orchestration.domain.entities import DeepResearchResponse
 
@@ -81,6 +82,20 @@ class IOnyxEngine(ABC):
         Shares the session's conversation with chat(): it reads the earlier turns and their evidence, and
         records its own turn.
         """
+        pass
+
+    @abstractmethod
+    def get_chunks(self, chunk_ids: List[uuid.UUID]) -> List[RetrievedChunk]:
+        """
+        The verbatim text and resolved clip paths behind a set of chunk ids.
+        A citation carries ids and timestamps but no text, so a UI showing a cited excerpt beside
+        its clip reads the chunks back through here. A plain indexed read: no model, no VRAM.
+        """
+        pass
+
+    @abstractmethod
+    def list_sources(self) -> List[Source]:
+        """Everything ingested into the vault, newest first, each with its file row attached."""
         pass
 
     @abstractmethod

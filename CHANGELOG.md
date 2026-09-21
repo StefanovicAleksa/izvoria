@@ -4,6 +4,73 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Desktop frontend: a native PySide6 app with click-to-verify citations
+
+> **Action required:** install the new GUI dependency with `venv/bin/pip install -r requirements.txt`
+> (`PySide6-Essentials`, ~230 MB on disk). Deliberately **not** `PySide6` or `PySide6-Addons`: the app
+> has no embedded media player, so QtMultimedia is not needed.
+
+Until now the appliance was operable only through `app/main.py`'s numbered menu. That cannot deliver
+the product's central claim — it prints a file path and a timestamp and leaves the user to go find
+the video themselves. `frontend/` closes the verification loop: read a claim, click its citation,
+watch the speaker say it, without leaving the app.
+
+- **`frontend/main.py`** launches a PySide6 (Qt6) desktop app with three views — Chat (single-pass
+  and Deep Research), Search (standard and verified), Ingest (video and audio, with a live log pane).
+  `--stub` runs the whole UI against canned data with no GPU, database or weights, which is the loop
+  to develop in: a real chat turn costs tens of seconds.
+- **In-process, no server.** The app calls `OnyxEngine` directly on one background `QThread`. No
+  HTTP, no IPC, no second runtime to vendor onto an air-gapped appliance. Only
+  `frontend/onyx_desktop/data/engine_gateway.py` imports `app.*`; everything above it speaks in
+  frozen dataclasses, which is what makes the stub and the headless tests possible.
+- **One engine call at a time, by construction.** Requests cross to the worker as queued Qt signals,
+  so the event loop serializes them — the VRAM pool holds one model at a time, so two overlapping
+  GPU calls would collide rather than queue. A second request while one is in flight is *refused*,
+  not enqueued.
+- **Grounding is enforced in the UI, not just hoped for.** An answer that returns with no citations
+  is rendered with an explicit "not traceable" warning rather than as an ordinary reply; an
+  unresolved clip path disables its open button with the reason; an unresolved Deep Research
+  self-critique shows an amber strip. Evidence cards show the verbatim `raw_text`, never
+  `text_payload`.
+- **`OnyxEngine.get_chunks(chunk_ids)` and `list_sources()`** (new, declared on `IOnyxEngine`). A
+  `QACitation` carries ids, timestamps and a path but **no text**, so showing a cited excerpt beside
+  its clip needs the chunks read back. `get_chunks` loads no model and resolves physical paths onto
+  its results, which `RetrievalAPI.get_chunks` does not.
+- **`JobManager(repository, progress_listener=None)`** and
+  `OnyxBootstrapper.build(progress_listener=…)`. Every Phase already wraps its per-file work in
+  `run_job`, so one hook observes every file of every phase in every pipeline — the only way to show
+  batch progress, since the pipelines report nothing until they return. Defaults to `None`, so the
+  CLI is untouched. A listener that raises is logged and ignored.
+- **No embedded media player, deliberately.** The first cut had one, and on this hardware Qt's
+  FFmpeg backend tried VAAPI hardware decode, failed (`vaExportSurfaceHandle failed`, no
+  `nvidia-vaapi-driver` installed) and segfaulted the process mid-answer. Onyx is not a media player:
+  an evidence card's **Open clip** button hands the file straight to the desktop's own player via
+  `QDesktopServices.openUrl`, in one click. That
+  removed the entire codec/hardware-decode failure class and dropped `PySide6-Addons`, taking the Qt
+  footprint from ~650 MB to ~230 MB — which matters on an appliance image. The cost is that a system
+  player cannot be told to start at a timestamp, so the source panel shows the cited span in large
+  copyable text; for extracted clips (all video ingestion) the clip already *is* the excerpt.
+  Clicking a card's body instead loads the excerpt into the review panel without launching anything
+  — the first cut had only a "Review source" button that merely filled that panel, which left the
+  player two clicks away and read as if it were broken.
+- **Two hangs found and fixed while building this**, both reproducible: `worker.finished →
+  thread.quit` must be a `DirectConnection` (a `QThread` object's affinity is the GUI thread, so an
+  auto connection queues `quit()` behind an event loop already blocked in `thread.wait()`), and
+  `closeEvent` must defer its shutdown to a `QTimer.singleShot(0, …)` rather than calling
+  `self.close()` reentrantly from inside itself.
+- Citation tags are re-normalized in the gateway before display: `generated_answer` is the raw model
+  text while `citations` was parsed from a normalized copy, so the answer could still contain
+  `[Doc 1, 2]` after the citation list had split it. Reuses
+  `normalize_citation_tags` rather than adding a second regex.
+- `pytest.ini` gains `frontend/tests` and a `gui` marker. `frontend/tests/` deliberately has **no
+  `__init__.py`**: a package named `tests` there shadows the root `tests` package and breaks
+  collection of the entire existing suite.
+
+**Known limits, all documented in `frontend/README.md`:** ingestion cannot be cancelled (nothing in
+the pipeline has a stop point), ingestion progress goes quiet during transcription and diarization
+(11 phases have no logger), conversation history is not re-displayed on resume, and there is no
+library view yet.
+
 ## Qwen3.5-9B with a 128K context, and multi-turn chat
 
 > **Action required:**

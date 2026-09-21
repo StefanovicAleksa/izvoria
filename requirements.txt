@@ -54,3 +54,9 @@ SPARQLWrapper>=2.0.0
 
 # --- RAG Storage & Indexing (Phase 16) ---
 sentence-transformers>=2.7.0
+
+# --- Desktop Frontend (frontend/) ---
+# Essentials only (QtWidgets/QtCore/QtGui). Deliberately NOT PySide6 or PySide6-Addons: the app has
+# no embedded media player, so QtMultimedia is not needed -- which keeps ~500MB and Qt's
+# hardware-decode crashes off the appliance. Source files open in the desktop's own player.
+PySide6-Essentials>=6.7.0

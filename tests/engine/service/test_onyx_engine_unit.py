@@ -457,3 +457,129 @@ class TestOnyxEngineUnit:
 
         mock_async_service.release_all.assert_called_once_with()
 
+
+class TestOnyxEngineReadSideAccess:
+    """
+    get_chunks / list_sources exist so a UI can show the verbatim text behind a citation and the
+    contents of the vault. A QACitation carries ids and timestamps but no text, so without
+    get_chunks an answer's evidence cannot be read alongside its clip.
+
+    Standalone rather than a subclass of TestOnyxEngineUnit: inheriting would re-run every test in
+    that class under this name.
+    """
+
+    @pytest.fixture
+    def mock_storage_api(self):
+        return Mock()
+
+    @pytest.fixture
+    def mock_retrieval_api(self):
+        return Mock()
+
+    @pytest.fixture
+    def engine(self, mock_storage_api, mock_retrieval_api):
+        return OnyxEngine(
+            async_model_service=Mock(),
+            media_pipeline=Mock(),
+            audio_pipeline=Mock(),
+            live_pipeline=Mock(),
+            live_verified_pipeline=Mock(),
+            live_qa_pipeline=Mock(),
+            storage_api=mock_storage_api,
+            retrieval_api=mock_retrieval_api,
+        )
+
+    @pytest.fixture
+    def online_engine(self, engine):
+        engine._state = EngineState.ONLINE
+        return engine
+
+    @staticmethod
+    def _read_chunk(chunk_id, source_id, extracted_file_id=None):
+        return RetrievedChunk(
+            chunk_id=chunk_id,
+            source_id=source_id,
+            text_payload="contextualized payload",
+            raw_text="SPEAKER_01: verbatim words.",
+            speaker_labels=["SPEAKER_01"],
+            start_sec=10.0,
+            end_sec=20.0,
+            relevance_score=0.0,
+            extracted_file_id=extracted_file_id,
+        )
+
+    def test_get_chunks_delegates_to_the_retrieval_api(self, online_engine, mock_retrieval_api):
+        chunk_id, source_id = uuid.uuid4(), uuid.uuid4()
+        mock_retrieval_api.get_chunks.return_value = [self._read_chunk(chunk_id, source_id)]
+
+        result = online_engine.get_chunks([chunk_id])
+
+        mock_retrieval_api.get_chunks.assert_called_once_with([chunk_id])
+        assert [c.chunk_id for c in result] == [chunk_id]
+
+    def test_get_chunks_resolves_the_extracted_clip_path(
+        self, online_engine, mock_retrieval_api, mock_storage_api
+    ):
+        """get_chunks does not resolve paths upstream, so the facade must inject them itself."""
+        chunk_id, source_id, clip_id = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        mock_retrieval_api.get_chunks.return_value = [
+            self._read_chunk(chunk_id, source_id, extracted_file_id=clip_id)
+        ]
+        mock_storage_api.get_file_path.return_value = "/vault/clips/abc.mp4"
+
+        chunk = online_engine.get_chunks([chunk_id])[0]
+
+        mock_storage_api.get_file_path.assert_called_once_with(clip_id)
+        assert getattr(chunk, "physical_path") == "/vault/clips/abc.mp4"
+
+    def test_get_chunks_falls_back_to_the_source_file_when_no_clip_exists(
+        self, online_engine, mock_retrieval_api, mock_storage_api
+    ):
+        """The audio-only pipeline extracts no clips, so the whole source is the only source."""
+        chunk_id, source_id = uuid.uuid4(), uuid.uuid4()
+        mock_retrieval_api.get_chunks.return_value = [self._read_chunk(chunk_id, source_id)]
+        source = Mock()
+        source.file.file_path = "/vault/raw/whole.wav"
+        mock_storage_api.get_source.return_value = source
+
+        chunk = online_engine.get_chunks([chunk_id])[0]
+
+        mock_storage_api.get_source.assert_called_once_with(source_id)
+        assert getattr(chunk, "physical_path") == "/vault/raw/whole.wav"
+
+    def test_get_chunks_survives_an_unresolvable_path(
+        self, online_engine, mock_retrieval_api, mock_storage_api
+    ):
+        """A missing file must not lose the excerpt text, which is still worth reading."""
+        chunk_id, source_id = uuid.uuid4(), uuid.uuid4()
+        mock_retrieval_api.get_chunks.return_value = [self._read_chunk(chunk_id, source_id)]
+        mock_storage_api.get_source.side_effect = RuntimeError("file vanished")
+
+        chunk = online_engine.get_chunks([chunk_id])[0]
+
+        assert getattr(chunk, "physical_path", None) is None
+        assert chunk.raw_text == "SPEAKER_01: verbatim words."
+
+    def test_get_chunks_is_refused_while_offline(self, engine):
+        with pytest.raises(EngineOfflineError):
+            engine.get_chunks([uuid.uuid4()])
+
+    def test_get_chunks_without_a_retrieval_api_raises(self, online_engine):
+        online_engine._retrieval_api = None
+
+        with pytest.raises(EngineOfflineError):
+            online_engine.get_chunks([uuid.uuid4()])
+
+    def test_list_sources_delegates_to_storage(self, online_engine, mock_storage_api):
+        source = Source(
+            id=uuid.uuid4(), name="deposition.mp4", source_type=SourceType.VIDEO,
+            content_hash="abc123", file_id=uuid.uuid4(),
+        )
+        mock_storage_api.list_sources.return_value = [source]
+
+        assert online_engine.list_sources() == [source]
+        mock_storage_api.list_sources.assert_called_once_with()
+
+    def test_list_sources_is_refused_while_offline(self, engine):
+        with pytest.raises(EngineOfflineError):
+            engine.list_sources()

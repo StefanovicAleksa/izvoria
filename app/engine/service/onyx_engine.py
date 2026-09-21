@@ -8,7 +8,7 @@ import sys
 import os
 import uuid
 import gc
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from sqlalchemy import text
 
@@ -24,8 +24,8 @@ from app.engine.utils.error_mapper import map_engine_error
 from app.engine.utils.conversation_history import build_conversation_history, history_chunks_newest_first
 
 from app.features.storage.service.storage_api import StorageAPI
-from app.features.storage.domain.entities import SourceType
-from app.features.rag_retrieval.domain.entities import SearchQuery, SearchResult
+from app.features.storage.domain.entities import Source, SourceType
+from app.features.rag_retrieval.domain.entities import RetrievedChunk, SearchQuery, SearchResult
 from app.features.rag_retrieval.service.retrieval_api import RetrievalAPI
 from app.features.qa_generation.domain.entities import QAResponse, ConversationHistory
 from app.features.session_memory.service.session_memory_api import SessionMemoryAPI
@@ -304,6 +304,52 @@ class OnyxEngine(IOnyxEngine):
         except Exception as e:
             self._release_models_after_failure()
             raise map_engine_error(e, context=f"Deep Research Chat [{query.prompt}]")
+
+    # ==========================================
+    # READ-SIDE ACCESS (for a UI)
+    # ==========================================
+
+    def get_chunks(self, chunk_ids: List[uuid.UUID]) -> List[RetrievedChunk]:
+        """
+        The verbatim text behind a set of chunk ids, with clip paths resolved.
+
+        A QACitation carries ids and timestamps but no text, so a UI that wants to show the cited
+        excerpt beside its clip has to read the chunks back. This is a plain indexed read: no
+        model is loaded and no VRAM is budgeted.
+
+        Duplicate ids are collapsed and ids that no longer exist are skipped upstream, so the
+        result may be shorter than the request and is not positionally aligned with it.
+        """
+        self._enforce_online_state()
+        # _retrieval_api is optional on __init__; guard it directly rather than reusing
+        # _require_conversation_support(), which also demands session memory and would reject
+        # this read for the wrong reason.
+        if self._retrieval_api is None:
+            raise EngineOfflineError("Retrieval is not wired into this engine instance.")
+
+        try:
+            chunks = self._retrieval_api.get_chunks(list(chunk_ids))
+        except Exception as e:
+            raise map_engine_error(e, context="Fetching chunks by id")
+
+        # get_chunks does not resolve physical paths the way a search result does.
+        for chunk in chunks:
+            try:
+                path = self._physical_path(chunk.extracted_file_id, chunk.source_id)
+                if path:
+                    object.__setattr__(chunk, 'physical_path', path)
+            except Exception as e:
+                logger.warning(f"Failed to resolve physical path for chunk {chunk.chunk_id}: {e}")
+        return chunks
+
+    def list_sources(self) -> List[Source]:
+        """Everything ingested into the vault, newest first, each with its file row attached."""
+        if self._state == EngineState.OFFLINE:
+            raise EngineOfflineError("Engine is offline.")
+        try:
+            return self._storage_api.list_sources()
+        except Exception as e:
+            raise map_engine_error(e, context="Listing ingested sources")
 
     def _require_conversation_support(self) -> None:
         if self._session_memory_api is None or self._retrieval_api is None:

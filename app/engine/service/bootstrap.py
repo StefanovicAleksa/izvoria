@@ -3,6 +3,7 @@
 
 import logging
 import typing
+from typing import Callable, Optional
 
 from app.core.config import settings
 from app.core.database.service.manager import db_manager
@@ -152,12 +153,18 @@ class OnyxBootstrapper:
     """
 
     @classmethod
-    def build(cls) -> IOnyxEngine:
+    def build(cls, progress_listener: Optional[Callable] = None) -> IOnyxEngine:
+        """
+        `progress_listener(phase, state, source_id, detail)` is handed to the JobManager, which
+        every Phase routes its per-file work through. A long-running caller (the desktop app)
+        uses it to show batch ingestion progress, since the pipelines report nothing until they
+        return. None keeps the CLI's behaviour exactly as it was.
+        """
         logger.info("Initializing dependency injection container...")
 
         # --- Core Infrastructure ---
         job_repo = JobRepository(db_manager)
-        job_manager = JobManager(job_repo)
+        job_manager = JobManager(job_repo, progress_listener=progress_listener)
 
         vram_monitor = PyTorchVramMonitor()
         orchestrator = ModelManagerOrchestrator(vram_monitor)
