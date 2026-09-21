@@ -123,3 +123,18 @@ class TestRetrievalAPI:
         with pytest.raises(Exception) as exc_info:
             api.expand_neighbors([self._chunk()], top_k=1)
         assert "neighbouring" in str(exc_info.value)
+
+    def test_get_chunks_delegates_to_the_repository_without_a_model(self, api, mocks):
+        ids = [uuid.uuid4(), uuid.uuid4()]
+        mocks["search_repo"].fetch_chunks.return_value = ["chunk"]
+
+        assert api.get_chunks(ids) == ["chunk"]
+        mocks["search_repo"].fetch_chunks.assert_called_once_with(ids)
+        mocks["orchestrator"].acquire_model.assert_not_called()
+
+    def test_get_chunks_maps_errors(self, api, mocks):
+        mocks["search_repo"].fetch_chunks.side_effect = RuntimeError("db down")
+
+        with pytest.raises(Exception) as exc_info:
+            api.get_chunks([uuid.uuid4()])
+        assert "by id" in str(exc_info.value)

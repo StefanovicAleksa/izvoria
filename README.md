@@ -59,7 +59,7 @@ Onyx operates autonomously, transforming raw media into highly accurate, domain-
 ### **9\. RAG Retrieval, Verified Search & QA Generation (query time)**
 
 * **What it does:** Answers a user's question strictly from their own ingested data, with citations.  
-* **How it works:** A query is embedded and run as a **hybrid search** (pgvector cosine distance + Postgres full-text rank, combined via Reciprocal Rank Fusion) against the indexed chunks. For **Verified Search**, retrieved chunks are then passed through an SLM-based **hallucination scrubber** that drops anything judged irrelevant or unreliable. For a full chat answer, the surviving chunks are handed to a local **Gemma** model (via `llama.cpp`) which generates a response and cites the specific source chunks it drew from.
+* **How it works:** A query is embedded and run as a **hybrid search** (pgvector cosine distance + Postgres full-text rank, combined via Reciprocal Rank Fusion) against the indexed chunks. For **Verified Search**, retrieved chunks are then passed through an SLM-based **hallucination scrubber** that drops anything judged irrelevant or unreliable. For a full chat answer, the surviving chunks are handed to a local **Qwen3.5-9B** model (via `llama.cpp`, 128K context) which generates a response and cites the specific source chunks it drew from. Chat is multi-turn: a follow-up is rewritten into a standalone search query, and the model also sees the earlier questions, answers and excerpts of the conversation, whose `[Doc N]` numbers stay the same for the whole conversation.
 
 ## **🧠 The Orchestrator (VRAM Management)**
 
@@ -140,6 +140,9 @@ You must manually download and place the required AI models into the local model
 | **Diarization**    | NeMo TitaNet Large          | models/titanet\_large.nemo               | \~0.5 GB  |
 | **Sentence Split** | Segment Any Text (SaT)      | models/sat-3l-sm                         | \~0.75 GB |
 | **Correction**     | Qwen 2.5 7B (GGUF Q4\_K\_M) | models/Qwen2.5-7B-Instruct-Q4\_K\_M.gguf | \~5.0 GB  |
+| **Chat / Reasoning** | Qwen3.5 9B (GGUF Q4\_K\_M) | models/Qwen3.5-9B-Q4\_K\_M.gguf         | \~9–11 GB at 128K context |
+
+The chat model is downloaded with `./models_download.sh` (`unsloth/Qwen3.5-9B-GGUF`, only `Qwen3.5-9B-Q4_K_M.gguf`; the vision `mmproj` file is not needed).
 
 ### **6\. Running the Appliance**
 

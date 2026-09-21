@@ -4,6 +4,56 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Qwen3.5-9B with a 128K context, and multi-turn chat
+
+> **Action required:**
+> - Download the new answer/reasoner model with `./models_download.sh` (`unsloth/Qwen3.5-9B-GGUF`, `Qwen3.5-9B-Q4_K_M.gguf`, ~5.7 GB).
+> - `session_turns` gains columns. `OnyxEngine.start()` adds them to an existing table (`ALTER TABLE ... ADD COLUMN IF NOT EXISTS`), so no reset is needed.
+
+- **One long-context model answers and reasons** (`app/core/config.py`).
+  - **What changed.** `QA_GENERATION_MODEL_PATH` and `QA_REASONER_MODEL_PATH` both point at Qwen3.5-9B Q4_K_M; before, Gemma 4 E4B answered at 16K and Qwen2.5-7B reasoned at 8K.
+  - **Why it fits.** Qwen3.5 is a hybrid Gated DeltaNet / attention model: only 8 of its 32 layers keep a KV cache, so a long context costs little VRAM.
+  - **New settings.** `QA_GENERATION_N_CTX=131072` and `QA_REASONER_N_CTX=65536`. The new `QA_LLM_KV_CACHE_TYPE=q8_0` and `QA_LLM_ENABLE_THINKING=False` apply to both.
+  - **Measured on the RTX 3060.**
+    - The 128K context peaks at 8.6 GB of VRAM.
+    - A 96K-token prompt takes 85 s (~1,130 tokens/s), and the model found a fact planted in it.
+  - **Known cost.** Both roles use the same file under different `ModelType`s, so switching between reasoner and answer model reloads it.
+- **Thinking mode is controlled for real** (`app/core/model_manager/utils/llama_cpp_chat.py`, new).
+  - **The problem.** `Llama.create_chat_completion` has a fixed signature and drops template variables, so `enable_thinking` never reached the GGUF chat template.
+  - **The fix.**
+    - `chat_completion()` calls the model's chat handler directly, which does forward the variable.
+    - `strip_reasoning()` removes `<think>` blocks, including reasoning whose opening tag the template put in the prompt.
+    - `build_llama()` sets the KV cache type.
+  - **Rename.** `GemmaGenerationAdapter` is now `LlamaCppGenerationAdapter`, and `GemmaOOMError` is now `GenerationOOMError`.
+- **Answers without citations are no longer returned** (`generation_api.py`).
+  - **The problem.** Qwen3.5 writes longer answers than Gemma. On the first eval it answered 3 questions with no citation at all, some with interpretation the transcript doesn't contain.
+  - **The fix.**
+    - The answer prompt now asks for no interpretation, advice or summary, and a `[Doc N]` tag right after each claim.
+    - An answer that is neither the refusal nor cites a shown document is sent back once, in the same model acquisition, to be rewritten with citations (`CITATION_RETRY_PROMPT`). If it still cites nothing, the refusal is returned instead.
+    - This applies to `generate`, `generate_with_critique` and `generate_conversation`.
+- **Chat is multi-turn** (`OnyxEngine.chat(query, session_id=None)`).
+  - **How a follow-up is answered.**
+    - It is rewritten into a standalone search query by the reasoner model, before any preload.
+    - The answer model then sees the earlier turns: each turn's question, its answer, and the excerpts it showed.
+    - It is asked the user's words followed by the standalone form. Without that form, Qwen3.5 refused pronoun follow-ups ("and when did he walk in?") even with the answering excerpt in the conversation.
+  - **Stable citations.** `[Doc N]` numbers are conversation-wide.
+    - `session_turns` stores `evidence_chunk_ids` and `first_doc_number` per turn, plus `mode` and `standalone_query`.
+    - A follow-up can cite an earlier turn's excerpt under its original tag, rebuilt with the new `RetrievalAPI.get_chunks`.
+  - **Packing** (`qa_generation/utils/conversation_packer.py`). The current question and its evidence come first, then earlier turns' text newest first, then their evidence newest first. When the context is full, the oldest turns lose their excerpts first, then drop out. Tags in earlier answers that point at a dropped excerpt are removed.
+  - **Prompt shape.** Messages are append-only, so a later KV-state cache could reuse the prefix.
+  - **History window.** `CHAT_HISTORY_MAX_TURNS=20` bounds the history read per turn.
+- **Deep Research shares the conversation.**
+  - It reads every earlier turn instead of only the last.
+  - Its evidence pool starts with this question's search, then the excerpts earlier turns showed.
+  - It records its own turn with the pool, numbering only chunks new to the conversation. Its answers are stored without tags, since it numbers its evidence on its own.
+  - Its answer model gets the standalone form of a follow-up too (`app/orchestration/utils/follow_up.py`).
+- **CLI.** Option 5 is a conversation loop: a blank line returns to the menu and `/new` starts over. Options 5 and 7 share one session.
+- **RAG eval.** Chat mode also scores the two follow-up questions, through a real session.
+  - **Gemma 4 E4B, before:** 26/28 answered, 25/28 cite a relevant chunk (89%), 0 uncited, 5/6 unanswerable refused, 817 s.
+  - **Qwen3.5-9B, after:** 28/30 answered, 27/30 cite a relevant chunk (90%; both follow-ups included), 0 uncited, 5/6 refused, 903 s.
+  - **Not yet re-measured:** Deep Research mode.
+- **Still open.** Every chat turn reloads the answer model and prefills the whole conversation, because the embedder, reranker and scrubber are swapped in between. At 50K+ tokens that is tens of seconds per turn.
+
 ## Retrieval and answering: evidence kept, context budgeted, citations complete
 
 Measured with the new `scripts/eval/rag_eval.py`. It runs 28 answerable, 6 unanswerable and 2 follow-up questions (`rag_labels.json`) against the dev DB. The labels name chunk ids, so they only fit that DB.

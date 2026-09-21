@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from app.features.rag_retrieval.domain.entities import RetrievedChunk, SearchQuery
+from app.features.session_memory.domain.enums import SessionTurnMode
 
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s: %(message)s")
 
@@ -80,9 +81,9 @@ def run_retrieval(labels: dict, only: Optional[set], top_n: int, cache: Optional
     if followups:
         reasoning_api = ReasoningAPI(QwenReasonerAdapter(), orchestrator)
         for item in followups:
-            # Same shape SessionMemoryAPI.get_prior_context produces
+            # Same shape SessionMemoryAPI.format_prior_context produces
             answer = CITATION_TAG.sub("", item["prior_answer"]).strip()
-            prior = f"[PRIOR TURN]\nQ: {item['prior_question']}\nA: {answer}"
+            prior = f"[PRIOR TURN 1]\nQ: {item['prior_question']}\nA: {answer}"
             query = reasoning_api.rewrite_query(item["question"], prior, release_after=False)
             print(f"{item['id']}: '{item['question']}' -> '{query}'")
             rewritten.append({**item, "id": f"{item['id']}r", "question": query})
@@ -162,7 +163,7 @@ def run_answer(labels: dict, only: Optional[set], mode: str, top_n: int) -> None
 
     answerable = _selected(labels["answerable"], only)
     unanswerable = _selected(labels["unanswerable"], only)
-    followups = _selected(labels.get("followups", []), only) if mode == "deep" else []
+    followups = _selected(labels.get("followups", []), only)
     cases = [(i, i["relevant"]) for i in answerable + followups] + [(i, []) for i in unanswerable]
 
     counts = {"answered": 0, "cited_relevant": 0, "uncited": 0, "refused_correctly": 0, "clarified": 0, "errors": 0}
@@ -174,12 +175,15 @@ def run_answer(labels: dict, only: Optional[set], mode: str, top_n: int) -> None
             t0 = time.perf_counter()
             text, cited_ids, clarification = "", [], None
             try:
+                session_id = uuid.uuid4()
+                if "prior_question" in item:
+                    # The labelled prior answer has no stored evidence; recorded as a Deep Research turn, its tags
+                    # are dropped rather than read as conversation-wide numbers
+                    engine._session_memory_api.record_turn(session_id, item["prior_question"], item["prior_answer"],
+                                                           mode=SessionTurnMode.DEEP_RESEARCH)
                 if mode == "chat":
-                    response = engine.chat(query)
+                    response = engine.chat(query, session_id=session_id if "prior_question" in item else None)
                 else:
-                    session_id = uuid.uuid4()
-                    if "prior_question" in item:
-                        engine._session_memory_api.record_turn(session_id, item["prior_question"], item["prior_answer"])
                     result = engine.chat_deep_research(session_id, query)
                     response, clarification = result.qa_response, result.clarification_question
                 if response is not None:

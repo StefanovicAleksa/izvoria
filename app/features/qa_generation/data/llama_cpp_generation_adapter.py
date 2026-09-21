@@ -1,5 +1,4 @@
-# Canvas: gemma_adapter_v11
-# Path: app/features/qa_generation/data/gemma_adapter.py
+# Path: app/features/qa_generation/data/llama_cpp_generation_adapter.py
 
 import os
 import gc
@@ -11,6 +10,7 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
+from app.core.model_manager.utils.llama_cpp_chat import build_llama, chat_completion, strip_reasoning
 from app.features.qa_generation.domain.interfaces import IQAGenerationAdapter
 from app.features.qa_generation.domain.entities import AnswerCritique
 from app.features.qa_generation.domain.enums import CritiqueVerdict
@@ -23,9 +23,9 @@ from app.features.qa_generation.utils.error_mapper import map_qa_error
 logger = logging.getLogger(__name__)
 
 
-class GemmaGenerationAdapter(IQAGenerationAdapter):
+class LlamaCppGenerationAdapter(IQAGenerationAdapter):
     """
-    Adapter for executing Gemma Instruct GGUF via llama.cpp for the Final QA Generation phase.
+    Adapter for executing an instruct GGUF (Qwen3.5-9B) via llama.cpp for the Final QA Generation phase.
     """
 
     CRITIQUE_MAX_TOKENS = 200
@@ -34,14 +34,7 @@ class GemmaGenerationAdapter(IQAGenerationAdapter):
 
     @staticmethod
     def _get_llama_model(absolute_model_path: str) -> Any:
-        from llama_cpp import Llama
-        return Llama(
-            model_path=absolute_model_path,
-            n_gpu_layers=-1,
-            n_ctx=settings.QA_GENERATION_N_CTX,
-            flash_attn=True,
-            verbose=False
-        )
+        return build_llama(absolute_model_path, settings.QA_GENERATION_N_CTX, settings.QA_LLM_KV_CACHE_TYPE)
 
     def load(self, manifest: ModelManifest) -> LoadedModel:
         try:
@@ -54,7 +47,7 @@ class GemmaGenerationAdapter(IQAGenerationAdapter):
             llm = self._get_llama_model(absolute_path)
             return LoadedModel(manifest=manifest, model_instance=llm)
         except Exception as e:
-            raise map_qa_error(e, context=f"Load Gemma Model: {manifest.model_path}") from e
+            raise map_qa_error(e, context=f"Load QA Generation Model: {manifest.model_path}") from e
 
     def unload(self, model: LoadedModel) -> bool:
         try:
@@ -66,7 +59,7 @@ class GemmaGenerationAdapter(IQAGenerationAdapter):
             gc.collect()
             return True
         except Exception as e:
-            raise map_qa_error(e, context="Unload Gemma Model") from e
+            raise map_qa_error(e, context="Unload QA Generation Model") from e
 
     def count_tokens(self, model: LoadedModel, text: str) -> int:
         try:
@@ -100,6 +93,35 @@ class GemmaGenerationAdapter(IQAGenerationAdapter):
         except Exception as e:
             raise map_qa_error(e, context="Computing the context token budget") from e
 
+    def get_conversation_token_budget(self, model: LoadedModel, system_prompt: str) -> int:
+        """Tokens left for every conversation message once the system prompt and the answer are reserved."""
+        try:
+            llm: Any = model.model_instance
+            fixed = self.count_tokens(model, system_prompt)
+            budget = (llm.n_ctx() - fixed - settings.QA_GENERATION_MAX_ANSWER_TOKENS
+                      - self.TEMPLATE_MARGIN_TOKENS)
+            return max(budget, 0)
+        except Exception as e:
+            raise map_qa_error(e, context="Computing the conversation token budget") from e
+
+    @staticmethod
+    def _complete_answer(llm: Any, messages: List[Dict[str, str]]) -> str:
+        response = chat_completion(
+            llm,
+            messages,
+            enable_thinking=settings.QA_LLM_ENABLE_THINKING,
+            temperature=0.1,
+            max_tokens=settings.QA_GENERATION_MAX_ANSWER_TOKENS
+        )
+
+        choice = response["choices"][0]
+        raw_content = choice["message"].get("content") or ""
+
+        if choice.get("finish_reason", "stop") == "length":
+            logger.warning("QA Generation LLM hit max_tokens limit. Response may be truncated.")
+
+        return strip_reasoning(raw_content)
+
     def generate_answer(
             self,
             model: LoadedModel,
@@ -108,8 +130,6 @@ class GemmaGenerationAdapter(IQAGenerationAdapter):
             user_query: str
     ) -> str:
         try:
-            llm: Any = model.model_instance
-
             user_content = QA_USER_TEMPLATE.format(
                 context_block=context_block,
                 user_query=user_query
@@ -120,29 +140,16 @@ class GemmaGenerationAdapter(IQAGenerationAdapter):
                 {"role": "user", "content": user_content}
             ]
 
-            response = llm.create_chat_completion(
-                messages=messages,
-                temperature=0.1,
-                max_tokens=settings.QA_GENERATION_MAX_ANSWER_TOKENS
-            )
-
-            choice = response["choices"][0]
-            raw_content = choice["message"].get("content", "")
-            finish_reason = choice.get("finish_reason", "stop")
-
-            if finish_reason == "length":
-                logger.warning("QA Generation LLM hit max_tokens limit. Response may be truncated.")
-
-            # Strip C++ null terminators safely
-            raw_content = raw_content.replace('\x00', '')
-
-            # Gemma 4 outputs empty thought tags when reasoning is disabled. Strip them to keep the UI clean.
-            cleaned_content = re.sub(r'<\|channel>thought\n<channel\|>', '', raw_content).strip()
-
-            return cleaned_content
+            return self._complete_answer(model.model_instance, messages)
 
         except Exception as e:
             raise map_qa_error(e, context="Executing Autoregressive QA Generation") from e
+
+    def generate_conversation_answer(self, model: LoadedModel, messages: List[Dict[str, str]]) -> str:
+        try:
+            return self._complete_answer(model.model_instance, messages)
+        except Exception as e:
+            raise map_qa_error(e, context="Executing Conversational QA Generation") from e
 
     def critique_answer(
             self,
@@ -165,14 +172,16 @@ class GemmaGenerationAdapter(IQAGenerationAdapter):
                 {"role": "user", "content": user_content}
             ]
 
-            response = llm.create_chat_completion(
-                messages=messages,
+            response = chat_completion(
+                llm,
+                messages,
+                enable_thinking=settings.QA_LLM_ENABLE_THINKING,
                 response_format={"type": "json_object"},
                 temperature=0.0,
                 max_tokens=self.CRITIQUE_MAX_TOKENS
             )
 
-            raw_content = response["choices"][0]["message"]["content"]
+            raw_content = strip_reasoning(response["choices"][0]["message"]["content"] or "")
 
             json_match = re.search(r'\{.*}', raw_content, re.DOTALL)
             parsed_data = json.loads(json_match.group(0)) if json_match else json.loads(raw_content)

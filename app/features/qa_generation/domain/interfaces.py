@@ -2,6 +2,7 @@
 # Path: app/features/qa_generation/domain/interfaces.py
 
 from abc import ABC, abstractmethod
+from typing import Dict, List
 
 from app.core.model_manager.domain.entities import LoadedModel, ModelManifest
 from app.core.model_manager.domain.interfaces import IModelLoader
@@ -10,7 +11,7 @@ from app.features.qa_generation.domain.entities import AnswerCritique
 
 class IQAGenerationAdapter(IModelLoader, ABC):
     """
-    Contract for the Generation LLM (e.g., Gemma 4 E4B).
+    Contract for the Generation LLM (e.g., Qwen3.5-9B).
     Inherits from IModelLoader so the Orchestrator manages its VRAM lifecycle.
     """
 
@@ -38,6 +39,14 @@ class IQAGenerationAdapter(IModelLoader, ABC):
         pass
 
     @abstractmethod
+    def get_conversation_token_budget(self, model: LoadedModel, system_prompt: str) -> int:
+        """
+        Tokens available for all conversation messages (earlier turns, their evidence and the current question)
+        once the system prompt and the answer generation budget are accounted for.
+        """
+        pass
+
+    @abstractmethod
     def generate_answer(
         self,
         model: LoadedModel,
@@ -48,6 +57,14 @@ class IQAGenerationAdapter(IModelLoader, ABC):
         """
         Executes the inference using the assembled strict context prompt.
         Returns the raw generated string containing citation tags.
+        """
+        pass
+
+    @abstractmethod
+    def generate_conversation_answer(self, model: LoadedModel, messages: List[Dict[str, str]]) -> str:
+        """
+        Answers the last user message of a multi-turn conversation (system prompt first, then alternating
+        user/assistant messages). Returns the raw generated string containing citation tags.
         """
         pass
 

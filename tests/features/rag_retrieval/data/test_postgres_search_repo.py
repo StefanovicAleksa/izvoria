@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from app.features.rag_retrieval.data.postgres_search_repo import (
-    PostgresSearchRepository, _HYBRID_SEARCH_SQL, _NEIGHBORS_SQL
+    PostgresSearchRepository, _CHUNKS_BY_ID_SQL, _HYBRID_SEARCH_SQL, _NEIGHBORS_SQL
 )
 from app.features.rag_retrieval.exceptions.base import RetrievalError
 
@@ -138,3 +138,47 @@ class TestPostgresSearchRepository:
 
         with pytest.raises(RetrievalError):
             PostgresSearchRepository().fetch_neighbors([uuid.uuid4()])
+
+    @staticmethod
+    def _row(chunk_id):
+        return {
+            "chunk_id": str(chunk_id), "source_id": str(uuid.uuid4()), "text_payload": "payload",
+            "raw_text": "[Speaker_0 @ 00:00:01]: Hello.", "speaker_labels": ["Speaker_0"],
+            "start_sec": 1, "end_sec": 9, "extracted_file_id": None,
+        }
+
+    @patch("app.features.rag_retrieval.data.postgres_search_repo.db_manager")
+    def test_fetch_chunks_returns_them_in_requested_order_skipping_missing(self, mock_db_manager):
+        session_mock = MagicMock()
+        mock_db_manager.session.return_value.__enter__.return_value = session_mock
+        first, missing, second = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        # The query returns rows in chunk_id order, and ids as strings
+        session_mock.execute.return_value.mappings.return_value.all.return_value = [self._row(second), self._row(first)]
+
+        chunks = PostgresSearchRepository().fetch_chunks([first, missing, second, first])
+
+        session_mock.execute.assert_called_once_with(
+            _CHUNKS_BY_ID_SQL, {"chunk_ids": [str(first), str(missing), str(second), str(first)]}
+        )
+        assert [c.chunk_id for c in chunks] == [first, second]
+        assert chunks[0].raw_text == "[Speaker_0 @ 00:00:01]: Hello."
+        assert chunks[0].speaker_labels == ["Speaker_0"]
+        assert chunks[0].relevance_score == 0.0
+
+    @patch("app.features.rag_retrieval.data.postgres_search_repo.db_manager")
+    def test_fetch_chunks_without_ids_skips_the_database(self, mock_db_manager):
+        assert PostgresSearchRepository().fetch_chunks([]) == []
+        mock_db_manager.session.assert_not_called()
+
+    @patch("app.features.rag_retrieval.data.postgres_search_repo.db_manager")
+    def test_fetch_chunks_maps_errors(self, mock_db_manager):
+        mock_db_manager.session.return_value.__enter__.side_effect = RuntimeError("connection refused")
+
+        with pytest.raises(RetrievalError):
+            PostgresSearchRepository().fetch_chunks([uuid.uuid4()])
+
+    def test_chunks_by_id_query_joins_the_clip(self):
+        sql = str(_CHUNKS_BY_ID_SQL)
+
+        assert "LEFT JOIN video_clips vc ON vc.chunk_id = v.chunk_id" in sql
+        assert "v.chunk_id = ANY(CAST(:chunk_ids AS uuid[]))" in sql

@@ -4,7 +4,7 @@
 from .base import QAGenerationError
 from .inference import (
     GenerationModelError,
-    GemmaOOMError,
+    GenerationOOMError,
     ContextWindowExceededError,
     LLMInferenceCrashError
 )
@@ -13,7 +13,7 @@ from .pipeline import JSONCritiqueParseError
 __all__ = [
     "QAGenerationError",
     "GenerationModelError",
-    "GemmaOOMError",
+    "GenerationOOMError",
     "ContextWindowExceededError",
     "LLMInferenceCrashError",
     "JSONCritiqueParseError"

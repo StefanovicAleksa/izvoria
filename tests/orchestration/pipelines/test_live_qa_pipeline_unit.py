@@ -8,9 +8,11 @@ from unittest.mock import Mock
 from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import PhaseBatchResult, RagRetrievalJobResult, RagRerankingJobResult, \
-    RetrievalScrubbingJobResult, QAGenerationJobResult
+    RetrievalScrubbingJobResult, QAGenerationJobResult, ConversationChatResult
 from app.features.rag_retrieval.domain.entities import SearchQuery, SearchResult, RetrievedChunk
-from app.features.qa_generation.domain.entities import QAResponse
+from app.features.qa_generation.domain.entities import (
+    QAResponse, ConversationAnswer, ConversationHistory, ConversationTurn, NumberedChunk
+)
 from app.orchestration.exceptions.workflow import WorkflowStateError
 
 
@@ -206,3 +208,153 @@ class TestLiveQAPipelineUnit:
         # Dropped before generation runs (and once more by the pipeline's final cleanup)
         assert call_order == ["discard", "execute", "discard"]
         mock_qa_phase.execute.assert_called_once_with([(search_id, "Who entered the bank?", [])])
+
+
+class TestLiveQAPipelineConversation:
+    @pytest.fixture
+    def phases(self):
+        retrieval = Mock()
+        retrieval.expand_neighbors.side_effect = lambda chunks: list(chunks)
+        reasoner = Mock()
+        reasoner.rewrite_query.return_value = "What did the defendant do after entering the bank?"
+        return {"retrieval": retrieval, "reranking": Mock(), "scrubber": Mock(), "qa": Mock(), "reasoner": reasoner}
+
+    @pytest.fixture
+    def pipeline(self, phases):
+        return LiveQAPipeline(
+            retrieval_phase=phases["retrieval"], reranking_phase=phases["reranking"],
+            scrubber_phase=phases["scrubber"], qa_generation_phase=phases["qa"], reasoner_phase=phases["reasoner"]
+        )
+
+    @pytest.fixture
+    def chunk(self):
+        return RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload="He left", start_sec=0,
+                              end_sec=1, relevance_score=1.0)
+
+    @staticmethod
+    def _stub(phases, search_id, chunks):
+        search_result = SearchResult(query="q", results=chunks, execution_time_ms=1)
+        phases["retrieval"].execute.return_value = PhaseBatchResult(
+            phase=PipelinePhase.RAG_RETRIEVAL, status=PhaseStatus.COMPLETED,
+            items=[(RagRetrievalJobResult(search_id=search_id, success=True), search_result)]
+        )
+        phases["reranking"].execute.return_value = PhaseBatchResult(
+            phase=PipelinePhase.RAG_RERANKING, status=PhaseStatus.COMPLETED,
+            items=[(RagRerankingJobResult(search_id=search_id, success=True), search_result)]
+        )
+        phases["scrubber"].execute.return_value = PhaseBatchResult(
+            phase=PipelinePhase.RETRIEVAL_SCRUBBING, status=PhaseStatus.COMPLETED,
+            items=[(RetrievalScrubbingJobResult(search_id=search_id, success=True), chunks)]
+        )
+
+    @staticmethod
+    def _answer(phases, search_id, text, new_ids):
+        answer = ConversationAnswer(response=QAResponse(query="q", generated_answer=text, citations=[]),
+                                    new_chunk_ids=new_ids)
+        phases["qa"].execute_conversation.return_value = PhaseBatchResult(
+            phase=PipelinePhase.QA_GENERATION, status=PhaseStatus.COMPLETED, successful_count=1,
+            items=[(QAGenerationJobResult(search_id=search_id, success=True), answer)]
+        )
+        return answer
+
+    def test_follow_up_is_rewritten_before_any_preload_then_answered_with_the_history(self, pipeline, phases, chunk):
+        search_id = uuid.uuid4()
+        history = ConversationHistory(turns=[ConversationTurn(question="Who entered?", answer="He did.")],
+                                      next_doc_number=2)
+        self._stub(phases, search_id, [chunk])
+        answer = self._answer(phases, search_id, "He left [Doc 2].", [chunk.chunk_id])
+        order = []
+        phases["reasoner"].rewrite_query.side_effect = (
+            lambda *args: order.append("rewrite") or "What did the defendant do after entering the bank?"
+        )
+        phases["retrieval"].preload_model.side_effect = lambda: order.append("preload")
+
+        result = pipeline.execute_conversation_chat(search_id, SearchQuery(prompt="And then?", limit=4), history,
+                                                    "[PRIOR TURN 1]...")
+
+        assert order == ["rewrite", "preload"]
+        phases["reasoner"].rewrite_query.assert_called_once_with(search_id, "And then?", "[PRIOR TURN 1]...")
+        searched = phases["retrieval"].execute.call_args[0][0][0][1]
+        assert searched.prompt == "What did the defendant do after entering the bank?"
+        assert searched.limit == 4
+        phases["qa"].execute_conversation.assert_called_once_with([(
+            search_id,
+            "And then?\n(Standalone form of this follow-up question: What did the defendant do after entering the bank?)",
+            [chunk], history
+        )])
+        phases["reasoner"].preload_model.assert_not_called()
+        assert result == ConversationChatResult(
+            qa_response=answer.response,
+            standalone_query="What did the defendant do after entering the bank?",
+            new_chunk_ids=[chunk.chunk_id]
+        )
+        for phase in ("retrieval", "reranking", "scrubber", "qa", "reasoner"):
+            phases[phase].discard_preload.assert_called_once_with()
+
+    def test_first_turn_is_not_rewritten(self, pipeline, phases, chunk):
+        search_id = uuid.uuid4()
+        self._stub(phases, search_id, [chunk])
+        self._answer(phases, search_id, "A.", [])
+
+        result = pipeline.execute_conversation_chat(search_id, SearchQuery(prompt="Who entered?"),
+                                                    ConversationHistory(), None)
+
+        phases["reasoner"].rewrite_query.assert_not_called()
+        assert phases["retrieval"].execute.call_args[0][0][0][1].prompt == "Who entered?"
+        assert phases["qa"].execute_conversation.call_args[0][0][0][1] == "Who entered?"
+        assert result.standalone_query == "Who entered?"
+
+    def test_nothing_new_but_history_evidence_keeps_the_answer_model_preload(self, pipeline, phases, chunk):
+        search_id = uuid.uuid4()
+        history = ConversationHistory(
+            turns=[ConversationTurn(question="q", answer="a", evidence=[NumberedChunk(doc_number=1, chunk=chunk)])],
+            next_doc_number=2
+        )
+        self._stub(phases, search_id, [])
+        self._answer(phases, search_id, "From before [Doc 1].", [])
+
+        pipeline.execute_conversation_chat(search_id, SearchQuery(prompt="Was it him?"), history, "prior")
+
+        # Only the final cleanup discards; generation still needs the model
+        phases["qa"].discard_preload.assert_called_once_with()
+        phases["qa"].execute_conversation.assert_called_once_with([(
+            search_id,
+            "Was it him?\n(Standalone form of this follow-up question: What did the defendant do after entering the bank?)",
+            [], history
+        )])
+
+    def test_nothing_anywhere_drops_the_answer_model_preload_before_generating(self, pipeline, phases):
+        search_id = uuid.uuid4()
+        self._stub(phases, search_id, [])
+        self._answer(phases, search_id, "I cannot answer this based on the provided context.", [])
+
+        pipeline.execute_conversation_chat(search_id, SearchQuery(prompt="Q"), ConversationHistory(), None)
+
+        assert phases["qa"].discard_preload.call_count == 2
+
+    def test_failed_generation_halts_and_discards_preloads(self, pipeline, phases, chunk):
+        search_id = uuid.uuid4()
+        self._stub(phases, search_id, [chunk])
+        phases["qa"].execute_conversation.return_value = PhaseBatchResult(
+            phase=PipelinePhase.QA_GENERATION, status=PhaseStatus.FAILED, errors=["LLM Crash"]
+        )
+
+        with pytest.raises(WorkflowStateError, match="Final LLM Generation failed"):
+            pipeline.execute_conversation_chat(search_id, SearchQuery(prompt="Q"), ConversationHistory(), None)
+
+        for phase in ("retrieval", "reranking", "scrubber", "qa", "reasoner"):
+            phases[phase].discard_preload.assert_called_once_with()
+
+    def test_without_a_reasoner_follow_ups_are_searched_as_asked(self, phases, chunk):
+        pipeline = LiveQAPipeline(
+            retrieval_phase=phases["retrieval"], reranking_phase=phases["reranking"],
+            scrubber_phase=phases["scrubber"], qa_generation_phase=phases["qa"]
+        )
+        search_id = uuid.uuid4()
+        self._stub(phases, search_id, [chunk])
+        self._answer(phases, search_id, "A.", [])
+
+        result = pipeline.execute_conversation_chat(search_id, SearchQuery(prompt="And then?"),
+                                                    ConversationHistory(), "prior")
+
+        assert result.standalone_query == "And then?"

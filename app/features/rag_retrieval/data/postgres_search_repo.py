@@ -96,8 +96,49 @@ _NEIGHBORS_SQL = text("""
     ORDER BY n.chunk_id
 """)
 
+_CHUNKS_BY_ID_SQL = text("""
+    SELECT DISTINCT ON (v.chunk_id)
+           v.chunk_id, v.source_id, v.text_payload, v.raw_text, v.speaker_labels, v.start_sec, v.end_sec,
+           vc.extracted_file_id
+    FROM vector_chunks v
+    LEFT JOIN video_clips vc ON vc.chunk_id = v.chunk_id
+    WHERE v.chunk_id = ANY(CAST(:chunk_ids AS uuid[]))
+    ORDER BY v.chunk_id
+""")
+
 
 class PostgresSearchRepository(IRetrievalRepository):
+
+    def fetch_chunks(self, chunk_ids: List[uuid.UUID]) -> List[RetrievedChunk]:
+        if not chunk_ids:
+            return []
+
+        try:
+            with db_manager.session() as session:
+                rows = session.execute(
+                    _CHUNKS_BY_ID_SQL, {"chunk_ids": [str(chunk_id) for chunk_id in chunk_ids]}
+                ).mappings().all()
+
+                chunks = [
+                    RetrievedChunk(
+                        chunk_id=row["chunk_id"],
+                        source_id=row["source_id"],
+                        text_payload=row["text_payload"],
+                        raw_text=row["raw_text"],
+                        speaker_labels=list(row["speaker_labels"] or []),
+                        start_sec=float(row["start_sec"]),
+                        end_sec=float(row["end_sec"]),
+                        # Fetched by id for an earlier conversation turn, not ranked for this query
+                        relevance_score=0.0,
+                        extracted_file_id=row["extracted_file_id"]
+                    )
+                    for row in rows
+                ]
+                by_id = {chunk.chunk_id: chunk for chunk in chunks}
+                return [by_id[chunk_id] for chunk_id in dict.fromkeys(chunk_ids) if chunk_id in by_id]
+
+        except Exception as e:
+            raise map_retrieval_error(e, context="Fetching chunks by id") from e
 
     def fetch_neighbors(self, chunk_ids: List[uuid.UUID]) -> List[RetrievedChunk]:
         if not chunk_ids:

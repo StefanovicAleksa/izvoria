@@ -5,7 +5,8 @@ import uuid
 import pytest
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.qa_generation.utils.citation_parser import (
-    build_context_block, parse_citations, normalize_citation_tags
+    build_context_block, build_numbered_context_block, doc_numbers, number_for_reading, parse_citations,
+    normalize_citation_tags
 )
 
 
@@ -141,3 +142,61 @@ class TestNormalizeCitationTags:
         assert [(c.doc_id, c.chunk_id) for c in citations] == [
             ("[Doc 1]", chunks[0].chunk_id), ("[Doc 3]", chunks[2].chunk_id)
         ]
+
+
+class TestConversationNumbering:
+    @staticmethod
+    def _chunk(start: float, source_id: uuid.UUID, text: str = "text") -> RetrievedChunk:
+        return RetrievedChunk(chunk_id=uuid.uuid4(), source_id=source_id, text_payload=text,
+                              start_sec=start, end_sec=start + 1, relevance_score=0.0)
+
+    def test_context_block_numbers_from_start_number(self):
+        source = uuid.uuid4()
+        late, early = self._chunk(30, source, "late"), self._chunk(10, source, "early")
+
+        block = build_context_block([late, early], start_number=7)
+
+        assert block.doc_mapping == {"[Doc 7]": early.chunk_id, "[Doc 8]": late.chunk_id}
+        assert block.formatted_text.index("[Doc 7]") < block.formatted_text.index("[Doc 8]")
+
+    def test_number_for_reading_orders_by_source_then_time(self):
+        first_source, second_source = uuid.uuid4(), uuid.uuid4()
+        best = self._chunk(50, first_source)
+        other = self._chunk(0, second_source)
+        earlier_same_source = self._chunk(5, first_source)
+
+        numbered = number_for_reading([best, other, earlier_same_source], start_number=3)
+
+        assert [(n, c.chunk_id) for n, c in numbered] == [
+            (3, earlier_same_source.chunk_id), (4, best.chunk_id), (5, other.chunk_id)
+        ]
+
+    def test_numbered_block_keeps_given_numbers_with_gaps(self):
+        source = uuid.uuid4()
+        a, b = self._chunk(0, source, "alpha"), self._chunk(100, source, "beta")
+
+        block = build_numbered_context_block([(2, a), (9, b)])
+
+        assert block.doc_mapping == {"[Doc 2]": a.chunk_id, "[Doc 9]": b.chunk_id}
+        assert "[Doc 2] (00:00:00–00:00:01)\nalpha" in block.formatted_text
+        assert "[Doc 9] (00:01:40–00:01:41)\nbeta" in block.formatted_text
+
+    def test_doc_numbers_reads_mapping_keys(self):
+        assert doc_numbers({"[Doc 2]": uuid.uuid4(), "[Doc 9]": uuid.uuid4()}) == {2, 9}
+
+    @pytest.mark.parametrize("text, expected", [
+        ("A [Doc 2] B [Doc 3]", "A [Doc 2] B "),
+        ("A [Doc 1, 9]", "A [Doc 9]"),
+        ("A [Docs 8-10]", "A [Doc 9]"),
+    ])
+    def test_normalize_with_valid_numbers_drops_tags_not_shown(self, text, expected):
+        assert normalize_citation_tags(text, 0, valid_numbers={2, 9}) == expected
+
+    def test_parse_citations_resolves_conversation_wide_numbers(self):
+        source = uuid.uuid4()
+        a, b = self._chunk(0, source), self._chunk(10, source)
+        mapping = {"[Doc 4]": a.chunk_id, "[Doc 11]": b.chunk_id}
+
+        citations = parse_citations("X [Doc 11]. Y [Doc 4, 5].", [a, b], mapping)
+
+        assert [(c.doc_id, c.chunk_id) for c in citations] == [("[Doc 4]", a.chunk_id), ("[Doc 11]", b.chunk_id)]

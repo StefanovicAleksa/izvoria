@@ -210,6 +210,17 @@ class DeepResearchResponse(BaseModel):
     iteration_trace: List[DeepResearchIterationTrace] = Field(default_factory=list)
     critique_unresolved: bool = False
     total_iterations: int = 0
+    # The first search query (a follow-up rewritten to stand alone) and every chunk the evidence pool held,
+    # best first, so the conversation can show them to later turns
+    standalone_query: Optional[str] = None
+    evidence_chunk_ids: List[uuid.UUID] = Field(default_factory=list)
+    model_config = ConfigDict(frozen=True)
+
+# One answered turn of a multi-turn chat: the answer, the query it searched with, and the chunks it showed first
+class ConversationChatResult(BaseModel):
+    qa_response: QAResponse
+    standalone_query: str
+    new_chunk_ids: List[uuid.UUID] = Field(default_factory=list)
     model_config = ConfigDict(frozen=True)
 
 class PhaseBatchResult(BaseModel):

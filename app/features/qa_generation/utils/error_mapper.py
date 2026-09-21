@@ -27,26 +27,26 @@ def map_qa_error(e: Exception, context: str = "") -> exc.QAGenerationError:
         )
 
     if "out of memory" in error_msg or "cuda_error_out_of_memory" in error_msg:
-        return exc.GemmaOOMError(
+        return exc.GenerationOOMError(
             f"VRAM exhausted during QA Generation inference: {str(e)} | Context: {context}",
             original_exception=e
         )
 
     if "token indices sequence length" in error_msg or "context length" in error_msg or "n_ctx" in error_msg:
         return exc.ContextWindowExceededError(
-            f"The combined RAG context and user prompt exceed Gemma's context window: {str(e)} | Context: {context}",
+            f"The combined RAG context and user prompt exceed the QA generation model's context window: {str(e)} | Context: {context}",
             original_exception=e
         )
 
     if "llama_cpp" in error_msg or "generation failed" in error_msg or "segmentation fault" in error_msg:
         return exc.LLMInferenceCrashError(
-            f"Gemma model crashed during text generation: {str(e)} | Context: {context}",
+            f"QA generation model crashed during text generation: {str(e)} | Context: {context}",
             original_exception=e
         )
 
     if isinstance(e, ModelManagerError):
         return exc.GenerationModelError(
-            f"Model Manager failed to provision the Gemma model: {str(e)} | Context: {context}",
+            f"Model Manager failed to provision the QA generation model: {str(e)} | Context: {context}",
             original_exception=e
         )
 

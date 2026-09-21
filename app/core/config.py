@@ -191,27 +191,36 @@ class Settings(BaseSettings):
     # Chat pipelines add the chunks before and after this many of the best surviving chunks (0 disables)
     RAG_NEIGHBOR_EXPANSION_TOP_K: int = 3
 
-    # Qwen2.5-7B (same weights as the reasoner): on the dev-DB eval (scripts/eval/rag_eval.py) the 3B judge kept the
+    # Qwen2.5-7B: on the dev-DB eval (scripts/eval/rag_eval.py) the 3B judge kept the
     # chunk that answers the question for 75% of questions, the 7B for 89%
     RETRIEVAL_SCRUBBER_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
     RETRIEVAL_SCRUBBER_VRAM_REQUIREMENT_MB: float = 5000.0
 
-    QA_GENERATION_MODEL_PATH: str = "models/google_gemma-4-E4B-it-Q4_K_M.gguf"
-    QA_GENERATION_VRAM_REQUIREMENT_MB: float = 4500.0
-    # Context window of the answer model. Retrieved evidence is packed to fit what's left after the prompts,
-    # the question and the answer/critique generation budget, so no chunk count can overflow it.
-    # 16K measured at ~4.6 GB VRAM on the dev box (8K: ~4.1 GB).
-    QA_GENERATION_N_CTX: int = 16384
+    # Qwen3.5-9B: hybrid Gated DeltaNet / Gated Attention, so only 8 of 32 layers keep a KV cache (~32 KiB/token
+    # at f16, ~17 KiB at q8_0). 128K context fits a 12 GB card next to the ~5.7 GB Q4_K_M weights.
+    QA_GENERATION_MODEL_PATH: str = "models/Qwen3.5-9B-Q4_K_M.gguf"
+    QA_GENERATION_VRAM_REQUIREMENT_MB: float = 10000.0
+    # Context window of the answer model. Retrieved evidence and the conversation history are packed to fit what's
+    # left after the prompts, the question and the answer/critique generation budget, so nothing can overflow it.
+    QA_GENERATION_N_CTX: int = 131072
     QA_GENERATION_MAX_ANSWER_TOKENS: int = 1024
 
-    # Deep Research reasoning loop: reuses the same Qwen2.5-7B weights as ASR_PHASE_3/VISUAL_CUE_DETECTION,
-    # but under its own ModelType/n_ctx since residency is keyed on (model_type, model_path).
-    QA_REASONER_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
-    QA_REASONER_VRAM_REQUIREMENT_MB: float = 5000.0
+    # Deep Research reasoning loop: the same weights as the answer model, but under its own ModelType/n_ctx
+    # since residency is keyed on (model_type, model_path) — switching between the two reloads the file.
+    QA_REASONER_MODEL_PATH: str = "models/Qwen3.5-9B-Q4_K_M.gguf"
+    QA_REASONER_VRAM_REQUIREMENT_MB: float = 10000.0
     # Context window of the reasoner; its evidence block is cut to fit alongside the prompt and a 1000-token reply
-    QA_REASONER_N_CTX: int = 8192
+    QA_REASONER_N_CTX: int = 65536
+
+    # Shared by the answer model and the reasoner: KV cache precision (f16, q8_0, q4_0) and the chat template's
+    # thinking mode. Grounded answers and JSON decisions are generated without a <think> block.
+    QA_LLM_KV_CACHE_TYPE: str = "q8_0"
+    QA_LLM_ENABLE_THINKING: bool = False
     DEEP_RESEARCH_MAX_ITERATIONS: int = 3
     DEEP_RESEARCH_MAX_CRITIQUE_RETRIES: int = 1
+
+    # Multi-turn chat: most recent turns of a session shown to the answer model and the reasoner
+    CHAT_HISTORY_MAX_TURNS: int = 20
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,

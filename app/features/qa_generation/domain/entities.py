@@ -5,6 +5,7 @@ import uuid
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, ConfigDict
 
+from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.qa_generation.domain.enums import CritiqueVerdict
 
 
@@ -58,5 +59,40 @@ class AnswerCritique(BaseModel):
     gap_description: Optional[str] = Field(
         default=None, description="Set iff verdict is NEEDS_MORE_EVIDENCE: what's missing or unsupported."
     )
+
+    model_config = ConfigDict(frozen=True)
+
+class NumberedChunk(BaseModel):
+    """An evidence chunk with the [Doc N] number it carries for the whole conversation."""
+    doc_number: int = Field(..., ge=1)
+    chunk: RetrievedChunk
+
+    model_config = ConfigDict(frozen=True)
+
+
+class ConversationTurn(BaseModel):
+    """
+    An earlier question/answer of a conversation and the evidence first shown in that turn. The answer's
+    [Doc N] tags refer to conversation-wide numbers; they are not source material themselves.
+    """
+    question: str
+    answer: str
+    evidence: List[NumberedChunk] = Field(default_factory=list)
+
+    model_config = ConfigDict(frozen=True)
+
+
+class ConversationHistory(BaseModel):
+    """Earlier turns, oldest first. New evidence of the next turn is numbered from next_doc_number."""
+    turns: List[ConversationTurn] = Field(default_factory=list)
+    next_doc_number: int = Field(default=1, ge=1)
+
+    model_config = ConfigDict(frozen=True)
+
+
+class ConversationAnswer(BaseModel):
+    """A conversational answer, plus the chunks it showed for the first time, in [Doc N] order."""
+    response: QAResponse
+    new_chunk_ids: List[uuid.UUID] = Field(default_factory=list)
 
     model_config = ConfigDict(frozen=True)

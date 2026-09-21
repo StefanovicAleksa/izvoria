@@ -19,8 +19,8 @@ class TestQAGenerationErrorMapper:
             (ValidationError.from_exception_data("Mock Error", []), exc.JSONCritiqueParseError),
 
             # 1. Hardware/VRAM limits
-            (RuntimeError("CUDA out of memory"), exc.GemmaOOMError),
-            (MemoryError("Out of memory"), exc.GemmaOOMError),
+            (RuntimeError("CUDA out of memory"), exc.GenerationOOMError),
+            (MemoryError("Out of memory"), exc.GenerationOOMError),
 
             # 2. Context Window Overflows
             (ValueError("token indices sequence length is longer than context"), exc.ContextWindowExceededError),
@@ -34,7 +34,7 @@ class TestQAGenerationErrorMapper:
             (ModelManagerError("Weights missing"), exc.GenerationModelError),
 
             # 5. Pass-through (already mapped)
-            (exc.GemmaOOMError("Already mapped"), exc.GemmaOOMError),
+            (exc.GenerationOOMError("Already mapped"), exc.GenerationOOMError),
 
             # 6. Fallback (Generic wrap)
             (Exception("Unexpected cosmic ray"), exc.QAGenerationError),

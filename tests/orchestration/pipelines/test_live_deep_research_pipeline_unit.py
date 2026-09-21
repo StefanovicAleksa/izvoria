@@ -452,7 +452,45 @@ class TestLiveDeepResearchPipelineUnit:
         searched = mock_retrieval_phase.execute.call_args[0][0][0][1]
         assert searched.prompt == "Why did the pound reverse after the hike?"
         assert mock_reasoner_phase.execute.call_args[0][0][0][1] == "Why after that?"
-        assert mock_qa_generation_phase.execute_with_critique.call_args[0][0][0][1] == "Why after that?"
+        # The answer model doesn't see the conversation: it gets the user's words plus the standalone form
+        assert mock_qa_generation_phase.execute_with_critique.call_args[0][0][0][1] == (
+            "Why after that?\n(Standalone form of this follow-up question: Why did the pound reverse after the hike?)"
+        )
+
+    def test_unchanged_rewrite_leaves_the_answer_question_as_asked(
+            self, pipeline, mock_reasoner_phase, mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase,
+            mock_qa_generation_phase, raw_chunk
+    ):
+        search_id = uuid.uuid4()
+        _stub_retrieval_pass(mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase, search_id, [raw_chunk])
+        mock_reasoner_phase.rewrite_query.side_effect = None
+        mock_reasoner_phase.rewrite_query.return_value = "Who voted?"
+        mock_reasoner_phase.execute.return_value = _reasoner_result(search_id, _answer_ready())
+        mock_qa_generation_phase.execute_with_critique.return_value = _sufficient_generation(search_id)
+
+        pipeline.execute_deep_research(search_id, SearchQuery(prompt="Who voted?"), prior_session_context="prior")
+
+        assert mock_qa_generation_phase.execute_with_critique.call_args[0][0][0][1] == "Who voted?"
+
+    def test_seed_chunks_join_the_pool_after_the_first_search_and_are_reported(
+            self, pipeline, mock_reasoner_phase, mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase,
+            mock_qa_generation_phase, raw_chunk
+    ):
+        search_id = uuid.uuid4()
+        seed = raw_chunk.model_copy(update={"chunk_id": uuid.uuid4()})
+        _stub_retrieval_pass(mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase, search_id, [raw_chunk])
+        mock_reasoner_phase.rewrite_query.side_effect = None
+        mock_reasoner_phase.rewrite_query.return_value = "standalone"
+        mock_reasoner_phase.execute.return_value = _reasoner_result(search_id, _ask_clarification("Which meeting?"))
+
+        result = pipeline.execute_deep_research(
+            search_id, SearchQuery(prompt="follow-up"), prior_session_context="prior", seed_chunks=[seed, raw_chunk]
+        )
+
+        pool = mock_reasoner_phase.execute.call_args[0][0][0][2]
+        assert [c.chunk_id for c in pool] == [raw_chunk.chunk_id, seed.chunk_id]
+        assert result.evidence_chunk_ids == [raw_chunk.chunk_id, seed.chunk_id]
+        assert result.standalone_query == "standalone"
 
     def test_refined_query_fallback_is_the_rewritten_query(
             self, pipeline, mock_reasoner_phase, mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase,

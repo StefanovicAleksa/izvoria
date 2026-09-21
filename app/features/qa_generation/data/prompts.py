@@ -27,7 +27,8 @@ QA_USER_TEMPLATE = """
 [USER QUESTION]
 {user_query}
 
-Provide a detailed, professional response based entirely on the RETRIEVED CONTEXT above. Ensure every claim is cited.
+Answer precisely and professionally, using only what the RETRIEVED CONTEXT above states; add no interpretation, \
+advice or summary of your own. Put the [Doc N] tag of each claim right after that claim, inside the sentence.
 """
 
 CRITIQUE_SYSTEM_PROMPT = """You are a strict fact-checker reviewing a draft answer against the evidence it was \
@@ -64,3 +65,41 @@ CRITIQUE_USER_TEMPLATE = """
 
 Check the draft answer against the evidence. Return the JSON.
 """
+
+# Appended to QA_SYSTEM_PROMPT when the question is part of an ongoing conversation
+QA_CONVERSATION_RULES = """
+
+<CONVERSATION_RULES>
+1. This is a multi-turn conversation. Earlier user messages carry the context blocks retrieved for them; the last \
+user message carries any new ones. Every context block anywhere in the conversation is valid evidence for the \
+current question, exactly like the new ones. If an earlier block answers the question, answer from it and cite it; \
+do not refuse just because the newest message's blocks don't contain the answer.
+2. Document numbers are unique across the whole conversation: [Doc 7] always refers to the same excerpt. Cite \
+only tags that appear in a context block, exactly as written.
+3. Your own earlier answers are NOT evidence. Never repeat a claim from them unless you cite the context block \
+that supports it.
+4. Use the earlier turns to understand what the current question refers to ("he", "that meeting", "after that").
+5. Answer only the last user question.
+</CONVERSATION_RULES>"""
+
+# User message of every conversation turn (earlier turns keep it, so the prompt only ever grows at the end)
+QA_CONVERSATION_USER_TEMPLATE = """
+[NEW CONTEXT BLOCKS]
+{context_block}
+
+[USER QUESTION]
+{user_query}
+
+Answer precisely and professionally, using only what the context blocks in this message and in earlier messages of \
+this conversation state; add no interpretation, advice or summary of your own. Put the [Doc N] tag of each claim right \
+after that claim, inside the sentence, never grouped at the end. Refuse only if no context block in the whole \
+conversation supports an answer.
+"""
+
+# Context block of a turn whose excerpts are all shown earlier in the conversation (or were dropped for space)
+NO_NEW_CONTEXT_BLOCK = "(No new excerpts for this question; use the context blocks shown earlier in this conversation.)"
+
+# Sent (same model acquisition) when an answer that is not the refusal came back without a single citation
+CITATION_RETRY_PROMPT = """Your answer above has no [Doc N] citations. Rewrite it so that every claim carries the \
+[Doc N] tag of the context block it comes from, right after the claim, and remove every claim no context block \
+supports. If no context block supports an answer, reply exactly: I cannot answer this based on the provided context."""

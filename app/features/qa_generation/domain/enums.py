@@ -4,6 +4,6 @@ from enum import Enum
 
 
 class CritiqueVerdict(str, Enum):
-    """The self-critique's verdict on a Gemma draft answer, checked in the same model acquisition."""
+    """The self-critique's verdict on a draft answer, checked in the same model acquisition."""
     SUFFICIENT = "sufficient"
     NEEDS_MORE_EVIDENCE = "needs_more_evidence"

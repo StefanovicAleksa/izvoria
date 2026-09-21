@@ -3,7 +3,8 @@
 
 import time
 import logging
-from typing import List, Tuple
+import re
+from typing import Collection, Dict, List, Tuple
 
 from app.core.config import settings
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
@@ -12,17 +13,25 @@ from app.core.model_manager.domain.enums import ModelType
 
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.qa_generation.domain.interfaces import IQAGenerationAdapter
-from app.features.qa_generation.domain.entities import QAResponse, AnswerCritique, RAGContextBlock
+from app.features.qa_generation.domain.entities import (
+    QAResponse, AnswerCritique, RAGContextBlock, ConversationHistory, ConversationAnswer, NumberedChunk
+)
 from app.features.qa_generation.domain.enums import CritiqueVerdict
-from app.features.qa_generation.data.prompts import QA_SYSTEM_PROMPT, NO_EVIDENCE_ANSWER
+from app.features.qa_generation.data.prompts import (
+    QA_SYSTEM_PROMPT, QA_USER_TEMPLATE, QA_CONVERSATION_RULES, QA_CONVERSATION_USER_TEMPLATE, NO_EVIDENCE_ANSWER,
+    NO_NEW_CONTEXT_BLOCK, CITATION_RETRY_PROMPT
+)
 from app.features.qa_generation.exceptions.pipeline import JSONCritiqueParseError
 from app.features.qa_generation.utils.citation_parser import (
-    build_context_block, parse_citations, normalize_citation_tags
+    build_context_block, build_numbered_context_block, doc_numbers, parse_citations, normalize_citation_tags
 )
+from app.features.qa_generation.utils.conversation_packer import pack_conversation, PackedConversation
 from app.features.qa_generation.utils.context_packer import select_within_budget
 from app.features.qa_generation.utils.error_mapper import map_qa_error
 
 logger = logging.getLogger(__name__)
+
+_CITATION_TAG = re.compile(r"\[Doc \d+]")
 
 
 class QAGenerationAPI:
@@ -71,6 +80,48 @@ class QAGenerationAPI:
             inference_time_ms=int((time.time() - start_time) * 1000)
         )
 
+    def _cited_or_refused(
+            self,
+            loaded_model: LoadedModel,
+            messages: List[Dict[str, str]],
+            generated_text: str,
+            valid_numbers: Collection[int]
+    ) -> str:
+        """
+        An answer must cite the evidence it rests on. One that is neither the refusal nor cites anything shown is
+        sent back once (same acquisition) to be rewritten with citations; if it still cites nothing, the refusal
+        is returned instead of an untraceable answer. Tags are normalized to the shown documents either way.
+        """
+        text = normalize_citation_tags(generated_text, 0, valid_numbers)
+        if self._is_refusal(text) or _CITATION_TAG.search(text):
+            return text
+
+        logger.warning("Answer came back without citations; asking the model to cite its claims.")
+        retry_messages = messages + [
+            {"role": "assistant", "content": generated_text},
+            {"role": "user", "content": CITATION_RETRY_PROMPT},
+        ]
+        retried = normalize_citation_tags(
+            self._adapter.generate_conversation_answer(loaded_model, retry_messages), 0, valid_numbers
+        )
+        if self._is_refusal(retried) or _CITATION_TAG.search(retried):
+            return retried
+
+        logger.warning("Answer still has no citations after the retry; returning the refusal instead.")
+        return NO_EVIDENCE_ANSWER
+
+    @staticmethod
+    def _is_refusal(text: str) -> bool:
+        return text.strip().startswith(NO_EVIDENCE_ANSWER.rstrip("."))
+
+    @staticmethod
+    def _answer_messages(context_block: str, user_query: str) -> List[Dict[str, str]]:
+        """The messages generate_answer sends, for a follow-up request in the same exchange."""
+        return [
+            {"role": "system", "content": QA_SYSTEM_PROMPT},
+            {"role": "user", "content": QA_USER_TEMPLATE.format(context_block=context_block, user_query=user_query)},
+        ]
+
     def generate(
             self,
             user_query: str,
@@ -100,12 +151,15 @@ class QAGenerationAPI:
                     context_block=context_block.formatted_text,
                     user_query=user_query
                 )
+                # Grouped tags ([Doc 1, 3]) become [Doc 1][Doc 3] in the returned text too, so it matches the citations
+                generated_text = self._cited_or_refused(
+                    loaded_model, self._answer_messages(context_block.formatted_text, user_query),
+                    generated_text, doc_numbers(context_block.doc_mapping)
+                )
             finally:
                 if release_after:
                     self._orchestrator.release_model(loaded_model, self._adapter, flush=True)
 
-            # Grouped tags ([Doc 1, 3]) become [Doc 1][Doc 3] in the returned text too, so it matches the citations
-            generated_text = normalize_citation_tags(generated_text, len(context_block.doc_mapping))
             citations = parse_citations(
                 generated_text=generated_text,
                 chunks=packed,
@@ -124,6 +178,111 @@ class QAGenerationAPI:
 
         except Exception as e:
             raise map_qa_error(e, context=f"Processing QA Generation for query: '{user_query}'")
+
+    @staticmethod
+    def _context_text(evidence: List[NumberedChunk]) -> str:
+        if not evidence:
+            return NO_NEW_CONTEXT_BLOCK
+        ordered = sorted(evidence, key=lambda n: n.doc_number)
+        return build_numbered_context_block([(n.doc_number, n.chunk) for n in ordered]).formatted_text
+
+    def _conversation_messages(
+            self, system_prompt: str, packed: PackedConversation, user_query: str
+    ) -> List[Dict[str, str]]:
+        """
+        system, then each retained turn as user (its evidence + question) / assistant (its answer), then the
+        current question with its new evidence. Earlier turns only ever get appended, so the prompt of one turn is
+        a prefix of the next one's while nothing is trimmed.
+        """
+        shown_numbers = {n.doc_number for n in packed.shown_evidence}
+        messages = [{"role": "system", "content": system_prompt}]
+        for turn in packed.turns:
+            messages.append({"role": "user", "content": QA_CONVERSATION_USER_TEMPLATE.format(
+                context_block=self._context_text(turn.evidence), user_query=turn.question)})
+            # A tag whose excerpt was dropped for space would point at nothing the model can see
+            messages.append({"role": "assistant",
+                             "content": normalize_citation_tags(turn.answer, 0, shown_numbers)})
+        messages.append({"role": "user", "content": QA_CONVERSATION_USER_TEMPLATE.format(
+            context_block=self._context_text(packed.new_evidence), user_query=user_query)})
+        return messages
+
+    def generate_conversation(
+            self,
+            user_query: str,
+            retrieved_chunks: List[RetrievedChunk],
+            history: ConversationHistory,
+            release_after: bool = True
+    ) -> ConversationAnswer:
+        """
+        Answers a question that is part of a conversation. The model sees the earlier turns with the evidence
+        they showed, under document numbers that stay the same for the whole conversation, so a follow-up can cite
+        an excerpt an earlier turn found. Earlier answers are shown for context only; every citation must still
+        resolve to an excerpt in the prompt.
+
+        With no earlier turns this is generate() with conversation-wide numbering from history.next_doc_number.
+        """
+        logger.info(f"Executing Conversational QA Generation ({len(history.turns)} earlier turns): '{user_query}'")
+        start_time = time.time()
+
+        if not retrieved_chunks and not any(turn.evidence for turn in history.turns):
+            logger.info("No evidence in this turn or the conversation; answering with the refusal without a model.")
+            return ConversationAnswer(response=self._refusal(user_query, start_time))
+
+        system_prompt = QA_SYSTEM_PROMPT + QA_CONVERSATION_RULES
+
+        try:
+            loaded_model = self._orchestrator.acquire_model(self._manifest, self._adapter, wait_for_clear=True)
+
+            try:
+                def count(text: str) -> int:
+                    return self._adapter.count_tokens(loaded_model, text)
+
+                packed = pack_conversation(
+                    history=history,
+                    current_question=user_query,
+                    current_chunks=retrieved_chunks,
+                    token_budget=self._adapter.get_conversation_token_budget(loaded_model, system_prompt),
+                    turn_template_tokens=count(QA_CONVERSATION_USER_TEMPLATE.format(context_block="", user_query="")),
+                    count_tokens=count
+                )
+                shown = packed.shown_evidence
+                if not shown:
+                    logger.warning("No evidence fits the conversation budget; answering with the refusal.")
+                    return ConversationAnswer(response=self._refusal(user_query, start_time))
+                if len(packed.turns) < len(history.turns):
+                    logger.info(f"Conversation budget keeps {len(packed.turns)} of {len(history.turns)} earlier turns.")
+
+                messages = self._conversation_messages(system_prompt, packed, user_query)
+                generated_text = self._cited_or_refused(
+                    loaded_model, messages, self._adapter.generate_conversation_answer(loaded_model, messages),
+                    {n.doc_number for n in shown}
+                )
+            finally:
+                if release_after:
+                    self._orchestrator.release_model(loaded_model, self._adapter, flush=True)
+
+            doc_mapping = packed.doc_mapping
+            citations = parse_citations(
+                generated_text=generated_text,
+                chunks=[n.chunk for n in shown],
+                doc_mapping=doc_mapping
+            )
+
+            inference_time_ms = int((time.time() - start_time) * 1000)
+            logger.info(f"Conversational QA complete in {inference_time_ms}ms with {len(citations)} citations.")
+
+            return ConversationAnswer(
+                response=QAResponse(
+                    query=user_query,
+                    generated_answer=generated_text,
+                    citations=citations,
+                    inference_time_ms=inference_time_ms
+                ),
+                new_chunk_ids=[n.chunk.chunk_id for n in packed.new_evidence]
+            )
+
+        except Exception as e:
+            raise map_qa_error(e, context=f"Processing Conversational QA Generation for query: '{user_query}'")
 
     def generate_with_critique(
             self,
@@ -162,7 +321,10 @@ class QAGenerationAPI:
                     context_block=context_block.formatted_text,
                     user_query=user_query
                 )
-                generated_text = normalize_citation_tags(generated_text, len(context_block.doc_mapping))
+                generated_text = self._cited_or_refused(
+                    loaded_model, self._answer_messages(context_block.formatted_text, user_query),
+                    generated_text, doc_numbers(context_block.doc_mapping)
+                )
 
                 try:
                     critique = self._adapter.critique_answer(

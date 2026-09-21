@@ -78,6 +78,38 @@ def print_deep_research_result(result):
             print(f"    -> refined query: {step.refined_query}")
 
 
+def print_chat_response(response):
+    print(f"\n[ONYX AI]\n{response.generated_answer}")
+    print(f"\n[CITATIONS USED: {len(response.citations)}]")
+    for cit in response.citations:
+        print(f"  {cit.doc_id} {cit.physical_path or 'No physical file resolved'}")
+        print(f"         Timestamp: {cit.start_sec}s - {cit.end_sec}s")
+
+
+def run_conversation(engine, session_id):
+    """
+    Multi-turn chat: each question is a turn of the session's conversation, so follow-ups can refer to earlier
+    questions, answers and cited excerpts. Returns the session id to keep using (/new starts a fresh one).
+    """
+    print("\n[SYSTEM] Conversation mode. Blank line returns to the menu; /new starts a new conversation.")
+    while True:
+        prompt = input("\n[You] > ").strip()
+        if not prompt:
+            return session_id
+        if prompt.lower() == "/new":
+            session_id = uuid.uuid4()
+            print("[SYSTEM] Started a new conversation.")
+            continue
+
+        print("\n[SYSTEM] Running RAG + QA Generation Pipeline...")
+        try:
+            response = engine.chat(SearchQuery(prompt=prompt, limit=5), session_id=session_id)
+        except EngineError as e:
+            print(f"\n[ENGINE ERROR] Task failed: {e}")
+            continue
+        print_chat_response(response)
+
+
 def run_deep_research_with_clarifications(engine, session_id, original_question, max_clarification_rounds=3):
     """
     chat_deep_research()'s intra-question state (evidence pool, decision history) is ephemeral
@@ -121,8 +153,8 @@ def main():
         print(f"\n[FATAL STARTUP ERROR] Appliance failed to boot: {e}")
         sys.exit(1)
 
-    # One deep-research session per CLI run, so consecutive questions share conversational memory.
-    deep_research_session_id = uuid.uuid4()
+    # Chat (5) and Deep Research (7) share one conversation until /new is typed in chat
+    conversation_session_id = uuid.uuid4()
 
     try:
         while True:
@@ -131,7 +163,7 @@ def main():
             print("  2. Ingest Folders [Audio Pipeline - FAST]")
             print("  3. Standard Search [Fast RAG]")
             print("  4. Verified Search [SLM Hallucination Scrubber]")
-            print("  5. Chat with Data [RAG -> LLM Synthesis]")
+            print("  5. Chat with Data [Multi-Turn Conversation]")
             print("  6. Shutdown Appliance")
             print("  7. Deep Research Chat [Multi-Pass Reasoning]")
 
@@ -168,22 +200,12 @@ def main():
                         print_search_results(results, "VERIFIED RETRIEVAL")
 
                 elif choice == '5':
-                    prompt = input("[Enter your question] > ").strip()
-                    if prompt:
-                        print("\n[SYSTEM] Running RAG + QA Generation Pipeline...")
-                        query = SearchQuery(prompt=prompt, limit=5)
-                        response = engine.chat(query)
-
-                        print(f"\n[ONYX AI]\n{response.generated_answer}")
-                        print(f"\n[CITATIONS USED: {len(response.citations)}]")
-                        for cit in response.citations:
-                            print(f"  {cit.doc_id} {cit.physical_path or 'No physical file resolved'}")
-                            print(f"         Timestamp: {cit.start_sec}s - {cit.end_sec}s")
+                    conversation_session_id = run_conversation(engine, conversation_session_id)
 
                 elif choice == '7':
                     prompt = input("[Enter your research question] > ").strip()
                     if prompt:
-                        run_deep_research_with_clarifications(engine, deep_research_session_id, prompt)
+                        run_deep_research_with_clarifications(engine, conversation_session_id, prompt)
 
                 elif choice == '6' or choice.lower() in ['exit', 'quit']:
                     print("\n[SYSTEM] Initiating graceful shutdown sequence...")

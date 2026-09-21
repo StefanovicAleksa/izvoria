@@ -200,3 +200,15 @@ class TestNeighborFetchIntegration:
         assert first[0].relevance_score == 0.0
         # Anchors that neighbour each other are returned once each, alongside the outer neighbours
         assert sorted(c.chunk_id for c in both) == sorted(seeded_timeline)
+
+    def test_fetch_chunks_returns_requested_chunks_in_order(self, seeded_timeline):
+        repo = PostgresSearchRepository()
+        missing = uuid.uuid4()
+
+        chunks = repo.fetch_chunks([seeded_timeline[2], missing, seeded_timeline[0], seeded_timeline[2]])
+
+        assert [c.chunk_id for c in chunks] == [seeded_timeline[2], seeded_timeline[0]]
+        assert chunks[0].raw_text == "[Speaker_0 @ 00:00:02]: part 2"
+        assert chunks[0].speaker_labels == ["Speaker_0"]
+        assert (chunks[0].start_sec, chunks[0].end_sec) == (200.0, 310.0)
+        assert chunks[0].extracted_file_id is None

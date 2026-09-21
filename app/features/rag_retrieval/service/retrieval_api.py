@@ -2,6 +2,7 @@
 # Path: app/features/rag_retrieval/service/retrieval_api.py
 
 import time
+import uuid
 import logging
 from typing import List
 
@@ -77,6 +78,13 @@ class RetrievalAPI:
 
         except Exception as e:
             raise map_retrieval_error(e, context=f"Processing search query: '{query.prompt}'") from e
+
+    def get_chunks(self, chunk_ids: List[uuid.UUID]) -> List[RetrievedChunk]:
+        """Chunks by id, in the given order; deleted ones are skipped. Needs no model."""
+        try:
+            return self._search_repo.fetch_chunks(chunk_ids)
+        except Exception as e:
+            raise map_retrieval_error(e, context="Fetching chunks by id") from e
 
     def expand_neighbors(self, chunks: List[RetrievedChunk], top_k: int) -> List[RetrievedChunk]:
         """

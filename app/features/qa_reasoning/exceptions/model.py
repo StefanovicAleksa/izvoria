@@ -7,7 +7,7 @@ class ReasonerModelError(QAReasoningError):
     pass
 
 class ReasonerOOMError(ReasonerModelError):
-    """Raised when the GPU VRAM limit is breached during Qwen2.5-7B load or inference."""
+    """Raised when the GPU VRAM limit is breached during Qwen3.5-9B load or inference."""
     pass
 
 class ReasonerInferenceError(ReasonerModelError):

@@ -7,9 +7,9 @@ class GenerationModelError(QAGenerationError):
     """Base exception for AI hardware and inference failures during QA generation."""
     pass
 
-class GemmaOOMError(GenerationModelError):
+class GenerationOOMError(GenerationModelError):
     """
-    Raised when the GPU VRAM limit is breached while loading Gemma 4 E4B
+    Raised when the GPU VRAM limit is breached while loading the QA generation model
     or during the autoregressive generation phase.
     """
     pass
@@ -17,7 +17,7 @@ class GemmaOOMError(GenerationModelError):
 class ContextWindowExceededError(GenerationModelError):
     """
     Raised when the assembled RAG context chunks + user prompt exceed
-    the maximum configured token context limit of the Gemma model.
+    the maximum configured token context limit of the QA generation model.
     """
     pass
 

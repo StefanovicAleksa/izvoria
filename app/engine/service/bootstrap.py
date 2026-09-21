@@ -97,7 +97,7 @@ from app.features.rag_reranking.service.rerank_api import RerankAPI
 from app.features.retrieval_hallucination_scrubber.data.slm_adapter import QwenRetrievalScrubberAdapter
 from app.features.retrieval_hallucination_scrubber.service.scrubber_api import RetrievalScrubberAPI
 
-from app.features.qa_generation.data.gemma_adapter import GemmaGenerationAdapter
+from app.features.qa_generation.data.llama_cpp_generation_adapter import LlamaCppGenerationAdapter
 from app.features.qa_generation.service.generation_api import QAGenerationAPI
 
 from app.features.qa_reasoning.data.qwen_reasoner_adapter import QwenReasonerAdapter
@@ -282,7 +282,7 @@ class OnyxBootstrapper:
         scrubber_adapter = QwenRetrievalScrubberAdapter()
         scrubber_api = RetrievalScrubberAPI(adapter=scrubber_adapter, orchestrator=orchestrator)
 
-        qa_adapter = GemmaGenerationAdapter()
+        qa_adapter = LlamaCppGenerationAdapter()
         qa_api = QAGenerationAPI(adapter=qa_adapter, orchestrator=orchestrator)
 
         # --- Feature: Deep Research (Reasoner + Session Memory) ---
@@ -377,7 +377,8 @@ class OnyxBootstrapper:
                                                                scrubber_phase=retrieval_scrubber_phase)
         live_qa_pipeline = LiveQAPipeline(retrieval_phase=rag_retrieval_phase, reranking_phase=rag_reranking_phase,
                                           scrubber_phase=retrieval_scrubber_phase,
-                                          qa_generation_phase=qa_generation_phase)
+                                          qa_generation_phase=qa_generation_phase,
+                                          reasoner_phase=reasoner_phase)
 
         live_deep_research_pipeline = LiveDeepResearchPipeline(
             reasoner_phase=reasoner_phase,
@@ -399,7 +400,8 @@ class OnyxBootstrapper:
             live_qa_pipeline=live_qa_pipeline,
             storage_api=storage_api,
             live_deep_research_pipeline=live_deep_research_pipeline,
-            session_memory_api=session_memory_api
+            session_memory_api=session_memory_api,
+            retrieval_api=retrieval_api
         )
 
         logger.info("Onyx Bootstrapper successfully constructed the Engine container.")

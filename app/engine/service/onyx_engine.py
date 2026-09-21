@@ -10,6 +10,8 @@ import uuid
 import gc
 from typing import Dict, Optional
 
+from sqlalchemy import text
+
 from app.core.database.service.manager import db_manager
 from app.core.database.data.engine import Base
 from app.core.model_manager.service.async_model_service import AsyncModelService
@@ -19,12 +21,16 @@ from app.engine.domain.enums import EngineState
 from app.engine.domain.entities import IngestionReport
 from app.engine.exceptions.lifecycle import EngineOfflineError, EngineBusyError
 from app.engine.utils.error_mapper import map_engine_error
+from app.engine.utils.conversation_history import build_conversation_history, history_chunks_newest_first
 
 from app.features.storage.service.storage_api import StorageAPI
 from app.features.storage.domain.entities import SourceType
 from app.features.rag_retrieval.domain.entities import SearchQuery, SearchResult
-from app.features.qa_generation.domain.entities import QAResponse
+from app.features.rag_retrieval.service.retrieval_api import RetrievalAPI
+from app.features.qa_generation.domain.entities import QAResponse, ConversationHistory
 from app.features.session_memory.service.session_memory_api import SessionMemoryAPI
+from app.features.session_memory.domain.enums import SessionTurnMode
+from app.features.session_memory.data.models import SESSION_TURNS_UPGRADE_DDL
 
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.service.pipelines.batch_audio_pipeline import BatchAudioPipeline
@@ -54,7 +60,8 @@ class OnyxEngine(IOnyxEngine):
             live_qa_pipeline: LiveQAPipeline,
             storage_api: StorageAPI,
             live_deep_research_pipeline: Optional[LiveDeepResearchPipeline] = None,
-            session_memory_api: Optional[SessionMemoryAPI] = None
+            session_memory_api: Optional[SessionMemoryAPI] = None,
+            retrieval_api: Optional[RetrievalAPI] = None
     ):
         self._async_service = async_model_service
         self._media_pipeline = media_pipeline
@@ -65,6 +72,7 @@ class OnyxEngine(IOnyxEngine):
         self._storage_api = storage_api
         self._live_deep_research_pipeline = live_deep_research_pipeline
         self._session_memory_api = session_memory_api
+        self._retrieval_api = retrieval_api
 
         self._state = EngineState.OFFLINE
         self._state_lock = threading.RLock()
@@ -85,6 +93,8 @@ class OnyxEngine(IOnyxEngine):
                 with db_manager.session() as session:
                     engine = session.get_bind()
                     Base.metadata.create_all(bind=engine)
+                    for statement in SESSION_TURNS_UPGRADE_DDL:
+                        session.execute(text(statement))
 
                 self._force_aggressive_garbage_collection()
 
@@ -224,39 +234,83 @@ class OnyxEngine(IOnyxEngine):
             self._release_models_after_failure()
             raise map_engine_error(e, context=f"Verified Search [{query.prompt}]")
 
-    def chat(self, query: SearchQuery) -> QAResponse:
+    def chat(self, query: SearchQuery, session_id: Optional[uuid.UUID] = None) -> QAResponse:
+        """
+        Without a session_id, a standalone question. With one, a turn of that conversation: the answer model sees
+        the earlier turns (chat and Deep Research alike) and their evidence, and this turn is recorded.
+        """
         self._enforce_online_state()
+        if session_id is not None:
+            self._require_conversation_support()
+
         try:
             search_id = uuid.uuid4()
-            result = self._live_qa_pipeline.execute_chat(search_id, query)
-            self._resolve_citation_paths(result)
-            return result
+            if session_id is None:
+                result = self._live_qa_pipeline.execute_chat(search_id, query)
+                self._resolve_citation_paths(result)
+                return result
+
+            turns = self._session_memory_api.get_history(session_id)
+            history = self._load_history(turns)
+            chat_result = self._live_qa_pipeline.execute_conversation_chat(
+                search_id, query, history, self._session_memory_api.format_prior_context(turns)
+            )
+            self._session_memory_api.record_turn(
+                session_id, query.prompt, chat_result.qa_response.generated_answer,
+                mode=SessionTurnMode.CHAT,
+                standalone_query=chat_result.standalone_query,
+                evidence_chunk_ids=chat_result.new_chunk_ids,
+                first_doc_number=history.next_doc_number
+            )
+            self._resolve_citation_paths(chat_result.qa_response)
+            return chat_result.qa_response
         except Exception as e:
             self._release_models_after_failure()
             raise map_engine_error(e, context=f"Chat QA Generation [{query.prompt}]")
 
     def chat_deep_research(self, session_id: uuid.UUID, query: SearchQuery) -> DeepResearchResponse:
         self._enforce_online_state()
-        if self._live_deep_research_pipeline is None or self._session_memory_api is None:
+        if self._live_deep_research_pipeline is None:
             raise EngineOfflineError("Deep Research chat is not wired into this engine instance.")
+        self._require_conversation_support()
 
         try:
             search_id = uuid.uuid4()
-            prior_context = self._session_memory_api.get_prior_context(session_id)
-            result = self._live_deep_research_pipeline.execute_deep_research(search_id, query, prior_context)
+            turns = self._session_memory_api.get_history(session_id)
+            history = self._load_history(turns)
+            result = self._live_deep_research_pipeline.execute_deep_research(
+                search_id, query,
+                prior_session_context=self._session_memory_api.format_prior_context(turns),
+                seed_chunks=history_chunks_newest_first(history)
+            )
 
             if result.qa_response is not None:
                 self._resolve_citation_paths(result.qa_response)
-                self._session_memory_api.record_turn(session_id, query.prompt, result.qa_response.generated_answer)
+                answer_text = result.qa_response.generated_answer
             else:
-                self._session_memory_api.record_turn(
-                    session_id, query.prompt, f"[Clarification requested] {result.clarification_question}"
-                )
+                answer_text = f"[Clarification requested] {result.clarification_question}"
+
+            # Seeded chunks keep the numbers earlier turns gave them; only chunks new to the conversation are numbered
+            shown = {n.chunk.chunk_id for turn in history.turns for n in turn.evidence}
+            self._session_memory_api.record_turn(
+                session_id, query.prompt, answer_text,
+                mode=SessionTurnMode.DEEP_RESEARCH,
+                standalone_query=result.standalone_query,
+                evidence_chunk_ids=[c for c in result.evidence_chunk_ids if c not in shown],
+                first_doc_number=history.next_doc_number
+            )
 
             return result
         except Exception as e:
             self._release_models_after_failure()
             raise map_engine_error(e, context=f"Deep Research Chat [{query.prompt}]")
+
+    def _require_conversation_support(self) -> None:
+        if self._session_memory_api is None or self._retrieval_api is None:
+            raise EngineOfflineError("Conversation memory is not wired into this engine instance.")
+
+    def _load_history(self, turns) -> ConversationHistory:
+        return build_conversation_history(turns, self._retrieval_api.get_chunks)
 
     def _release_models_after_failure(self) -> None:
         """A failed live call must not leave a model resident for the next request to wait on."""

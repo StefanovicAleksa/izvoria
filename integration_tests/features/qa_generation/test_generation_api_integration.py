@@ -13,7 +13,7 @@ from app.core.database.service.manager import db_manager
 from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 
-from app.features.qa_generation.data.gemma_adapter import GemmaGenerationAdapter
+from app.features.qa_generation.data.llama_cpp_generation_adapter import LlamaCppGenerationAdapter
 from app.features.qa_generation.service.generation_api import QAGenerationAPI
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.storage.domain.entities import SourceType
@@ -27,7 +27,7 @@ from app.features.clip_extractor.data.models import VideoClipModel
 class TestQAGenerationAPIIntegration:
     """
     STRICT NO-MOCKS INTEGRATION TEST.
-    Requires: Live PostgreSQL, NVIDIA GPU, and the Gemma 4 E4B model.
+    Requires: Live PostgreSQL, NVIDIA GPU, and the QA generation model (Qwen3.5-9B).
     """
 
     @pytest.fixture(scope="module", autouse=True)
@@ -40,14 +40,14 @@ class TestQAGenerationAPIIntegration:
     def ensure_model_exists(self):
         if not os.path.exists(settings.QA_GENERATION_MODEL_PATH):
             pytest.skip(
-                f"Integration test skipped due to missing Gemma 4 model at: {settings.QA_GENERATION_MODEL_PATH}"
+                f"Integration test skipped due to missing QA generation model at: {settings.QA_GENERATION_MODEL_PATH}"
             )
 
     @pytest.fixture
     def live_api(self) -> QAGenerationAPI:
         vram_monitor = PyTorchVramMonitor()
         orchestrator = ModelManagerOrchestrator(vram_monitor)
-        adapter = GemmaGenerationAdapter()
+        adapter = LlamaCppGenerationAdapter()
 
         return QAGenerationAPI(
             adapter=adapter,
@@ -151,7 +151,7 @@ class TestQAGenerationAPIIntegration:
         object.__setattr__(retrieved_chunk, 'physical_path', seeded_db_context["physical_path"])
 
         # 2. Execute LIVE GPU Inference
-        print("\n[DEBUG] Acquiring VRAM lock and spinning up Gemma 4 E4B for QA Generation...")
+        print("\n[DEBUG] Acquiring VRAM lock and spinning up the QA generation model for QA Generation...")
         response = live_api.generate(
             user_query="What time did the defendant enter the bank, and what were they wearing?",
             retrieved_chunks=[retrieved_chunk],
@@ -194,7 +194,7 @@ class TestQAGenerationAPIIntegration:
         )
         object.__setattr__(retrieved_chunk, 'physical_path', seeded_db_context["physical_path"])
 
-        print("\n[DEBUG] Acquiring VRAM lock for Gemma 4 E4B draft + self-critique...")
+        print("\n[DEBUG] Acquiring VRAM lock for the QA generation model draft + self-critique...")
         response, critique = live_api.generate_with_critique(
             user_query="What time did the defendant enter the bank, and what were they wearing?",
             retrieved_chunks=[retrieved_chunk],
@@ -206,17 +206,19 @@ class TestQAGenerationAPIIntegration:
         assert critique.verdict is not None
     def test_generate_with_critique_fits_an_oversized_evidence_pool(self, live_api: QAGenerationAPI):
         """
-        A Deep Research pool of 30 transcript-sized chunks (well over the 8K context) used to overflow llama.cpp's
-        context window. The evidence is now cut to the budget, so the call succeeds and only packed chunks are cited.
+        An evidence pool larger than the context window used to overflow llama.cpp. The evidence is now cut to the
+        budget, so the call succeeds and only packed chunks are cited. The pool is sized from QA_GENERATION_N_CTX
+        (~3.5K tokens per chunk), so at 128K this prefills the full window twice (answer + critique).
         """
         source_id = uuid.uuid4()
-        filler = " ".join(["The witness described the lobby layout and the queue at the counter in detail."] * 25)
+        filler = " ".join(["The witness described the lobby layout and the queue at the counter in detail."] * 220)
+        chunk_count = settings.QA_GENERATION_N_CTX // 3000 + 10
         chunks = [
             RetrievedChunk(
                 chunk_id=uuid.uuid4(),
                 source_id=source_id,
                 text_payload=filler,
-                raw_text=f"[Speaker_0 @ 00:{i:02d}:00]: " + (
+                raw_text=f"[Speaker_0 @ {i // 60:02d}:{i % 60:02d}:00]: " + (
                     "The defendant wearing a red jacket entered the bank at exactly 09:00 AM. " if i == 0 else ""
                 ) + filler,
                 speaker_labels=["Speaker_0"],
@@ -224,7 +226,7 @@ class TestQAGenerationAPIIntegration:
                 end_sec=60.0 * i + 55.0,
                 relevance_score=1.0 - i / 100
             )
-            for i in range(30)
+            for i in range(chunk_count)
         ]
 
         response, critique = live_api.generate_with_critique(

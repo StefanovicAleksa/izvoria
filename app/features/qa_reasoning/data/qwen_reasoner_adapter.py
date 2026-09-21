@@ -11,6 +11,7 @@ from pathlib import Path
 
 from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
+from app.core.model_manager.utils.llama_cpp_chat import build_llama, chat_completion, strip_reasoning
 from app.features.qa_reasoning.domain.interfaces import IReasonerAdapter
 from app.features.qa_reasoning.domain.entities import ReasonerDecision, EvidenceLink
 from app.features.qa_reasoning.domain.enums import ReasonerDecisionType
@@ -25,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 class QwenReasonerAdapter(IReasonerAdapter):
     """
-    Adapter for executing Qwen2.5-7B-Instruct via llama.cpp as the Deep Research Reasoner.
+    Adapter for executing Qwen3.5-9B via llama.cpp as the Deep Research Reasoner.
     Fails closed on an unparseable/invalid `decision` field: unlike the retrieval scrubber's
     fail-open default, there is no safe default among three semantically different
     control-flow branches (see JSONReasonerParseError).
@@ -37,14 +38,7 @@ class QwenReasonerAdapter(IReasonerAdapter):
 
     @staticmethod
     def _get_llama_model(model_path: str) -> Any:
-        from llama_cpp import Llama
-        return Llama(
-            model_path=model_path,
-            n_gpu_layers=-1,
-            n_ctx=settings.QA_REASONER_N_CTX,
-            flash_attn=True,
-            verbose=False
-        )
+        return build_llama(model_path, settings.QA_REASONER_N_CTX, settings.QA_LLM_KV_CACHE_TYPE)
 
     def load(self, manifest: ModelManifest) -> LoadedModel:
         try:
@@ -110,13 +104,15 @@ class QwenReasonerAdapter(IReasonerAdapter):
                 {"role": "user", "content": QUERY_REWRITE_USER_TEMPLATE.format(
                     prior_session_context=prior_session_context, question=question)}
             ]
-            response = llm.create_chat_completion(
-                messages=messages,
+            response = chat_completion(
+                llm,
+                messages,
+                enable_thinking=settings.QA_LLM_ENABLE_THINKING,
                 response_format={"type": "json_object"},
                 temperature=0.0,
                 max_tokens=self.REWRITE_MAX_TOKENS
             )
-            raw_content = response["choices"][0]["message"]["content"]
+            raw_content = strip_reasoning(response["choices"][0]["message"]["content"] or "")
             json_match = re.search(r'\{.*}', raw_content, re.DOTALL)
             parsed_data = json.loads(json_match.group(0)) if json_match else json.loads(raw_content)
 
@@ -149,8 +145,10 @@ class QwenReasonerAdapter(IReasonerAdapter):
                 {"role": "user", "content": user_content}
             ]
 
-            response = llm.create_chat_completion(
-                messages=messages,
+            response = chat_completion(
+                llm,
+                messages,
+                enable_thinking=settings.QA_LLM_ENABLE_THINKING,
                 response_format={"type": "json_object"},
                 # Deterministic: the decision must follow from the evidence actually gathered,
                 # not from decoding randomness flip-flopping between near-identical inputs.
@@ -158,7 +156,7 @@ class QwenReasonerAdapter(IReasonerAdapter):
                 max_tokens=self.REASON_MAX_TOKENS
             )
 
-            raw_content = response["choices"][0]["message"]["content"]
+            raw_content = strip_reasoning(response["choices"][0]["message"]["content"] or "")
 
             json_match = re.search(r'\{.*}', raw_content, re.DOTALL)
             if json_match:

@@ -11,7 +11,7 @@ from app.features.qa_reasoning.domain.entities import ReasonerDecision
 
 class IReasonerAdapter(IModelLoader, ABC):
     """
-    Contract for the Reasoner LLM (e.g., Qwen2.5-7B-Instruct).
+    Contract for the Reasoner LLM (e.g., Qwen3.5-9B).
     Inherits from IModelLoader so the Orchestrator manages its VRAM lifecycle.
     """
 

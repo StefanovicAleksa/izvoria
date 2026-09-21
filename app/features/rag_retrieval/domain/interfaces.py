@@ -39,6 +39,13 @@ class IRetrievalRepository(ABC):
         pass
 
     @abstractmethod
+    def fetch_chunks(self, chunk_ids: List[uuid.UUID]) -> List[RetrievedChunk]:
+        """
+        The given chunks, in the given order (duplicates once). Ids that no longer exist are skipped.
+        """
+        pass
+
+    @abstractmethod
     def fetch_neighbors(self, chunk_ids: List[uuid.UUID]) -> List[RetrievedChunk]:
         """
         For each given chunk, the chunks immediately before and after it (by start time) in the same source.

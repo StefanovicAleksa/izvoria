@@ -10,9 +10,13 @@ from app.engine.domain.enums import EngineState
 from app.engine.domain.entities import IngestionReport
 from app.engine.exceptions.lifecycle import EngineOfflineError
 from app.features.rag_retrieval.domain.entities import SearchQuery
-from app.features.qa_generation.domain.entities import QAResponse, QACitation
+from app.features.rag_retrieval.domain.entities import RetrievedChunk
+from app.features.qa_generation.domain.entities import QAResponse, QACitation, ConversationHistory
+from app.features.session_memory.domain.entities import SessionTurn
+from app.features.session_memory.domain.enums import SessionTurnMode
+from app.features.session_memory.data.models import SESSION_TURNS_UPGRADE_DDL
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
-from app.orchestration.domain.entities import PhaseBatchResult, DeepResearchResponse
+from app.orchestration.domain.entities import PhaseBatchResult, DeepResearchResponse, ConversationChatResult
 from app.features.storage.domain.entities import Source, SourceType
 
 
@@ -42,12 +46,19 @@ class TestOnyxEngineUnit:
     def mock_live_deep_research_pipeline(self): return Mock()
 
     @pytest.fixture
-    def mock_session_memory_api(self): return Mock()
+    def mock_session_memory_api(self):
+        api = Mock()
+        api.get_history.return_value = []
+        api.format_prior_context.return_value = None
+        return api
+
+    @pytest.fixture
+    def mock_retrieval_api(self): return Mock()
 
     @pytest.fixture
     def engine(self, mock_async_service, mock_media_pipeline, mock_audio_pipeline, mock_live_pipeline,
                mock_live_verified_pipeline, mock_live_qa_pipeline, mock_storage_api,
-               mock_live_deep_research_pipeline, mock_session_memory_api):
+               mock_live_deep_research_pipeline, mock_session_memory_api, mock_retrieval_api):
         return OnyxEngine(
             async_model_service=mock_async_service,
             media_pipeline=mock_media_pipeline,
@@ -57,7 +68,8 @@ class TestOnyxEngineUnit:
             live_qa_pipeline=mock_live_qa_pipeline,
             storage_api=mock_storage_api,
             live_deep_research_pipeline=mock_live_deep_research_pipeline,
-            session_memory_api=mock_session_memory_api
+            session_memory_api=mock_session_memory_api,
+            retrieval_api=mock_retrieval_api
         )
 
     @patch('app.engine.service.onyx_engine.db_manager')
@@ -74,6 +86,16 @@ class TestOnyxEngineUnit:
         assert engine.get_state() == EngineState.OFFLINE
         mock_async_service.shutdown.assert_called_once()
         mock_db_manager.dispose.assert_called_once()
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_start_adds_multi_turn_columns_to_an_existing_session_turns_table(self, mock_db_manager, engine):
+        session = mock_db_manager.session.return_value.__enter__.return_value
+
+        engine.start()
+
+        executed = [str(call.args[0]) for call in session.execute.call_args_list]
+        assert executed == list(SESSION_TURNS_UPGRADE_DDL)
+        assert all("ADD COLUMN IF NOT EXISTS" in statement for statement in executed)
 
     def test_ingest_videos_raises_if_offline(self, engine):
         with pytest.raises(EngineOfflineError):
@@ -262,38 +284,149 @@ class TestOnyxEngineUnit:
         with pytest.raises(Exception, match="DB down"):
             engine.search_standard(SearchQuery(prompt="test"))
 
+    @staticmethod
+    def _chunk(chunk_id=None):
+        return RetrievedChunk(chunk_id=chunk_id or uuid.uuid4(), source_id=uuid.uuid4(), text_payload="t",
+                              start_sec=0.0, end_sec=1.0, relevance_score=0.0)
+
+    @staticmethod
+    def _turn(session_id, first_doc_number, evidence_ids, mode=SessionTurnMode.CHAT):
+        return SessionTurn(id=uuid.uuid4(), session_id=session_id, question="Earlier?", answer_text="Earlier [Doc 1].",
+                           mode=mode, evidence_chunk_ids=evidence_ids, first_doc_number=first_doc_number,
+                           created_at="2026-01-01T00:00:00Z")
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_chat_with_session_runs_a_conversation_turn_and_records_it(
+            self, _, engine, mock_live_qa_pipeline, mock_session_memory_api, mock_retrieval_api
+    ):
+        engine.start()
+        session_id = uuid.uuid4()
+        earlier = self._chunk()
+        turns = [self._turn(session_id, 1, [earlier.chunk_id])]
+        mock_session_memory_api.get_history.return_value = turns
+        mock_session_memory_api.format_prior_context.return_value = "prior"
+        mock_retrieval_api.get_chunks.return_value = [earlier]
+        new_id = uuid.uuid4()
+        qa_response = QAResponse(query="And then?", generated_answer="Then [Doc 2].", citations=[])
+        mock_live_qa_pipeline.execute_conversation_chat.return_value = ConversationChatResult(
+            qa_response=qa_response, standalone_query="What happened after the vote?", new_chunk_ids=[new_id]
+        )
+
+        result = engine.chat(SearchQuery(prompt="And then?"), session_id=session_id)
+
+        assert result == qa_response
+        mock_session_memory_api.get_history.assert_called_once_with(session_id)
+        mock_retrieval_api.get_chunks.assert_called_once_with([earlier.chunk_id])
+        _, query, history, prior = mock_live_qa_pipeline.execute_conversation_chat.call_args[0]
+        assert query.prompt == "And then?"
+        assert prior == "prior"
+        assert history.next_doc_number == 2
+        assert [(n.doc_number, n.chunk.chunk_id) for n in history.turns[0].evidence] == [(1, earlier.chunk_id)]
+        mock_session_memory_api.record_turn.assert_called_once_with(
+            session_id, "And then?", "Then [Doc 2].",
+            mode=SessionTurnMode.CHAT,
+            standalone_query="What happened after the vote?",
+            evidence_chunk_ids=[new_id],
+            first_doc_number=2
+        )
+        mock_live_qa_pipeline.execute_chat.assert_not_called()
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_chat_without_session_does_not_touch_conversation_memory(
+            self, _, engine, mock_live_qa_pipeline, mock_session_memory_api
+    ):
+        engine.start()
+        mock_live_qa_pipeline.execute_chat.return_value = QAResponse(query="q", generated_answer="a", citations=[])
+
+        engine.chat(SearchQuery(prompt="q"))
+
+        mock_session_memory_api.get_history.assert_not_called()
+        mock_session_memory_api.record_turn.assert_not_called()
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_chat_with_session_raises_if_memory_not_wired(self, _, mock_async_service, mock_media_pipeline,
+                                                          mock_audio_pipeline, mock_live_pipeline,
+                                                          mock_live_verified_pipeline, mock_live_qa_pipeline,
+                                                          mock_storage_api):
+        bare_engine = OnyxEngine(
+            async_model_service=mock_async_service, media_pipeline=mock_media_pipeline,
+            audio_pipeline=mock_audio_pipeline, live_pipeline=mock_live_pipeline,
+            live_verified_pipeline=mock_live_verified_pipeline, live_qa_pipeline=mock_live_qa_pipeline,
+            storage_api=mock_storage_api
+        )
+        bare_engine.start()
+
+        with pytest.raises(EngineOfflineError):
+            bare_engine.chat(SearchQuery(prompt="test"), session_id=uuid.uuid4())
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_failed_conversation_chat_releases_all_models_and_records_nothing(
+            self, _, engine, mock_live_qa_pipeline, mock_async_service, mock_session_memory_api
+    ):
+        engine.start()
+        mock_live_qa_pipeline.execute_conversation_chat.side_effect = RuntimeError("Scrubber crashed")
+
+        with pytest.raises(Exception):
+            engine.chat(SearchQuery(prompt="test"), session_id=uuid.uuid4())
+
+        mock_async_service.release_all.assert_called_once_with()
+        mock_session_memory_api.record_turn.assert_not_called()
+
     @patch('app.engine.service.onyx_engine.db_manager')
     def test_chat_deep_research_happy_path_records_turn(
             self, _, engine, mock_live_deep_research_pipeline, mock_session_memory_api
     ):
         engine.start()
         session_id = uuid.uuid4()
+        pool_id = uuid.uuid4()
         qa_response = QAResponse(query="test", generated_answer="Grounded answer.", citations=[])
-        deep_result = DeepResearchResponse(qa_response=qa_response, total_iterations=2)
+        deep_result = DeepResearchResponse(qa_response=qa_response, total_iterations=2,
+                                           standalone_query="test", evidence_chunk_ids=[pool_id])
         mock_live_deep_research_pipeline.execute_deep_research.return_value = deep_result
-        mock_session_memory_api.get_prior_context.return_value = "prior context"
+        mock_session_memory_api.format_prior_context.return_value = "prior context"
 
         result = engine.chat_deep_research(session_id, SearchQuery(prompt="test"))
 
         assert result.qa_response.generated_answer == "Grounded answer."
-        mock_session_memory_api.get_prior_context.assert_called_once_with(session_id)
-        mock_session_memory_api.record_turn.assert_called_once_with(session_id, "test", "Grounded answer.")
+        mock_session_memory_api.get_history.assert_called_once_with(session_id)
+        mock_live_deep_research_pipeline.execute_deep_research.assert_called_once()
+        call = mock_live_deep_research_pipeline.execute_deep_research.call_args
+        assert call.kwargs == {"prior_session_context": "prior context", "seed_chunks": []}
+        mock_session_memory_api.record_turn.assert_called_once_with(
+            session_id, "test", "Grounded answer.",
+            mode=SessionTurnMode.DEEP_RESEARCH,
+            standalone_query="test",
+            evidence_chunk_ids=[pool_id],
+            first_doc_number=1
+        )
 
     @patch('app.engine.service.onyx_engine.db_manager')
-    def test_chat_deep_research_clarification_records_placeholder_turn(
-            self, _, engine, mock_live_deep_research_pipeline, mock_session_memory_api
+    def test_chat_deep_research_seeds_history_evidence_and_numbers_only_new_chunks(
+            self, _, engine, mock_live_deep_research_pipeline, mock_session_memory_api, mock_retrieval_api
     ):
         engine.start()
         session_id = uuid.uuid4()
-        deep_result = DeepResearchResponse(qa_response=None, clarification_question="Which incident?")
-        mock_live_deep_research_pipeline.execute_deep_research.return_value = deep_result
+        old_a, old_b = self._chunk(), self._chunk()
+        mock_session_memory_api.get_history.return_value = [
+            self._turn(session_id, 1, [old_a.chunk_id]),
+            self._turn(session_id, 2, [old_b.chunk_id], mode=SessionTurnMode.DEEP_RESEARCH),
+        ]
+        mock_retrieval_api.get_chunks.return_value = [old_a, old_b]
+        fresh_id = uuid.uuid4()
+        mock_live_deep_research_pipeline.execute_deep_research.return_value = DeepResearchResponse(
+            clarification_question="Which vote?", evidence_chunk_ids=[fresh_id, old_a.chunk_id]
+        )
 
-        result = engine.chat_deep_research(session_id, SearchQuery(prompt="test"))
+        engine.chat_deep_research(session_id, SearchQuery(prompt="test"))
 
-        assert result.qa_response is None
-        assert result.clarification_question == "Which incident?"
+        seeds = mock_live_deep_research_pipeline.execute_deep_research.call_args.kwargs["seed_chunks"]
+        assert [c.chunk_id for c in seeds] == [old_b.chunk_id, old_a.chunk_id]
         mock_session_memory_api.record_turn.assert_called_once_with(
-            session_id, "test", "[Clarification requested] Which incident?"
+            session_id, "test", "[Clarification requested] Which vote?",
+            mode=SessionTurnMode.DEEP_RESEARCH,
+            standalone_query=None,
+            evidence_chunk_ids=[fresh_id],
+            first_doc_number=3
         )
 
     @patch('app.engine.service.onyx_engine.db_manager')
@@ -323,3 +456,4 @@ class TestOnyxEngineUnit:
             engine.chat_deep_research(uuid.uuid4(), SearchQuery(prompt="test"))
 
         mock_async_service.release_all.assert_called_once_with()
+

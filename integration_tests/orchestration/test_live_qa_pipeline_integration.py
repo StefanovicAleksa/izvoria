@@ -33,8 +33,8 @@ from app.features.rag_reranking.service.rerank_api import RerankAPI
 from app.features.retrieval_hallucination_scrubber.data.slm_adapter import QwenRetrievalScrubberAdapter
 from app.features.retrieval_hallucination_scrubber.service.scrubber_api import RetrievalScrubberAPI
 
-# FIX: Import the correct Gemma adapter
-from app.features.qa_generation.data.gemma_adapter import GemmaGenerationAdapter
+# QA generation adapter
+from app.features.qa_generation.data.llama_cpp_generation_adapter import LlamaCppGenerationAdapter
 from app.features.qa_generation.service.generation_api import QAGenerationAPI
 
 from app.orchestration.service.phases.rag_retrieval_phase import RagRetrievalPhase
@@ -166,7 +166,7 @@ class TestLiveQAPipelineIntegration:
         scrub_phase = RetrievalScrubberPhase(job_manager, scrubber_api, async_service, scrubber_adapter)
 
         # QA Generation Phase Dependencies
-        qa_adapter = GemmaGenerationAdapter()
+        qa_adapter = LlamaCppGenerationAdapter()
         qa_api = QAGenerationAPI(qa_adapter, orchestrator)
         qa_phase = QAGenerationPhase(job_manager, qa_api, async_service, qa_adapter)
 

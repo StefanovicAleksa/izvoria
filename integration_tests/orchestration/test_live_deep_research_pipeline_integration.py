@@ -32,7 +32,7 @@ from app.features.rag_reranking.service.rerank_api import RerankAPI
 from app.features.retrieval_hallucination_scrubber.data.slm_adapter import QwenRetrievalScrubberAdapter
 from app.features.retrieval_hallucination_scrubber.service.scrubber_api import RetrievalScrubberAPI
 
-from app.features.qa_generation.data.gemma_adapter import GemmaGenerationAdapter
+from app.features.qa_generation.data.llama_cpp_generation_adapter import LlamaCppGenerationAdapter
 from app.features.qa_generation.service.generation_api import QAGenerationAPI
 
 from app.features.qa_reasoning.data.qwen_reasoner_adapter import QwenReasonerAdapter
@@ -156,7 +156,7 @@ class TestLiveDeepResearchPipelineIntegration:
         scrubber_api = RetrievalScrubberAPI(scrubber_adapter, orchestrator)
         scrub_phase = RetrievalScrubberPhase(job_manager, scrubber_api, async_service, scrubber_adapter)
 
-        qa_adapter = GemmaGenerationAdapter()
+        qa_adapter = LlamaCppGenerationAdapter()
         qa_api = QAGenerationAPI(qa_adapter, orchestrator)
         qa_phase = QAGenerationPhase(job_manager, qa_api, async_service, qa_adapter)
 

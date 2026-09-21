@@ -9,7 +9,9 @@ from unittest.mock import Mock, ANY
 from app.orchestration.service.phases.qa_generation_phase import QAGenerationPhase
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import QAGenerationJobResult
-from app.features.qa_generation.domain.entities import QAResponse, AnswerCritique
+from app.features.qa_generation.domain.entities import (
+    QAResponse, AnswerCritique, ConversationAnswer, ConversationHistory
+)
 from app.features.qa_generation.domain.enums import CritiqueVerdict
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.core.model_manager.domain.entities import LoadedModel
@@ -126,7 +128,7 @@ class TestQAGenerationPhaseUnit:
 
     def test_execute_with_critique_marks_failure_on_exception(self, phase, mock_job_manager):
         search_id = uuid.uuid4()
-        mock_job_manager.run_job.side_effect = RuntimeError("Gemma crashed")
+        mock_job_manager.run_job.side_effect = RuntimeError("LLM crashed")
 
         result = phase.execute_with_critique([(search_id, "Q", [])])
 
@@ -134,3 +136,72 @@ class TestQAGenerationPhaseUnit:
         job_res, payload = result.items[0]
         assert job_res.success is False
         assert payload is None
+    def test_execute_conversation_happy_path(self, phase, mock_async_service, mock_job_manager, mock_loader,
+                                             mock_qa_api):
+        search_id = uuid.uuid4()
+        chunk = RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload="Test context",
+                               start_sec=0, end_sec=1, relevance_score=1.0)
+        history = ConversationHistory(next_doc_number=3)
+        phase._preload_future = Mock(spec=concurrent.futures.Future)
+        mock_loaded_model = Mock(spec=LoadedModel)
+        mock_async_service.resolve_preload.return_value = mock_loaded_model
+        answer = ConversationAnswer(
+            response=QAResponse(query="And then?", generated_answer="He left [Doc 3].", citations=[]),
+            new_chunk_ids=[chunk.chunk_id]
+        )
+        mock_job_manager.run_job.return_value = answer
+
+        result = phase.execute_conversation([(search_id, "And then?", [chunk], history)])
+
+        assert result.status == PhaseStatus.COMPLETED
+        job_res, payload = result.items[0]
+        assert job_res.success is True
+        assert job_res.generated_answer_preview == "He left [Doc 3]...."
+        assert payload == answer
+        mock_job_manager.run_job.assert_called_once_with(
+            ANY, mock_qa_api.generate_conversation, user_query="And then?", retrieved_chunks=[chunk],
+            release_after=False, history=history
+        )
+        mock_async_service.trigger_unload.assert_called_once_with(
+            loaded_model=mock_loaded_model, loader=mock_loader, flush=True
+        )
+
+    def test_execute_conversation_without_preload_releases_per_job(self, phase, mock_async_service,
+                                                                   mock_job_manager):
+        mock_job_manager.run_job.return_value = ConversationAnswer(
+            response=QAResponse(query="Q", generated_answer="", citations=[])
+        )
+
+        phase.execute_conversation([(uuid.uuid4(), "Q", [], ConversationHistory())])
+
+        assert mock_job_manager.run_job.call_args.kwargs["release_after"] is True
+        mock_async_service.trigger_unload.assert_not_called()
+
+    def test_execute_conversation_marks_failure_on_exception(self, phase, mock_job_manager):
+        mock_job_manager.run_job.side_effect = RuntimeError("LLM crashed")
+
+        result = phase.execute_conversation([(uuid.uuid4(), "Q", [], ConversationHistory())])
+
+        assert result.status == PhaseStatus.FAILED
+        job_res, payload = result.items[0]
+        assert job_res.success is False
+        assert payload is None
+        assert "Conversational QA Generation" in result.errors[0]
+
+    def test_execute_conversation_fails_if_preload_fails(self, phase, mock_async_service, mock_job_manager):
+        phase._preload_future = Mock(spec=concurrent.futures.Future)
+        mock_async_service.resolve_preload.side_effect = ModelManagerError("Out of VRAM")
+
+        result = phase.execute_conversation([(uuid.uuid4(), "Q", [], ConversationHistory())])
+
+        assert result.status == PhaseStatus.FAILED
+        mock_job_manager.run_job.assert_not_called()
+
+    def test_discard_preload_hands_the_future_to_the_async_service(self, phase, mock_async_service, mock_loader):
+        future = Mock(spec=concurrent.futures.Future)
+        phase._preload_future = future
+
+        phase.discard_preload()
+        phase.discard_preload()
+
+        mock_async_service.discard_preload.assert_called_once_with(future, mock_loader)

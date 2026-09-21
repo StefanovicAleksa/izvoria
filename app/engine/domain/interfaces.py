@@ -3,6 +3,7 @@
 
 import uuid
 from abc import ABC, abstractmethod
+from typing import Optional
 
 from app.engine.domain.enums import EngineState
 from app.engine.domain.entities import IngestionReport
@@ -61,21 +62,24 @@ class IOnyxEngine(ABC):
         pass
 
     @abstractmethod
-    def chat(self, query: SearchQuery) -> QAResponse:
+    def chat(self, query: SearchQuery, session_id: Optional[uuid.UUID] = None) -> QAResponse:
         """
         Executes an end-to-end Chat pipeline:
         Hybrid Search -> SLM Semantic Scrubbing -> LLM Final Generation.
+        With a session_id the question is a turn of that conversation: a follow-up is searched in standalone form,
+        the answer model sees the earlier turns and the evidence they showed, and the turn is recorded.
         """
         pass
 
     @abstractmethod
     def chat_deep_research(self, session_id: uuid.UUID, query: SearchQuery) -> DeepResearchResponse:
         """
-        Multi-pass reasoning chat: a Qwen2.5-7B Reasoner loops against retrieval/rerank/scrub
-        until ready to answer or in need of clarification, then Gemma drafts an answer and
+        Multi-pass reasoning chat: a Qwen3.5-9B Reasoner loops against retrieval/rerank/scrub
+        until ready to answer or in need of clarification, then the answer model drafts an answer and
         immediately self-critiques it (same model acquisition), looping back for more evidence
         if under-supported. Bounded by DEEP_RESEARCH_MAX_ITERATIONS / DEEP_RESEARCH_MAX_CRITIQUE_RETRIES.
-        Opt-in and purely additive to chat() — nothing about LiveQAPipeline changes.
+        Shares the session's conversation with chat(): it reads the earlier turns and their evidence, and
+        records its own turn.
         """
         pass
 

@@ -15,6 +15,7 @@ from app.orchestration.domain.entities import (
     ReasonerJobResult, PhaseBatchResult, DeepResearchIterationTrace, DeepResearchResponse
 )
 from app.orchestration.exceptions.workflow import WorkflowStateError, WorkflowExecutionError
+from app.orchestration.utils.follow_up import answer_question
 
 from app.orchestration.service.phases.reasoner_phase import ReasonerPhase
 from app.orchestration.service.phases.rag_retrieval_phase import RagRetrievalPhase
@@ -207,7 +208,13 @@ class LiveDeepResearchPipeline:
             search_id: uuid.UUID,
             query: SearchQuery,
             prior_session_context: Optional[str] = None,
+            seed_chunks: Optional[List[RetrievedChunk]] = None,
     ) -> DeepResearchResponse:
+        """
+        prior_session_context is the conversation so far as text. seed_chunks is the evidence earlier turns of the
+        conversation showed; it joins the pool after this question's own first search, so it is what an evidence
+        budget drops first.
+        """
         logger.info(f"========== Starting Live Deep Research Pipeline for Search [{search_id}] ==========")
 
         evidence_pool: List[RetrievedChunk] = []
@@ -220,6 +227,14 @@ class LiveDeepResearchPipeline:
         # session context is likewise only meaningful on the true first turn of the call.
         extra_context: Optional[str] = None
         is_first_turn = True
+        standalone_query: Optional[str] = None
+
+        def respond(**kwargs) -> DeepResearchResponse:
+            return DeepResearchResponse(
+                standalone_query=standalone_query,
+                evidence_chunk_ids=[c.chunk_id for c in evidence_pool],
+                **kwargs
+            )
 
         try:
             # ================= Mandatory initial evidence pass =================
@@ -231,6 +246,8 @@ class LiveDeepResearchPipeline:
             current_query = self._reasoner_phase.rewrite_query(search_id, query.prompt, prior_session_context)
             initial_chunks = self._run_retrieval_pass(search_id, current_query, query.limit)
             evidence_pool, _ = self._merge_new_chunks(evidence_pool, initial_chunks)
+            evidence_pool, _ = self._merge_new_chunks(evidence_pool, list(seed_chunks or []))
+            standalone_query = current_query
             iteration_count = 1
 
             while True:
@@ -245,7 +262,7 @@ class LiveDeepResearchPipeline:
 
                     if decision.decision == ReasonerDecisionType.ASK_CLARIFICATION:
                         logger.info(f"Deep Research halted for clarification [{search_id}].")
-                        return DeepResearchResponse(
+                        return respond(
                             qa_response=None,
                             clarification_question=decision.clarification_question,
                             iteration_trace=trace,
@@ -270,7 +287,7 @@ class LiveDeepResearchPipeline:
 
                         if final_decision.decision == ReasonerDecisionType.ASK_CLARIFICATION:
                             logger.info(f"Deep Research halted for clarification after budget exhausted [{search_id}].")
-                            return DeepResearchResponse(
+                            return respond(
                                 qa_response=None,
                                 clarification_question=final_decision.clarification_question,
                                 iteration_trace=trace,
@@ -286,7 +303,7 @@ class LiveDeepResearchPipeline:
                             f"Reasoner ignored the final-decision instruction and chose refine_query again "
                             f"[{search_id}]; falling back to a clarification."
                         )
-                        return DeepResearchResponse(
+                        return respond(
                             qa_response=None,
                             clarification_question=(
                                 "I couldn't find evidence that specifically answers this after several searches. "
@@ -312,7 +329,7 @@ class LiveDeepResearchPipeline:
                 )
                 self._qa_generation_phase.preload_model()
                 qa_result = self._qa_generation_phase.execute_with_critique(
-                    [(search_id, query.prompt, answer_evidence)]
+                    [(search_id, answer_question(query.prompt, standalone_query), answer_evidence)]
                 )
                 if qa_result.status == PhaseStatus.FAILED:
                     raise WorkflowStateError(
@@ -326,13 +343,13 @@ class LiveDeepResearchPipeline:
 
                 if critique.verdict == CritiqueVerdict.SUFFICIENT:
                     logger.info(f"========== Live Deep Research Pipeline Completed for Search [{search_id}] ==========")
-                    return DeepResearchResponse(
+                    return respond(
                         qa_response=qa_response, iteration_trace=trace, total_iterations=iteration_count
                     )
 
                 if critique_retry_count >= self._max_critique_retries:
                     logger.info(f"Deep Research critique unresolved after retry cap for [{search_id}]; returning draft.")
-                    return DeepResearchResponse(
+                    return respond(
                         qa_response=qa_response, iteration_trace=trace,
                         total_iterations=iteration_count, critique_unresolved=True,
                     )

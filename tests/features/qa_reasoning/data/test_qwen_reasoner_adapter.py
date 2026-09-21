@@ -12,14 +12,52 @@ from app.features.qa_reasoning.domain.enums import ReasonerDecisionType
 from app.features.qa_reasoning.exceptions.pipeline import JSONReasonerParseError
 
 
+MODULE = "app.features.qa_reasoning.data.qwen_reasoner_adapter"
+
+
 class TestQwenReasonerAdapter:
+    @pytest.fixture(autouse=True)
+    def chat_completion(self):
+        """
+        The adapter calls llama_cpp_chat.chat_completion(llm, messages, enable_thinking=..., **kw); route it to the
+        mocked llm.create_chat_completion so each test can stub and inspect a single call on the model mock.
+        """
+        def _route(llm, messages, enable_thinking, **kwargs):
+            return llm.create_chat_completion(messages=messages, **kwargs)
+
+        with patch(f"{MODULE}.chat_completion", side_effect=_route) as mock_chat:
+            yield mock_chat
+
     @pytest.fixture
     def manifest(self):
         return ModelManifest(
             model_type=ModelType.QA_REASONER,
-            model_path="/mock/path/qwen2.5-7b-instruct.gguf",
-            required_vram_mb=5000.0
+            model_path="/mock/path/Qwen3.5-9B-Q4_K_M.gguf",
+            required_vram_mb=10000.0
         )
+
+    @patch(f"{MODULE}.build_llama")
+    @patch(f"{MODULE}.settings")
+    def test_model_uses_reasoner_context_and_kv_cache_settings(self, mock_settings, mock_build):
+        mock_settings.QA_REASONER_N_CTX = 65536
+        mock_settings.QA_LLM_KV_CACHE_TYPE = "q8_0"
+
+        assert QwenReasonerAdapter._get_llama_model("/abs/model.gguf") == mock_build.return_value
+        mock_build.assert_called_once_with("/abs/model.gguf", 65536, "q8_0")
+
+    @patch(f"{MODULE}.settings")
+    def test_rewrite_passes_the_thinking_switch_and_strips_think_blocks(self, mock_settings, chat_completion,
+                                                                        manifest):
+        mock_settings.QA_LLM_ENABLE_THINKING = False
+        mock_llm = MagicMock()
+        mock_llm.create_chat_completion.return_value = {
+            "choices": [{"message": {"content": '<think>\n\n</think>\n\n{"standalone_query": "Q2"}'}}]
+        }
+        loaded = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        assert QwenReasonerAdapter().rewrite_query(loaded, "Q", "prior") == "Q2"
+        assert chat_completion.call_args.args[0] is mock_llm
+        assert chat_completion.call_args.kwargs["enable_thinking"] is False
 
     @patch("os.path.exists", return_value=True)
     @patch.object(QwenReasonerAdapter, "_get_llama_model")
