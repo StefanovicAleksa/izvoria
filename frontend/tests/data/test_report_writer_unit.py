@@ -103,3 +103,25 @@ def test_default_filename(topic, expected):
     )
 
     assert default_filename(document) == expected
+
+
+class TestDefaultSavePath:
+    def test_it_is_absolute_and_outside_the_repository(self):
+        """
+        A bare filename resolves against the CWD, and the app chdirs to the project root -- saved
+        reports were landing untracked in the git working tree. A report is client transcript content.
+        """
+        from pathlib import Path
+
+        from onyx_desktop.data.report_writer import default_save_path
+
+        document = ReportDocument(
+            report_id=REPORT_ID, topic="Chain of custody", markdown="",
+            status=ReportRunStatus.COMPLETED,
+        )
+
+        path = Path(default_save_path(document))
+
+        assert path.is_absolute()
+        assert path.name == "chain-of-custody.md"
+        assert str(path).startswith(str(Path.home()))

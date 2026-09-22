@@ -60,11 +60,19 @@ def _import_engine() -> Dict[str, Any]:
     from app.engine.service.bootstrap import OnyxBootstrapper
     from app.features.rag_retrieval.domain.entities import SearchQuery
     from app.features.qa_generation.utils.citation_parser import normalize_citation_tags
+    from app.features.deep_research_report.domain.entities import OutlineSection, SubQuestion
+    from app.features.deep_research_report.utils import markdown_renderer
 
     _engine_modules.update(
         bootstrapper=OnyxBootstrapper,
         SearchQuery=SearchQuery,
         normalize_citation_tags=normalize_citation_tags,
+        # Report mode: rebuilding an edited plan needs the engine's own entities, and rendering needs
+        # the renderer's link mode. Every symbol used anywhere in this file must be registered here --
+        # a missing one only fails at call time, with a KeyError the error mapper cannot name.
+        OutlineSection=OutlineSection,
+        SubQuestion=SubQuestion,
+        markdown_renderer=markdown_renderer,
     )
     return _engine_modules
 
@@ -241,11 +249,11 @@ class OnyxEngineGateway(IEngineGateway):
                                            title=edited.title, brief=edited.brief,
                                            order_index=order_index))
             )
-            for question_index, text in enumerate(edited.questions):
+            for text in edited.questions:
                 if text.strip():
                     questions.append(modules["SubQuestion"](
                         text=text.strip(), section_key=sections[-1].key,
-                        order_index=len(questions) + question_index,
+                        order_index=len(questions),
                     ))
 
         return stored_plan.model_copy(update={"sections": sections, "sub_questions": questions})

@@ -138,6 +138,49 @@ class TestPlanApproval:
         assert view._outline._warning.isVisible()
 
 
+class TestPlanTransition:
+    """
+    The approval step has to be visibly distinct. Scoping takes about a minute; if the previous
+    outline stays on screen the whole time and the new one swaps in underneath it, nothing appears
+    to happen -- for the same topic the two outlines look almost identical, and the run reads as
+    though it started itself.
+    """
+
+    def test_scoping_clears_the_previous_outline(self, view):
+        view.show_plan(_plan())
+        assert view._outline.isVisibleTo(view)
+
+        view.start_planning("a new topic")
+
+        assert not view._outline.isVisibleTo(view)
+        assert view._scoping.isVisibleTo(view)
+        assert "a new topic" in view._scoping.text()
+
+    def test_the_new_plan_replaces_the_scoping_notice(self, view):
+        view.start_planning("a new topic")
+
+        view.show_plan(_plan())
+
+        assert not view._scoping.isVisibleTo(view)
+        assert view._outline.isVisibleTo(view)
+
+    def test_scoping_drops_the_stale_plan_so_stop_cannot_target_it(self, view):
+        """The old report_id must not linger as a cancel target for a run that is not happening."""
+        view.show_plan(_plan())
+
+        view.start_planning("a new topic")
+
+        assert view._plan is None
+
+    def test_a_failed_scope_clears_the_notice(self, view):
+        view.start_planning("a new topic")
+
+        view.show_failure("The appliance is busy.")
+
+        assert not view._scoping.isVisibleTo(view)
+        assert view._failure.isVisibleTo(view)
+
+
 class TestRunProgress:
     def test_the_bar_is_determinate_from_the_plans_job_count(self, view):
         """Unlike ingestion, a report knows up front how many steps it will take."""

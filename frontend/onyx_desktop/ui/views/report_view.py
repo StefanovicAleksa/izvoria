@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QSplitter, QStackedWidget, QVBoxLayout, QWidget,
 )
 
-from onyx_desktop.data.report_writer import default_filename, save_markdown
+from onyx_desktop.data.report_writer import default_save_path, save_markdown
 from onyx_desktop.domain.entities import Evidence, ProgressTick, ReportDocument, ReportPlanDraft
 from onyx_desktop.domain.enums import ReportMode
 from onyx_desktop.ui import theme
@@ -138,6 +138,12 @@ class ReportView(QWidget):
         controls.addWidget(self._plan_button)
         layout.addLayout(controls)
 
+        self._scoping = QLabel()
+        self._scoping.setWordWrap(True)
+        self._scoping.setProperty("role", "subtle")
+        self._scoping.setVisible(False)
+        layout.addWidget(self._scoping)
+
         self._outline = OutlineEditor()
         self._outline.accepted.connect(self._on_start)
         self._outline.discarded.connect(self._on_discard)
@@ -226,9 +232,31 @@ class ReportView(QWidget):
         self._mode.setEnabled(not busy)
         self._outline.set_busy(busy)
 
+    def start_planning(self, topic: str) -> None:
+        """
+        Clears the previous outline while the new one is being scoped.
+
+        Without this the old plan sits on screen for the whole scoping call and the new one swaps in
+        underneath it. For the same topic the two look nearly identical, so nothing appears to happen
+        and the approval step reads as though it were skipped.
+
+        Called only once the bridge has ACCEPTED the request -- a refused one must not throw away an
+        outline the user is still working with.
+        """
+        self._plan = None
+        self._failure.setVisible(False)
+        self._outline.setVisible(False)
+        self._scoping.setText(
+            f"Searching the archive and drafting an outline for \u201c{topic}\u201d\u2026 "
+            f"This takes about a minute."
+        )
+        self._scoping.setVisible(True)
+        self._stack.setCurrentIndex(_COMPOSE)
+
     def show_plan(self, plan: ReportPlanDraft) -> None:
         self._plan = plan
         self._failure.setVisible(False)
+        self._scoping.setVisible(False)
         self._outline.show_plan(plan)
         self._outline.setVisible(True)
         self._stack.setCurrentIndex(_COMPOSE)
@@ -289,6 +317,7 @@ class ReportView(QWidget):
             self._source_panel.show_evidence(report.evidence[0])
 
     def show_failure(self, message: str) -> None:
+        self._scoping.setVisible(False)
         self._failure.setText(message)
         self._failure.setProperty("role", "banner-danger")
         self._failure.style().unpolish(self._failure)
@@ -330,6 +359,7 @@ class ReportView(QWidget):
         self._plan = None
         self._document = None
         self._outline.setVisible(False)
+        self._scoping.setVisible(False)
         self._body.clear_report()
         self._source_panel.clear()
         self._failure.setVisible(False)
@@ -350,7 +380,7 @@ class ReportView(QWidget):
             return
 
         destination, _ = QFileDialog.getSaveFileName(
-            self, "Save report", default_filename(self._document), "Markdown (*.md);;All files (*)"
+            self, "Save report", default_save_path(self._document), "Markdown (*.md);;All files (*)"
         )
         if not destination:
             return

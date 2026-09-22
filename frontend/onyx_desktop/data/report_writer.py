@@ -20,6 +20,19 @@ from onyx_desktop.domain.entities import ReportDocument
 logger = logging.getLogger(__name__)
 
 
+def default_save_path(report: ReportDocument) -> str:
+    """
+    An ABSOLUTE default for the save dialog.
+
+    A bare filename resolves against the process CWD, and `apply_runtime_environment` chdirs to the
+    project root -- so every saved report landed untracked inside the git working tree. A report is
+    client transcript content; it must not default into a repository.
+    """
+    documents = Path.home() / "Documents"
+    folder = documents if documents.is_dir() else Path.home()
+    return str(folder / default_filename(report))
+
+
 def default_filename(report: ReportDocument) -> str:
     """A filesystem-safe suggestion for the save dialog, from the report's own topic."""
     slug = "".join(char if char.isalnum() else "-" for char in report.topic.lower())

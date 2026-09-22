@@ -259,7 +259,10 @@ class MainWindow(QMainWindow):
 
     @Slot(str, object)
     def _on_report_plan_requested(self, topic: str, mode) -> None:
-        self._bridge.plan_report(topic, mode)
+        # Mirrors the ingest path: the view only switches state once the request is accepted, so a
+        # refusal (appliance busy) leaves the outline the user was working with intact.
+        if self._bridge.plan_report(topic, mode) is not None:
+            self._report.start_planning(topic)
 
     @Slot(object, object)
     def _on_report_requested(self, plan, mode) -> None:

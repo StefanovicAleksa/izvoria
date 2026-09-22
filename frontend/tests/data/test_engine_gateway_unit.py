@@ -15,7 +15,8 @@ import uuid
 import pytest
 from unittest.mock import MagicMock
 
-from onyx_desktop.domain.enums import MediaKind, MessageRole, TurnOutcome
+from onyx_desktop.domain.entities import ReportOutlineDraft, ReportPlanDraft
+from onyx_desktop.domain.enums import MediaKind, MessageRole, ReportMode, TurnOutcome
 
 pytest.importorskip("app.features.rag_retrieval.domain.entities")
 
@@ -29,12 +30,26 @@ from app.orchestration.domain.entities import (  # noqa: E402
     ReasonedChatResponse,
 )
 
+from app.features.deep_research_report.domain.entities import (  # noqa: E402
+    EvidenceEntry,
+    OutlineSection,
+    Report,
+    ReportSection,
+    ResearchPlan,
+    SubQuestion,
+)
+from app.features.deep_research_report.domain.enums import (  # noqa: E402
+    ReportStatus,
+    SectionStatus,
+)
+
 from onyx_desktop.data.engine_gateway import OnyxEngineGateway  # noqa: E402
 
 CHUNK_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 SOURCE_ID = uuid.UUID("22222222-2222-2222-2222-222222222222")
 CLIP_ID = uuid.UUID("33333333-3333-3333-3333-333333333333")
 SESSION_ID = uuid.UUID("44444444-4444-4444-4444-444444444444")
+REPORT_ID = uuid.UUID("55555555-5555-5555-5555-555555555555")
 
 
 def make_chunk(extracted_file_id=CLIP_ID, physical_path=None, **overrides):
@@ -321,3 +336,235 @@ class TestErrorTranslation:
 
         with pytest.raises(ApplianceOfflineError):
             OnyxEngineGateway().search("q", SearchMode.STANDARD, 5)
+
+
+class TestReportMapping:
+    """
+    The report path, with REAL engine entities.
+
+    These exist because the first version of this feature shipped broken: `_import_engine()` never
+    registered the symbols `_apply_edits` and `_map_report` look up, so both raised KeyError the first
+    time the desktop ran a report -- and the error mapper, which matches on class name, turned that
+    into "The appliance could not complete that request." The view tests mocked the gateway and the
+    stub gateway has its own implementation, so nothing exercised this code until a human clicked it.
+    """
+
+    @staticmethod
+    def _plan(report_id=REPORT_ID):
+        questions = [
+            SubQuestion(text="Who sealed the bag?", section_key="s1", order_index=0),
+            SubQuestion(text="Where was it stored?", section_key="s2", order_index=1),
+        ]
+        return ResearchPlan(
+            report_id=report_id,
+            topic="chain of custody",
+            scope_note="Covers handling and storage.",
+            sections=[
+                OutlineSection(key="s1", title="Handling", order_index=0, brief="How it was handled.",
+                               sub_question_ids=[questions[0].id]),
+                OutlineSection(key="s2", title="Storage", order_index=1, brief="Where it was kept.",
+                               sub_question_ids=[questions[1].id]),
+            ],
+            sub_questions=questions,
+        )
+
+    @staticmethod
+    def _draft(sections):
+        return ReportPlanDraft(report_id=REPORT_ID, topic="chain of custody", sections=tuple(sections))
+
+    def _report(self, status=ReportStatus.COMPLETED, evidence=None):
+        plan = self._plan()
+        return Report(
+            id=REPORT_ID,
+            topic="chain of custody",
+            status=status,
+            plan=plan,
+            mode=ReportMode.EXHAUSTIVE,
+            rounds_used=2,
+            sections=[
+                ReportSection(key="s1", title="Handling", order_index=0, status=SectionStatus.WRITTEN,
+                              markdown_body="Sealed [Doc 1].", cited_doc_numbers=[1]),
+                ReportSection(key="s2", title="Storage", order_index=1,
+                              status=SectionStatus.SKIPPED_NO_EVIDENCE),
+            ],
+            evidence=evidence if evidence is not None else [
+                EvidenceEntry(doc_number=1, chunk_id=CHUNK_ID, source_id=SOURCE_ID,
+                              source_name="Deposition", start_sec=10, end_sec=40,
+                              speaker_labels=["speaker_0"], digest="The bag was sealed."),
+            ],
+            markdown_path="/reports/r.md",
+            indexed_source_count=3,
+            swept_source_count=3,
+        )
+
+    # ---------- _apply_edits ----------
+
+    def test_an_unedited_plan_round_trips(self, gateway_and_engine):
+        gateway, _ = gateway_and_engine
+        plan = self._plan()
+        draft = self._draft([
+            ReportOutlineDraft(key=s.key, title=s.title, brief=s.brief,
+                               questions=tuple(q.text for q in plan.sub_questions_for(s.key)))
+            for s in plan.sections
+        ])
+
+        approved = gateway._apply_edits(plan, draft)
+
+        assert [s.key for s in approved.sections] == ["s1", "s2"]
+        assert [q.text for q in approved.sub_questions] == ["Who sealed the bag?", "Where was it stored?"]
+
+    def test_a_renamed_section_keeps_its_key(self, gateway_and_engine):
+        """The engine re-attaches evidence by key across revisions; regenerating one would detach it."""
+        gateway, _ = gateway_and_engine
+        plan = self._plan()
+        draft = self._draft([
+            ReportOutlineDraft(key="s1", title="Evidence handling", brief="Reworded.",
+                               questions=("Who sealed the bag?",)),
+            ReportOutlineDraft(key="s2", title="Storage", brief="", questions=()),
+        ])
+
+        approved = gateway._apply_edits(plan, draft)
+
+        assert approved.sections[0].key == "s1"
+        assert approved.sections[0].title == "Evidence handling"
+        assert approved.sections[0].brief == "Reworded."
+
+    def test_a_dropped_section_takes_its_questions_with_it(self, gateway_and_engine):
+        gateway, _ = gateway_and_engine
+        draft = self._draft([
+            ReportOutlineDraft(key="s1", title="Handling", questions=("Who sealed the bag?",)),
+        ])
+
+        approved = gateway._apply_edits(self._plan(), draft)
+
+        assert [s.key for s in approved.sections] == ["s1"]
+        assert [q.section_key for q in approved.sub_questions] == ["s1"]
+
+    def test_a_user_added_section_gets_a_key_that_cannot_collide(self, gateway_and_engine):
+        gateway, _ = gateway_and_engine
+        draft = self._draft([
+            ReportOutlineDraft(key="s1", title="Handling", questions=("Who sealed the bag?",)),
+            ReportOutlineDraft(key="", title="Transfers", brief="Who moved it.", questions=("Who moved it?",)),
+        ])
+
+        approved = gateway._apply_edits(self._plan(), draft)
+
+        assert approved.sections[1].key not in {"s1", "s2"}
+        assert approved.sections[1].title == "Transfers"
+
+    def test_sub_question_order_is_sequential(self, gateway_and_engine):
+        """It was len(questions) + question_index, which double-counted once a section had two."""
+        gateway, _ = gateway_and_engine
+        draft = self._draft([
+            ReportOutlineDraft(key="s1", title="Handling", questions=("one", "two", "three")),
+            ReportOutlineDraft(key="s2", title="Storage", questions=("four", "five")),
+        ])
+
+        approved = gateway._apply_edits(self._plan(), draft)
+
+        assert [q.order_index for q in approved.sub_questions] == [0, 1, 2, 3, 4]
+
+    def test_blank_questions_are_dropped(self, gateway_and_engine):
+        gateway, _ = gateway_and_engine
+        draft = self._draft([
+            ReportOutlineDraft(key="s1", title="Handling", questions=("  ", "Who sealed the bag?", "")),
+        ])
+
+        approved = gateway._apply_edits(self._plan(), draft)
+
+        assert [q.text for q in approved.sub_questions] == ["Who sealed the bag?"]
+
+    def test_the_rebuilt_plan_passes_the_engines_own_validator(self, gateway_and_engine):
+        """
+        The gateway and the validator have to agree. Anything the editor can produce must survive
+        validate_and_normalise, or the user gets a failure they cannot act on.
+        """
+        from app.features.deep_research_report.utils.outline_validator import validate_and_normalise
+
+        gateway, _ = gateway_and_engine
+        plan = self._plan()
+        draft = self._draft([
+            ReportOutlineDraft(key="s2", title="Storage", questions=("Where was it stored?",)),
+            ReportOutlineDraft(key="", title="Transfers", brief="Who moved it.", questions=("Who moved it?",)),
+        ])
+
+        final = validate_and_normalise(plan, gateway._apply_edits(plan, draft))
+
+        assert [s.title for s in final.sections] == ["Storage", "Transfers"]
+        assert final.revision == plan.revision + 1
+
+    # ---------- _map_report ----------
+
+    def test_citations_are_rendered_as_clickable_links(self, gateway_and_engine):
+        gateway, engine = gateway_and_engine
+        engine.get_chunks.return_value = [make_chunk(physical_path="/vault/clip.mp4")]
+
+        document = gateway._map_report(self._report())
+
+        assert "[Doc 1](onyx://doc/1)" in document.markdown
+        assert document.evidence_for(1) is not None
+
+    def test_evidence_uses_raw_text_and_resolves_its_clip(self, gateway_and_engine):
+        gateway, engine = gateway_and_engine
+        chunk = make_chunk(physical_path="/vault/clip.mp4")
+        engine.get_chunks.return_value = [chunk]
+
+        evidence = gateway._map_report(self._report()).evidence[0]
+
+        # raw_text, never text_payload: the latter carries generated situating context that is
+        # explicitly not citable source material.
+        assert evidence.excerpt == chunk.raw_text
+        assert evidence.excerpt != chunk.text_payload
+        assert evidence.clip_path == "/vault/clip.mp4"
+        assert evidence.media_kind is MediaKind.CLIP
+
+    def test_a_chunk_deleted_by_a_re_ingest_falls_back_to_the_stored_digest(self, gateway_and_engine):
+        """
+        chunk_id is deliberately not a foreign key, so a signed-off report outlives its chunks. The
+        citation must still render with real provenance rather than becoming blank.
+        """
+        gateway, engine = gateway_and_engine
+        engine.get_chunks.return_value = []
+
+        evidence = gateway._map_report(self._report()).evidence[0]
+
+        assert evidence.excerpt == "The bag was sealed."
+        assert evidence.clip_path is None
+        assert evidence.media_kind is MediaKind.UNRESOLVED
+
+    def test_only_cited_evidence_is_carried_over(self, gateway_and_engine):
+        """The bank holds everything gathered; an uncited entry is noise in a document to be checked."""
+        gateway, engine = gateway_and_engine
+        engine.get_chunks.return_value = []
+        report = self._report(evidence=[
+            EvidenceEntry(doc_number=1, chunk_id=CHUNK_ID, source_id=SOURCE_ID,
+                          source_name="Deposition", start_sec=10, end_sec=40, digest="cited"),
+            EvidenceEntry(doc_number=9, chunk_id=uuid.uuid4(), source_id=SOURCE_ID,
+                          source_name="Deposition", start_sec=99, end_sec=120, digest="never cited"),
+        ])
+
+        document = gateway._map_report(report)
+
+        assert [e.doc_number for e in document.evidence] == [1]
+
+    def test_mode_status_and_round_count_survive_the_mapping(self, gateway_and_engine):
+        gateway, engine = gateway_and_engine
+        engine.get_chunks.return_value = []
+
+        document = gateway._map_report(self._report(status=ReportStatus.CANCELLED))
+
+        assert document.mode is ReportMode.EXHAUSTIVE
+        assert document.rounds_used == 2
+        assert document.is_partial is True
+        assert document.section_count == 1
+        assert document.uncovered_count == 1
+
+    def test_a_failed_hydration_still_returns_a_readable_report(self, gateway_and_engine):
+        """A report whose citations cannot be hydrated is still worth reading."""
+        gateway, engine = gateway_and_engine
+        engine.get_chunks.side_effect = RuntimeError("database gone")
+
+        document = gateway._map_report(self._report())
+
+        assert "[Doc 1](onyx://doc/1)" in document.markdown
+        assert document.evidence == ()
