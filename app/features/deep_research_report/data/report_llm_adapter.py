@@ -215,6 +215,7 @@ class LlamaCppReportAdapter(IReportLlmAdapter):
             model: LoadedModel,
             plan: ResearchPlan,
             evidence_digest: str,
+            asked_block: str = "",
     ) -> OutlineAssignment:
         try:
             outline_block = "\n".join(
@@ -223,7 +224,10 @@ class LlamaCppReportAdapter(IReportLlmAdapter):
             messages = [
                 {"role": "system", "content": OUTLINE_SYSTEM_PROMPT},
                 {"role": "user", "content": OUTLINE_USER_TEMPLATE.format(
-                    topic=plan.topic, outline_block=outline_block, bank_index=evidence_digest
+                    topic=plan.topic, outline_block=outline_block, bank_index=evidence_digest,
+                    # "" in round 1 and in deep mode, which is what keeps the prompt identical to the
+                    # single-pass one rather than showing an empty heading.
+                    asked_block=asked_block,
                 )},
             ]
             parsed = self._json_completion(model, messages, settings.REPORT_PLAN_MAX_TOKENS)

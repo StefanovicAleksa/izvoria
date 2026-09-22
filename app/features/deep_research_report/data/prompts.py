@@ -80,6 +80,11 @@ sensible sequence, and you may drop a section entirely by assigning it nothing.
 specific search query for that section. Word it using terms that actually appear in the evidence index \
 above -- the original question already failed, so repeating its phrasing will fail again. If the archive \
 plainly has nothing on that section's subject, omit it rather than inventing a query.
+7. A SEARCHES ALREADY RUN list may follow the evidence index. Those queries have been tried; every one \
+of them will be rejected if you write it again, in any rephrasing that means the same thing. An entry \
+marked NOTHING NEW is the strongest signal you have: those words are absent from this archive, so a \
+follow-up built from synonyms of them will fail too. Change the vocabulary to words you can see in the \
+evidence index, or omit the section.
 
 Respond with ONLY a JSON object:
 {
@@ -101,7 +106,7 @@ APPROVED OUTLINE
 
 EVIDENCE INDEX
 {bank_index}
-
+{asked_block}
 Assign the evidence to the sections."""
 
 

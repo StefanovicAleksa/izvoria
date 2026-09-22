@@ -67,6 +67,7 @@ class IReportLlmAdapter(IModelLoader, ABC):
         model: LoadedModel,
         plan: ResearchPlan,
         evidence_digest: str,
+        asked_block: str = "",
     ) -> OutlineAssignment:
         """
         Re-assigns the outline against the evidence actually gathered, returning sections carrying their
@@ -81,6 +82,11 @@ class IReportLlmAdapter(IModelLoader, ABC):
         `evidence_digest` is the whole bank rendered one line per entry (doc number, source, timespan,
         excerpt head) -- compact enough that the entire bank fits one call, which is what makes a single
         model acquisition cover planning and writing both.
+
+        `asked_block` is the searches earlier rounds already ran and what each one returned, empty on the
+        first round and in deep mode. It exists so the follow-up is a genuinely new question: the model
+        cannot re-word a query it cannot see, and a query marked as having added nothing tells it which
+        vocabulary the archive does not contain.
         """
         pass
 

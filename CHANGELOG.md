@@ -4,6 +4,74 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## A gathering round is only entered when it has something new to ask
+
+Exhaustive mode kept no record of what it had already searched for, so it re-searched it.
+
+The follow-up query for an uncovered section comes from the model when it writes one and from a
+deterministic fallback when it does not — and that fallback is a pure function of the section's
+title and brief, neither of which changes between rounds. A section the model wrote nothing for was
+therefore re-searched with the **identical query every round** until the budget ran out. The
+"a round added no new chunks" rule caught it, but only after the round had been paid for: one
+embedder load, one reranker load and one ~5.7 GB report-model load to re-reach a conclusion already
+reached. Introduced with exhaustive mode itself (`766c19d`).
+
+Found by running deep and exhaustive head to head on a section the corpus cannot support. The run
+took 3 rounds; rounds 2 and 3 issued the same query, and round 3 was guaranteed to return nothing
+before it started.
+
+**What the run now remembers.** A `QueryAttempt` per search — its text, its round, and how many
+chunks it added *that were not already in the bank*. Held in memory for the run, like the follow-up
+queries themselves; persisting them would put transient queries into
+`research_report_sub_questions`, where `REPORT_MAX_SUB_QUESTIONS` rejects the plan on the next
+validation.
+
+It is used twice:
+
+- **The model is shown it** (`SEARCHES ALREADY RUN` in the outline prompt, with what each query
+  returned). A query credited with nothing is the load-bearing entry — it says those words are
+  absent from this archive, so a synonym will fail too. The model cannot re-word a search it cannot
+  see, which is why its follow-ups were paraphrases.
+- **Follow-ups are filtered against it** afterwards, in `ReportAuthoringAPI`, because neither the
+  model nor the fallback can be trusted to remember. Returning no follow-ups is how the API says
+  *stop*; the pipeline then writes instead of gathering. Comparison normalises case, whitespace and
+  trailing punctuation only — over-matching would drop a round that had something to find.
+
+**Deep mode is untouched.** The history is passed only to a pass that can act on it, so a
+single-round run — every deep run — sends the outline prompt it always sent, and the final writing
+round of an exhaustive run sends it too.
+
+Re-running the same comparison after the fix: deep 1 round / 87 s, exhaustive **2** rounds / 116 s
+(was 3). The follow-up was model-written rather than the fallback for the first time, because the
+failed query was now visible to it as having found nothing.
+
+## Report view fixes: a dead gateway import, reports saved into the repo, an invisible approval step
+
+Four defects in the Report view, all introduced with it (`766c19d`), three of them user-visible.
+
+**Every report run failed with "The appliance could not complete that request."** `_import_engine()`
+is the deferred cache that keeps `ui/` and `service/` from importing `app.*`, and three symbols the
+gateway uses — `OutlineSection`, `SubQuestion` and `markdown_renderer` — were never registered in it.
+`_apply_edits` and `_map_report` raised `KeyError`, which the class-name-matching error mapper turned
+into the generic failure sentence, so the message named nothing. **Any symbol used anywhere in
+`engine_gateway.py` must be registered in `_import_engine()`**; a missing one fails only at call
+time. 13 tests now cover the mapping, and all 13 fail if the registration is removed.
+
+**Saved reports landed in the git working tree.** The save dialog was given a bare filename, which
+resolves against the process CWD — and `apply_runtime_environment` chdirs to the project root. Every
+saved report, which is client transcript content, defaulted into the repository. `default_save_path`
+returns an absolute path under `~/Documents`.
+
+**The approval step read as though it were skipped.** Scoping takes about a minute, during which the
+previous outline stayed on screen and the new one swapped in underneath it. For the same topic the
+two look nearly identical, so nothing appeared to happen and the run looked self-starting.
+`ReportView.start_planning` now clears the outline and shows a scoping notice — and `MainWindow`
+calls it only once the bridge has *accepted* the request, mirroring the ingest path, so a refusal
+(appliance busy) does not throw away an outline the user is still editing.
+
+**Sub-question ordering double-counted.** `order_index=len(questions) + question_index` advanced
+twice per question within a section; it is `len(questions)`.
+
 ## Exhaustive report mode, and the desktop Report view
 
 Two gaps in Deep Research Report mode, closed.

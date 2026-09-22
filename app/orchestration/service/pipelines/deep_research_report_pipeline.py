@@ -8,7 +8,8 @@ from app.core.config import settings
 from app.core.jobs.domain.entities import CancellationToken
 from app.core.jobs.exceptions.execution import JobCancelled
 from app.features.deep_research_report.domain.entities import (
-    CorpusDigest, EvidenceEntry, IndexedSource as ReportIndexedSource, Report, ReportSection, ResearchPlan,
+    CorpusDigest, EvidenceEntry, IndexedSource as ReportIndexedSource, QueryAttempt, Report,
+    ReportSection, ResearchPlan,
 )
 from app.features.deep_research_report.domain.enums import (
     EvidenceOrigin, ReportMode, ReportStatus, SectionStatus,
@@ -68,10 +69,9 @@ class DeepResearchReportPipeline:
         self._scoping_phase = scoping_phase
         self._authoring_phase = authoring_phase
         self._report_api = report_api
-        # Accepted and stored, but NOT yet acted on: gathering currently runs exactly one round. Wiring
-        # the second round means looping back to _gather() with sub-questions aimed at the sections the
-        # outline pass could not support -- and it must trigger_unload the report model first, because
-        # acquiring the embedder with wait_for_clear=True while holding the 9B would park forever.
+        # The cap for exhaustive mode only; `execute_report` passes 1 and is unaffected. Each extra round
+        # costs an embedder load, a reranker load and a ~5.7 GB report-model load, so a round is only
+        # entered when it has a query no earlier round has already run.
         self._max_gather_rounds = max_gather_rounds
 
     # ==========================================
@@ -259,6 +259,10 @@ class DeepResearchReportPipeline:
                        for q in plan.sub_questions]
             swept_total = 0
             rounds_used = 0
+            # What this run has already searched for, and what each search was worth. Both halves are
+            # used: the outline pass is shown it so its follow-up is a new question, and the follow-ups
+            # it returns are filtered against it so a round is never spent re-asking.
+            attempts: List[QueryAttempt] = []
 
             for round_index in range(1, max_rounds + 1):
                 try:
@@ -270,6 +274,7 @@ class DeepResearchReportPipeline:
 
                     round_hits, swept = self._gather_round(report_id, plan, queries, sweep, cancel_token)
                     before = len(hits)
+                    before_ids = {chunk.chunk_id for chunk, _, _ in hits}
                     # Deduped across ALL rounds, not per round: `research_report_evidence` carries a unique
                     # constraint on (report_id, chunk_id), so a round-1 chunk re-found in round 2 would
                     # raise an IntegrityError and kill the run.
@@ -278,9 +283,16 @@ class DeepResearchReportPipeline:
                     # Round 1's value is the real coverage claim; later rounds run no sweep and report 0.
                     swept_total = max(swept_total, swept)
 
+                    round_attempts = self._record_attempts(queries, round_hits, before_ids, round_index)
+                    attempts.extend(round_attempts)
+
                     logger.info(
                         f"Report {report_id} round {round_index}: {added} new chunk(s), "
                         f"{len(hits)} in the bank."
+                    )
+                    logger.info(
+                        f"Report {report_id} round {round_index} query yield: "
+                        + "; ".join(f"{a.chunks_added} x {a.text[:70]!r}" for a in round_attempts)
                     )
 
                     if round_index > 1 and added == 0:
@@ -300,9 +312,14 @@ class DeepResearchReportPipeline:
                     self._raise_if_cancelled(cancel_token, f"before round {round_index} assignment")
 
                     is_last_round = round_index == max_rounds
+                    # The history is only shown to a pass that can act on it. On the last round -- and so
+                    # on every deep run, which has only one -- follow-ups are discarded, so sending it
+                    # would spend context to change nothing and would stop deep mode's prompt being the
+                    # single-pass prompt it has always been.
                     result = self._author(
                         report_id, plan, evidence, chunk_lookup,
                         stop_on_gaps=not is_last_round, cancel_token=cancel_token,
+                        asked=None if is_last_round else attempts,
                     )
 
                     if self._authoring_phase.was_cancelled(result):
@@ -313,9 +330,12 @@ class DeepResearchReportPipeline:
 
                     # By here `_author` has resolved and unloaded the preload fired above, so the
                     # paths below start from a clean slot.
+                    # Already filtered against `attempts`, so an empty list means every remaining gap can
+                    # only be re-asked with a query this run has run before. That round would return the
+                    # same chunks and reach the same conclusion, having paid three model loads for it.
                     follow_ups = self._authoring_phase.follow_ups(result)
                     if not follow_ups:
-                        logger.info("Sections are unsupported but there is nothing else to search for; writing.")
+                        logger.info("Sections are unsupported but there is nothing new to search for; writing.")
                         return self._write_final(
                             report_id, plan, hits, swept_total, mode, rounds_used, cancel_token
                         )
@@ -410,6 +430,39 @@ class DeepResearchReportPipeline:
         chunk_lookup = {chunk.chunk_id: chunk for chunk, _, _ in with_neighbors}
         return evidence, chunk_lookup
 
+    @staticmethod
+    def _record_attempts(
+            queries: List[Tuple[str, SearchQuery]],
+            round_hits: List[Tuple[RetrievedChunk, EvidenceOrigin, Optional[str]]],
+            known_ids: set,
+            round_index: int,
+    ) -> List[QueryAttempt]:
+        """
+        Credits each query with the chunks it put in the bank that were not in it already.
+
+        Measured against the bank as it stood BEFORE this round, and each chunk credited once, so two
+        queries that both surfaced the same new chunk do not both claim it. Sweep hits carry no
+        `found_by` and are credited to nothing, which is right: the sweep is not a query anyone chose.
+
+        A query that added nothing keeps its entry rather than being dropped. Zero is the reading the
+        next round leans on hardest -- it is the difference between "the archive has nothing on this"
+        and "nobody has asked the right way yet".
+        """
+        credited: Dict[str, int] = {text: 0 for text, _ in queries}
+        seen = set(known_ids)
+
+        for chunk, _origin, found_by in round_hits:
+            if chunk.chunk_id in seen:
+                continue
+            seen.add(chunk.chunk_id)
+            if found_by in credited:
+                credited[found_by] += 1
+
+        return [
+            QueryAttempt(text=text, round_index=round_index, chunks_added=credited[text])
+            for text, _ in queries
+        ]
+
     def _author(
             self,
             report_id: uuid.UUID,
@@ -420,6 +473,7 @@ class DeepResearchReportPipeline:
             cancel_token: Optional[CancellationToken],
             pending_keys: Optional[List[str]] = None,
             optimize: bool = True,
+            asked: Optional[List[QueryAttempt]] = None,
     ):
         result = self._authoring_phase.execute_report(
             report_id=report_id,
@@ -429,6 +483,7 @@ class DeepResearchReportPipeline:
             pending_keys=pending_keys,
             optimize=optimize,
             stop_on_gaps=stop_on_gaps,
+            asked=asked,
             cancel_token=cancel_token,
         )
         if result.status == PhaseStatus.FAILED:

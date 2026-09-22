@@ -9,11 +9,12 @@ from app.core.config import settings
 from app.core.model_manager.domain.entities import LoadedModel, ModelManifest
 from app.core.model_manager.domain.enums import ModelType
 from app.features.deep_research_report.domain.entities import (
-    CorpusDigest, EvidenceEntry, FollowUpQuery, OutlineAssignment, OutlineSection, Report,
-    ReportSection, ResearchPlan,
+    CorpusDigest, EvidenceEntry, FollowUpQuery, OutlineAssignment, OutlineSection, QueryAttempt,
+    Report, ReportSection, ResearchPlan,
 )
 from app.features.deep_research_report.domain.enums import ReportStatus, SectionStatus
 from app.features.deep_research_report.service.report_api import ReportAuthoringAPI
+from app.features.deep_research_report.utils.query_log import normalise_query
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 
 
@@ -195,6 +196,132 @@ class TestOptimizeOutline:
         assignment = api.optimize_outline(plan, [_evidence(chunk, doc_number=1)])
 
         assert [f.text for f in assignment.follow_ups] == ["who sealed the bag at the scene"]
+
+
+class TestSearchHistory:
+    """
+    A follow-up is only worth a gathering round if it asks something the run has not asked. Each round
+    costs an embedder load, a reranker load and a ~5.7 GB report-model load, and the fallback query is a
+    pure function of a title and brief that do not change between rounds -- so without this the same
+    query is re-issued every round until the budget runs out.
+    """
+
+    @staticmethod
+    def _uncovered_plan():
+        return ResearchPlan(report_id=uuid.uuid4(), topic="t", sections=[
+            OutlineSection(key="s1", title="Storage", order_index=0, brief="Where it was kept"),
+        ])
+
+    @staticmethod
+    def _asked(text: str, chunks_added: int = 0):
+        return [QueryAttempt(text=text, round_index=1, chunks_added=chunks_added)]
+
+    def test_the_history_is_shown_to_the_model(self, api, adapter):
+        plan = self._uncovered_plan()
+        adapter.optimize_outline.return_value = OutlineAssignment(sections=list(plan.sections))
+
+        api.optimize_outline(plan, [_evidence(_chunk(), doc_number=1)],
+                             asked=self._asked("who sealed the bag", chunks_added=2))
+
+        asked_block = adapter.optimize_outline.call_args[0][3]
+        assert "who sealed the bag" in asked_block
+        assert "2 new excerpt(s)" in asked_block
+
+    def test_no_history_means_no_block(self, api, adapter):
+        """Deep mode and round 1 must send the prompt they have always sent."""
+        plan = self._uncovered_plan()
+        adapter.optimize_outline.return_value = OutlineAssignment(sections=list(plan.sections))
+
+        api.optimize_outline(plan, [_evidence(_chunk(), doc_number=1)])
+
+        assert adapter.optimize_outline.call_args[0][3] == ""
+
+    def test_a_model_follow_up_that_repeats_an_earlier_search_is_dropped(self, api, adapter):
+        """
+        The repeat never reaches retrieval. The section is still uncovered afterwards, so it falls back
+        to its one derived query -- which is a different search, not the one already run.
+        """
+        plan = self._uncovered_plan()
+        adapter.optimize_outline.return_value = OutlineAssignment(
+            sections=list(plan.sections),
+            follow_ups=[FollowUpQuery(section_key="s1", text="Who sealed the bag?")],
+        )
+
+        assignment = api.optimize_outline(plan, [_evidence(_chunk(), doc_number=1)],
+                                          asked=self._asked("who sealed the bag"))
+
+        texts = [f.text for f in assignment.follow_ups]
+        assert "Who sealed the bag?" not in texts
+        assert texts == ["Storage. Where it was kept."]
+
+    def test_the_derived_fallback_is_not_regenerated_once_it_has_been_asked(self, api, adapter):
+        """
+        The exact loop that was spinning: the model writes no follow-up, so the fallback fills the gap
+        from the section's title and brief -- identically, every round.
+        """
+        plan = self._uncovered_plan()
+        adapter.optimize_outline.return_value = OutlineAssignment(sections=list(plan.sections))
+
+        first = api.optimize_outline(plan, [_evidence(_chunk(), doc_number=1)])
+        assert len(first.follow_ups) == 1
+
+        second = api.optimize_outline(
+            plan, [_evidence(_chunk(), doc_number=1)],
+            asked=[QueryAttempt(text=first.follow_ups[0].text, round_index=1, chunks_added=0)],
+        )
+
+        assert second.follow_ups == []
+
+    def test_a_still_unasked_section_keeps_its_follow_up(self, api, adapter):
+        """Exhausting one section must not silence the others."""
+        plan = ResearchPlan(report_id=uuid.uuid4(), topic="t", sections=[
+            OutlineSection(key="s1", title="Storage", order_index=0, brief="Where it was kept"),
+            OutlineSection(key="s2", title="Handling", order_index=1, brief="Who touched it"),
+        ])
+        adapter.optimize_outline.return_value = OutlineAssignment(sections=list(plan.sections))
+
+        exhausted = api.optimize_outline(plan, [_evidence(_chunk(), doc_number=1)]).follow_ups
+        storage = next(f for f in exhausted if f.section_key == "s1")
+
+        assignment = api.optimize_outline(
+            plan, [_evidence(_chunk(), doc_number=1)],
+            asked=[QueryAttempt(text=storage.text, round_index=1, chunks_added=0)],
+        )
+
+        assert [f.section_key for f in assignment.follow_ups] == ["s2"]
+
+    def test_no_query_is_issued_twice_in_one_pass(self, api, adapter):
+        """
+        Two sections can be briefed similarly enough that the model writes one query twice. Searching it
+        twice in the same round costs two retrievals to return one set of chunks.
+        """
+        plan = ResearchPlan(report_id=uuid.uuid4(), topic="t", sections=[
+            OutlineSection(key="s1", title="A", order_index=0),
+            OutlineSection(key="s2", title="B", order_index=1),
+        ])
+        adapter.optimize_outline.return_value = OutlineAssignment(
+            sections=list(plan.sections),
+            follow_ups=[FollowUpQuery(section_key="s1", text="what was sealed"),
+                        FollowUpQuery(section_key="s2", text="What was sealed?")],
+        )
+
+        assignment = api.optimize_outline(plan, [_evidence(_chunk(), doc_number=1)])
+
+        texts = [normalise_query(f.text) for f in assignment.follow_ups]
+        assert len(texts) == len(set(texts))
+        assert texts.count("what was sealed") == 1
+
+    def test_an_empty_bank_still_respects_the_history(self, api, adapter, orchestrator):
+        """The no-model path has its own return and would otherwise bypass the filter entirely."""
+        plan = self._uncovered_plan()
+
+        derived = api.optimize_outline(plan, []).follow_ups[0]
+        assignment = api.optimize_outline(
+            plan, [], asked=[QueryAttempt(text=derived.text, round_index=1, chunks_added=0)]
+        )
+
+        assert assignment.follow_ups == []
+        orchestrator.acquire_model.assert_not_called()
 
 
 class TestWriteSection:

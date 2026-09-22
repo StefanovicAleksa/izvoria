@@ -89,6 +89,28 @@ class FollowUpQuery(BaseModel):
     model_config = ConfigDict(frozen=True)
 
 
+class QueryAttempt(BaseModel):
+    """
+    One search this run has already run, and what it was worth.
+
+    Gathering is allowed to repeat, and without a record of what was already asked it repeats itself: the
+    fallback follow-up is derived deterministically from a section's title and brief, neither of which
+    changes between rounds, so a section the model writes no follow-up for is re-searched with the
+    identical query every round until the budget runs out. Each of those rounds costs an embedder load, a
+    reranker load and a ~5.7 GB report-model load to reach a conclusion already reached.
+
+    `chunks_added` counts only chunks NOT already in the bank, so it answers the question the next round
+    actually needs answered -- "did asking this buy us anything" -- rather than how many rows came back.
+    A query that scored zero is the useful signal: its wording found nothing in this corpus, which is
+    exactly what the model must be told so it re-words rather than paraphrases.
+    """
+    text: str
+    round_index: int
+    chunks_added: int = 0
+
+    model_config = ConfigDict(frozen=True)
+
+
 class OutlineAssignment(BaseModel):
     """
     What one outline-optimisation pass produced: where the evidence goes, and what to search for next.

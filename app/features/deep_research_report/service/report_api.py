@@ -11,8 +11,8 @@ from app.core.model_manager.domain.entities import LoadedModel, ModelManifest
 from app.core.model_manager.domain.enums import ModelType
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.features.deep_research_report.domain.entities import (
-    CorpusDigest, EvidenceEntry, FollowUpQuery, OutlineAssignment, OutlineSection, Report,
-    ReportSection, ReportSummary, ResearchPlan,
+    CorpusDigest, EvidenceEntry, FollowUpQuery, OutlineAssignment, OutlineSection, QueryAttempt,
+    Report, ReportSection, ReportSummary, ResearchPlan,
 )
 from app.features.deep_research_report.domain.enums import ReportMode, ReportStatus, SectionStatus
 from app.features.deep_research_report.domain.interfaces import (
@@ -22,6 +22,9 @@ from app.features.deep_research_report.utils import markdown_renderer
 from app.features.deep_research_report.utils.error_mapper import map_report_error
 from app.features.deep_research_report.utils.evidence_bank import (
     build_bank_index, build_section_digest, chunks_for_section, pack_section_evidence,
+)
+from app.features.deep_research_report.utils.query_log import (
+    already_asked, format_attempts, normalise_query,
 )
 from app.features.qa_generation.utils.citation_parser import (
     build_numbered_context_block, normalize_citation_tags,
@@ -149,6 +152,7 @@ class ReportAuthoringAPI:
             plan: ResearchPlan,
             evidence: List[EvidenceEntry],
             release_after: bool = False,
+            asked: Optional[List[QueryAttempt]] = None,
     ) -> OutlineAssignment:
         """
         Assigns the gathered bank to the outline's sections, and says what to search for next.
@@ -161,20 +165,27 @@ class ReportAuthoringAPI:
         an exhaustive run's whole second round depends on having queries to run, and the case that most
         needs one -- a bank so empty the model is never called at all -- is exactly the case the model
         cannot answer.
+
+        `asked` is what the run has already searched for. It is applied twice: the model is shown it, so
+        its follow-up is a new question rather than a paraphrase, and every follow-up is checked against
+        it afterwards, because the fallback is derived from a section's unchanging title and brief and
+        would otherwise hand back the previous round's query verbatim. A round that can only re-ask what
+        has already been asked cannot find anything, and costs an embedder, a reranker and a ~5.7 GB
+        model load to prove it. Returning no follow-ups is how this call says "stop".
         """
         if not evidence:
             logger.info(f"Report {plan.report_id} gathered no evidence; every section is uncovered.")
             uncovered = [s.model_copy(update={"evidence_doc_numbers": []}) for s in plan.sections]
             return OutlineAssignment(
                 sections=uncovered,
-                follow_ups=self._fallback_follow_ups(uncovered, existing=[]),
+                follow_ups=self._fresh_follow_ups(uncovered, [], asked),
             )
 
         try:
             loaded_model = self._acquire()
             try:
                 assignment = self._adapter.optimize_outline(
-                    loaded_model, plan, build_bank_index(evidence)
+                    loaded_model, plan, build_bank_index(evidence), format_attempts(asked or [])
                 )
             finally:
                 self._release(loaded_model, release_after)
@@ -197,31 +208,53 @@ class ReportAuthoringAPI:
 
             result = OutlineAssignment(sections=cleaned, follow_ups=assignment.follow_ups)
             return result.model_copy(update={
-                "follow_ups": self._fallback_follow_ups(result.uncovered, result.follow_ups)
+                "follow_ups": self._fresh_follow_ups(result.uncovered, result.follow_ups, asked)
             })
 
         except Exception as e:
             raise map_report_error(e, context=f"Optimising the outline of report {plan.report_id}") from e
 
     @staticmethod
-    def _fallback_follow_ups(
+    def _fresh_follow_ups(
             uncovered: List[OutlineSection],
             existing: List[FollowUpQuery],
+            asked: Optional[List[QueryAttempt]],
     ) -> List[FollowUpQuery]:
         """
-        Guarantees every uncovered section has something to search for next round.
+        Every uncovered section's next query, minus anything this run has already searched for.
 
-        Built from the section's own title and brief, deterministically, with no model call -- the same
-        shape `outline_validator._fill_empty_sections` uses. It is worse than a model-written follow-up,
+        The model's own follow-ups are filtered first, then each remaining gap is filled from the section's
+        title and brief -- deterministically, with no model call, the same shape
+        `outline_validator._fill_empty_sections` uses. A generated query is worse than a model-written one,
         which is why it only fills gaps the model left, but a worse query beats no second round at all.
+
+        The filter is what stops the loop spinning. Neither the model nor the fallback knows what earlier
+        rounds tried: the fallback is a pure function of a title and brief that do not change between
+        rounds, so an uncovered section the model writes nothing for regenerates the identical query every
+        round. Dropping it here means an exhausted section contributes no query, and a round with no
+        queries left is a round the caller skips instead of paying for.
         """
-        covered_keys = {f.section_key for f in existing}
-        filled = list(existing)
+        seen = already_asked(asked or [])
+        filled: List[FollowUpQuery] = []
+
+        for follow_up in existing:
+            key = normalise_query(follow_up.text)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            filled.append(follow_up)
+
+        covered_keys = {f.section_key for f in filled}
         for section in uncovered:
             if section.key in covered_keys:
                 continue
             text = f"{section.title.strip()}. {section.brief.strip()}".strip().rstrip(".") + "."
+            key = normalise_query(text)
+            if not key or key in seen:
+                continue
+            seen.add(key)
             filled.append(FollowUpQuery(section_key=section.key, text=text))
+
         return filled
 
     # ==========================================

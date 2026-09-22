@@ -711,3 +711,101 @@ class TestExhaustiveRounds:
 
         # Once per round plus the run's own finally.
         assert retrieval.discard_preload.call_count >= 3
+
+    def test_the_assignment_pass_is_told_what_has_already_been_searched(
+            self, make_pipeline, phases, monkeypatch
+    ):
+        """
+        Round 2 has to be able to write a genuinely new query, and it cannot re-word a search it cannot
+        see. The history carries what each one returned, so a query that found nothing is recognisable
+        as vocabulary the archive does not have.
+        """
+        monkeypatch.setattr(settings, "REPORT_SCRUB_ENABLED", False)
+        _, _, _, _, authoring = phases
+        self._gap_round(authoring)
+
+        make_pipeline(max_gather_rounds=3).execute_iterative_report(REPORT_ID, _plan())
+
+        second_pass = authoring.execute_report.call_args_list[1].kwargs["asked"]
+        texts = [a.text for a in second_pass]
+        assert "Who sealed it?" in texts and "Where was it kept?" in texts
+        assert all(isinstance(a.chunks_added, int) for a in second_pass)
+
+    def test_the_history_accumulates_across_rounds(self, make_pipeline, phases, monkeypatch):
+        """Round 3 must know what round 2 asked, not only what round 1 asked."""
+        monkeypatch.setattr(settings, "REPORT_SCRUB_ENABLED", False)
+        _, _, _, _, authoring = phases
+        self._gap_round(authoring, follow_up_text="what did Draghi say about the wedge")
+
+        # Four, so that the third round is still a gathering round -- the last round discards
+        # follow-ups and is deliberately handed no history.
+        make_pipeline(max_gather_rounds=4).execute_iterative_report(REPORT_ID, _plan())
+
+        third_pass = authoring.execute_report.call_args_list[2].kwargs["asked"]
+        texts = [a.text for a in third_pass]
+        assert "what did Draghi say about the wedge" in texts
+        assert "Who sealed it?" in texts
+
+    def test_deep_mode_is_never_handed_a_search_history(self, make_pipeline, phases, monkeypatch):
+        """
+        A single-round run discards follow-ups, so showing it the history would spend context to change
+        nothing -- and would stop deep mode's outline prompt being the one it has always sent.
+        """
+        monkeypatch.setattr(settings, "REPORT_SCRUB_ENABLED", False)
+        _, _, _, _, authoring = phases
+
+        make_pipeline().execute_report(REPORT_ID, _plan())
+
+        assert authoring.execute_report.call_args.kwargs["asked"] is None
+
+    def test_the_final_writing_round_is_not_handed_a_history_either(
+            self, make_pipeline, phases, monkeypatch
+    ):
+        monkeypatch.setattr(settings, "REPORT_SCRUB_ENABLED", False)
+        _, _, _, _, authoring = phases
+        self._gap_round(authoring)
+
+        make_pipeline(max_gather_rounds=2).execute_iterative_report(REPORT_ID, _plan())
+
+        assert authoring.execute_report.call_args_list[-1].kwargs["asked"] is None
+
+    def test_a_query_is_credited_only_with_chunks_new_to_the_bank(
+            self, make_pipeline, phases, monkeypatch
+    ):
+        """
+        The count answers "did asking this buy us anything", which is what decides whether asking again
+        is worth three model loads -- not how many rows came back.
+        """
+        monkeypatch.setattr(settings, "REPORT_SCRUB_ENABLED", False)
+        _, _, _, _, authoring = phases
+        self._gap_round(authoring)
+
+        make_pipeline(max_gather_rounds=3).execute_iterative_report(REPORT_ID, _plan())
+
+        first_round = [a for a in authoring.execute_report.call_args_list[1].kwargs["asked"]
+                       if a.round_index == 1]
+        # The fixture returns one distinct chunk per query per round.
+        assert [a.chunks_added for a in first_round] == [1, 1]
+
+    def test_a_round_with_nothing_new_to_ask_is_not_spent(
+            self, make_pipeline, phases, monkeypatch
+    ):
+        """
+        The loop's other stop rule. When every remaining gap can only be re-asked with a query this run
+        has already run, the round would return the same chunks and reach the same conclusion -- after
+        paying an embedder, a reranker and a ~5.7 GB report-model load for it. `optimize_outline` says
+        so by returning no follow-ups, and the pipeline must write rather than gather again.
+        """
+        monkeypatch.setattr(settings, "REPORT_SCRUB_ENABLED", False)
+        retrieval, _, _, _, authoring = phases
+        self._gap_round(authoring)
+        # Round 2's assignment finds the gap again but has nothing unasked left to search for.
+        authoring.follow_ups.side_effect = [
+            [FollowUpQuery(section_key="s2", text="re-worded query")], [],
+        ]
+
+        make_pipeline(max_gather_rounds=5).execute_iterative_report(REPORT_ID, _plan())
+
+        assert retrieval.execute_sweep.call_count == 2
+        # The budget allowed five; the run still wrote instead of burning the remaining three.
+        assert authoring.execute_report.call_count == 3

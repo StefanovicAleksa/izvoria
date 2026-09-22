@@ -17,7 +17,8 @@ from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.exceptions.base import ModelManagerError
 from app.core.model_manager.service.async_model_service import AsyncModelService
 from app.features.deep_research_report.domain.entities import (
-    EvidenceEntry, FollowUpQuery, OutlineAssignment, OutlineSection, ReportSection, ResearchPlan,
+    EvidenceEntry, FollowUpQuery, OutlineAssignment, OutlineSection, QueryAttempt, ReportSection,
+    ResearchPlan,
 )
 from app.features.deep_research_report.domain.enums import SectionStatus
 from app.features.deep_research_report.service.report_api import ReportAuthoringAPI
@@ -111,6 +112,7 @@ class ReportAuthoringPhase:
             pending_keys: Optional[List[str]] = None,
             optimize: bool = True,
             stop_on_gaps: bool = False,
+            asked: Optional[List[QueryAttempt]] = None,
             cancel_token: Optional[CancellationToken] = None,
     ) -> PhaseBatchResult:
         """
@@ -128,6 +130,11 @@ class ReportAuthoringPhase:
         Deliberately a flag rather than a callback. A callback invoked from in here would be handed the
         exact footgun this design exists to avoid: something that runs while the model is held and whose
         entire purpose is to decide "go gather more".
+
+        `asked` is every search earlier rounds ran and what it returned. It travels with `stop_on_gaps`
+        because they serve one purpose: the follow-ups this phase hands back are only worth another round
+        if they ask something new, so the outline pass is shown the history and filters its answer against
+        it. An empty list is correct for round 1 and for deep mode.
 
         Cancellation is checked between sections. A cancelled run keeps everything already written and
         stops -- the caller records the report as CANCELLED and it stays resumable.
@@ -179,6 +186,7 @@ class ReportAuthoringPhase:
                         plan=plan,
                         evidence=evidence,
                         release_after=not hold,
+                        asked=asked,
                     )
                     sections = list(assignment.sections)
                     outline_succeeded = True
