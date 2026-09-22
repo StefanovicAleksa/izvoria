@@ -18,6 +18,7 @@ _LABELS = {
     ApplianceStatus.READY: "Ready",
     ApplianceStatus.WORKING: "Working",
     ApplianceStatus.INGESTING: "Ingesting",
+    ApplianceStatus.RESEARCHING: "Researching",
     ApplianceStatus.ERROR: "Error",
 }
 

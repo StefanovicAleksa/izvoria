@@ -1,10 +1,10 @@
-# Path: tests/orchestration/pipelines/test_live_deep_research_pipeline_unit.py
+# Path: tests/orchestration/pipelines/test_live_reasoning_pipeline_unit.py
 
 import pytest
 import uuid
 from unittest.mock import Mock
 
-from app.orchestration.service.pipelines.live_deep_research_pipeline import LiveDeepResearchPipeline
+from app.orchestration.service.pipelines.live_reasoning_pipeline import LiveReasoningPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import (
     PhaseBatchResult, RagRetrievalJobResult, RagRerankingJobResult, RetrievalScrubbingJobResult,
@@ -20,7 +20,7 @@ from app.features.qa_reasoning.domain.enums import ReasonerDecisionType
 
 def _reasoner_result(search_id, decision: ReasonerDecision, status=PhaseStatus.COMPLETED, errors=None):
     return PhaseBatchResult(
-        phase=PipelinePhase.DEEP_RESEARCH_REASONING, status=status, successful_count=1 if status == PhaseStatus.COMPLETED else 0,
+        phase=PipelinePhase.REASONING_TURN, status=status, successful_count=1 if status == PhaseStatus.COMPLETED else 0,
         items=[(ReasonerJobResult(search_id=search_id, success=True, decision=decision.decision.value), decision)]
         if status == PhaseStatus.COMPLETED else [],
         errors=errors or []
@@ -52,7 +52,7 @@ def _stub_retrieval_pass(mock_retrieval_phase, mock_reranking_phase, mock_scrubb
                           chunks=None):
     """Stubs a single retrieve -> rerank -> scrub pass with `.return_value` (safe for any call
     count) so tests that don't care about evidence content can still satisfy the mandatory
-    first pass every LiveDeepResearchPipeline call now performs before the Reasoner runs."""
+    first pass every LiveReasoningPipeline call now performs before the Reasoner runs."""
     chunks = chunks or []
     search_result = SearchResult(query="q", results=chunks, execution_time_ms=1)
     mock_retrieval_phase.execute.return_value = PhaseBatchResult(
@@ -87,7 +87,7 @@ def _sufficient_generation(search_id, answer="Answer."):
     )
 
 
-class TestLiveDeepResearchPipelineUnit:
+class TestLiveReasoningPipelineUnit:
     @pytest.fixture
     def mock_reasoner_phase(self):
         phase = Mock()
@@ -115,7 +115,7 @@ class TestLiveDeepResearchPipelineUnit:
     @pytest.fixture
     def pipeline(self, mock_reasoner_phase, mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase,
                  mock_qa_generation_phase):
-        return LiveDeepResearchPipeline(
+        return LiveReasoningPipeline(
             reasoner_phase=mock_reasoner_phase,
             retrieval_phase=mock_retrieval_phase,
             reranking_phase=mock_reranking_phase,
@@ -152,7 +152,7 @@ class TestLiveDeepResearchPipelineUnit:
             items=[(QAGenerationJobResult(search_id=search_id, success=True), (qa_response, critique))]
         )
 
-        pipeline.execute_deep_research(search_id, SearchQuery(prompt="Q"))
+        pipeline.execute_reasoning(search_id, SearchQuery(prompt="Q"))
 
         mock_retrieval_phase.execute.assert_called_once()
         first_reasoner_call_args = mock_reasoner_phase.execute.call_args_list[0][0][0][0]
@@ -170,7 +170,7 @@ class TestLiveDeepResearchPipelineUnit:
             search_id, _ask_clarification("Which incident do you mean?")
         )
 
-        result = pipeline.execute_deep_research(search_id, SearchQuery(prompt="What happened?"))
+        result = pipeline.execute_reasoning(search_id, SearchQuery(prompt="What happened?"))
 
         assert result.qa_response is None
         assert result.clarification_question == "Which incident do you mean?"
@@ -193,7 +193,7 @@ class TestLiveDeepResearchPipelineUnit:
             items=[(QAGenerationJobResult(search_id=search_id, success=True), (qa_response, critique))]
         )
 
-        result = pipeline.execute_deep_research(search_id, SearchQuery(prompt="Q"))
+        result = pipeline.execute_reasoning(search_id, SearchQuery(prompt="Q"))
 
         assert result.qa_response == qa_response
         assert result.total_iterations == 1
@@ -246,7 +246,7 @@ class TestLiveDeepResearchPipelineUnit:
             items=[(QAGenerationJobResult(search_id=search_id, success=True), (qa_response, critique))]
         )
 
-        result = pipeline.execute_deep_research(search_id, SearchQuery(prompt="Q", limit=5))
+        result = pipeline.execute_reasoning(search_id, SearchQuery(prompt="Q", limit=5))
 
         assert result.qa_response == qa_response
         assert result.total_iterations == 2
@@ -283,7 +283,7 @@ class TestLiveDeepResearchPipelineUnit:
             items=[(QAGenerationJobResult(search_id=search_id, success=True), (qa_response, critique))]
         )
 
-        result = pipeline.execute_deep_research(search_id, SearchQuery(prompt="Q"))
+        result = pipeline.execute_reasoning(search_id, SearchQuery(prompt="Q"))
 
         assert result.total_iterations == 3
         # 3 REFINE_QUERY turns + 1 final restricted-choice turn = 4 reasoner calls
@@ -309,7 +309,7 @@ class TestLiveDeepResearchPipelineUnit:
         ]
         _stub_retrieval_pass(mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase, search_id, [raw_chunk])
 
-        result = pipeline.execute_deep_research(search_id, SearchQuery(prompt="Q"))
+        result = pipeline.execute_reasoning(search_id, SearchQuery(prompt="Q"))
 
         assert result.qa_response is None
         assert result.clarification_question == "Which financial instrument specifically?"
@@ -328,7 +328,7 @@ class TestLiveDeepResearchPipelineUnit:
         )
         _stub_retrieval_pass(mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase, search_id, [raw_chunk])
 
-        result = pipeline.execute_deep_research(search_id, SearchQuery(prompt="Q"))
+        result = pipeline.execute_reasoning(search_id, SearchQuery(prompt="Q"))
 
         assert result.qa_response is None
         assert "Still not specific enough." in result.clarification_question
@@ -350,7 +350,7 @@ class TestLiveDeepResearchPipelineUnit:
             items=[(QAGenerationJobResult(search_id=search_id, success=True), (qa_response, needs_more))]
         )
 
-        result = pipeline.execute_deep_research(search_id, SearchQuery(prompt="Q"))
+        result = pipeline.execute_reasoning(search_id, SearchQuery(prompt="Q"))
 
         # max_critique_retries=1: one retry attempted (2 reasoner turns, 2 generation calls), then returns anyway
         assert result.critique_unresolved is True
@@ -372,7 +372,7 @@ class TestLiveDeepResearchPipelineUnit:
         )
 
         with pytest.raises(WorkflowStateError, match="Reasoner turn failed"):
-            pipeline.execute_deep_research(search_id, SearchQuery(prompt="Q"))
+            pipeline.execute_reasoning(search_id, SearchQuery(prompt="Q"))
 
     def test_failed_mandatory_retrieval_raises_before_reasoner_runs_and_discards_all_pending_preloads(
             self, pipeline, mock_reasoner_phase, mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase,
@@ -384,7 +384,7 @@ class TestLiveDeepResearchPipelineUnit:
         )
 
         with pytest.raises(WorkflowStateError, match="Retrieval failed"):
-            pipeline.execute_deep_research(search_id, SearchQuery(prompt="Q"))
+            pipeline.execute_reasoning(search_id, SearchQuery(prompt="Q"))
 
         # The mandatory pass fails before the Reasoner is ever consulted.
         mock_reasoner_phase.execute.assert_not_called()
@@ -405,7 +405,7 @@ class TestLiveDeepResearchPipelineUnit:
         mock_reasoner_phase.execute.side_effect = RuntimeError("boom")
 
         with pytest.raises(Exception):
-            pipeline.execute_deep_research(search_id, SearchQuery(prompt="Q"))
+            pipeline.execute_reasoning(search_id, SearchQuery(prompt="Q"))
 
         for phase in self._all_phases(mock_reasoner_phase, mock_retrieval_phase, mock_reranking_phase,
                                       mock_scrubber_phase, mock_qa_generation_phase):
@@ -428,7 +428,7 @@ class TestLiveDeepResearchPipelineUnit:
             items=[(QAGenerationJobResult(search_id=search_id, success=True), (qa_response, critique))]
         )
 
-        pipeline.execute_deep_research(search_id, SearchQuery(prompt="Q"), prior_session_context="prior turn")
+        pipeline.execute_reasoning(search_id, SearchQuery(prompt="Q"), prior_session_context="prior turn")
 
         first_call_args = mock_reasoner_phase.execute.call_args_list[0][0][0][0]
         second_call_args = mock_reasoner_phase.execute.call_args_list[1][0][0][0]
@@ -446,7 +446,7 @@ class TestLiveDeepResearchPipelineUnit:
         mock_reasoner_phase.execute.return_value = _reasoner_result(search_id, _answer_ready())
         mock_qa_generation_phase.execute_with_critique.return_value = _sufficient_generation(search_id)
 
-        pipeline.execute_deep_research(search_id, SearchQuery(prompt="Why after that?"), prior_session_context="prior")
+        pipeline.execute_reasoning(search_id, SearchQuery(prompt="Why after that?"), prior_session_context="prior")
 
         mock_reasoner_phase.rewrite_query.assert_called_once_with(search_id, "Why after that?", "prior")
         searched = mock_retrieval_phase.execute.call_args[0][0][0][1]
@@ -468,7 +468,7 @@ class TestLiveDeepResearchPipelineUnit:
         mock_reasoner_phase.execute.return_value = _reasoner_result(search_id, _answer_ready())
         mock_qa_generation_phase.execute_with_critique.return_value = _sufficient_generation(search_id)
 
-        pipeline.execute_deep_research(search_id, SearchQuery(prompt="Who voted?"), prior_session_context="prior")
+        pipeline.execute_reasoning(search_id, SearchQuery(prompt="Who voted?"), prior_session_context="prior")
 
         assert mock_qa_generation_phase.execute_with_critique.call_args[0][0][0][1] == "Who voted?"
 
@@ -483,7 +483,7 @@ class TestLiveDeepResearchPipelineUnit:
         mock_reasoner_phase.rewrite_query.return_value = "standalone"
         mock_reasoner_phase.execute.return_value = _reasoner_result(search_id, _ask_clarification("Which meeting?"))
 
-        result = pipeline.execute_deep_research(
+        result = pipeline.execute_reasoning(
             search_id, SearchQuery(prompt="follow-up"), prior_session_context="prior", seed_chunks=[seed, raw_chunk]
         )
 
@@ -506,7 +506,7 @@ class TestLiveDeepResearchPipelineUnit:
         ]
         mock_qa_generation_phase.execute_with_critique.return_value = _sufficient_generation(search_id)
 
-        pipeline.execute_deep_research(search_id, SearchQuery(prompt="follow-up"), prior_session_context="prior")
+        pipeline.execute_reasoning(search_id, SearchQuery(prompt="follow-up"), prior_session_context="prior")
 
         searched = [call[0][0][0][1].prompt for call in mock_retrieval_phase.execute.call_args_list]
         assert searched == ["standalone", "standalone"]
@@ -523,7 +523,7 @@ class TestLiveDeepResearchPipelineUnit:
         mock_reasoner_phase.execute.return_value = _reasoner_result(search_id, _answer_ready())
         mock_qa_generation_phase.execute_with_critique.return_value = _sufficient_generation(search_id)
 
-        pipeline.execute_deep_research(search_id, SearchQuery(prompt="Q"))
+        pipeline.execute_reasoning(search_id, SearchQuery(prompt="Q"))
 
         mock_retrieval_phase.expand_neighbors.assert_called_once_with([raw_chunk])
         pool_seen = mock_reasoner_phase.execute.call_args[0][0][0][2]
@@ -560,7 +560,7 @@ class TestLiveDeepResearchPipelineUnit:
         )
         mock_qa_generation_phase.execute_with_critique.return_value = _sufficient_generation(search_id)
 
-        pipeline.execute_deep_research(search_id, SearchQuery(prompt="What did the defendant say?"))
+        pipeline.execute_reasoning(search_id, SearchQuery(prompt="What did the defendant say?"))
 
         assert pool_rerank_calls == [([raw_chunk, second, third], 3)]
         request = mock_qa_generation_phase.execute_with_critique.call_args[0][0][0]
@@ -587,7 +587,7 @@ class TestLiveDeepResearchPipelineUnit:
         mock_reasoner_phase.execute.return_value = _reasoner_result(search_id, _answer_ready())
         mock_qa_generation_phase.execute_with_critique.return_value = _sufficient_generation(search_id)
 
-        result = pipeline.execute_deep_research(search_id, SearchQuery(prompt="Q"))
+        result = pipeline.execute_reasoning(search_id, SearchQuery(prompt="Q"))
 
         assert result.qa_response is not None
         request = mock_qa_generation_phase.execute_with_critique.call_args[0][0][0]

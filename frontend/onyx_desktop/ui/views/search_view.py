@@ -169,7 +169,11 @@ class SearchView(QWidget):
         prompt = self._input.text().strip()
         if not prompt:
             return
-        self.searchRequested.emit(prompt, self._mode.currentData(), self._limit.value())
+        # Rebuilt from the combo's QVariant: a str-derived Enum comes back as a plain str, and an
+        # `is` comparison in the gateway would then silently run a standard search instead.
+        self.searchRequested.emit(
+            prompt, SearchMode(self._mode.currentData()), self._limit.value()
+        )
 
     def _on_review(self, evidence: Evidence) -> None:
         self._source_panel.show_evidence(evidence)

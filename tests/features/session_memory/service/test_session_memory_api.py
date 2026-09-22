@@ -76,15 +76,15 @@ class TestSessionMemoryAPI:
             evidence_chunk_ids=[chunk_id], first_doc_number=4
         )
 
-    def test_record_deep_research_turn_strips_its_own_tags(self, api, mock_repo):
+    def test_record_reasoning_turn_strips_its_own_tags(self, api, mock_repo):
         session_id = uuid.uuid4()
 
         api.record_turn(session_id, "Q", "It rose [Doc 1] and then fell [Doc 2, 3].",
-                        mode=SessionTurnMode.DEEP_RESEARCH)
+                        mode=SessionTurnMode.REASONING)
 
         mock_repo.record_turn.assert_called_once_with(
             session_id, "Q", "It rose and then fell.",
-            mode=SessionTurnMode.DEEP_RESEARCH, standalone_query=None,
+            mode=SessionTurnMode.REASONING, standalone_query=None,
             evidence_chunk_ids=[], first_doc_number=1
         )
 

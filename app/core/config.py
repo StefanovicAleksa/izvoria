@@ -60,6 +60,16 @@ class Settings(BaseSettings):
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    # Overrides where finished research reports are written. Integration tests point it at a tmp_path.
+    REPORTS_PATH: str = ""
+
+    @property
+    def REPORTS_DIR(self) -> Path:
+        """Where Deep Research Report mode writes its Markdown deliverables."""
+        path = Path(self.REPORTS_PATH) if self.REPORTS_PATH else self.BASE_DIR / self.DATA_DIR / self.ENV / "reports"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
     # ==========================================
     # PERFORMANCE TUNING
     # ==========================================
@@ -205,7 +215,7 @@ class Settings(BaseSettings):
     QA_GENERATION_N_CTX: int = 131072
     QA_GENERATION_MAX_ANSWER_TOKENS: int = 1024
 
-    # Deep Research reasoning loop: the same weights as the answer model, but under its own ModelType/n_ctx
+    # Reasoned Answer mode's reasoning loop: the same weights as the answer model, but under its own ModelType/n_ctx
     # since residency is keyed on (model_type, model_path) — switching between the two reloads the file.
     QA_REASONER_MODEL_PATH: str = "models/Qwen3.5-9B-Q4_K_M.gguf"
     QA_REASONER_VRAM_REQUIREMENT_MB: float = 10000.0
@@ -216,8 +226,51 @@ class Settings(BaseSettings):
     # thinking mode. Grounded answers and JSON decisions are generated without a <think> block.
     QA_LLM_KV_CACHE_TYPE: str = "q8_0"
     QA_LLM_ENABLE_THINKING: bool = False
-    DEEP_RESEARCH_MAX_ITERATIONS: int = 3
-    DEEP_RESEARCH_MAX_CRITIQUE_RETRIES: int = 1
+    REASONING_MAX_ITERATIONS: int = 3
+    REASONING_MAX_CRITIQUE_RETRIES: int = 1
+
+    # ==========================================
+    # DEEP RESEARCH REPORT MODE
+    # ==========================================
+    # A third ModelType on the same GGUF as QA_GENERATION/QA_REASONER, for the same reason they are separate:
+    # residency is keyed on (model_type, model_path). Report mode holds ONE acquisition across outline
+    # optimisation and every section write, so the file is loaded once per run rather than once per section.
+    REPORT_AUTHORING_MODEL_PATH: str = "models/Qwen3.5-9B-Q4_K_M.gguf"
+    REPORT_AUTHORING_VRAM_REQUIREMENT_MB: float = 10000.0
+    REPORT_AUTHORING_N_CTX: int = 131072
+    # A report section is longer than a chat answer, so it does not reuse QA_GENERATION_MAX_ANSWER_TOKENS (1024).
+    REPORT_SECTION_MAX_TOKENS: int = 1600
+    REPORT_PLAN_MAX_TOKENS: int = 1500
+    # Evidence shown to the writer for ONE section. Deliberately far below n_ctx: prefill is the cost driver on
+    # a 3060, and a section that takes the whole window would make an 8-section report unusable.
+    REPORT_SECTION_EVIDENCE_TOKENS: int = 8000
+
+    REPORT_MAX_SECTIONS: int = 8
+    REPORT_MAX_SUB_QUESTIONS: int = 12
+    REPORT_CANDIDATES_PER_QUERY: int = 40
+    REPORT_RERANK_TOP_N: int = 12
+
+    # Per-document sweep: every indexed source gets looked at, so a relevant recording is not missed just
+    # because no generated sub-question happened to surface it. ANN-gated so the cost does not scale with
+    # the corpus; REPORT_SWEEP_EXHAUSTIVE trades that bound for true completeness on small corpora.
+    REPORT_SWEEP_MAX_SOURCES: int = 50
+    REPORT_SWEEP_PER_SOURCE: int = 3
+    REPORT_SWEEP_ANN_DEPTH: int = 2000
+    REPORT_SWEEP_EXHAUSTIVE: bool = False
+
+    # The scrubber is one sequential 7B call per chunk and drops the answering chunk for ~1 question in 9.
+    # For a report, recall dominates precision: an irrelevant chunk is simply never cited, but a dropped one
+    # cannot be. Off by default, and the report states which way this was set.
+    REPORT_SCRUB_ENABLED: bool = False
+    REPORT_SCRUB_MAX_CHUNKS: int = 150
+
+    # Exhaustive mode only; Deep mode always passes 1. A round that adds no new chunks stops the loop
+    # early, so most runs finish well under this. Each extra round costs one embedder load, one reranker
+    # load and one reload of the report model.
+    REPORT_MAX_GATHER_ROUNDS: int = 3
+    # A section assigned fewer than this many documents counts as a gap worth searching again for.
+    REPORT_MIN_SECTION_EVIDENCE: int = 1
+    REPORT_FOLLOWUP_QUERIES_PER_ROUND: int = 6
 
     # Multi-turn chat: most recent turns of a session shown to the answer model and the reasoner
     CHAT_HISTORY_MAX_TURNS: int = 20

@@ -1,4 +1,4 @@
-# Path: app/orchestration/service/pipelines/live_deep_research_pipeline.py
+# Path: app/orchestration/service/pipelines/live_reasoning_pipeline.py
 
 import logging
 import uuid
@@ -12,7 +12,7 @@ from app.features.qa_generation.domain.enums import CritiqueVerdict
 from app.orchestration.domain.enums import PhaseStatus
 from app.orchestration.domain.entities import (
     RagRetrievalJobResult, RagRerankingJobResult, RetrievalScrubbingJobResult, QAGenerationJobResult,
-    ReasonerJobResult, PhaseBatchResult, DeepResearchIterationTrace, DeepResearchResponse
+    ReasonerJobResult, PhaseBatchResult, ReasoningIterationTrace, ReasonedChatResponse
 )
 from app.orchestration.exceptions.workflow import WorkflowStateError, WorkflowExecutionError
 from app.orchestration.utils.follow_up import answer_question
@@ -47,9 +47,9 @@ def _extract_all(result: PhaseBatchResult, job_result_type: Type[_T]) -> List[Tu
     return extracted
 
 
-class LiveDeepResearchPipeline:
+class LiveReasoningPipeline:
     """
-    Multi-pass "deep research" chat pipeline: always gathers at least one round of real
+    Multi-pass reasoning chat pipeline: always gathers at least one round of real
     evidence before the Reasoner ever judges the question, then loops a reasoning turn against
     the accumulating evidence pool — re-running the existing retrieve -> rerank -> scrub stack
     on REFINE_QUERY — before drafting an answer with immediate self-critique. The first
@@ -168,7 +168,7 @@ class LiveDeepResearchPipeline:
             query: SearchQuery,
             evidence_pool: List[RetrievedChunk],
             decision_history: List[ReasonerDecision],
-            trace: List[DeepResearchIterationTrace],
+            trace: List[ReasoningIterationTrace],
             iteration_count: int,
             prior_session_context: Optional[str],
             extra_context: Optional[str],
@@ -187,7 +187,7 @@ class LiveDeepResearchPipeline:
             raise WorkflowStateError("Pipeline halted: Reasoner produced no decision.")
 
         decision_history.append(decision)
-        trace.append(DeepResearchIterationTrace(
+        trace.append(ReasoningIterationTrace(
             iteration=iteration_count,
             decision=decision.decision.value,
             interim_analysis=decision.interim_analysis,
@@ -203,23 +203,23 @@ class LiveDeepResearchPipeline:
         "— there is no search budget left to act on it."
     )
 
-    def execute_deep_research(
+    def execute_reasoning(
             self,
             search_id: uuid.UUID,
             query: SearchQuery,
             prior_session_context: Optional[str] = None,
             seed_chunks: Optional[List[RetrievedChunk]] = None,
-    ) -> DeepResearchResponse:
+    ) -> ReasonedChatResponse:
         """
         prior_session_context is the conversation so far as text. seed_chunks is the evidence earlier turns of the
         conversation showed; it joins the pool after this question's own first search, so it is what an evidence
         budget drops first.
         """
-        logger.info(f"========== Starting Live Deep Research Pipeline for Search [{search_id}] ==========")
+        logger.info(f"========== Starting Live Reasoned Answer Pipeline for Search [{search_id}] ==========")
 
         evidence_pool: List[RetrievedChunk] = []
         decision_history: List[ReasonerDecision] = []
-        trace: List[DeepResearchIterationTrace] = []
+        trace: List[ReasoningIterationTrace] = []
         iteration_count = 0
         critique_retry_count = 0
         current_query = query.prompt
@@ -229,8 +229,8 @@ class LiveDeepResearchPipeline:
         is_first_turn = True
         standalone_query: Optional[str] = None
 
-        def respond(**kwargs) -> DeepResearchResponse:
-            return DeepResearchResponse(
+        def respond(**kwargs) -> ReasonedChatResponse:
+            return ReasonedChatResponse(
                 standalone_query=standalone_query,
                 evidence_chunk_ids=[c.chunk_id for c in evidence_pool],
                 **kwargs
@@ -261,7 +261,7 @@ class LiveDeepResearchPipeline:
                     extra_context = None
 
                     if decision.decision == ReasonerDecisionType.ASK_CLARIFICATION:
-                        logger.info(f"Deep Research halted for clarification [{search_id}].")
+                        logger.info(f"Reasoned Answer halted for clarification [{search_id}].")
                         return respond(
                             qa_response=None,
                             clarification_question=decision.clarification_question,
@@ -278,7 +278,7 @@ class LiveDeepResearchPipeline:
                         # final, restricted decision (answer_ready or ask_clarification only) rather
                         # than silently generating an answer it just flagged as not yet supported.
                         logger.info(
-                            f"Deep Research hit max_iterations={self._max_iterations}; forcing a final decision."
+                            f"Reasoned Answer hit max_iterations={self._max_iterations}; forcing a final decision."
                         )
                         final_decision = self._reasoner_turn(
                             search_id, query, evidence_pool, decision_history, trace, iteration_count + 1,
@@ -286,7 +286,7 @@ class LiveDeepResearchPipeline:
                         )
 
                         if final_decision.decision == ReasonerDecisionType.ASK_CLARIFICATION:
-                            logger.info(f"Deep Research halted for clarification after budget exhausted [{search_id}].")
+                            logger.info(f"Reasoned Answer halted for clarification after budget exhausted [{search_id}].")
                             return respond(
                                 qa_response=None,
                                 clarification_question=final_decision.clarification_question,
@@ -342,13 +342,13 @@ class LiveDeepResearchPipeline:
                 qa_response, critique = payload
 
                 if critique.verdict == CritiqueVerdict.SUFFICIENT:
-                    logger.info(f"========== Live Deep Research Pipeline Completed for Search [{search_id}] ==========")
+                    logger.info(f"========== Live Reasoned Answer Pipeline Completed for Search [{search_id}] ==========")
                     return respond(
                         qa_response=qa_response, iteration_trace=trace, total_iterations=iteration_count
                     )
 
                 if critique_retry_count >= self._max_critique_retries:
-                    logger.info(f"Deep Research critique unresolved after retry cap for [{search_id}]; returning draft.")
+                    logger.info(f"Reasoned Answer critique unresolved after retry cap for [{search_id}]; returning draft.")
                     return respond(
                         qa_response=qa_response, iteration_trace=trace,
                         total_iterations=iteration_count, critique_unresolved=True,
@@ -363,7 +363,7 @@ class LiveDeepResearchPipeline:
             logger.error(f"Workflow State Error: {e}")
             raise e
         except Exception as e:
-            logger.error(f"Critical Deep Research Pipeline Crash: {e}")
-            raise WorkflowExecutionError(f"Critical Deep Research Pipeline Crash: {str(e)}", original_exception=e) from e
+            logger.error(f"Critical Reasoned Answer Pipeline Crash: {e}")
+            raise WorkflowExecutionError(f"Critical Reasoned Answer Pipeline Crash: {str(e)}", original_exception=e) from e
         finally:
             self._discard_pending_preloads()

@@ -38,6 +38,8 @@ class EngineBridge(QObject):
     _chatRequested = Signal(int, str, object, object, int)
     _searchRequested = Signal(int, str, object, int)
     _ingestRequested = Signal(int, str, object)
+    _reportPlanRequested = Signal(int, str, object)   # rid, topic, ReportMode
+    _reportRequested = Signal(int, object, object)    # rid, ReportPlanDraft, ReportMode
     _hydrateRequested = Signal(int, object)
     _shutdownRequested = Signal()
 
@@ -47,6 +49,8 @@ class EngineBridge(QObject):
     searchFinished = Signal(int, object)
     ingestFinished = Signal(int, object)
     evidenceFinished = Signal(int, object)
+    reportPlanFinished = Signal(int, object)
+    reportFinished = Signal(int, object)
     progressTicked = Signal(object)
     failed = Signal(int, str)
     busyChanged = Signal(bool)
@@ -54,6 +58,9 @@ class EngineBridge(QObject):
 
     def __init__(self, gateway: IEngineGateway, parent: Optional[QObject] = None):
         super().__init__(parent)
+        # Kept for ONE purpose: request_report_cancel, which must reach the engine without going
+        # through the worker queue it is trying to interrupt. Nothing else here may call it directly.
+        self._gateway = gateway
         self._ids = itertools.count(1)
         self._pending: Dict[int, str] = {}
         self._status = ApplianceStatus.OFFLINE
@@ -69,6 +76,8 @@ class EngineBridge(QObject):
         self._chatRequested.connect(self._worker.run_chat)
         self._searchRequested.connect(self._worker.run_search)
         self._ingestRequested.connect(self._worker.run_ingest)
+        self._reportPlanRequested.connect(self._worker.run_report_plan)
+        self._reportRequested.connect(self._worker.run_report)
         self._hydrateRequested.connect(self._worker.run_hydrate)
         self._shutdownRequested.connect(self._worker.shutdown)
 
@@ -78,6 +87,10 @@ class EngineBridge(QObject):
         self._worker.searchReady.connect(lambda rid, res: self._settle(rid, self.searchFinished, res))
         self._worker.ingestReady.connect(self._on_ingest_done)
         self._worker.evidenceReady.connect(lambda rid, ev: self._settle(rid, self.evidenceFinished, ev))
+        self._worker.reportPlanReady.connect(
+            lambda rid, plan: self._settle(rid, self.reportPlanFinished, plan))
+        self._worker.reportReady.connect(
+            lambda rid, report: self._settle(rid, self.reportFinished, report))
         self._worker.progressed.connect(self.progressTicked)
         self._worker.failed.connect(self._on_failed)
 
@@ -148,6 +161,37 @@ class EngineBridge(QObject):
             return None
         self._ingestRequested.emit(request_id, path, mode)
         return request_id
+
+    def plan_report(self, topic: str, mode) -> Optional[int]:
+        request_id = self._begin("report_plan", ApplianceStatus.WORKING, "Planning the report…")
+        if request_id is None:
+            return None
+        self._reportPlanRequested.emit(request_id, topic, mode)
+        return request_id
+
+    def run_report(self, plan, mode) -> Optional[int]:
+        request_id = self._begin("report", ApplianceStatus.RESEARCHING, "Researching…")
+        if request_id is None:
+            return None
+        self._reportRequested.emit(request_id, plan, mode)
+        return request_id
+
+    def request_report_cancel(self, report_id) -> bool:
+        """
+        Calls the gateway DIRECTLY from the GUI thread, deliberately bypassing the worker queue.
+
+        Everything else in this class is a queued signal so engine calls serialize onto one thread. A
+        cancel cannot be: the worker is busy running the very report this is stopping, so a queued call
+        would not be delivered until that run finished -- which is precisely when it is useless.
+
+        Safe because `cancel_research_report` only sets a threading.Event. No model, no database, no
+        blocking work happens on the GUI thread here.
+        """
+        return self._gateway.request_report_cancel(report_id)
+
+    @property
+    def is_researching(self) -> bool:
+        return "report" in self._pending.values()
 
     def hydrate_evidence(self, chunk_ids: List[uuid.UUID]) -> Optional[int]:
         request_id = self._begin("hydrate", ApplianceStatus.WORKING, "Loading excerpts…")

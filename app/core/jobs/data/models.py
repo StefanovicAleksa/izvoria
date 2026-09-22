@@ -40,3 +40,11 @@ class JobModel(Base):
     __table_args__ = (
         Index('idx_jobs_source_history', 'source_id', 'created_at'),
     )
+
+# There are no migrations, so renamed enum values are backfilled here and run by OnyxEngine.start() after
+# create_all(). Job.job_type is parsed into JobType, so a row left on a retired value makes get_job_history
+# raise for that source. Every statement must be idempotent -- this runs on every boot.
+JOBS_UPGRADE_DDL = (
+    # JobType.DEEP_RESEARCH_REASONING became JobType.REASONING_TURN when the mode was renamed.
+    "UPDATE jobs SET job_type = 'reasoning_turn' WHERE job_type = 'deep_research_reasoning'",
+)

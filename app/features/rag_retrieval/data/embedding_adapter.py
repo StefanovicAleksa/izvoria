@@ -57,6 +57,35 @@ class HuggingFacePromptAdapter(IPromptEmbeddingAdapter):
         except Exception as e:
             raise map_retrieval_error(e, context="Unloading Prompt Embedding Model") from e
 
+    def embed_prompts(self, model: LoadedModel, texts: List[str]) -> List[List[float]]:
+        """
+        One forward pass for many prompts. sentence-transformers batches a list natively, so a 40-query
+        fan-out costs barely more than a single query -- the expensive part was always the load/unload
+        around it, which the caller now pays once.
+        """
+        if not getattr(model, "model_instance", None):
+            raise Exception("Cannot embed prompts: The model is not loaded in VRAM.")
+
+        if not texts:
+            return []
+
+        # Strict rather than skipping blanks: callers zip these vectors back onto their queries by
+        # position, so dropping one would silently attach every later vector to the wrong query.
+        blank = [index for index, text in enumerate(texts) if not (text or "").strip()]
+        if blank:
+            raise ValueError(f"Search prompts at positions {blank} are empty; cannot vectorize.")
+
+        try:
+            embedder: Any = model.model_instance
+            embeddings = embedder.encode(
+                list(texts),
+                show_progress_bar=False,
+                normalize_embeddings=True
+            )
+            return [vector.tolist() for vector in embeddings]
+        except Exception as e:
+            raise map_retrieval_error(e, context="Executing batched prompt vectorization") from e
+
     def embed_prompt(self, model: LoadedModel, text: str) -> List[float]:
         if not getattr(model, "model_instance", None):
             raise Exception("Cannot embed prompt: The model is not loaded in VRAM.")

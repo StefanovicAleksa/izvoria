@@ -196,5 +196,6 @@ STATUS_COLOURS = {
     "ready": SUCCESS,
     "working": ACCENT,
     "ingesting": WARNING,
+    "researching": ACCENT,
     "error": DANGER,
 }

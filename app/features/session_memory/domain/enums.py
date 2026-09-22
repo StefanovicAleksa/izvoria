@@ -6,4 +6,4 @@ from enum import Enum
 class SessionTurnMode(str, Enum):
     """Which chat entrypoint answered a turn. Both share one conversation history."""
     CHAT = "chat"
-    DEEP_RESEARCH = "deep_research"
+    REASONING = "reasoning"

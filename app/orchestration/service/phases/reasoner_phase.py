@@ -28,8 +28,8 @@ logger = logging.getLogger(__name__)
 
 class ReasonerPhase:
     """
-    Wraps one Deep Research Reasoner turn with job tracking and model lifecycle. The
-    multi-iteration loop lives in LiveDeepResearchPipeline, not here — this Phase, like every
+    Wraps one Reasoner turn with job tracking and model lifecycle. The
+    multi-iteration loop lives in LiveReasoningPipeline, not here — this Phase, like every
     other Phase, wraps exactly one logical step.
     """
 
@@ -47,7 +47,7 @@ class ReasonerPhase:
         self._preload_future: Optional[concurrent.futures.Future] = None
 
     def preload_model(self) -> None:
-        logger.info("Triggering background preload for Deep Research Reasoner LLM...")
+        logger.info("Triggering background preload for Reasoner LLM...")
         manifest = ModelManifest(
             model_type=ModelType.QA_REASONER,
             model_path=settings.QA_REASONER_MODEL_PATH,
@@ -73,7 +73,7 @@ class ReasonerPhase:
             return question
 
         request = JobRequest(
-            job_type=JobType.DEEP_RESEARCH_REASONING,
+            job_type=JobType.REASONING_TURN,
             source_id=None,
             input_params={"search_id": str(search_id), "step": "query_rewrite"}
         )
@@ -98,7 +98,7 @@ class ReasonerPhase:
         """
         Takes a list of tuples containing:
         (search_id, original_question, evidence_pool, decision_history, prior_session_context, extra_context).
-        In practice LiveDeepResearchPipeline always calls this with exactly one item per turn.
+        In practice LiveReasoningPipeline always calls this with exactly one item per turn.
         """
         logger.info(f"Executing Reasoner Phase for {len(reasoning_requests)} turns...")
 
@@ -116,7 +116,7 @@ class ReasonerPhase:
             except ModelManagerError as e:
                 logger.error(f"Failed to load Reasoner LLM: {e}")
                 return PhaseBatchResult(
-                    phase=PipelinePhase.DEEP_RESEARCH_REASONING,
+                    phase=PipelinePhase.REASONING_TURN,
                     status=PhaseStatus.FAILED,
                     errors=[f"Critical failure preloading Reasoner LLM: {str(e)}"]
                 )
@@ -124,7 +124,7 @@ class ReasonerPhase:
         try:
             for search_id, question, evidence_pool, history, prior_context, extra_context in reasoning_requests:
                 request = JobRequest(
-                    job_type=JobType.DEEP_RESEARCH_REASONING,
+                    job_type=JobType.REASONING_TURN,
                     source_id=None,
                     input_params={"search_id": str(search_id)}
                 )
@@ -172,7 +172,7 @@ class ReasonerPhase:
             status = PhaseStatus.PARTIAL_SUCCESS
 
         return PhaseBatchResult(
-            phase=PipelinePhase.DEEP_RESEARCH_REASONING,
+            phase=PipelinePhase.REASONING_TURN,
             status=status,
             total_processed=len(reasoning_requests),
             successful_count=success_count,

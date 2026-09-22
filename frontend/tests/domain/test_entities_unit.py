@@ -79,7 +79,7 @@ class TestChatMessageGrounding:
 
     def test_a_clarification_request_is_not_branded_ungrounded(self):
         """
-        Deep Research asks for clarification more often than it answers. Those turns legitimately
+        Reasoned Answer asks for clarification more often than it answers. Those turns legitimately
         carry no evidence and must not be flagged as untraceable answers.
         """
         message = ChatMessage(

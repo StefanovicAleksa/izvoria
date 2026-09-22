@@ -11,7 +11,12 @@ from pathlib import Path
 from app.core.config import settings
 from app.engine.service.bootstrap import OnyxBootstrapper
 from app.engine.domain.enums import EngineState
+from app.features.qa_generation.data.prompts import NO_EVIDENCE_ANSWER
 from app.features.rag_retrieval.domain.entities import SearchQuery
+
+# Answerable from integration_tests/resources/test_video.mp4, whose transcript is a single line of
+# dialogue about following your passions, robotics and space.
+RELEVANT_QUERY = "What do the speakers say about following their passions?"
 
 
 class TestOnyxEngineIntegration:
@@ -97,7 +102,14 @@ class TestOnyxEngineIntegration:
         time.sleep(3.0)
 
         # 2. Run Standard Search
-        query = SearchQuery(prompt="test", limit=1)
+        #
+        # The query has to be answerable from the fixture, which is a single chunk of dialogue:
+        #   "You're a jerk Tom. Look, Celia. We have to follow our passions. You have your robotics
+        #    and I just want to be awesome in space."
+        # "passions" and "follow" appear verbatim, so both the dense and the sparse leg have something
+        # to match. This used to be the literal string "test" -- see the chat step below for why that
+        # made this test fail.
+        query = SearchQuery(prompt=RELEVANT_QUERY, limit=1)
         search_result = active_engine.search_standard(query)
 
         assert len(search_result.results) > 0
@@ -110,12 +122,27 @@ class TestOnyxEngineIntegration:
         assert physical_path.endswith(".mp4")
 
         # 3. Run Chat / QA Generation
-        chat_query = SearchQuery(prompt="test", limit=1)
+        #
+        # Unlike search_standard, the chat path runs the SLM scrubber, which judges each chunk against
+        # the question. With the old "test" query the scrubber correctly rejected the only chunk --
+        # nothing in that dialogue is about the word "test" -- so generate() short-circuited to the
+        # refusal without ever loading the QA model, and inference_time_ms stayed 0. The assertion was
+        # right; the query was not.
+        chat_query = SearchQuery(prompt=RELEVANT_QUERY, limit=1)
         chat_result = active_engine.chat(chat_query)
 
-        assert chat_result.query == "test"
+        assert chat_result.query == RELEVANT_QUERY
         assert chat_result.generated_answer is not None
-        assert chat_result.inference_time_ms > 0
+
+        assert not chat_result.generated_answer.startswith(NO_EVIDENCE_ANSWER.rstrip(".")), (
+            "The QA model refused: no chunk survived retrieval -> rerank -> scrub for a question the "
+            "fixture transcript plainly answers. That is a retrieval or scrubber regression, not a "
+            "generation one."
+        )
+        assert chat_result.inference_time_ms > 0, (
+            "The QA model never ran. generate() returns the refusal without acquiring a model when no "
+            "evidence survives, which is the only way this can be 0."
+        )
 
         # Verify citation path resolution (if citations exist for this test)
         if chat_result.citations:

@@ -20,9 +20,9 @@ logger = logging.getLogger(__name__)
 
 class ReasoningAPI:
     """
-    Service for running one Deep Research Reasoner turn. Each call acquires the model once,
+    Service for running one Reasoner turn. Each call acquires the model once,
     runs a single reasoning turn, and releases — the multi-iteration loop lives in
-    LiveDeepResearchPipeline, not here, since every pipeline iteration is a fresh call.
+    LiveReasoningPipeline, not here, since every pipeline iteration is a fresh call.
     """
 
     def __init__(

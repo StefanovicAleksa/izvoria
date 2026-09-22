@@ -54,3 +54,51 @@ class SearchResult(BaseModel):
     execution_time_ms: int = Field(default=0)
 
     model_config = ConfigDict(frozen=True)
+
+
+class IndexedSource(BaseModel):
+    """
+    A source that actually has rows in `vector_chunks`.
+
+    Distinct from storage's `Source`, which lists what was *ingested*: a file can be ingested and still have
+    nothing indexed (ingestion failed partway, or it held no speech). Anything that wants to reason about
+    corpus coverage needs the indexed set, not the ingested one.
+    """
+    source_id: uuid.UUID
+    name: str
+    chunk_count: int
+    first_start_sec: float = 0.0
+    last_end_sec: float = 0.0
+
+    model_config = ConfigDict(frozen=True)
+
+
+class CorpusSweep(BaseModel):
+    """
+    A per-document sweep: run `prompt` against each of the best-matching indexed sources individually, so a
+    relevant recording is still found when no single query ranked it into the global top-k.
+
+    `ann_depth` and `max_sources` are the cost gate. Picking sweep sources by grouping over all of
+    `vector_chunks` would be a full scan with a distance computation per row; one index-served ANN probe
+    grouped down to its best sources costs the same whether the corpus holds ten thousand chunks or ten
+    million.
+    """
+    prompt: str = Field(..., min_length=1)
+    per_source_limit: int = Field(default=3, ge=1, le=20)
+    max_sources: int = Field(default=50, ge=1)
+    ann_depth: int = Field(default=2000, ge=1)
+
+    model_config = ConfigDict(frozen=True)
+
+
+class BatchSearchResult(BaseModel):
+    """
+    One embedder acquisition's worth of searching: the fan-out's per-query results plus the sweep's hits.
+
+    Kept apart rather than merged because they mean different things downstream -- a fan-out hit is
+    attributable to the sub-question that found it, a sweep hit is attributable to nothing but the topic.
+    """
+    results: List[SearchResult] = Field(default_factory=list)
+    sweep_results: List[RetrievedChunk] = Field(default_factory=list)
+    swept_source_count: int = 0
+    execution_time_ms: int = 0

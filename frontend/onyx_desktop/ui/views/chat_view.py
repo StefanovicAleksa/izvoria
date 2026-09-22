@@ -6,7 +6,7 @@ The conversation view: ask, read the answer, click a citation, check it against 
 
 Two behaviours here are dictated by the engine rather than by taste:
 
-- Deep Research often answers with a question instead of an answer, and its intra-question state
+- Reasoned Answer often answers with a question instead of an answer, and its intra-question state
   is discarded when the call returns, so a clarification cannot resume mid-loop. The reply is
   therefore sent as the original question with `[Clarification N]` lines appended, which is what
   the CLI does. Capped at three rounds.
@@ -51,7 +51,7 @@ class ChatView(QWidget):
         self._session_id = uuid.uuid4()
         self._pending_row: Optional[QWidget] = None
 
-        # Deep Research clarification state: the question being refined, and what has been added.
+        # Reasoned Answer clarification state: the question being refined, and what has been added.
         self._clarifying_question: Optional[str] = None
         self._clarifications: List[str] = []
 
@@ -141,9 +141,9 @@ class ChatView(QWidget):
 
         self._mode = QComboBox()
         self._mode.addItem("Chat — single pass", ChatMode.SINGLE_PASS)
-        self._mode.addItem("Deep Research — multi-pass", ChatMode.DEEP_RESEARCH)
+        self._mode.addItem("Reasoned Answer — multi-pass", ChatMode.REASONING)
         self._mode.setToolTip(
-            "Deep Research reasons over several retrieval rounds and self-critiques its answer. "
+            "Reasoned Answer mode reasons over several retrieval rounds and self-critiques its answer. "
             "It is substantially slower and often asks a clarifying question first."
         )
         controls.addWidget(self._mode)
@@ -217,18 +217,21 @@ class ChatView(QWidget):
         if not prompt:
             return
 
-        mode = self._mode.currentData()
+        # QComboBox stores userData as a QVariant; a str-derived Enum comes back out as a plain
+        # str, so `is` comparisons downstream would silently take the wrong branch. Rebuilt here,
+        # at the boundary, so everything below this line gets a real enum.
+        mode = ChatMode(self._mode.currentData())
         limit = self._limit.value()
 
         if self._clarifying_question is not None:
             # A clarification cannot resume the reasoner mid-loop, so the whole question is
             # re-asked with every clarification appended -- the reasoner starts fresh with the
-            # fuller picture, matching run_deep_research_with_clarifications in app/main.py.
+            # fuller picture, matching run_reasoned_with_clarifications in app/main.py.
             self._clarifications.append(prompt)
             outgoing = self._clarifying_question
             for index, clarification in enumerate(self._clarifications, start=1):
                 outgoing += f"\n\n[Clarification {index}] {clarification}"
-            mode = ChatMode.DEEP_RESEARCH
+            mode = ChatMode.REASONING
         else:
             outgoing = prompt
 
@@ -297,7 +300,7 @@ class ChatView(QWidget):
     def _show_pending(self, mode: ChatMode) -> None:
         text = (
             "Reasoning over several retrieval rounds… this takes a while."
-            if mode is ChatMode.DEEP_RESEARCH
+            if mode is ChatMode.REASONING
             else "Retrieving, scrubbing and answering…"
         )
         label = QLabel(text)

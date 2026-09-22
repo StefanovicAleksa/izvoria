@@ -36,6 +36,11 @@ test_outputs.txt
 /data/artifacts/*
 !/data/artifacts/.gitkeep
 
+# The runtime vault and everything the appliance writes at run time: ingested client media under
+# onyx_data/<YYYY>/<MM>/<DD>/, and generated research reports under onyx_data/<env>/reports/.
+# This is customer data on a customer's machine -- it must never reach a repository.
+/onyx_data/
+
 # --- Machine Learning Models (Root Only) ---
 # IMPORTANT: Leading slash prevents ignoring valid 'models.py' files in your app
 /local_models/

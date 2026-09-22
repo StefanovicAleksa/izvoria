@@ -229,7 +229,9 @@ class IngestView(QWidget):
         path = self._path.text().strip()
         if not path:
             return
-        self.ingestRequested.emit(path, self._mode.currentData())
+        # Rebuilt from the combo's QVariant: a str-derived Enum comes back as a plain str, and an
+        # `is` comparison in the gateway would then silently run the video pipeline on audio.
+        self.ingestRequested.emit(path, IngestMode(self._mode.currentData()))
 
 
 class _ReportCard(QFrame):

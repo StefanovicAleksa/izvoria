@@ -20,6 +20,7 @@ from onyx_desktop.domain.enums import (  # noqa: E402
     ApplianceStatus,
     ChatMode,
     IngestMode,
+    ReportMode,
     SearchMode,
 )
 from onyx_desktop.service.engine_bridge import EngineBridge  # noqa: E402
@@ -174,3 +175,46 @@ class TestShutdown:
         instance = EngineBridge(stub_gateway)
         assert instance.stop(timeout_ms=5000) is True
         assert instance.stop(timeout_ms=5000) is True
+
+
+class TestReportRequests:
+    def test_planning_and_running_go_through_the_worker_queue(self, bridge):
+        bridge._status = ApplianceStatus.READY
+
+        assert bridge.plan_report("a topic", ReportMode.DEEP) is not None
+        bridge._pending.clear()
+        assert bridge.run_report(object(), ReportMode.EXHAUSTIVE) is not None
+
+    def test_a_running_report_marks_the_bridge_as_researching(self, bridge):
+        bridge._status = ApplianceStatus.READY
+
+        bridge.run_report(object(), ReportMode.DEEP)
+
+        assert bridge.is_researching is True
+        assert bridge.is_ingesting is False
+
+    def test_cancel_calls_the_gateway_directly_not_through_the_worker(self, bridge, stub_gateway):
+        """
+        The one deliberate exception to "everything through the worker".
+
+        The worker thread is busy running the very report being cancelled, so a queued call would not
+        be delivered until that run had already finished -- which is exactly when it is useless. Safe
+        only because the engine just sets a threading.Event here.
+        """
+        bridge._status = ApplianceStatus.READY
+        report_id = uuid.uuid4()
+        bridge.run_report(object(), ReportMode.DEEP)
+
+        calls = []
+        stub_gateway.request_report_cancel = lambda rid: calls.append(rid) or True
+
+        assert bridge.request_report_cancel(report_id) is True
+        # Delivered immediately, while the run is still pending -- not queued behind it.
+        assert calls == [report_id]
+        assert bridge.is_researching is True
+
+    def test_a_second_request_while_researching_is_refused_not_queued(self, bridge):
+        bridge._status = ApplianceStatus.READY
+        bridge.run_report(object(), ReportMode.DEEP)
+
+        assert bridge.send_chat("hello", uuid.uuid4(), ChatMode.SINGLE_PASS) is None

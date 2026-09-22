@@ -37,6 +37,13 @@ class RagRerankingPhase:
         self._preload_future: Optional[concurrent.futures.Future] = None
 
     def preload_model(self) -> None:
+        # Discard any preload a previous call fired but nobody resolved. Without this, overwriting
+        # `_preload_future` below makes the old one unreachable: the background worker still loads that
+        # model, `discard_preload` can never be called on it, nothing releases it, and the next
+        # `acquire_model(..., wait_for_clear=True)` parks forever with no exception and no way out but a
+        # restart. Straight-line pipelines resolve every preload exactly once so this never fired; the
+        # report mode's gather loop calls preload_model once per round, which makes it load-bearing.
+        self.discard_preload()
         if not self._rerank_api.is_available():
             logger.info("Reranker weights not installed; skipping preload (results keep RRF order).")
             return

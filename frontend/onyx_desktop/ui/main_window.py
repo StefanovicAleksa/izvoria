@@ -43,6 +43,7 @@ from onyx_desktop.service.engine_bridge import EngineBridge
 from onyx_desktop.service.log_relay import LogRelay
 from onyx_desktop.ui.views.chat_view import ChatView
 from onyx_desktop.ui.views.ingest_view import IngestView
+from onyx_desktop.ui.views.report_view import ReportView
 from onyx_desktop.ui.views.search_view import SearchView
 from onyx_desktop.ui.widgets.status_bar import StatusBar
 
@@ -89,7 +90,8 @@ class MainWindow(QMainWindow):
         self._chat = ChatView()
         self._search = SearchView()
         self._ingest = IngestView()
-        for view in (self._chat, self._search, self._ingest):
+        self._report = ReportView()
+        for view in (self._chat, self._search, self._ingest, self._report):
             self._views.addWidget(view)
         body.addWidget(self._views, stretch=1)
 
@@ -120,7 +122,7 @@ class MainWindow(QMainWindow):
 
         self._nav = QButtonGroup(self)
         self._nav.setExclusive(True)
-        for index, label in enumerate(("Chat", "Search", "Ingest")):
+        for index, label in enumerate(("Chat", "Search", "Ingest", "Report")):
             button = QPushButton(label)
             button.setProperty("role", "nav")
             button.setCheckable(True)
@@ -149,11 +151,16 @@ class MainWindow(QMainWindow):
         self._chat.chatRequested.connect(self._on_chat_requested)
         self._search.searchRequested.connect(self._on_search_requested)
         self._ingest.ingestRequested.connect(self._on_ingest_requested)
+        self._report.planRequested.connect(self._on_report_plan_requested)
+        self._report.reportRequested.connect(self._on_report_requested)
+        self._report.cancelRequested.connect(self._on_report_cancel_requested)
 
         self._bridge.booted.connect(self._on_booted)
         self._bridge.chatFinished.connect(self._on_chat_finished)
         self._bridge.searchFinished.connect(self._on_search_finished)
         self._bridge.ingestFinished.connect(self._on_ingest_finished)
+        self._bridge.reportPlanFinished.connect(self._on_report_plan_finished)
+        self._bridge.reportFinished.connect(self._on_report_finished)
         self._bridge.progressTicked.connect(self._on_progress)
         self._bridge.statusChanged.connect(self._on_status)
         self._bridge.busyChanged.connect(self._on_busy)
@@ -183,8 +190,13 @@ class MainWindow(QMainWindow):
         self._chat.set_busy(busy)
         self._search.set_busy(busy)
         self._ingest.set_busy(busy)
+        self._report.set_busy(busy)
         if ingesting:
             self._views.setCurrentWidget(self._ingest)
+        elif self._bridge.is_researching:
+            # A report holds the GPU for tens of minutes. Showing its progress beats leaving the user
+            # on a chat view that silently refuses to answer.
+            self._views.setCurrentWidget(self._report)
 
     @Slot(int, object)
     def _on_chat_finished(self, _request_id: int, message: ChatMessage) -> None:
@@ -200,7 +212,12 @@ class MainWindow(QMainWindow):
 
     @Slot(object)
     def _on_progress(self, tick: ProgressTick) -> None:
-        self._ingest.apply_tick(tick)
+        # Routed, not broadcast. One listener sees every job in the process, so a report's ticks would
+        # otherwise drive the ingestion counters and vice versa.
+        if self._bridge.is_researching:
+            self._report.apply_tick(tick)
+        else:
+            self._ingest.apply_tick(tick)
 
     @Slot(object)
     def _on_log_line(self, line: LogLine) -> None:
@@ -215,7 +232,17 @@ class MainWindow(QMainWindow):
             self._search.show_failure(message)
         elif current is self._ingest:
             self._ingest.show_failure(message)
+        elif current is self._report:
+            self._report.show_failure(message)
         self._status.apply(StatusSnapshot(status=self._bridge.status, detail=message))
+
+    @Slot(int, object)
+    def _on_report_plan_finished(self, _request_id: int, plan) -> None:
+        self._report.show_plan(plan)
+
+    @Slot(int, object)
+    def _on_report_finished(self, _request_id: int, report) -> None:
+        self._report.show_report(report)
 
     # ---------- view requests ----------
 
@@ -231,6 +258,25 @@ class MainWindow(QMainWindow):
         self._bridge.run_search(prompt, mode, limit)
 
     @Slot(str, object)
+    def _on_report_plan_requested(self, topic: str, mode) -> None:
+        self._bridge.plan_report(topic, mode)
+
+    @Slot(object, object)
+    def _on_report_requested(self, plan, mode) -> None:
+        if self._bridge.run_report(plan, mode) is not None:
+            self._report.start_run(plan)
+
+    @Slot(object)
+    def _on_report_cancel_requested(self, report_id) -> None:
+        """
+        Straight to the bridge, which calls the gateway on THIS thread rather than queueing.
+
+        The worker is busy running the report being stopped, so a queued cancel would only arrive once
+        the run it was meant to interrupt had already finished.
+        """
+        self._bridge.request_report_cancel(report_id)
+
+    @Slot(str, object)
     def _on_ingest_requested(self, path: str, mode: IngestMode) -> None:
         if self._bridge.start_ingest(path, mode) is not None:
             self._ingest.start_run()
@@ -242,7 +288,7 @@ class MainWindow(QMainWindow):
             event.accept()
             return
 
-        if self._bridge.is_ingesting and not self._confirm_force_quit():
+        if (self._bridge.is_ingesting or self._bridge.is_researching) and not self._confirm_force_quit():
             event.ignore()
             return
 
@@ -281,8 +327,13 @@ class MainWindow(QMainWindow):
     def _confirm_force_quit(self) -> bool:
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
-        box.setWindowTitle("Ingestion in progress")
-        box.setText("An ingestion is running and cannot be interrupted.")
+        researching = self._bridge.is_researching
+        box.setWindowTitle("Research in progress" if researching else "Ingestion in progress")
+        box.setText(
+            "A research report is running and holds the GPU."
+            if researching else
+            "An ingestion is running and cannot be interrupted."
+        )
         box.setInformativeText(
             "The pipeline has no stop point — it is inside native transcription and LLM "
             "calls that ignore interruption. Quitting now ends the process mid-file and may "

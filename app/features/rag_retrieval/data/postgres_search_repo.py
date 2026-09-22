@@ -9,7 +9,7 @@ from sqlalchemy import text
 from app.core.config import settings
 from app.core.database.service.manager import db_manager
 from app.features.rag_retrieval.domain.interfaces import IRetrievalRepository
-from app.features.rag_retrieval.domain.entities import RetrievedChunk
+from app.features.rag_retrieval.domain.entities import IndexedSource, RetrievedChunk
 from app.features.rag_retrieval.utils.error_mapper import map_retrieval_error
 
 logger = logging.getLogger(__name__)
@@ -107,7 +107,90 @@ _CHUNKS_BY_ID_SQL = text("""
 """)
 
 
+# Every source that actually has indexed chunks, with the human-readable name RetrievedChunk has no room
+# for. `sources`/`files` are joined here rather than in the hot search path because only corpus-level
+# callers need the name, and the search SQL runs per query.
+_INDEXED_SOURCES_SQL = text("""
+    SELECT v.source_id,
+           s.name AS source_name,
+           f.file_name,
+           COUNT(*) AS chunk_count,
+           MIN(v.start_sec) AS first_start_sec,
+           MAX(v.end_sec) AS last_end_sec
+    FROM vector_chunks v
+    JOIN sources s ON s.id = v.source_id
+    LEFT JOIN files f ON f.id = s.file_id
+    GROUP BY v.source_id, s.name, f.file_name
+    HAVING COUNT(*) >= :min_chunks
+    ORDER BY chunk_count DESC
+""")
+
+
+# Which sources the per-document sweep should look inside.
+#
+# The naive form -- GROUP BY source_id over all of vector_chunks taking MIN(distance) -- computes a
+# distance for every row in the table and cannot be served by any index, so it turns into a full scan that
+# grows with the corpus. Instead one ANN probe (index-served, LIMIT :ann_depth) is grouped down to the
+# sources it touched, ranked by how early each source's best chunk appeared. Cost is bounded by ann_depth,
+# not by corpus size.
+_SWEEP_SOURCES_SQL = text("""
+    WITH ann AS (
+        SELECT v.source_id,
+               ROW_NUMBER() OVER (ORDER BY v.embedding <=> CAST(:query_vector AS vector)) AS rank_idx
+        FROM vector_chunks v
+        ORDER BY v.embedding <=> CAST(:query_vector AS vector)
+        LIMIT :ann_depth
+    )
+    SELECT source_id
+    FROM ann
+    GROUP BY source_id
+    ORDER BY MIN(rank_idx) ASC
+    LIMIT :max_sources
+""")
+
+
 class PostgresSearchRepository(IRetrievalRepository):
+
+    def list_indexed_sources(self, min_chunks: int = 1) -> List[IndexedSource]:
+        try:
+            with db_manager.session() as session:
+                rows = session.execute(_INDEXED_SOURCES_SQL, {"min_chunks": min_chunks}).mappings().all()
+
+                return [
+                    IndexedSource(
+                        source_id=row["source_id"],
+                        # `sources.name` is the display name; the filename is the fallback, and the id is
+                        # the last resort -- a report's references table must never show a blank source.
+                        name=row["source_name"] or row["file_name"] or str(row["source_id"]),
+                        chunk_count=int(row["chunk_count"]),
+                        first_start_sec=float(row["first_start_sec"] or 0.0),
+                        last_end_sec=float(row["last_end_sec"] or 0.0),
+                    )
+                    for row in rows
+                ]
+
+        except Exception as e:
+            raise map_retrieval_error(e, context="Listing indexed sources") from e
+
+    def pick_sweep_sources(
+            self,
+            query_vector: List[float],
+            ann_depth: int,
+            max_sources: int
+    ) -> List[uuid.UUID]:
+        vector_str = f"[{','.join(map(str, query_vector))}]"
+
+        try:
+            with db_manager.session() as session:
+                rows = session.execute(
+                    _SWEEP_SOURCES_SQL,
+                    {"query_vector": vector_str, "ann_depth": ann_depth, "max_sources": max_sources}
+                ).mappings().all()
+
+                return [row["source_id"] for row in rows]
+
+        except Exception as e:
+            raise map_retrieval_error(e, context="Picking sources for the corpus sweep") from e
 
     def fetch_chunks(self, chunk_ids: List[uuid.UUID]) -> List[RetrievedChunk]:
         if not chunk_ids:

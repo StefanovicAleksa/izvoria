@@ -1,4 +1,4 @@
-# Path: integration_tests/orchestration/test_live_deep_research_pipeline_integration.py
+# Path: integration_tests/orchestration/test_live_reasoning_pipeline_integration.py
 
 import os
 import gc
@@ -43,13 +43,13 @@ from app.orchestration.service.phases.rag_reranking_phase import RagRerankingPha
 from app.orchestration.service.phases.retrieval_scrubber_phase import RetrievalScrubberPhase
 from app.orchestration.service.phases.qa_generation_phase import QAGenerationPhase
 from app.orchestration.service.phases.reasoner_phase import ReasonerPhase
-from app.orchestration.service.pipelines.live_deep_research_pipeline import LiveDeepResearchPipeline
+from app.orchestration.service.pipelines.live_reasoning_pipeline import LiveReasoningPipeline
 
 
-class TestLiveDeepResearchPipelineIntegration:
+class TestLiveReasoningPipelineIntegration:
     """
     STRICT NO-MOCKS INTEGRATION TEST.
-    Tests the LiveDeepResearchPipeline end-to-end, including the Reasoner loop.
+    Tests the LiveReasoningPipeline end-to-end, including the Reasoner loop.
     Requires: Live PostgreSQL with pgvector, downloaded Embedding, Scrubber, QA Generation, and
     Reasoner (Qwen2.5-7B) models.
     """
@@ -74,12 +74,12 @@ class TestLiveDeepResearchPipelineIntegration:
 
         with db_manager.session() as session:
             dummy_file = FileModel(
-                id=file_id, file_path="/mock/path/dummy_deep_research.mp4",
-                file_name="dummy_deep_research.mp4", file_size_bytes=1024
+                id=file_id, file_path="/mock/path/dummy_reasoning.mp4",
+                file_name="dummy_reasoning.mp4", file_size_bytes=1024
             )
             dummy_source = SourceModel(
                 id=source_id, name="Bank_Security_Camera.mp4", source_type=SourceType.VIDEO.value,
-                content_hash="mock_deep_research_hash", file_id=file_id
+                content_hash="mock_reasoning_hash", file_id=file_id
             )
             session.add(dummy_file)
             session.add(dummy_source)
@@ -168,27 +168,27 @@ class TestLiveDeepResearchPipelineIntegration:
         reasoning_api = ReasoningAPI(adapter=reasoner_adapter, orchestrator=orchestrator)
         reasoner_phase = ReasonerPhase(job_manager, reasoning_api, async_service, reasoner_adapter)
 
-        deep_research_pipeline = LiveDeepResearchPipeline(
+        reasoning_pipeline = LiveReasoningPipeline(
             reasoner_phase=reasoner_phase,
             retrieval_phase=rag_phase,
             reranking_phase=rerank_phase,
             scrubber_phase=scrub_phase,
             qa_generation_phase=qa_phase,
-            max_iterations=settings.DEEP_RESEARCH_MAX_ITERATIONS,
-            max_critique_retries=settings.DEEP_RESEARCH_MAX_CRITIQUE_RETRIES,
+            max_iterations=settings.REASONING_MAX_ITERATIONS,
+            max_critique_retries=settings.REASONING_MAX_CRITIQUE_RETRIES,
         )
 
-        yield deep_research_pipeline
+        yield reasoning_pipeline
         async_service.shutdown()
 
     @pytest.mark.integration
-    def test_deep_research_pipeline_produces_grounded_answer_or_clarification(self, pipeline_setup):
-        deep_research_pipeline = pipeline_setup
+    def test_reasoning_pipeline_produces_grounded_answer_or_clarification(self, pipeline_setup):
+        reasoning_pipeline = pipeline_setup
 
         query = SearchQuery(prompt="What time did the defendant enter the bank, and what were they wearing?", limit=3)
 
-        print("\n[DEBUG] Executing End-to-End Deep Research Pipeline (Reasoner + RAG + Chat)...")
-        result = deep_research_pipeline.execute_deep_research(uuid.uuid4(), query)
+        print("\n[DEBUG] Executing End-to-End Reasoned Answer Pipeline (Reasoner + RAG + Chat)...")
+        result = reasoning_pipeline.execute_reasoning(uuid.uuid4(), query)
 
         assert result.total_iterations >= 0
         assert len(result.iteration_trace) >= 1

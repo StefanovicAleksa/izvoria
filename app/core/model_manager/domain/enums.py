@@ -40,5 +40,10 @@ class ModelType(str, Enum):
 
     QA_GENERATION = "qa_generation"
 
-    # NEW: Deep Research reasoning loop
+    # Reasoned Answer mode's reasoning loop
     QA_REASONER = "qa_reasoner"
+
+    # Deep Research Report mode. One ModelType covers BOTH the planner and the writer roles on purpose:
+    # residency is keyed on (model_type, model_path), so a separate planner type would reload the same
+    # ~5.7 GB GGUF on every plan<->write alternation -- which is exactly the QA_GENERATION/QA_REASONER cost.
+    REPORT_AUTHORING = "report_authoring"

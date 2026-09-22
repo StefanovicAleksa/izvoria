@@ -1,9 +1,39 @@
+import threading
 import uuid
 from datetime import datetime
 from typing import Optional, Dict, Any
 from pydantic import AliasChoices, BaseModel, Field, ConfigDict, computed_field, field_validator
 
 from app.core.jobs.domain.enums import JobStatus, JobType
+
+class CancellationToken:
+    """
+    A cooperative stop signal for long-running work.
+
+    Deliberately not a pydantic model: it is shared mutable state, set from one thread (a GUI, a CLI
+    handler) and polled from another (the pipeline). `threading.Event` is the whole implementation --
+    `set()` is safe to call from any thread, which is what lets a Stop button work without the caller
+    having to reach into the worker thread that is busy.
+
+    Cancellation is checked at unit boundaries, never mid-generation: llama.cpp's completion call is
+    blocking with no callback, so the finest granularity available is "between sections".
+    """
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+
+    def cancel(self) -> None:
+        self._event.set()
+
+    @property
+    def is_cancelled(self) -> bool:
+        return self._event.is_set()
+
+    def raise_if_cancelled(self, context: str = "") -> None:
+        if self._event.is_set():
+            from app.core.jobs.exceptions.execution import JobCancelled
+            raise JobCancelled(f"Work was cancelled by the user.{f' | Context: {context}' if context else ''}")
+
 
 class JobRequest(BaseModel):
     job_type: JobType
@@ -12,6 +42,10 @@ class JobRequest(BaseModel):
     source_id: Optional[uuid.UUID] = Field(default=None, description="The UUID of the Source being processed")
 
     input_params: Dict[str, Any] = Field(default_factory=dict)
+
+    # A human label for the progress listener, e.g. "Writing section 4/8: Regulatory exposure". Without it
+    # a listener only ever sees the job type, which is enough for a spinner but not for a progress bar.
+    progress_detail: Optional[str] = Field(default=None)
 
     model_config = ConfigDict(frozen=True)
 

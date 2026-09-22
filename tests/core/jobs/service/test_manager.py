@@ -231,3 +231,111 @@ class TestJobManagerProgressListener:
             manager.run_job(req, lambda: "never runs")
 
         assert events == []
+
+
+class TestCancellation:
+    """
+    Cooperative cancellation. `cancel_job` and JobStatus.CANCELLED already existed; what was missing was
+    anything that actually polls them, which is what makes a Stop button real rather than decorative.
+    """
+
+    @pytest.fixture
+    def mock_repo(self):
+        repo = Mock()
+        repo.create_job.return_value = Mock(id=uuid.uuid4())
+        repo.start_job.return_value = True
+        return repo
+
+    def test_a_cancelled_run_never_calls_the_work_function(self, mock_repo):
+        from app.core.jobs.domain.entities import CancellationToken
+        from app.core.jobs.exceptions.execution import JobCancelled
+
+        manager = JobManager(mock_repo)
+        token = CancellationToken()
+        token.cancel()
+        target = Mock()
+        request = JobRequest(job_type=JobType.RESEARCH_SECTION)
+
+        with pytest.raises(JobCancelled):
+            manager.run_job(request, target, cancel_token=token)
+
+        target.assert_not_called()
+        mock_repo.create_job.assert_not_called()
+
+    def test_a_cancelled_run_is_recorded_and_reported(self, mock_repo):
+        from app.core.jobs.domain.entities import CancellationToken
+        from app.core.jobs.exceptions.execution import JobCancelled
+        from app.core.jobs.service.manager import PROGRESS_CANCELLED
+
+        listener = Mock()
+        manager = JobManager(mock_repo, progress_listener=listener)
+        token = CancellationToken()
+        token.cancel()
+
+        with pytest.raises(JobCancelled):
+            manager.run_job(JobRequest(job_type=JobType.RESEARCH_SECTION), Mock(), cancel_token=token)
+
+        listener.assert_called_once()
+        assert listener.call_args.args[1] == PROGRESS_CANCELLED
+
+    def test_an_uncancelled_token_does_not_interfere(self, mock_repo):
+        from app.core.jobs.domain.entities import CancellationToken
+
+        manager = JobManager(mock_repo)
+        target = Mock(return_value="done")
+
+        result = manager.run_job(
+            JobRequest(job_type=JobType.RESEARCH_SECTION), target, cancel_token=CancellationToken()
+        )
+
+        assert result == "done"
+        target.assert_called_once()
+
+    def test_no_token_at_all_is_the_existing_behaviour(self, mock_repo):
+        manager = JobManager(mock_repo)
+        target = Mock(return_value="done")
+
+        assert manager.run_job(JobRequest(job_type=JobType.RAG_RETRIEVAL), target) == "done"
+
+
+class TestProgressDetail:
+    @pytest.fixture
+    def mock_repo(self):
+        repo = Mock()
+        repo.create_job.return_value = Mock(id=uuid.uuid4())
+        repo.start_job.return_value = True
+        return repo
+
+    def test_a_requests_progress_detail_reaches_the_listener(self, mock_repo):
+        """
+        Without this a listener only ever sees the job type -- enough for a spinner, not for
+        "Writing section 4/8: Regulatory exposure".
+        """
+        listener = Mock()
+        manager = JobManager(mock_repo, progress_listener=listener)
+        request = JobRequest(
+            job_type=JobType.RESEARCH_SECTION, progress_detail="Writing section 4/8: Exposure"
+        )
+
+        manager.run_job(request, Mock(return_value=None))
+
+        details = [c.args[3] for c in listener.call_args_list]
+        assert details == ["Writing section 4/8: Exposure", "Writing section 4/8: Exposure"]
+
+    def test_a_failure_message_still_wins_over_the_static_label(self, mock_repo):
+        listener = Mock()
+        manager = JobManager(mock_repo, progress_listener=listener)
+        request = JobRequest(job_type=JobType.RESEARCH_SECTION, progress_detail="Writing section 1/1")
+
+        with pytest.raises(RuntimeError):
+            manager.run_job(request, Mock(side_effect=RuntimeError("boom")))
+
+        assert listener.call_args.args[3] == "boom"
+
+    def test_requests_without_a_detail_are_unchanged(self, mock_repo):
+        listener = Mock()
+        manager = JobManager(mock_repo, progress_listener=listener)
+
+        manager.run_job(JobRequest(job_type=JobType.RAG_RETRIEVAL), Mock(return_value=None))
+
+        assert listener.call_args.args[3] is None

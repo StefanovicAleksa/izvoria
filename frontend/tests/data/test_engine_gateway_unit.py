@@ -25,8 +25,8 @@ from app.features.rag_retrieval.domain.entities import (  # noqa: E402
     SearchResult,
 )
 from app.orchestration.domain.entities import (  # noqa: E402
-    DeepResearchIterationTrace,
-    DeepResearchResponse,
+    ReasoningIterationTrace,
+    ReasonedChatResponse,
 )
 
 from onyx_desktop.data.engine_gateway import OnyxEngineGateway  # noqa: E402
@@ -229,13 +229,13 @@ class TestChatMapping:
         assert message.evidence[0].clip_path == "/vault/clip.mp4"
 
 
-class TestDeepResearchMapping:
+class TestReasonedMapping:
     def test_a_clarification_request_is_its_own_outcome(self, gateway_and_engine):
         gateway, engine = gateway_and_engine
-        engine.chat_deep_research.return_value = DeepResearchResponse(
+        engine.chat_reasoned.return_value = ReasonedChatResponse(
             qa_response=None,
             clarification_question="Which schedule, the 2019 or the 2024 revision?",
-            iteration_trace=[DeepResearchIterationTrace(
+            iteration_trace=[ReasoningIterationTrace(
                 iteration=1, decision="CLARIFY",
                 interim_analysis="Two candidate documents match.", chunks_added=3,
             )],
@@ -243,7 +243,7 @@ class TestDeepResearchMapping:
         )
         from onyx_desktop.domain.enums import ChatMode
 
-        message = gateway.chat("q", SESSION_ID, ChatMode.DEEP_RESEARCH, 5)
+        message = gateway.chat("q", SESSION_ID, ChatMode.REASONING, 5)
 
         assert message.outcome is TurnOutcome.NEEDS_CLARIFICATION
         assert message.text.startswith("Which schedule")
@@ -255,7 +255,7 @@ class TestDeepResearchMapping:
 
     def test_an_unresolved_critique_is_carried_through(self, gateway_and_engine):
         gateway, engine = gateway_and_engine
-        engine.chat_deep_research.return_value = DeepResearchResponse(
+        engine.chat_reasoned.return_value = ReasonedChatResponse(
             qa_response=QAResponse(
                 query="q", generated_answer="Probably [Doc 1].",
                 citations=[QACitation(doc_id="[Doc 1]", chunk_id=CHUNK_ID,
@@ -268,7 +268,7 @@ class TestDeepResearchMapping:
         engine.get_chunks.return_value = []
         from onyx_desktop.domain.enums import ChatMode
 
-        message = gateway.chat("q", SESSION_ID, ChatMode.DEEP_RESEARCH, 5)
+        message = gateway.chat("q", SESSION_ID, ChatMode.REASONING, 5)
 
         assert message.critique_unresolved is True
         assert message.total_iterations == 3

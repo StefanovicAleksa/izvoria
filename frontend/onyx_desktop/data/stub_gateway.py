@@ -7,14 +7,16 @@ A gateway with no engine behind it.
 Booting the real appliance takes a long time, needs Postgres up, model weights on disk and a free
 GPU, and a single chat turn costs tens of seconds. That is a hopeless loop for iterating on a
 window. This stub answers instantly-ish with canned data covering every branch the UI has to
-render: a grounded answer, an answer with *no* evidence, a Deep Research clarification request,
+render: a grounded answer, an answer with *no* evidence, a Reasoned Answer clarification request,
 an unresolved clip path, and a failure.
 """
 
 import itertools
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, List, Optional
 
 from onyx_desktop.domain.entities import (
@@ -23,6 +25,9 @@ from onyx_desktop.domain.entities import (
     IngestionSummary,
     ProgressTick,
     ReasoningStep,
+    ReportDocument,
+    ReportOutlineDraft,
+    ReportPlanDraft,
     SearchHit,
     SearchOutcome,
 )
@@ -32,6 +37,8 @@ from onyx_desktop.domain.enums import (
     JobProgressState,
     MediaKind,
     MessageRole,
+    ReportMode,
+    ReportRunStatus,
     SearchMode,
     TurnOutcome,
 )
@@ -43,6 +50,12 @@ _LOREM = (
     "acknowledged receipt in writing.\n"
     "SPEAKER_02: That matches our copy of the cover letter."
 )
+
+# The report phases the engine emits, so the stub's progress bar exercises the same routing.
+_REPORT_PHASES = [
+    "research_scoping", "rag_retrieval", "rag_reranking",
+    "research_outline", "research_section", "research_section", "research_summary",
+]
 
 _PHASES = [
     "scan", "ingest", "audio_extraction", "vad", "transcribe",
@@ -61,6 +74,10 @@ class StubEngineGateway(IEngineGateway):
         self._turn_counter = itertools.count(1)
         self._progress: Optional[Callable[[ProgressTick], None]] = None
         self._chunks = {}
+        self._report_counter = itertools.count(1)
+        self._cancel_requested = False
+        self._last_report: Optional[ReportDocument] = None
+        self._report_id: Optional[uuid.UUID] = None
 
     # ---------- lifecycle ----------
 
@@ -89,7 +106,7 @@ class StubEngineGateway(IEngineGateway):
         if "fail" in prompt.lower():
             raise EngineCallFailedError("Stub failure, on request.")
 
-        if mode is ChatMode.DEEP_RESEARCH and turn % 2 == 1:
+        if mode is ChatMode.REASONING and turn % 2 == 1:
             return ChatMessage(
                 role=MessageRole.ASSISTANT,
                 text="Which retention schedule do you mean — the 2024 revision, or the "
@@ -114,9 +131,9 @@ class StubEngineGateway(IEngineGateway):
             text=text,
             outcome=TurnOutcome.ANSWERED,
             evidence=evidence,
-            reasoning=self._reasoning() if mode is ChatMode.DEEP_RESEARCH else (),
-            critique_unresolved=(mode is ChatMode.DEEP_RESEARCH and turn % 3 == 0),
-            total_iterations=2 if mode is ChatMode.DEEP_RESEARCH else 0,
+            reasoning=self._reasoning() if mode is ChatMode.REASONING else (),
+            critique_unresolved=(mode is ChatMode.REASONING and turn % 3 == 0),
+            total_iterations=2 if mode is ChatMode.REASONING else 0,
             latency_ms=int(self._latency * 1000),
             created_at=datetime.now(timezone.utc),
         )
@@ -175,6 +192,99 @@ class StubEngineGateway(IEngineGateway):
             self._ingesting = False
 
     # ---------- helpers ----------
+
+    # ==========================================
+    # RESEARCH REPORTS
+    # ==========================================
+
+    def propose_report_plan(self, topic: str, mode: ReportMode) -> ReportPlanDraft:
+        time.sleep(self._latency)
+        if "fail" in topic.lower():
+            raise EngineCallFailedError("Stub failure, on request.")
+
+        self._report_id = uuid.uuid4()
+        return ReportPlanDraft(
+            report_id=self._report_id,
+            topic=topic,
+            scope_note=f"A stub plan for {topic!r}. Nothing was searched.",
+            sections=(
+                ReportOutlineDraft(key="s1", title="Background", brief="What the archive establishes.",
+                                   questions=("What is the background?",)),
+                ReportOutlineDraft(key="s2", title="Key findings", brief="The substantive findings.",
+                                   questions=("What did they conclude?", "Who said it?")),
+                ReportOutlineDraft(key="s3", title="Open questions", brief="What is unresolved.",
+                                   questions=("What remains unanswered?",)),
+            ),
+            indexed_source_count=3,
+            indexed_chunk_count=91,
+            expected_job_count=10,
+            estimated_minutes=12,
+        )
+
+    def run_report(self, plan: ReportPlanDraft, mode: ReportMode) -> ReportDocument:
+        # Progress ticks first, so the determinate bar has something to move against.
+        for index, phase in enumerate(_REPORT_PHASES):
+            self._tick(phase, JobProgressState.STARTED, index)
+            time.sleep(self._latency / 3)
+            self._tick(phase, JobProgressState.COMPLETED, index)
+
+        if self._cancel_requested:
+            self._cancel_requested = False
+            return self._report(plan, mode, ReportRunStatus.CANCELLED, sections=1, uncovered=0)
+
+        # Cycles the render branches: a whole report, then one with an uncovered section.
+        run = next(self._report_counter)
+        if run % 2 == 0:
+            return self._report(plan, mode, ReportRunStatus.COMPLETED, sections=2, uncovered=1)
+        return self._report(plan, mode, ReportRunStatus.COMPLETED, sections=3, uncovered=0)
+
+    def request_report_cancel(self, report_id: uuid.UUID) -> bool:
+        """Records the request; the next run_report returns a partial report, as the engine would."""
+        self._cancel_requested = True
+        return True
+
+    def load_report(self, report_id: uuid.UUID) -> Optional[ReportDocument]:
+        return self._last_report
+
+    def _report(self, plan: ReportPlanDraft, mode: ReportMode, status: ReportRunStatus,
+                sections: int, uncovered: int) -> ReportDocument:
+        evidence = self._evidence(3)
+        body = [f"# {plan.topic}", ""]
+        body.append(
+            f"> Generated by Onyx (stub) from {len(evidence)} cited excerpts across 1 source.\n"
+            f"> Coverage: swept 3 of 3 indexed sources.\n"
+            f"> Searched in {'2 rounds' if mode is ReportMode.EXHAUSTIVE else 'a single round'} "
+            f"({mode.value} mode).\n"
+            f"> Retrieval scrubber: disabled."
+        )
+        body.append("")
+        for index, section in enumerate(plan.sections[:sections]):
+            body += [f"## {section.title}", "",
+                     f"{_LOREM} [Doc {index + 1}](onyx://doc/{index + 1})", ""]
+        if uncovered:
+            body += ["## Not covered by the available material", "",
+                     f"- **{plan.sections[-1].title}** — no evidence in the indexed corpus supported this.",
+                     ""]
+        body += ["## References", "", "| Doc | Source | Timespan | Speakers |", "| --- | --- | --- | --- |"]
+        for item in evidence[:sections]:
+            body.append(f"| [Doc {item.doc_number}] | Stub recording | 00:00:10–00:00:40 | speaker_0 |")
+
+        document = ReportDocument(
+            report_id=plan.report_id,
+            topic=plan.topic,
+            markdown="\n".join(body) + "\n",
+            status=status,
+            mode=mode,
+            evidence=evidence[:sections],
+            markdown_path=str(Path(tempfile.gettempdir()) / f"{plan.report_id}.md"),
+            section_count=sections,
+            uncovered_count=uncovered,
+            rounds_used=2 if mode is ReportMode.EXHAUSTIVE else 1,
+            indexed_source_count=3,
+            swept_source_count=3,
+        )
+        self._last_report = document
+        return document
 
     def _tick(self, phase: str, state: JobProgressState, index: int) -> None:
         if self._progress is None:

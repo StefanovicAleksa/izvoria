@@ -36,6 +36,8 @@ class EngineWorker(QObject):
     searchReady = Signal(int, object)    # request_id, SearchOutcome
     ingestReady = Signal(int, object)    # request_id, IngestionSummary
     evidenceReady = Signal(int, object)  # request_id, List[Evidence]
+    reportPlanReady = Signal(int, object)  # request_id, ReportPlanDraft
+    reportReady = Signal(int, object)      # request_id, ReportDocument
     progressed = Signal(object)          # ProgressTick
     failed = Signal(int, str, object)    # request_id, user_message, DesktopError
     finished = Signal()
@@ -103,6 +105,26 @@ class EngineWorker(QObject):
             self.ingestReady.emit(request_id, summary)
         except Exception as exc:
             self._fail(request_id, exc, "Ingestion")
+
+    @Slot(int, str, object)
+    def run_report_plan(self, request_id: int, topic: str, mode) -> None:
+        try:
+            plan = self._gateway.propose_report_plan(topic, mode)
+            self.reportPlanReady.emit(request_id, plan)
+        except Exception as exc:
+            self._fail(request_id, exc, "Planning a research report")
+
+    @Slot(int, object, object)
+    def run_report(self, request_id: int, plan, mode) -> None:
+        """
+        The long one -- tens of minutes, holding the GPU. A cancelled run still comes back through
+        reportReady with a partial report, because the user stopping is not a failure.
+        """
+        try:
+            report = self._gateway.run_report(plan, mode)
+            self.reportReady.emit(request_id, report)
+        except Exception as exc:
+            self._fail(request_id, exc, "Research report")
 
     @Slot(int, object)
     def run_hydrate(self, request_id: int, chunk_ids: List[uuid.UUID]) -> None:

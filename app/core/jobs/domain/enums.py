@@ -40,4 +40,10 @@ class JobType(str, Enum):
     RAG_RERANKING = "rag_reranking"
     RETRIEVAL_SCRUBBING = "retrieval_scrubbing"
     QA_GENERATION = "qa_generation"
-    DEEP_RESEARCH_REASONING = "deep_research_reasoning"
+    REASONING_TURN = "reasoning_turn"
+
+    # Deep Research Report mode
+    RESEARCH_SCOPING = "research_scoping"
+    RESEARCH_OUTLINE = "research_outline"
+    RESEARCH_SECTION = "research_section"
+    RESEARCH_SUMMARY = "research_summary"

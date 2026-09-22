@@ -49,9 +49,11 @@ def window(qt_app, stub_gateway, session_store):
 
 
 class TestMainWindowSmoke:
-    def test_it_constructs_and_shows_with_three_views(self, window):
+    def test_it_constructs_and_shows_with_four_views(self, window):
         window.show()
-        assert window._views.count() == 3
+        # Chat, Search, Ingest, Report. The nav button id IS the stack index, so this count and the
+        # label tuple in _sidebar() must stay in step.
+        assert window._views.count() == 4
         assert window.windowTitle().startswith("Onyx")
 
     def test_every_signal_connection_is_valid(self, window):

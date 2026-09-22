@@ -12,6 +12,7 @@ from typing import Dict, List, Optional
 
 from sqlalchemy import text
 
+from app.core.config import settings
 from app.core.database.service.manager import db_manager
 from app.core.database.data.engine import Base
 from app.core.model_manager.service.async_model_service import AsyncModelService
@@ -30,16 +31,25 @@ from app.features.rag_retrieval.service.retrieval_api import RetrievalAPI
 from app.features.qa_generation.domain.entities import QAResponse, ConversationHistory
 from app.features.session_memory.service.session_memory_api import SessionMemoryAPI
 from app.features.session_memory.domain.enums import SessionTurnMode
+from app.core.jobs.domain.entities import CancellationToken
+from app.core.jobs.data.models import JOBS_UPGRADE_DDL
 from app.features.session_memory.data.models import SESSION_TURNS_UPGRADE_DDL
+from app.features.deep_research_report.data.models import RESEARCH_REPORT_UPGRADE_DDL
+from app.features.deep_research_report.domain.entities import (
+    CorpusDigest, Report, ReportSummary, ResearchPlan, ResearchPlanProposal,
+)
+from app.features.deep_research_report.domain.enums import ReportStatus
+from app.features.deep_research_report.service.report_api import ReportAuthoringAPI
 
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.service.pipelines.batch_audio_pipeline import BatchAudioPipeline
 from app.orchestration.service.pipelines.live_retrieval_pipeline import LiveRetrievalPipeline
 from app.orchestration.service.pipelines.live_verified_retrieval_pipeline import LiveVerifiedRetrievalPipeline
 from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
-from app.orchestration.service.pipelines.live_deep_research_pipeline import LiveDeepResearchPipeline
+from app.orchestration.service.pipelines.live_reasoning_pipeline import LiveReasoningPipeline
+from app.orchestration.service.pipelines.deep_research_report_pipeline import DeepResearchReportPipeline
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
-from app.orchestration.domain.entities import PhaseBatchResult, DeepResearchResponse
+from app.orchestration.domain.entities import PhaseBatchResult, ReasonedChatResponse
 
 logger = logging.getLogger(__name__)
 
@@ -59,9 +69,11 @@ class OnyxEngine(IOnyxEngine):
             live_verified_pipeline: LiveVerifiedRetrievalPipeline,
             live_qa_pipeline: LiveQAPipeline,
             storage_api: StorageAPI,
-            live_deep_research_pipeline: Optional[LiveDeepResearchPipeline] = None,
+            live_reasoning_pipeline: Optional[LiveReasoningPipeline] = None,
             session_memory_api: Optional[SessionMemoryAPI] = None,
-            retrieval_api: Optional[RetrievalAPI] = None
+            retrieval_api: Optional[RetrievalAPI] = None,
+            research_report_pipeline: Optional[DeepResearchReportPipeline] = None,
+            report_api: Optional[ReportAuthoringAPI] = None
     ):
         self._async_service = async_model_service
         self._media_pipeline = media_pipeline
@@ -70,12 +82,17 @@ class OnyxEngine(IOnyxEngine):
         self._live_verified_pipeline = live_verified_pipeline
         self._live_qa_pipeline = live_qa_pipeline
         self._storage_api = storage_api
-        self._live_deep_research_pipeline = live_deep_research_pipeline
+        self._live_reasoning_pipeline = live_reasoning_pipeline
         self._session_memory_api = session_memory_api
         self._retrieval_api = retrieval_api
+        self._research_report_pipeline = research_report_pipeline
+        self._report_api = report_api
 
         self._state = EngineState.OFFLINE
         self._state_lock = threading.RLock()
+        # Live cancellation tokens, keyed by report id. Guarded by the same lock as the state, and set
+        # from whichever thread asked to stop -- never from the one running the report.
+        self._research_cancels: Dict[uuid.UUID, CancellationToken] = {}
 
     # ==========================================
     # LIFECYCLE MANAGEMENT
@@ -93,7 +110,7 @@ class OnyxEngine(IOnyxEngine):
                 with db_manager.session() as session:
                     engine = session.get_bind()
                     Base.metadata.create_all(bind=engine)
-                    for statement in SESSION_TURNS_UPGRADE_DDL:
+                    for statement in (*SESSION_TURNS_UPGRADE_DDL, *JOBS_UPGRADE_DDL, *RESEARCH_REPORT_UPGRADE_DDL):
                         session.execute(text(statement))
 
                 self._force_aggressive_garbage_collection()
@@ -138,6 +155,10 @@ class OnyxEngine(IOnyxEngine):
                 raise EngineOfflineError("Cannot ingest media: Engine is offline.")
             if self._state == EngineState.INGESTING:
                 raise EngineBusyError("Cannot ingest media: Hardware is currently locked by another ingestion process.")
+            if self._state == EngineState.RESEARCHING:
+                raise EngineBusyError(
+                    "Cannot ingest media: a Deep Research Report run is holding the GPU. Stop it first."
+                )
             self._state = EngineState.INGESTING
 
         logger.info("Locking Engine for batch ingestion...")
@@ -237,7 +258,7 @@ class OnyxEngine(IOnyxEngine):
     def chat(self, query: SearchQuery, session_id: Optional[uuid.UUID] = None) -> QAResponse:
         """
         Without a session_id, a standalone question. With one, a turn of that conversation: the answer model sees
-        the earlier turns (chat and Deep Research alike) and their evidence, and this turn is recorded.
+        the earlier turns (chat and Reasoned Answer alike) and their evidence, and this turn is recorded.
         """
         self._enforce_online_state()
         if session_id is not None:
@@ -268,17 +289,17 @@ class OnyxEngine(IOnyxEngine):
             self._release_models_after_failure()
             raise map_engine_error(e, context=f"Chat QA Generation [{query.prompt}]")
 
-    def chat_deep_research(self, session_id: uuid.UUID, query: SearchQuery) -> DeepResearchResponse:
+    def chat_reasoned(self, session_id: uuid.UUID, query: SearchQuery) -> ReasonedChatResponse:
         self._enforce_online_state()
-        if self._live_deep_research_pipeline is None:
-            raise EngineOfflineError("Deep Research chat is not wired into this engine instance.")
+        if self._live_reasoning_pipeline is None:
+            raise EngineOfflineError("Reasoned Answer is not wired into this engine instance.")
         self._require_conversation_support()
 
         try:
             search_id = uuid.uuid4()
             turns = self._session_memory_api.get_history(session_id)
             history = self._load_history(turns)
-            result = self._live_deep_research_pipeline.execute_deep_research(
+            result = self._live_reasoning_pipeline.execute_reasoning(
                 search_id, query,
                 prior_session_context=self._session_memory_api.format_prior_context(turns),
                 seed_chunks=history_chunks_newest_first(history)
@@ -294,7 +315,7 @@ class OnyxEngine(IOnyxEngine):
             shown = {n.chunk.chunk_id for turn in history.turns for n in turn.evidence}
             self._session_memory_api.record_turn(
                 session_id, query.prompt, answer_text,
-                mode=SessionTurnMode.DEEP_RESEARCH,
+                mode=SessionTurnMode.REASONING,
                 standalone_query=result.standalone_query,
                 evidence_chunk_ids=[c for c in result.evidence_chunk_ids if c not in shown],
                 first_doc_number=history.next_doc_number
@@ -303,7 +324,181 @@ class OnyxEngine(IOnyxEngine):
             return result
         except Exception as e:
             self._release_models_after_failure()
-            raise map_engine_error(e, context=f"Deep Research Chat [{query.prompt}]")
+            raise map_engine_error(e, context=f"Reasoned Answer [{query.prompt}]")
+
+    # ==========================================
+    # DEEP RESEARCH REPORT MODE
+    # ==========================================
+
+    def _prepare_for_research(self, report_id: uuid.UUID) -> CancellationToken:
+        """
+        Locks the engine for a report run and registers its cancellation token.
+
+        Mirrors `_prepare_for_ingestion`: a report holds the GPU for tens of minutes, so live calls are
+        rejected with a clear reason rather than silently queueing behind it or fighting it for VRAM.
+        """
+        with self._state_lock:
+            if self._state == EngineState.OFFLINE:
+                raise EngineOfflineError("Cannot run a research report: Engine is offline.")
+            if self._state == EngineState.INGESTING:
+                raise EngineBusyError("Cannot run a research report: hardware is locked for batch ingestion.")
+            if self._state == EngineState.RESEARCHING:
+                raise EngineBusyError("Cannot run a research report: another report is already running.")
+            self._state = EngineState.RESEARCHING
+            token = CancellationToken()
+            self._research_cancels[report_id] = token
+
+        logger.info(f"Locking Engine for Deep Research Report {report_id}...")
+        try:
+            self._force_aggressive_garbage_collection()
+        except Exception as e:
+            self._cleanup_after_research(report_id)
+            raise map_engine_error(e, context="VRAM Eviction for Research")
+        return token
+
+    def _cleanup_after_research(self, report_id: uuid.UUID) -> None:
+        """Unlocks the engine and drops the run's token, whatever happened."""
+        try:
+            logger.info("Research report finished. Purging pipeline artifacts from VRAM...")
+            self._async_service.release_all()
+            self._force_aggressive_garbage_collection()
+        except Exception as e:
+            logger.error(f"Failed to cleanly purge VRAM: {e}")
+        finally:
+            with self._state_lock:
+                self._research_cancels.pop(report_id, None)
+                self._state = EngineState.ONLINE
+
+    def _require_research_support(self) -> None:
+        if self._research_report_pipeline is None or self._report_api is None:
+            raise EngineOfflineError("Deep Research Report mode is not wired into this engine instance.")
+
+    def propose_research_plan(
+            self,
+            topic: str,
+            session_id: Optional[uuid.UUID] = None,
+            source_id_filter: Optional[uuid.UUID] = None
+    ) -> ResearchPlanProposal:
+        """
+        Scopes a report: searches the corpus once, proposes an outline, and stops for approval.
+
+        Short enough to run as an ordinary live call (about a minute, two model loads). The long run is a
+        separate call on purpose -- a misread topic is cheap to fix here and expensive to fix later.
+        """
+        self._enforce_online_state()
+        self._require_research_support()
+
+        try:
+            report = self._research_report_pipeline.propose_plan(topic, session_id, source_id_filter)
+            sub_questions = len(report.plan.sub_questions)
+            sections = len(report.plan.sections)
+            return ResearchPlanProposal(
+                report_id=report.id,
+                plan=report.plan,
+                corpus=report.corpus or CorpusDigest(indexed_source_count=report.indexed_source_count,
+                                                    indexed_chunk_count=0),
+                # One search job and one outline job PER ROUND, then one job per section and one
+                # summary. The caller needs a denominator up front: unlike ingestion, a report knows how
+                # much work it is about to do. Exhaustive mode's ceiling is used, so the bar can only
+                # finish early -- never run past 100%.
+                expected_job_count=(settings.REPORT_MAX_GATHER_ROUNDS * 2) + sections + 1,
+                estimated_minutes=self._estimate_minutes(sections, sub_questions),
+            )
+        except Exception as e:
+            self._release_models_after_failure()
+            raise map_engine_error(e, context=f"Proposing a research plan for [{topic}]")
+
+    @staticmethod
+    def _estimate_minutes(sections: int, sub_questions: int) -> int:
+        """
+        A rough wall-clock estimate for the UI, from measured shapes on a 3060: gathering is dominated by
+        the model loads and the reranker, each section by its prefill plus about 1600 generated tokens.
+        Deliberately coarse -- it exists so a person can decide whether to start, not to be accurate.
+        """
+        rounds = max(1, settings.REPORT_MAX_GATHER_ROUNDS)
+        return max(5, (4 + (sub_questions // 4)) * rounds + (sections * 3))
+
+    def execute_iterative_research_report(self, report_id: uuid.UUID, approved_plan: ResearchPlan) -> Report:
+        """
+        Exhaustive mode: the same run, but gathering repeats while sections come back unsupported.
+
+        Takes the GPU exclusively exactly as the deep mode does; cancel it the same way. Costs one
+        embedder load, one reranker load and one report-model load per extra round, and stops early as
+        soon as a round turns up nothing new.
+        """
+        self._require_research_support()
+        token = self._prepare_for_research(report_id)
+
+        try:
+            return self._research_report_pipeline.execute_iterative_report(report_id, approved_plan, token)
+        except Exception as e:
+            raise map_engine_error(e, context=f"Running exhaustive research report [{report_id}]")
+        finally:
+            self._cleanup_after_research(report_id)
+
+    def execute_research_report(self, report_id: uuid.UUID, approved_plan: ResearchPlan) -> Report:
+        """
+        The long run. Holds the GPU exclusively; cancel it from another thread with
+        `cancel_research_report`, which returns a partial, resumable report rather than raising.
+        """
+        self._require_research_support()
+        token = self._prepare_for_research(report_id)
+
+        try:
+            return self._research_report_pipeline.execute_report(report_id, approved_plan, token)
+        except Exception as e:
+            raise map_engine_error(e, context=f"Running research report [{report_id}]")
+        finally:
+            self._cleanup_after_research(report_id)
+
+    def resume_research_report(self, report_id: uuid.UUID) -> Report:
+        """Writes the sections a cancelled or failed run left pending. Loads no retrieval model."""
+        self._require_research_support()
+        token = self._prepare_for_research(report_id)
+
+        try:
+            return self._research_report_pipeline.resume_report(report_id, token)
+        except Exception as e:
+            raise map_engine_error(e, context=f"Resuming research report [{report_id}]")
+        finally:
+            self._cleanup_after_research(report_id)
+
+    def cancel_research_report(self, report_id: uuid.UUID) -> bool:
+        """
+        Signals a running report to stop, and says whether one was actually running.
+
+        Safe to call from any thread -- it only sets an Event -- which is the point: the thread running the
+        report is busy inside a blocking generation call and cannot be asked politely any other way.
+
+        The run stops at the next section boundary, so up to about ninety seconds may pass before it does.
+        Everything written by then is kept and the report stays resumable.
+        """
+        with self._state_lock:
+            token = self._research_cancels.get(report_id)
+
+        if token is None:
+            logger.info(f"Cancel requested for report {report_id}, which is not currently running.")
+            return False
+
+        logger.info(f"Cancelling research report {report_id} after the section in flight.")
+        token.cancel()
+        return True
+
+    def get_report(self, report_id: uuid.UUID) -> Optional[Report]:
+        """A stored report, whatever its state. No model, no engine lock."""
+        self._require_research_support()
+        try:
+            return self._report_api.get_report(report_id)
+        except Exception as e:
+            raise map_engine_error(e, context=f"Loading research report [{report_id}]")
+
+    def list_reports(self, session_id: Optional[uuid.UUID] = None, limit: int = 50) -> List[ReportSummary]:
+        """Stored reports, newest first, optionally scoped to one conversation."""
+        self._require_research_support()
+        try:
+            return self._report_api.list_reports(session_id, limit)
+        except Exception as e:
+            raise map_engine_error(e, context="Listing research reports")
 
     # ==========================================
     # READ-SIDE ACCESS (for a UI)
@@ -371,6 +566,11 @@ class OnyxEngine(IOnyxEngine):
                 raise EngineOfflineError("Engine is offline.")
             if self._state == EngineState.INGESTING:
                 raise EngineBusyError("Hardware is locked for batch ingestion. Inference paused.")
+            if self._state == EngineState.RESEARCHING:
+                raise EngineBusyError(
+                    "Hardware is locked by a Deep Research Report run. Chat and search resume when it "
+                    "finishes, or when you stop it."
+                )
 
     def _physical_path(self, extracted_file_id: Optional[uuid.UUID], source_id: uuid.UUID) -> Optional[str]:
         """The chunk's extracted clip if there is one, otherwise the ingested source file (e.g. audio-only)."""

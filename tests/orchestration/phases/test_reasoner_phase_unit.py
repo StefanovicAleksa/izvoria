@@ -68,7 +68,7 @@ class TestReasonerPhaseUnit:
 
         result = phase.execute(inputs)
 
-        assert result.phase == PipelinePhase.DEEP_RESEARCH_REASONING
+        assert result.phase == PipelinePhase.REASONING_TURN
         assert result.status == PhaseStatus.COMPLETED
         assert result.successful_count == 1
         assert result.failed_count == 0

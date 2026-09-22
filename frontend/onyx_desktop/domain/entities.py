@@ -20,6 +20,8 @@ from onyx_desktop.domain.enums import (
     JobProgressState,
     MediaKind,
     MessageRole,
+    ReportMode,
+    ReportRunStatus,
     TurnOutcome,
 )
 
@@ -64,7 +66,7 @@ class Evidence:
 
 @dataclass(frozen=True)
 class ReasoningStep:
-    """One iteration of the Deep Research reasoner loop, for the collapsible trace panel."""
+    """One iteration of the Reasoner loop, for the collapsible trace panel."""
     iteration: int
     decision: str
     interim_analysis: str
@@ -188,3 +190,72 @@ class SessionRef:
 class StatusSnapshot:
     status: ApplianceStatus
     detail: str = ""
+
+
+@dataclass(frozen=True)
+class ReportOutlineDraft:
+    """
+    One proposed section, before the user has approved it.
+
+    `key` is the identity, not the position: the engine re-attaches evidence by key across plan
+    revisions, so reordering or renaming a section in the editor must carry the key along.
+    """
+    key: str
+    title: str
+    brief: str = ""
+    questions: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class ReportPlanDraft:
+    """
+    The plan the user is asked to approve, and what running it will cost.
+
+    `expected_job_count` exists so the progress bar can be determinate -- unlike ingestion, a report
+    knows up front how much work it is about to do.
+    """
+    report_id: uuid.UUID
+    topic: str
+    scope_note: str = ""
+    sections: Tuple[ReportOutlineDraft, ...] = ()
+    indexed_source_count: int = 0
+    indexed_chunk_count: int = 0
+    expected_job_count: int = 0
+    estimated_minutes: int = 0
+
+
+@dataclass(frozen=True)
+class ReportDocument:
+    """
+    A finished (or partial) report, ready to render.
+
+    `markdown` already carries `onyx://doc/N` links -- the engine's renderer emits them in link mode
+    precisely so the desktop can make citations clickable. `evidence` is what those links resolve to.
+
+    `markdown_path` is where the engine already wrote the file; Save-As copies from there rather than
+    re-rendering, so what the user saves is byte-identical to what the appliance produced.
+    """
+    report_id: uuid.UUID
+    topic: str
+    markdown: str
+    status: ReportRunStatus
+    mode: ReportMode = ReportMode.DEEP
+    evidence: Tuple[Evidence, ...] = ()
+    markdown_path: Optional[str] = None
+    section_count: int = 0
+    uncovered_count: int = 0
+    rounds_used: int = 1
+    indexed_source_count: int = 0
+    swept_source_count: int = 0
+
+    @property
+    def is_partial(self) -> bool:
+        """A cancelled or failed report still renders; the UI says so rather than implying it is whole."""
+        return self.status in (ReportRunStatus.CANCELLED, ReportRunStatus.FAILED)
+
+    def evidence_for(self, doc_number: int) -> Optional[Evidence]:
+        """What an `onyx://doc/N` click resolves to, or None if the bank no longer has it."""
+        for item in self.evidence:
+            if item.doc_number == doc_number:
+                return item
+        return None

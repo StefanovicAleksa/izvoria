@@ -49,17 +49,17 @@ class TestSessionMemoryRepository:
 
         result = repository.record_turn(
             session_id, "What happened?", "The defendant [Doc 3].",
-            mode=SessionTurnMode.DEEP_RESEARCH, standalone_query="What did the defendant do?",
+            mode=SessionTurnMode.REASONING, standalone_query="What did the defendant do?",
             evidence_chunk_ids=chunk_ids, first_doc_number=3
         )
 
         added = session.add.call_args[0][0]
-        assert added.mode == "deep_research"
+        assert added.mode == "reasoning"
         assert added.evidence_chunk_ids == chunk_ids
         assert added.first_doc_number == 3
         assert result.session_id == session_id
         assert result.answer_text == "The defendant [Doc 3]."
-        assert result.mode == SessionTurnMode.DEEP_RESEARCH
+        assert result.mode == SessionTurnMode.REASONING
         assert result.standalone_query == "What did the defendant do?"
         assert result.evidence_chunk_ids == chunk_ids
         assert result.next_doc_number == 5
@@ -94,6 +94,25 @@ class TestSessionMemoryRepository:
         session.execute.return_value.scalars.return_value.all.return_value = []
 
         assert repository.get_history(uuid.uuid4(), limit=20) == []
+
+    def test_get_history_reads_a_pre_rename_mode_as_chat_instead_of_raising(self, repository, session):
+        """
+        'deep_research' rows predate the rename to 'reasoning'. SESSION_TURNS_UPGRADE_DDL backfills them on
+        boot, but a database reached without start() must still yield its turns: losing which entrypoint
+        answered a turn is survivable, losing the turn is not.
+        """
+        session_id = uuid.uuid4()
+        stale = self._model(session_id, "What did they say?")
+        stale.mode = "deep_research"
+        session.execute.return_value.scalars.return_value.all.return_value = [stale]
+
+        result = repository.get_history(session_id, limit=20)
+
+        assert len(result) == 1
+        assert result[0].mode == SessionTurnMode.CHAT
+        assert result[0].question == "What did they say?"
+        assert result[0].answer_text == stale.answer_text
+        assert result[0].evidence_chunk_ids == stale.evidence_chunk_ids
 
     def test_get_last_turn_found(self, repository, session):
         session_id = uuid.uuid4()

@@ -2,7 +2,7 @@
 # Path: frontend/onyx_desktop/ui/widgets/reasoning_trace.py
 
 """
-The Deep Research reasoner's decision history, collapsed by default.
+The Reasoner's decision history, collapsed by default.
 
 Worth showing because it is the only view into *why* a multi-pass answer searched what it did --
 and, when the reasoner asks for clarification instead of answering, the only explanation of what

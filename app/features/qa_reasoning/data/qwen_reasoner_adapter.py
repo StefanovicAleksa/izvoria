@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 class QwenReasonerAdapter(IReasonerAdapter):
     """
-    Adapter for executing Qwen3.5-9B via llama.cpp as the Deep Research Reasoner.
+    Adapter for executing Qwen3.5-9B via llama.cpp as the Reasoner.
     Fails closed on an unparseable/invalid `decision` field: unlike the retrieval scrubber's
     fail-open default, there is no safe default among three semantically different
     control-flow branches (see JSONReasonerParseError).

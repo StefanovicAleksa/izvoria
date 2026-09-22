@@ -13,7 +13,7 @@ class MessageRole(str, Enum):
 class ChatMode(str, Enum):
     """Which engine call a chat turn maps to."""
     SINGLE_PASS = "single_pass"      # OnyxEngine.chat()
-    DEEP_RESEARCH = "deep_research"  # OnyxEngine.chat_deep_research()
+    REASONING = "reasoning"  # OnyxEngine.chat_reasoned()
 
 
 class SearchMode(str, Enum):
@@ -24,6 +24,22 @@ class SearchMode(str, Enum):
 class IngestMode(str, Enum):
     VIDEO = "video"   # OnyxEngine.ingest_videos()
     AUDIO = "audio"   # OnyxEngine.ingest_audios()
+
+
+class ReportMode(str, Enum):
+    """Which engine call a research report maps to."""
+    DEEP = "deep"              # OnyxEngine.execute_research_report()
+    EXHAUSTIVE = "exhaustive"  # OnyxEngine.execute_iterative_research_report()
+
+
+class ReportRunStatus(str, Enum):
+    """Mirrors the engine's ReportStatus. A cancelled report is partial, not lost."""
+    AWAITING_APPROVAL = "awaiting_approval"
+    GATHERING = "gathering"
+    WRITING = "writing"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
+    FAILED = "failed"
 
 
 class ApplianceStatus(str, Enum):
@@ -37,6 +53,7 @@ class ApplianceStatus(str, Enum):
     READY = "ready"
     WORKING = "working"
     INGESTING = "ingesting"
+    RESEARCHING = "researching"
     ERROR = "error"
 
 
@@ -53,7 +70,7 @@ class MediaKind(str, Enum):
 
 class TurnOutcome(str, Enum):
     """
-    Deep Research returns either an answer or a question back at the user, and the
+    Reasoned Answer returns either an answer or a question back at the user, and the
     clarification branch is the common case rather than an edge case.
     """
     ANSWERED = "answered"

@@ -7,7 +7,7 @@ import uuid
 
 from app.core.model_manager.domain.entities import LoadedModel
 from app.core.model_manager.domain.interfaces import IModelLoader
-from app.features.rag_retrieval.domain.entities import RetrievedChunk
+from app.features.rag_retrieval.domain.entities import IndexedSource, RetrievedChunk
 
 class IPromptEmbeddingAdapter(IModelLoader, ABC):
     """
@@ -17,6 +17,16 @@ class IPromptEmbeddingAdapter(IModelLoader, ABC):
     @abstractmethod
     def embed_prompt(self, model: LoadedModel, text: str) -> List[float]:
         """Converts the raw string prompt into a dense mathematical vector."""
+        pass
+
+    @abstractmethod
+    def embed_prompts(self, model: LoadedModel, texts: List[str]) -> List[List[float]]:
+        """
+        Vectorizes several prompts in one forward pass, in the given order.
+
+        This is what lets a query fan-out cost one model acquisition instead of one per query: the load and
+        unload of the embedder dominate the embedding itself for short prompts.
+        """
         pass
 
 class IRetrievalRepository(ABC):
@@ -35,6 +45,31 @@ class IRetrievalRepository(ABC):
         """
         Executes both Semantic (Dense) and Keyword (Sparse) searches,
         merges them using Reciprocal Rank Fusion (RRF), and returns the top results.
+        """
+        pass
+
+    @abstractmethod
+    def list_indexed_sources(self, min_chunks: int = 1) -> List[IndexedSource]:
+        """
+        Every source with rows in `vector_chunks`, best-populated first, with its human-readable name.
+
+        Storage's `list_sources()` answers "what was ingested"; this answers "what can actually be
+        retrieved", which is the only honest basis for a claim about corpus coverage.
+        """
+        pass
+
+    @abstractmethod
+    def pick_sweep_sources(
+        self,
+        query_vector: List[float],
+        ann_depth: int,
+        max_sources: int
+    ) -> List[uuid.UUID]:
+        """
+        The sources whose best chunk is nearest the query, via one index-served ANN probe.
+
+        Deliberately not a `GROUP BY source_id` over the whole table with a per-group MIN(distance): no
+        index can serve that, so it degrades into a full scan with a distance computation per row.
         """
         pass
 

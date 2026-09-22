@@ -59,9 +59,9 @@ def print_search_results(results, mode_name: str):
         print("-" * 80)
 
 
-def print_deep_research_result(result):
+def print_reasoned_result(result):
     if result.qa_response:
-        print(f"\n[ONYX AI - DEEP RESEARCH]\n{result.qa_response.generated_answer}")
+        print(f"\n[ONYX AI - REASONED ANSWER]\n{result.qa_response.generated_answer}")
         print(f"\n[CITATIONS USED: {len(result.qa_response.citations)}]")
         for cit in result.qa_response.citations:
             print(f"  {cit.doc_id} {cit.physical_path or 'No physical file resolved'}")
@@ -110,9 +110,9 @@ def run_conversation(engine, session_id):
         print_chat_response(response)
 
 
-def run_deep_research_with_clarifications(engine, session_id, original_question, max_clarification_rounds=3):
+def run_reasoned_with_clarifications(engine, session_id, original_question, max_clarification_rounds=3):
     """
-    chat_deep_research()'s intra-question state (evidence pool, decision history) is ephemeral
+    chat_reasoned()'s intra-question state (evidence pool, decision history) is ephemeral
     and discarded once the call returns, so a clarification round can't resume mid-loop — it
     re-asks with the original question plus every clarification given so far appended, and lets
     the Reasoner start its reasoning fresh with that fuller picture.
@@ -123,10 +123,10 @@ def run_deep_research_with_clarifications(engine, session_id, original_question,
         for i, clarification in enumerate(clarifications, 1):
             conversation += f"\n\n[Clarification {i}] {clarification}"
 
-        print("\n[SYSTEM] Running Deep Research Reasoning Loop (this may take a while)...")
+        print("\n[SYSTEM] Running the Reasoned Answer loop (this may take a while)...")
         query = SearchQuery(prompt=conversation, limit=5)
-        result = engine.chat_deep_research(session_id, query)
-        print_deep_research_result(result)
+        result = engine.chat_reasoned(session_id, query)
+        print_reasoned_result(result)
 
         if result.qa_response is not None:
             return
@@ -142,6 +142,138 @@ def run_deep_research_with_clarifications(engine, session_id, original_question,
         clarifications.append(answer)
 
 
+def print_research_plan(proposal):
+    """The outline the user is being asked to approve, with what it will cost."""
+    plan = proposal.plan
+    print("\n" + "=" * 78)
+    print(f"PROPOSED RESEARCH PLAN — {plan.topic}")
+    print("=" * 78)
+    if plan.scope_note:
+        print(f"\nScope: {plan.scope_note}")
+    print(f"\nCorpus: {proposal.corpus.indexed_source_count} indexed recording(s), "
+          f"{proposal.corpus.indexed_chunk_count} excerpt(s).")
+    print(f"Estimated run time: about {proposal.estimated_minutes} minutes "
+          f"({proposal.expected_job_count} steps).\n")
+
+    for section in plan.sections:
+        print(f"  [{section.key}] {section.title}")
+        if section.brief:
+            print(f"        {section.brief}")
+        for question in plan.sub_questions_for(section.key):
+            print(f"          - {question.text}")
+    print("=" * 78)
+
+
+def edit_research_plan(plan):
+    """
+    Minimal outline editing at the terminal: drop sections, or rename one.
+
+    Deliberately small. The point of the approval gate is to catch a misread topic before spending half
+    an hour on it, not to be a document editor -- the desktop UI is where real editing belongs.
+    """
+    from app.features.deep_research_report.domain.entities import ResearchPlan
+
+    sections = list(plan.sections)
+    while True:
+        print("\n  Sections: " + ", ".join(f"{s.key}={s.title}" for s in sections))
+        command = input("  [d <key> to drop, r <key> to rename, blank to finish] > ").strip()
+        if not command:
+            break
+
+        action, _, argument = command.partition(" ")
+        key = argument.strip()
+        target = next((s for s in sections if s.key == key), None)
+        if target is None:
+            print(f"  [ERROR] No section {key!r}.")
+            continue
+
+        if action == "d":
+            if len(sections) == 1:
+                print("  [ERROR] A report needs at least one section.")
+                continue
+            sections = [s for s in sections if s.key != key]
+        elif action == "r":
+            new_title = input(f"  [New title for {key}] > ").strip()
+            if new_title:
+                sections = [s.model_copy(update={"title": new_title}) if s.key == key else s
+                            for s in sections]
+        else:
+            print("  [ERROR] Use 'd <key>' or 'r <key>'.")
+
+    kept = {s.key for s in sections}
+    return plan.model_copy(update={
+        "sections": sections,
+        "sub_questions": [q for q in plan.sub_questions if q.section_key in kept],
+    })
+
+
+def run_research_report(engine, session_id):
+    """
+    Deep Research Report: scope, approve, then the long run.
+
+    Separated into two calls on purpose -- the run holds the GPU for tens of minutes, so the outline is
+    shown first and a misread topic costs a few seconds instead of the whole run.
+    """
+    topic = input("[Enter the research topic] > ").strip()
+    if not topic:
+        return
+
+    print("\n  [d] Deep       — one sweep of the corpus. Faster.")
+    print("  [e] Exhaustive — re-searches for any section the first sweep could not support. Slower.")
+    exhaustive = input("[Mode: d/e] > ").strip().lower().startswith("e")
+
+    print("\n[SYSTEM] Scoping the report against the indexed corpus (this takes a minute)...")
+    try:
+        proposal = engine.propose_research_plan(topic, session_id)
+    except Exception as e:
+        print(f"\n[ERROR] Could not scope this topic: {e}")
+        return
+
+    print_research_plan(proposal)
+    plan = proposal.plan
+
+    while True:
+        choice = input("\n[a]ccept / [e]dit / [c]ancel > ").strip().lower()
+        if choice in ("c", "cancel", ""):
+            print("[SYSTEM] Cancelled. Nothing was run.")
+            return
+        if choice in ("e", "edit"):
+            plan = edit_research_plan(plan)
+            continue
+        if choice in ("a", "accept"):
+            break
+        print("[ERROR] Choose a, e or c.")
+
+    print(f"\n[SYSTEM] Researching in {'exhaustive' if exhaustive else 'deep'} mode. The appliance is "
+          f"locked for roughly {proposal.estimated_minutes} minutes; Ctrl-C stops after the current section.")
+    try:
+        if exhaustive:
+            report = engine.execute_iterative_research_report(proposal.report_id, plan)
+        else:
+            report = engine.execute_research_report(proposal.report_id, plan)
+    except KeyboardInterrupt:
+        # The run is on this thread, so Ctrl-C lands here rather than in the cancellation token. Whatever
+        # was committed per section is already safe, and resume picks the rest up.
+        print("\n[SYSTEM] Interrupted. Sections already written are saved; "
+              f"resume with report id {proposal.report_id}.")
+        return
+    except Exception as e:
+        print(f"\n[ERROR] The research run failed: {e}")
+        return
+
+    print("\n" + "=" * 78)
+    print(f"REPORT COMPLETE — {report.topic}")
+    print("=" * 78)
+    print(f"  Sections written : {len(report.written_sections)}")
+    print(f"  Not covered      : {len(report.uncovered_sections)}")
+    print(f"  Cited excerpts   : {len(report.cited_doc_numbers)}")
+    print(f"  Coverage         : swept {report.swept_source_count} of "
+          f"{report.indexed_source_count} indexed source(s)")
+    print(f"  Gathering rounds : {report.rounds_used} ({report.mode.value} mode)")
+    print(f"\n  Written to: {report.markdown_path}")
+    print("=" * 78)
+
+
 def main():
     print_header()
     print("[SYSTEM] Initializing hardware state and preloading UI models...")
@@ -153,7 +285,7 @@ def main():
         print(f"\n[FATAL STARTUP ERROR] Appliance failed to boot: {e}")
         sys.exit(1)
 
-    # Chat (5) and Deep Research (7) share one conversation until /new is typed in chat
+    # Chat (5) and Reasoned Answer (7) share one conversation until /new is typed in chat
     conversation_session_id = uuid.uuid4()
 
     try:
@@ -165,9 +297,10 @@ def main():
             print("  4. Verified Search [SLM Hallucination Scrubber]")
             print("  5. Chat with Data [Multi-Turn Conversation]")
             print("  6. Shutdown Appliance")
-            print("  7. Deep Research Chat [Multi-Pass Reasoning]")
+            print("  7. Reasoned Answer [Multi-Pass Reasoning]")
+            print("  8. Deep Research Report [Multi-Page Cited Report]")
 
-            choice = input("\n[Select Option 1-7] > ").strip()
+            choice = input("\n[Select Option 1-8] > ").strip()
 
             try:
                 if choice == '1':
@@ -205,7 +338,10 @@ def main():
                 elif choice == '7':
                     prompt = input("[Enter your research question] > ").strip()
                     if prompt:
-                        run_deep_research_with_clarifications(engine, conversation_session_id, prompt)
+                        run_reasoned_with_clarifications(engine, conversation_session_id, prompt)
+
+                elif choice == '8':
+                    run_research_report(engine, conversation_session_id)
 
                 elif choice == '6' or choice.lower() in ['exit', 'quit']:
                     print("\n[SYSTEM] Initiating graceful shutdown sequence...")

@@ -24,7 +24,7 @@ def build_evidence_block(
     tag reliably where it garbled 36-character UUIDs; the returned mapping turns tags back into chunk ids.
 
     The pool arrives best-first. With a token budget, chunks that don't fit are left out (a later, shorter
-    chunk may still fit), so a growing Deep Research pool can never overflow the context window.
+    chunk may still fit), so a growing evidence pool can never overflow the context window.
     """
     if not evidence_pool:
         return EvidenceBlock(formatted_text=_EMPTY_POOL_TEXT, tag_mapping={})

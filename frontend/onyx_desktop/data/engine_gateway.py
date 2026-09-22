@@ -25,6 +25,9 @@ from onyx_desktop.domain.entities import (
     IngestionSummary,
     ProgressTick,
     ReasoningStep,
+    ReportDocument,
+    ReportOutlineDraft,
+    ReportPlanDraft,
     SearchHit,
     SearchOutcome,
 )
@@ -34,11 +37,13 @@ from onyx_desktop.domain.enums import (
     JobProgressState,
     MediaKind,
     MessageRole,
+    ReportMode,
+    ReportRunStatus,
     SearchMode,
     TurnOutcome,
 )
 from onyx_desktop.domain.interfaces import IEngineGateway
-from onyx_desktop.exceptions.gateway import ApplianceOfflineError
+from onyx_desktop.exceptions.gateway import ApplianceOfflineError, InvalidRequestError
 from onyx_desktop.utils.error_mapper import map_engine_error
 
 logger = logging.getLogger(__name__)
@@ -113,8 +118,8 @@ class OnyxEngineGateway(IEngineGateway):
         modules = _import_engine()
         try:
             query = modules["SearchQuery"](prompt=prompt, limit=limit)
-            if mode is ChatMode.DEEP_RESEARCH:
-                return self._map_deep_research(engine.chat_deep_research(session_id, query))
+            if mode is ChatMode.REASONING:
+                return self._map_reasoned(engine.chat_reasoned(session_id, query))
             response = engine.chat(query, session_id=session_id)
             return self._map_qa_response(response)
         except Exception as exc:
@@ -141,6 +146,160 @@ class OnyxEngineGateway(IEngineGateway):
             )
         except Exception as exc:
             raise map_engine_error(exc, context=f"{mode.value.capitalize()} search")
+
+    # ==========================================
+    # RESEARCH REPORTS
+    # ==========================================
+
+    def propose_report_plan(self, topic: str, mode: ReportMode) -> ReportPlanDraft:
+        engine = self._require_engine()
+        try:
+            proposal = engine.propose_research_plan(topic)
+            plan = proposal.plan
+            return ReportPlanDraft(
+                report_id=proposal.report_id,
+                topic=plan.topic,
+                scope_note=plan.scope_note,
+                sections=tuple(
+                    ReportOutlineDraft(
+                        key=section.key,
+                        title=section.title,
+                        brief=section.brief,
+                        questions=tuple(q.text for q in plan.sub_questions_for(section.key)),
+                    )
+                    for section in plan.sections
+                ),
+                indexed_source_count=proposal.corpus.indexed_source_count,
+                indexed_chunk_count=proposal.corpus.indexed_chunk_count,
+                expected_job_count=proposal.expected_job_count,
+                estimated_minutes=proposal.estimated_minutes,
+            )
+        except Exception as exc:
+            raise map_engine_error(exc, context="Planning a research report")
+
+    def run_report(self, plan: ReportPlanDraft, mode: ReportMode) -> ReportDocument:
+        engine = self._require_engine()
+        try:
+            stored = engine.get_report(plan.report_id)
+            if stored is None:
+                raise InvalidRequestError("That research plan is no longer available; scope it again.")
+
+            approved = self._apply_edits(stored.plan, plan)
+            if mode is ReportMode.EXHAUSTIVE:
+                report = engine.execute_iterative_research_report(plan.report_id, approved)
+            else:
+                report = engine.execute_research_report(plan.report_id, approved)
+            return self._map_report(report)
+        except Exception as exc:
+            raise map_engine_error(exc, context="Running a research report")
+
+    def request_report_cancel(self, report_id: uuid.UUID) -> bool:
+        """
+        Called on the GUI thread, bypassing the worker on purpose -- see IEngineGateway.
+
+        Never raises: a Stop button that throws while the run keeps going is worse than one that
+        reports it could not stop.
+        """
+        if self._engine is None:
+            return False
+        try:
+            return bool(self._engine.cancel_research_report(report_id))
+        except Exception as exc:
+            logger.error(f"Could not cancel report {report_id}: {exc}")
+            return False
+
+    def load_report(self, report_id: uuid.UUID) -> Optional[ReportDocument]:
+        engine = self._require_engine()
+        try:
+            report = engine.get_report(report_id)
+            return self._map_report(report) if report is not None else None
+        except Exception as exc:
+            raise map_engine_error(exc, context="Loading a research report")
+
+    @staticmethod
+    def _apply_edits(stored_plan: Any, draft: ReportPlanDraft) -> Any:
+        """
+        Rebuilds the engine's plan from the user's edited draft.
+
+        Section keys are carried through, not regenerated: the engine re-attaches evidence by key across
+        plan revisions, so a reordered or renamed section keeps its identity. A section the user deleted
+        simply does not appear, and its sub-questions go with it.
+        """
+        modules = _import_engine()
+        by_key = {section.key: section for section in stored_plan.sections}
+
+        sections = []
+        questions = []
+        for order_index, edited in enumerate(draft.sections):
+            original = by_key.get(edited.key)
+            base = original if original is not None else None
+            sections.append(
+                (base.model_copy(update={"title": edited.title, "brief": edited.brief,
+                                         "order_index": order_index})
+                 if base is not None else
+                 modules["OutlineSection"](key=edited.key or f"u{order_index + 1}",
+                                           title=edited.title, brief=edited.brief,
+                                           order_index=order_index))
+            )
+            for question_index, text in enumerate(edited.questions):
+                if text.strip():
+                    questions.append(modules["SubQuestion"](
+                        text=text.strip(), section_key=sections[-1].key,
+                        order_index=len(questions) + question_index,
+                    ))
+
+        return stored_plan.model_copy(update={"sections": sections, "sub_questions": questions})
+
+    def _map_report(self, report: Any) -> ReportDocument:
+        """
+        Renders the engine's report with clickable citations and hydrates the evidence behind them.
+
+        `link_citations=True` is what turns `[Doc 7]` into `[Doc 7](onyx://doc/7)`; the file on disk keeps
+        plain tags, so what the user saves is not littered with an internal URL scheme.
+        """
+        modules = _import_engine()
+        markdown = modules["markdown_renderer"].render(report, link_citations=True)
+
+        evidence: List[Evidence] = []
+        try:
+            cited = set(report.cited_doc_numbers)
+            entries = [e for e in report.evidence if e.doc_number in cited]
+            chunks = {c.chunk_id: c for c in self._engine.get_chunks([e.chunk_id for e in entries])}
+            for entry in entries:
+                chunk = chunks.get(entry.chunk_id)
+                evidence.append(Evidence(
+                    doc_number=entry.doc_number,
+                    chunk_id=entry.chunk_id,
+                    source_id=entry.source_id,
+                    start_sec=entry.start_sec,
+                    end_sec=entry.end_sec,
+                    # A re-ingest can delete the chunk; the bank's stored digest still names the source.
+                    excerpt=(chunk.raw_text if chunk is not None else entry.digest) or "",
+                    speakers=tuple(entry.speaker_labels),
+                    clip_path=getattr(chunk, "physical_path", None) if chunk is not None else None,
+                    media_kind=self._media_kind(
+                        getattr(chunk, "physical_path", None) if chunk is not None else None,
+                        getattr(chunk, "extracted_file_id", None) if chunk is not None else None,
+                    ),
+                ))
+        except Exception as exc:
+            # A report whose citations cannot be hydrated is still worth reading.
+            logger.warning(f"Could not hydrate report evidence: {exc}")
+
+        return ReportDocument(
+            report_id=report.id,
+            topic=report.topic,
+            markdown=markdown,
+            status=ReportRunStatus(report.status.value),
+            mode=ReportMode(report.mode.value),
+            evidence=tuple(evidence),
+            markdown_path=report.markdown_path,
+            section_count=len(report.written_sections),
+            uncovered_count=len(report.uncovered_sections),
+            rounds_used=report.rounds_used,
+            indexed_source_count=report.indexed_source_count,
+            swept_source_count=report.swept_source_count,
+        )
 
     def hydrate_evidence(self, chunk_ids: List[uuid.UUID]) -> List[Evidence]:
         engine = self._require_engine()
@@ -194,7 +353,7 @@ class OnyxEngineGateway(IEngineGateway):
             created_at=datetime.now(timezone.utc),
         )
 
-    def _map_deep_research(self, result: Any) -> ChatMessage:
+    def _map_reasoned(self, result: Any) -> ChatMessage:
         reasoning = tuple(
             ReasoningStep(
                 iteration=step.iteration,

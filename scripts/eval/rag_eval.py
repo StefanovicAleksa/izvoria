@@ -5,14 +5,14 @@ Scores retrieval and cited answering against scripts/eval/rag_labels.json (quest
 Stages:
 - retrieval: real RetrievalAPI -> RerankAPI -> RetrievalScrubberAPI, no answer model. Reports hit@k/MRR after RRF and
   rerank, how often a relevant chunk survives the scrubber, and how much survives for unanswerable questions.
-- answer: the real engine (OnyxBootstrapper) end to end, `chat` or `deep` (Deep Research). Reports answer rate,
+- answer: the real engine (OnyxBootstrapper) end to end, `chat` or `reasoned`. Reports answer rate,
   refusal correctness, whether a citation points at a relevant chunk, and uncited answers.
 
 Relevant chunks are listed by chunk_id prefix, so the labels only fit the dev DB they were written against.
 
 Run from the repo root, in the foreground (GPU):
     venv/bin/python -m scripts.eval.rag_eval --stage retrieval
-    venv/bin/python -m scripts.eval.rag_eval --stage answer --mode chat|deep [--only a01,u02]
+    venv/bin/python -m scripts.eval.rag_eval --stage answer --mode chat|reasoned [--only a01,u02]
 """
 
 import argparse
@@ -75,7 +75,7 @@ def run_retrieval(labels: dict, only: Optional[set], top_n: int, cache: Optional
     answerable = _selected(labels["answerable"], only)
     unanswerable = _selected(labels["unanswerable"], only)
     # Follow-ups are scored twice: on the raw follow-up text, and (as "<id>r") on the standalone query the
-    # Deep Research pipeline rewrites it into before searching
+    # Reasoned Answer pipeline rewrites it into before searching
     followups = _selected(labels.get("followups", []), only)
     rewritten = []
     if followups:
@@ -177,14 +177,14 @@ def run_answer(labels: dict, only: Optional[set], mode: str, top_n: int) -> None
             try:
                 session_id = uuid.uuid4()
                 if "prior_question" in item:
-                    # The labelled prior answer has no stored evidence; recorded as a Deep Research turn, its tags
+                    # The labelled prior answer has no stored evidence; recorded as a Reasoned Answer turn, its tags
                     # are dropped rather than read as conversation-wide numbers
                     engine._session_memory_api.record_turn(session_id, item["prior_question"], item["prior_answer"],
-                                                           mode=SessionTurnMode.DEEP_RESEARCH)
+                                                           mode=SessionTurnMode.REASONING)
                 if mode == "chat":
                     response = engine.chat(query, session_id=session_id if "prior_question" in item else None)
                 else:
-                    result = engine.chat_deep_research(session_id, query)
+                    result = engine.chat_reasoned(session_id, query)
                     response, clarification = result.qa_response, result.clarification_question
                 if response is not None:
                     text = response.generated_answer
@@ -223,7 +223,7 @@ def run_answer(labels: dict, only: Optional[set], mode: str, top_n: int) -> None
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--stage", default="retrieval", choices=["retrieval", "answer"])
-    parser.add_argument("--mode", default="chat", choices=["chat", "deep"])
+    parser.add_argument("--mode", default="chat", choices=["chat", "reasoned"])
     parser.add_argument("--only", default="", help="Comma-separated label ids")
     parser.add_argument("--top-n", type=int, default=10)
     parser.add_argument("--cache", default="", help="Retrieval stage: JSON file storing candidates/rerank order; "

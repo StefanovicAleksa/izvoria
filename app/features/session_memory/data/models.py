@@ -42,9 +42,14 @@ class SessionTurnModel(Base):
 
 # There are no migrations: create_all() never adds columns to a table that already exists. OnyxEngine.start()
 # runs these after create_all() so a session_turns table from before multi-turn chat gains the new columns.
+# It also carries value backfills, for the same reason — there is nowhere else to put them.
 SESSION_TURNS_UPGRADE_DDL = (
     "ALTER TABLE session_turns ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'chat'",
     "ALTER TABLE session_turns ADD COLUMN IF NOT EXISTS standalone_query TEXT",
     "ALTER TABLE session_turns ADD COLUMN IF NOT EXISTS evidence_chunk_ids UUID[] NOT NULL DEFAULT '{}'::uuid[]",
     "ALTER TABLE session_turns ADD COLUMN IF NOT EXISTS first_doc_number INTEGER NOT NULL DEFAULT 1",
+    # The mode formerly called 'deep_research' is now SessionTurnMode.REASONING. SessionTurn parses `mode` into
+    # that enum, so a row left on the old value fails validation and takes the whole conversation down with it.
+    # Idempotent, and a no-op on every boot after the first.
+    "UPDATE session_turns SET mode = 'reasoning' WHERE mode = 'deep_research'",
 )

@@ -4,6 +4,233 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Exhaustive report mode, and the desktop Report view
+
+Two gaps in Deep Research Report mode, closed.
+
+### 1. "Not covered" used to mean "one sweep missed it"
+
+Gathering ran exactly once: decompose the topic, search, write. But **you don't know what you're
+missing until you've read what you found** — the outline pass assigns evidence and may discover a
+section has nothing, by which point searching is over. That section was reported as "Not covered by
+the available material", which conflated *the corpus doesn't have this* with *the sub-question was
+worded badly*. The dev report cites "Draghi", "the scene of the crime", "wedge", "final flush of
+volume"; a query written before any of that vocabulary was visible could easily miss material a
+re-worded one finds.
+
+**Exhaustive mode** (`OnyxEngine.execute_iterative_research_report`) is a new mode beside the
+existing one, selected like Reasoned Answer is selected beside Chat. It re-gathers while sections
+come back unsupported, up to `REPORT_MAX_GATHER_ROUNDS` (3).
+
+**Code decides *when*, the model decides *what*.** The trigger is objective — a section got no
+evidence, or a round added no new chunks. The model is only asked the thing it is actually good at
+and that code cannot do: re-word a failed query using vocabulary now visible in the evidence bank.
+It already has the bank index in context during the outline pass, so the follow-ups cost nothing
+extra. Asking a model "is this report complete?" was considered and rejected: LLMs asked to
+self-assess completeness either always stop or never stop, and it would cost a 9B call per round to
+get an unreliable answer.
+
+Measured on the dev corpus with a deliberately unsupportable section added to the outline: round 1
+gathered 25 chunks and left it unsupported, round 2 re-searched and found **0 new chunks**, the loop
+exited early, and the section was reported as not covered. 130 s against 70 s for deep mode.
+"Not covered" now means *searched twice and genuinely absent*.
+
+### 2. The model-swap budget survives the loop
+
+The report model is acquired **once per round**, and the final round's residency also writes — so a
+one-round exhaustive run costs exactly what a deep run costs, and each extra round costs one
+embedder load, one reranker load and one report-model load.
+
+`ReportAuthoringPhase.execute_report` gained `stop_on_gaps: bool`. Deliberately a flag, not a
+callback: a callback invoked while the phase holds the model, whose entire purpose is to decide "go
+gather more", would hand the next reader the exact footgun this design exists to avoid —
+`acquire_model(wait_for_clear=True)` parks with no time limit, so re-gathering from inside the
+residency wedges the process.
+
+**The executive summary now rides the writing residency** instead of reloading the 5.7 GB model for
+one short call. That removes a wasted heavy load from *both* modes; the integration test's assertion
+tightened from `<= 2` to `== 1`.
+
+### 3. A latent hang this loop would have triggered
+
+`preload_model()` assigned `_preload_future` with no guard. Straight-line pipelines resolve every
+preload exactly once, so this never fired — but **in a loop any early return orphans the future**:
+the next round overwrites it, the background worker still loads that model, `discard_preload` can
+never be called on it, nothing releases it, and the next `wait_for_clear` acquisition parks forever
+with no exception and no exit but a restart. `discard_preload` cannot rescue it either —
+`future.cancel()` fails once the task is running, and its done-callback only fires after the load
+completes, which needs the VRAM it is waiting on.
+
+Fixed three ways: `preload_model()` is self-guarding in the four report-path phases, the loop body
+discards per iteration rather than only in the run's `finally`, and no preload is fired on a path
+that might not resolve it. An integration test runs the loop on a daemon thread and fails if it does
+not finish, so a regression fails loudly instead of hanging.
+
+Also fixed while the loop exposed them: evidence is deduped **across** rounds (a round-1 chunk
+re-found in round 2 would violate `UniqueConstraint(report_id, chunk_id)` and kill the run); the
+sweep's coverage count is carried forward with `max` (later rounds run no sweep, and passing their 0
+through made the renderer drop the coverage line entirely); and `OutlineValidationError` no longer
+marks a report FAILED — a user's outline being wrong is not a run crashing, and stranding the report
+over a fixable typo helped nobody.
+
+### 4. The desktop Report view
+
+`frontend/onyx_desktop/ui/views/report_view.py` — three states in a stack: compose (topic + mode),
+run (determinate progress + working Stop), read (the report). The right pane is the same
+`SourcePanel` chat and search use.
+
+- **Real click-to-verify, for the first time.** Worth being precise: the chat view's `[Doc N]` chips
+  only *look* clickable — `MessageBubble._body()` renders them as a coloured `<span>`, and you verify
+  a chat claim by clicking the evidence card underneath. A report is pages long and has no cards, so
+  the citation itself had to become the control. `QTextBrowser` + `setOpenLinks(False)` +
+  `anchorClicked` pairs with the `onyx://doc/N` scheme the renderer already emitted in link mode.
+- **A determinate progress bar**, because unlike ingestion a report states its step count up front.
+- **Cancel bypasses the bridge**, the one deliberate exception to "everything through the worker":
+  the worker is busy running the report being stopped, so a queued cancel would arrive exactly when
+  it is useless. Safe because the engine only sets a `threading.Event`.
+- **Save as Markdown** copies the file the engine already wrote, so what the user saves is
+  byte-identical to what the appliance produced and audited. The in-memory fallback strips
+  `onyx://doc/N`, which means nothing outside the app.
+- Progress ticks are now **routed** rather than broadcast — `MainWindow._on_progress` sent every tick
+  to the Ingest view, which would have driven the ingestion counters from report jobs.
+
+### 5. A shipped bug found on the way
+
+`QComboBox` stores userData as a QVariant, and a `str`-derived `Enum` comes back out as a **plain
+str**. Every gateway branch compares with `is`, so in the desktop app:
+
+- **Reasoned Answer ran single-pass chat**
+- **Verified search ran standard search**
+- **Audio ingest ran the video pipeline**
+
+Three of the four mode selectors silently did the wrong thing. Fixed at the boundary — each view now
+rebuilds the enum from `currentData()` — so downstream `is` comparisons stay honest.
+
+## Deep Research Report mode: topic in, multi-page cited report out
+
+> **Action required:** none. New tables are created by `Base.metadata.create_all()` on boot, and
+> `OnyxEngine.start()` backfills the renamed chat mode's stored values. Reports are written to
+> `onyx_data/<env>/reports/`.
+
+Both existing chat modes end in **one answer**. What a law firm or a hospital actually wants is the
+other shape of work: give the appliance a topic, have it sweep the whole local corpus, and come back
+with a structured, fully-cited report. That is what this adds, as a third mode alongside the other two.
+
+**The existing "Deep Research" chat mode is renamed to Reasoned Answer** (`OnyxEngine.chat_reasoned`,
+`LiveReasoningPipeline`, `SessionTurnMode.REASONING`, CLI option 7). Its behaviour is unchanged — it
+was always an iterative reasoning loop producing a chat answer, not deep research, and the name now
+belongs to the thing that earns it.
+
+### The architecture, and why it is this one
+
+Modelled on **WebWeaver** ([arXiv 2509.13312](https://arxiv.org/abs/2509.13312)): a planner interleaves
+evidence gathering with outline revision, writing citations into the outline that point into an evidence
+**memory bank**; a writer then composes the report **section by section**, pulling only that section's
+evidence into context and discarding it afterwards. Every survey of the field
+([2508.12752](https://arxiv.org/abs/2508.12752), [2506.12594](https://arxiv.org/pdf/2506.12594)) reports
+the same finding: outline-then-section synthesis beats brute-force long-context generation.
+
+It is also the only shape that fits the hardware. **No single context ever holds the corpus**, and peak
+context is max-over-sections rather than their sum. A 128K window makes this *possible*; it is pruning
+that makes it *affordable*.
+
+### The model-swap schedule is the design
+
+`app/orchestration/service/pipelines/deep_research_report_pipeline.py` is written as a swap timeline,
+because on a single 12 GB card that is what determines the wall clock:
+
+| Stage | Residency | Work |
+|---|---|---|
+| Scope | `RAG_EMBEDDING`, then `REPORT_AUTHORING` | one grounding search, then propose an outline |
+| Gather | `RAG_EMBEDDING` ×1 | **every** sub-question *and* the per-document sweep in one batched search |
+| Rank | `RAG_RERANKING` ×1 | every query's pool reranked under one residency |
+| Write | `REPORT_AUTHORING` ×1, **held** | outline optimisation + every section + the summary |
+
+Two mechanisms do the work. `RetrievalAPI.search_batch` acquires the embedder **once** for the whole
+fan-out — a 40-query sweep costs one 2.2 GB load instead of forty. And `ReportAuthoringPhase` is a
+single `execute_report()` rather than `execute_outline()` + `execute_sections()`, because each `execute`
+resolves a preload and unloads in its own `finally`: splitting it would mean two loads of the 5.7 GB
+GGUF instead of one. Preloads are fired one stage **early**, so each load overlaps the previous stage's
+compute rather than stalling after it.
+
+Measured end to end on the dev corpus: **a 4-section report in 78 s**, two heavy model loads for the
+whole run. A naive per-section arrangement of identical work costs ~40 loads, 16 of them heavy.
+
+`integration_tests/orchestration/test_deep_research_report_pipeline_integration.py` wraps the loader in
+a counting proxy and **asserts the load count**, because without that a later "simplification" would
+silently double the wall clock and nothing would fail.
+
+### Grounding is enforced in code, not asked for in prompts
+
+- The writer sees **only `raw_text`**, via the same `build_numbered_context_block` the chat path uses.
+  `text_payload` carries generated situating context; an answer grounded in it would still emerge
+  carrying a valid-looking citation.
+- `[Doc N]` numbers are assigned **once, report-wide**, in reading order — so a number means the same
+  thing in section 2, in the summary, in the references table, and in a run resumed three days later.
+- Each section's citations are normalised against **that section's** allowed numbers. Without that
+  restriction a section could cite a document it was never shown, because numbering is report-wide.
+- A section that cites nothing is re-prompted once, then recorded `SKIPPED_NO_EVIDENCE` and listed under
+  "Not covered by the available material" — **never uncited prose presented as a finding**.
+- The executive summary reads section prose, never evidence, and may cite only numbers the body used.
+  It is the one place a report synthesises across sections, and so the easiest place to invent a link.
+- The scoping pass sees real source names and real excerpts before proposing anything. In the first live
+  run this caught a human misreading: "ECB" in a filename was assumed to be the cricket board, and the
+  planner correctly identified European Central Bank trading content from the transcripts.
+
+### Coverage is stated, not implied
+
+`> Coverage: swept 50 of 214 indexed sources.` appears in every report. A report that looked at a
+quarter of the corpus and reads as though it covered all of it is dangerous in a product whose entire
+pitch is traceability. The scrubber setting is printed for the same reason.
+
+The per-document sweep exists so a relevant recording is not missed merely because no generated
+sub-question surfaced it. Its cost is gated by one index-served ANN probe
+(`IRetrievalRepository.pick_sweep_sources`) rather than a `GROUP BY` over `vector_chunks`, which no
+index can serve and which would degrade into a full scan as the corpus grows.
+
+### The retrieval scrubber is out of the gathering loop
+
+`REPORT_SCRUB_ENABLED = False` by default. It is one sequential Qwen2.5-7B call per chunk and, per the
+existing eval, drops the answering chunk for ~1 question in 9. For a report, recall dominates precision:
+an irrelevant chunk is simply never cited, but a dropped one *cannot* be. The cross-encoder's score
+floor does the cheap filtering instead. The setting is printed in the report so the choice is visible.
+
+### Persistence, resume and cancellation
+
+Every stage boundary commits, which is what makes a run recoverable rather than all-or-nothing.
+`resume_research_report` writes only the sections still pending and **loads no retrieval model at all** —
+the persisted bank is the run's memory. A crash in section six of eight costs two sections and one load.
+
+`research_report_evidence.chunk_id` is deliberately **not** a foreign key. Chunks cascade from `sources`,
+so re-ingesting a file deletes them, and a signed-off report has to survive that: denormalised source
+name, timespan, speakers and excerpt keep a citation renderable after its chunk is gone. An integration
+test deletes the chunk and asserts the citation still resolves.
+
+Cancellation is new to the codebase — `JobManager.cancel_job` existed but nothing polled it. A
+`CancellationToken` is checked at each job boundary, so a stop lands within one section (~90 s) rather
+than mid-generation, which llama.cpp does not offer. A cancelled report keeps and renders what it wrote.
+
+### What this touched
+
+- **New feature** `app/features/deep_research_report/` — entities, one adapter under one new
+  `ModelType.REPORT_AUTHORING`, Postgres repository, atomic Markdown file store, `ReportAuthoringAPI`.
+- **`app/features/rag_retrieval/`** (additive) — `search_batch`, `list_indexed_sources`,
+  `pick_sweep_sources`, batched `embed_prompts`.
+- **`app/core/jobs/`** — `CancellationToken`, `JobCancelled`, `PROGRESS_CANCELLED`, and
+  `JobRequest.progress_detail` so a listener can say "Writing section 4/8: Regulatory exposure" instead
+  of "research_section started".
+- **Orchestration** — `ResearchScopingPhase`, `ReportAuthoringPhase`, `RagRetrievalPhase.execute_sweep`,
+  `DeepResearchReportPipeline`.
+- **Engine** — `EngineState.RESEARCHING` (a report holds the GPU exclusively, like ingestion),
+  `propose_research_plan` / `execute_research_report` / `resume_research_report` /
+  `cancel_research_report` / `get_report` / `list_reports`, and CLI option 8 with an approval gate.
+
+**Known limits.** No desktop UI yet (CLI only) and no PDF/DOCX export — both are the next phase.
+Gathering runs exactly **one** round: `REPORT_MAX_GATHER_ROUNDS` and the pipeline's `max_gather_rounds`
+argument are plumbed through but the re-gather loop itself is **not implemented yet**, so a section the
+first sweep missed is reported as uncovered rather than searched for again. A report locks out chat and
+search for its duration, which is not solvable on one GPU.
+
 ## Desktop frontend: a native PySide6 app with click-to-verify citations
 
 > **Action required:** install the new GUI dependency with `venv/bin/pip install -r requirements.txt`

@@ -22,7 +22,7 @@ def strip_citation_tags(text: str) -> str:
 
 class SessionMemoryAPI:
     """
-    Conversation memory shared by chat() and chat_deep_research(): the session's recent turns, the evidence each
+    Conversation memory shared by chat() and chat_reasoned(): the session's recent turns, the evidence each
     turn showed first, and the conversation-wide [Doc N] numbering of that evidence.
     """
 
@@ -39,7 +39,7 @@ class SessionMemoryAPI:
     @staticmethod
     def format_prior_context(turns: List[SessionTurn]) -> Optional[str]:
         """
-        Earlier questions and answers as plain text for the query rewriter and the Deep Research reasoner. Tags are
+        Earlier questions and answers as plain text for the query rewriter and the Reasoner. Tags are
         stripped: those models number their evidence differently, so a [Doc N] here would point at something else.
         """
         if not turns:
@@ -64,10 +64,10 @@ class SessionMemoryAPI:
         first_doc_number: int = 1
     ) -> SessionTurn:
         """
-        Chat answers keep their tags, which already use the conversation-wide numbers. Deep Research answers number
+        Chat answers keep their tags, which already use the conversation-wide numbers. Reasoned Answer turns number
         their evidence on their own, so their tags are removed before they can be mistaken for conversation tags.
         """
-        if mode == SessionTurnMode.DEEP_RESEARCH:
+        if mode == SessionTurnMode.REASONING:
             answer_text = strip_citation_tags(answer_text)
         try:
             return self._repo.record_turn(

@@ -138,3 +138,181 @@ class TestRetrievalAPI:
         with pytest.raises(Exception) as exc_info:
             api.get_chunks([uuid.uuid4()])
         assert "by id" in str(exc_info.value)
+
+
+class TestSearchBatch:
+    """
+    `search_batch` is what the Deep Research Report mode's model-swap budget rests on: a whole fan-out
+    plus a per-document sweep under ONE embedder acquisition, instead of one 2.2 GB load per query.
+    """
+
+    @pytest.fixture
+    def mocks(self):
+        return {
+            "orchestrator": MagicMock(),
+            "embedding_adapter": MagicMock(),
+            "search_repo": MagicMock(),
+        }
+
+    @pytest.fixture
+    def api(self, mocks):
+        return RetrievalAPI(
+            orchestrator=mocks["orchestrator"],
+            embedding_adapter=mocks["embedding_adapter"],
+            search_repo=mocks["search_repo"],
+        )
+
+    @staticmethod
+    def _chunk(source_id=None) -> RetrievedChunk:
+        return RetrievedChunk(
+            chunk_id=uuid.uuid4(),
+            source_id=source_id or uuid.uuid4(),
+            text_payload="Match",
+            start_sec=0,
+            end_sec=10,
+            relevance_score=0.9,
+        )
+
+    def test_the_embedder_is_acquired_and_released_exactly_once_for_the_whole_batch(self, api, mocks):
+        queries = [SearchQuery(prompt=f"question {i}", limit=10) for i in range(8)]
+        mocks["embedding_adapter"].embed_prompts.return_value = [[0.1]] * 8
+        mocks["search_repo"].execute_hybrid_search.return_value = []
+
+        api.search_batch(queries)
+
+        assert mocks["orchestrator"].acquire_model.call_count == 1
+        assert mocks["orchestrator"].release_model.call_count == 1
+        assert mocks["embedding_adapter"].embed_prompts.call_count == 1
+        assert mocks["embedding_adapter"].embed_prompt.call_count == 0
+
+    def test_every_query_still_runs_its_own_search(self, api, mocks):
+        queries = [SearchQuery(prompt=f"question {i}", limit=10) for i in range(3)]
+        mocks["embedding_adapter"].embed_prompts.return_value = [[0.1], [0.2], [0.3]]
+        mocks["search_repo"].execute_hybrid_search.return_value = [self._chunk()]
+
+        result = api.search_batch(queries)
+
+        assert mocks["search_repo"].execute_hybrid_search.call_count == 3
+        assert [r.query for r in result.results] == ["question 0", "question 1", "question 2"]
+
+    def test_each_query_is_searched_with_its_own_vector(self, api, mocks):
+        queries = [SearchQuery(prompt="alpha", limit=10), SearchQuery(prompt="beta", limit=10)]
+        mocks["embedding_adapter"].embed_prompts.return_value = [[1.0], [2.0]]
+        mocks["search_repo"].execute_hybrid_search.return_value = []
+
+        api.search_batch(queries)
+
+        vectors = [c.kwargs["query_vector"] for c in mocks["search_repo"].execute_hybrid_search.call_args_list]
+        assert vectors == [[1.0], [2.0]]
+
+    def test_a_repeated_prompt_is_embedded_once(self, api, mocks):
+        queries = [SearchQuery(prompt="same", limit=10), SearchQuery(prompt="same", limit=10)]
+        mocks["embedding_adapter"].embed_prompts.return_value = [[0.5]]
+        mocks["search_repo"].execute_hybrid_search.return_value = []
+
+        api.search_batch(queries)
+
+        assert mocks["embedding_adapter"].embed_prompts.call_args.args[1] == ["same"]
+        assert mocks["search_repo"].execute_hybrid_search.call_count == 2
+
+    def test_the_sweep_reuses_the_topic_vector_rather_than_re_embedding_per_source(self, api, mocks):
+        """
+        The sweep issues one query per picked source, all with the same text. Embedding that text once
+        is the difference between one forward pass and fifty.
+        """
+        from app.features.rag_retrieval.domain.entities import CorpusSweep
+
+        sweep = CorpusSweep(prompt="the topic", per_source_limit=3, max_sources=50, ann_depth=2000)
+        mocks["embedding_adapter"].embed_prompts.return_value = [[0.7]]
+        mocks["search_repo"].pick_sweep_sources.return_value = [uuid.uuid4() for _ in range(4)]
+        mocks["search_repo"].execute_hybrid_search.return_value = [self._chunk()]
+
+        result = api.search_batch([], sweep=sweep)
+
+        assert mocks["embedding_adapter"].embed_prompts.call_args.args[1] == ["the topic"]
+        assert mocks["search_repo"].execute_hybrid_search.call_count == 4
+        assert result.swept_source_count == 4
+        assert len(result.sweep_results) == 4
+
+    def test_each_swept_source_gets_a_filtered_hybrid_search_not_a_raw_ann_slice(self, api, mocks):
+        """
+        The ANN probe only decides WHERE to look. Letting it also decide what to return would drop the
+        keyword half of retrieval on exactly the sources the fan-out already failed to surface.
+        """
+        from app.features.rag_retrieval.domain.entities import CorpusSweep
+
+        source_ids = [uuid.uuid4(), uuid.uuid4()]
+        mocks["embedding_adapter"].embed_prompts.return_value = [[0.7]]
+        mocks["search_repo"].pick_sweep_sources.return_value = source_ids
+        mocks["search_repo"].execute_hybrid_search.return_value = []
+
+        api.search_batch([], sweep=CorpusSweep(prompt="topic", per_source_limit=3))
+
+        filters = [c.kwargs["source_id_filter"] for c in mocks["search_repo"].execute_hybrid_search.call_args_list]
+        assert filters == source_ids
+        for call in mocks["search_repo"].execute_hybrid_search.call_args_list:
+            assert call.kwargs["query_text"] == "topic"
+            assert call.kwargs["limit"] == 3
+
+    def test_a_sweep_that_picks_no_sources_returns_cleanly(self, api, mocks):
+        from app.features.rag_retrieval.domain.entities import CorpusSweep
+
+        mocks["embedding_adapter"].embed_prompts.return_value = [[0.7]]
+        mocks["search_repo"].pick_sweep_sources.return_value = []
+
+        result = api.search_batch([], sweep=CorpusSweep(prompt="topic"))
+
+        assert result.sweep_results == []
+        assert result.swept_source_count == 0
+
+    def test_an_empty_batch_loads_no_model_at_all(self, api, mocks):
+        result = api.search_batch([])
+
+        assert result.results == []
+        mocks["orchestrator"].acquire_model.assert_not_called()
+
+    def test_the_embedder_is_released_even_when_embedding_raises(self, api, mocks):
+        mocks["embedding_adapter"].embed_prompts.side_effect = RuntimeError("CUDA fell over")
+
+        with pytest.raises(Exception):
+            api.search_batch([SearchQuery(prompt="q", limit=10)])
+
+        mocks["orchestrator"].release_model.assert_called_once()
+
+    def test_the_candidate_pool_is_widened_for_the_reranker(self, api, mocks):
+        mocks["embedding_adapter"].embed_prompts.return_value = [[0.1]]
+        mocks["search_repo"].execute_hybrid_search.return_value = []
+
+        api.search_batch([SearchQuery(prompt="q", limit=10)], candidates=40)
+
+        assert mocks["search_repo"].execute_hybrid_search.call_args.kwargs["limit"] == 40
+
+
+class TestListIndexedSources:
+    @pytest.fixture
+    def mocks(self):
+        return {
+            "orchestrator": MagicMock(),
+            "embedding_adapter": MagicMock(),
+            "search_repo": MagicMock(),
+        }
+
+    @pytest.fixture
+    def api(self, mocks):
+        return RetrievalAPI(
+            orchestrator=mocks["orchestrator"],
+            embedding_adapter=mocks["embedding_adapter"],
+            search_repo=mocks["search_repo"],
+        )
+
+    def test_reads_the_indexed_set_without_loading_a_model(self, api, mocks):
+        """
+        Distinct from storage's list_sources(), which reports what was *ingested*. Corpus-coverage
+        claims have to be based on what is actually retrievable.
+        """
+        mocks["search_repo"].list_indexed_sources.return_value = []
+
+        api.list_indexed_sources()
+
+        mocks["search_repo"].list_indexed_sources.assert_called_once_with(1)
+        mocks["orchestrator"].acquire_model.assert_not_called()

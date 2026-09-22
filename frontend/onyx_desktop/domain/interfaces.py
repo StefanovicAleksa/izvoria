@@ -9,9 +9,11 @@ from onyx_desktop.domain.entities import (
     ChatMessage,
     Evidence,
     IngestionSummary,
+    ReportDocument,
+    ReportPlanDraft,
     SearchOutcome,
 )
-from onyx_desktop.domain.enums import ChatMode, IngestMode, SearchMode
+from onyx_desktop.domain.enums import ChatMode, IngestMode, ReportMode, SearchMode
 
 
 class IEngineGateway(ABC):
@@ -49,7 +51,7 @@ class IEngineGateway(ABC):
     ) -> ChatMessage:
         """
         One conversation turn. Returns an assistant message that is either an answer with its
-        evidence, or -- for Deep Research -- a clarification question back at the user.
+        evidence, or -- for Reasoned Answer -- a clarification question back at the user.
         """
 
     @abstractmethod
@@ -62,6 +64,37 @@ class IEngineGateway(ABC):
         Runs a batch pipeline to completion. Very long and not interruptible; blocks live
         inference for its whole duration.
         """
+
+    @abstractmethod
+    def propose_report_plan(self, topic: str, mode: ReportMode) -> ReportPlanDraft:
+        """
+        Scopes a research report and returns the plan for the user to approve or edit.
+
+        Short (about a minute). The long run is a separate call on purpose: a misread topic is cheap to
+        fix here and expensive to fix after half an hour of GPU time.
+        """
+        pass
+
+    @abstractmethod
+    def run_report(self, plan: ReportPlanDraft, mode: ReportMode) -> ReportDocument:
+        """
+        Runs the approved plan. Takes the GPU exclusively for the whole run.
+
+        A cancelled run returns a PARTIAL report rather than raising -- the sections already written are
+        cited and valid, and the user asked to stop, which is not an error.
+        """
+        pass
+
+    @abstractmethod
+    def request_report_cancel(self, report_id: uuid.UUID) -> bool:
+        """
+        Asks a running report to stop, returning whether one was actually running.
+
+        Called DIRECTLY from the GUI thread, not through the worker: the worker is busy running the very
+        report this is trying to stop, so a queued call would sit behind it for the full run. Safe because
+        the engine only sets a threading.Event here -- no model, no database, no blocking.
+        """
+        pass
 
     @abstractmethod
     def hydrate_evidence(self, chunk_ids: List[uuid.UUID]) -> List[Evidence]:

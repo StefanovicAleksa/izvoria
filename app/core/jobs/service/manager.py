@@ -5,9 +5,9 @@ import traceback
 import uuid
 from typing import Any, Callable, List, Optional
 
-from app.core.jobs.domain.entities import Job, JobRequest
+from app.core.jobs.domain.entities import CancellationToken, Job, JobRequest
 from app.core.jobs.domain.interfaces import IJobRepository
-from app.core.jobs.exceptions.execution import JobExecutionFailed
+from app.core.jobs.exceptions.execution import JobCancelled, JobExecutionFailed
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +17,7 @@ _JSON_SCALARS = (str, int, float, bool, type(None))
 PROGRESS_STARTED = "started"
 PROGRESS_COMPLETED = "completed"
 PROGRESS_FAILED = "failed"
+PROGRESS_CANCELLED = "cancelled"
 
 
 class JobManager:
@@ -33,11 +34,28 @@ class JobManager:
         self._repo = repository
         self._progress_listener = progress_listener
 
-    def run_job(self, request: JobRequest, target_func: Callable, *args, **kwargs) -> Any:
+    def run_job(
+            self,
+            request: JobRequest,
+            target_func: Callable,
+            *args,
+            cancel_token: Optional[CancellationToken] = None,
+            **kwargs
+    ) -> Any:
         """
         Executes a feature function within the Job tracking context.
         Records success/failure and bubbles up any underlying exceptions.
+
+        `cancel_token` is checked once, BEFORE the job row is created and before `target_func` runs, so a
+        cancelled run never starts work it is about to throw away. It is not checked during the call: the
+        unit of work here is whatever the feature does, and interrupting mid-generation is not something
+        llama.cpp offers. Granularity is therefore one job -- which for a report is one section.
         """
+        if cancel_token is not None and cancel_token.is_cancelled:
+            logger.info(f"Skipping {request.job_type.value}: the run was cancelled.")
+            self._notify(request, PROGRESS_CANCELLED)
+            raise JobCancelled(f"{request.job_type.value} was not started: the run was cancelled.")
+
         # 1. Announce the job to the database
         job = self._repo.create_job(request)
 
@@ -82,7 +100,7 @@ class JobManager:
             return
         try:
             self._progress_listener(
-                request.job_type.value, state, request.source_id, detail
+                request.job_type.value, state, request.source_id, detail or request.progress_detail
             )
         except Exception as e:
             logger.debug(f"Progress listener raised and was ignored: {e}")

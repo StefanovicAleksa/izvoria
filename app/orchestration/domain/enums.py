@@ -32,7 +32,13 @@ class PipelinePhase(str, Enum):
     RAG_RERANKING = "rag_reranking"
     RETRIEVAL_SCRUBBING = "retrieval_scrubbing"
     QA_GENERATION = "qa_generation"
-    DEEP_RESEARCH_REASONING = "deep_research_reasoning"
+    REASONING_TURN = "reasoning_turn"
+
+    # Deep Research Report mode
+    RESEARCH_SCOPING = "research_scoping"
+    RESEARCH_SWEEP = "research_sweep"
+    REPORT_OUTLINE = "report_outline"
+    REPORT_SECTION = "report_section"
 
 class PhaseStatus(str, Enum):
     """The execution status of an entire batch phase."""

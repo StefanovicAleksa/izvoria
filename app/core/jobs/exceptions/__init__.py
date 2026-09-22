@@ -2,11 +2,12 @@
 
 from .base import JobError
 from .system import JobSystemError
-from .execution import JobDataError, JobExecutionFailed
+from .execution import JobCancelled, JobDataError, JobExecutionFailed
 
 __all__ = [
     "JobError",
     "JobSystemError",
     "JobDataError",
-    "JobExecutionFailed"
+    "JobExecutionFailed",
+    "JobCancelled"
 ]

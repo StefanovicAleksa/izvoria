@@ -30,7 +30,7 @@ from onyx_desktop.utils.formatting import duration, split_doc_tags
 
 
 class MessageBubble(QFrame):
-    """Renders a ChatMessage, its evidence cards and (for Deep Research) its reasoning trace."""
+    """Renders a ChatMessage, its evidence cards and (for Reasoned Answer) its reasoning trace."""
 
     openRequested = Signal(object)     # Evidence
     reviewRequested = Signal(object)   # Evidence

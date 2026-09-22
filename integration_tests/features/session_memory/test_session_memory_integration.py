@@ -28,7 +28,7 @@ class TestSessionMemoryIntegration:
 
         api.record_turn(session_id, "What happened at 9am?", "The defendant entered [Doc 1].",
                         standalone_query="What happened at 9am?", evidence_chunk_ids=first_ids)
-        api.record_turn(session_id, "And then?", "He left [Doc 2][Doc 3].", mode=SessionTurnMode.DEEP_RESEARCH,
+        api.record_turn(session_id, "And then?", "He left [Doc 2][Doc 3].", mode=SessionTurnMode.REASONING,
                         standalone_query="What did the defendant do after 9am?",
                         evidence_chunk_ids=second_ids, first_doc_number=3)
 
@@ -39,7 +39,7 @@ class TestSessionMemoryIntegration:
         assert history[0].answer_text == "The defendant entered [Doc 1]."
         assert history[0].evidence_chunk_ids == first_ids
         assert history[0].next_doc_number == 3
-        assert history[1].mode == SessionTurnMode.DEEP_RESEARCH
+        assert history[1].mode == SessionTurnMode.REASONING
         assert history[1].answer_text == "He left."
         assert history[1].standalone_query == "What did the defendant do after 9am?"
         assert history[1].evidence_chunk_ids == second_ids

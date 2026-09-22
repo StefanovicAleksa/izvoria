@@ -184,7 +184,7 @@ class QAGenerationJobResult(BaseModel):
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 
-# NEW: State tracker for one Deep Research Reasoner turn
+# NEW: State tracker for one Reasoner turn
 class ReasonerJobResult(BaseModel):
     search_id: uuid.UUID
     success: bool
@@ -192,11 +192,11 @@ class ReasonerJobResult(BaseModel):
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 
-# NEW: Deep Research pipeline result — the engine returns this directly as chat_deep_research()'s
+# NEW: Reasoned Answer pipeline result — the engine returns this directly as chat_reasoned()'s
 # response type (mirrors how OnyxEngine.chat() already returns QAResponse, a feature entity,
 # unchanged; this lives in orchestration rather than app/engine/domain/entities.py so the
 # pipeline that builds it doesn't have to depend upward on the engine layer).
-class DeepResearchIterationTrace(BaseModel):
+class ReasoningIterationTrace(BaseModel):
     iteration: int
     decision: str
     interim_analysis: str
@@ -204,10 +204,10 @@ class DeepResearchIterationTrace(BaseModel):
     chunks_added: int = 0
     model_config = ConfigDict(frozen=True)
 
-class DeepResearchResponse(BaseModel):
+class ReasonedChatResponse(BaseModel):
     qa_response: Optional[QAResponse] = None
     clarification_question: Optional[str] = None
-    iteration_trace: List[DeepResearchIterationTrace] = Field(default_factory=list)
+    iteration_trace: List[ReasoningIterationTrace] = Field(default_factory=list)
     critique_unresolved: bool = False
     total_iterations: int = 0
     # The first search query (a follow-up rewritten to stand alone) and every chunk the evidence pool held,
@@ -231,4 +231,50 @@ class PhaseBatchResult(BaseModel):
     failed_count: int = 0
     items: List[Any] = Field(default_factory=list)
     errors: List[str] = Field(default_factory=list)
+    model_config = ConfigDict(frozen=True)
+
+
+# ==========================================
+# Deep Research Report mode
+# ==========================================
+
+class ResearchScopingJobResult(BaseModel):
+    report_id: Optional[uuid.UUID] = None
+    success: bool = False
+    section_count: int = 0
+    sub_question_count: int = 0
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
+
+class EvidenceSweepJobResult(BaseModel):
+    """One search of the gathering stage -- a sub-question, or the per-document sweep as a whole."""
+    report_id: uuid.UUID
+    success: bool
+    query: str
+    chunks_found: int = 0
+    is_sweep: bool = False
+    swept_source_count: int = 0
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
+
+class ReportOutlineJobResult(BaseModel):
+    report_id: uuid.UUID
+    success: bool
+    # How many of the approved sections the gathered evidence could actually support. The gap between
+    # this and section_count is the report's honest coverage, and is surfaced rather than smoothed over.
+    covered_section_count: int = 0
+    section_count: int = 0
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
+
+class ReportSectionJobResult(BaseModel):
+    report_id: uuid.UUID
+    section_key: str
+    success: bool
+    status: Optional[str] = None
+    cited_count: int = 0
+    error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)

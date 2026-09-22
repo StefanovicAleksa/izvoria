@@ -23,7 +23,7 @@ frontend/onyx_desktop/data/engine_gateway.py   ← the only module importing app
         └── OnyxBootstrapper.build(progress_listener=…) → IOnyxEngine
                  start / stop / get_state
                  search_standard / search_verified
-                 chat / chat_deep_research
+                 chat / chat_reasoned / research reports
                  ingest_videos / ingest_audios
                  get_chunks / list_sources        ← added for this app
 ```
@@ -66,7 +66,7 @@ These are properties of the engine, not choices of the UI:
 | A citation's path is the extracted clip **or** the whole source file | the panel says which, and shows the timestamp to skip to in the second case |
 | `QACitation` has no text | excerpts come from a separate `get_chunks` read |
 | `generated_answer` is the raw model text while `citations` was parsed from a normalized copy | the gateway re-runs `normalize_citation_tags` so `[Doc N]` links are reliable |
-| Deep Research returns an answer **or** a clarification question | clarification is a first-class turn type, and re-asking appends `[Clarification N]` to the original question because the reasoner cannot resume mid-loop |
+| Reasoned Answer returns an answer **or** a clarification question | clarification is a first-class turn type, and re-asking appends `[Clarification N]` to the original question because the reasoner cannot resume mid-loop |
 | Ingestion and live inference are mutually exclusive | live views are disabled for the whole ingestion |
 | The VRAM pool holds one model at a time | every engine call is serialized onto one worker thread |
 | Nothing is cancellable | no Cancel button; closing mid-ingestion warns before quitting |

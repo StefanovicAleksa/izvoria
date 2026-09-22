@@ -23,7 +23,7 @@ before anything is drawn.
 
 `--stub` is the loop to develop in. A real chat turn costs tens of seconds and a boot costs
 seconds more; the stub answers straight away and deliberately cycles through every branch the UI
-has to render — a grounded answer, an answer with *no* evidence, a Deep Research clarification
+has to render — a grounded answer, an answer with *no* evidence, a Reasoned Answer clarification
 request, an unresolved clip path, and a failure (ask it anything containing "fail").
 
 ## Layout
@@ -43,6 +43,23 @@ onyx_desktop/
 The dependency rule that makes the stub possible: **`ui/` and `service/` never import `app.*`.**
 Only `data/engine_gateway.py` does, and it maps engine entities into the frozen dataclasses in
 `domain/entities.py`. That is also why the whole UI is testable without a GPU.
+
+## Views
+
+Chat, Search, Ingest, **Report**. The Report view is the odd one out, deliberately:
+
+- It is the only view whose work takes tens of minutes and holds the GPU, so it has a **determinate**
+  progress bar (a plan states its step count up front, unlike ingestion) and a **Stop** button.
+- It is the only place `[Doc N]` citations are actually clickable. The chat view renders them as
+  coloured `<span>`s; you verify a chat claim through the evidence card beneath it. A report is pages
+  long and has no cards, so the citation itself is the control — `QTextBrowser` + `setOpenLinks(False)`
+  + `anchorClicked`, against the `onyx://doc/N` links the engine's renderer emits in link mode.
+- Its **cancel bypasses `EngineBridge`'s worker queue**. That is the single exception to "every engine
+  call goes through the worker", and it exists because the worker is busy running the very report being
+  cancelled — a queued call would arrive exactly when it is useless. Safe only because the engine just
+  sets a `threading.Event`.
+- Adding a fifth view means editing **two aligned tuples** in `main_window.py`: the nav button id *is*
+  the `QStackedWidget` index.
 
 ## Threading
 

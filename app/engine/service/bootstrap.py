@@ -106,6 +106,10 @@ from app.features.qa_reasoning.service.reasoning_api import ReasoningAPI
 
 from app.features.session_memory.data.repositories import SessionMemoryRepository
 from app.features.session_memory.service.session_memory_api import SessionMemoryAPI
+from app.features.deep_research_report.data.report_llm_adapter import LlamaCppReportAdapter
+from app.features.deep_research_report.data.postgres_report_repo import PostgresReportRepository
+from app.features.deep_research_report.data.report_file_store import ReportFileStore
+from app.features.deep_research_report.service.report_api import ReportAuthoringAPI
 
 from app.orchestration.service.phases.scan_phase import ScanPhase
 from app.orchestration.service.phases.ingest_phase import IngestPhase
@@ -131,13 +135,16 @@ from app.orchestration.service.phases.rag_reranking_phase import RagRerankingPha
 from app.orchestration.service.phases.retrieval_scrubber_phase import RetrievalScrubberPhase
 from app.orchestration.service.phases.qa_generation_phase import QAGenerationPhase
 from app.orchestration.service.phases.reasoner_phase import ReasonerPhase
+from app.orchestration.service.phases.research_scoping_phase import ResearchScopingPhase
+from app.orchestration.service.phases.report_authoring_phase import ReportAuthoringPhase
 
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.service.pipelines.batch_audio_pipeline import BatchAudioPipeline
 from app.orchestration.service.pipelines.live_retrieval_pipeline import LiveRetrievalPipeline
 from app.orchestration.service.pipelines.live_verified_retrieval_pipeline import LiveVerifiedRetrievalPipeline
 from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
-from app.orchestration.service.pipelines.live_deep_research_pipeline import LiveDeepResearchPipeline
+from app.orchestration.service.pipelines.live_reasoning_pipeline import LiveReasoningPipeline
+from app.orchestration.service.pipelines.deep_research_report_pipeline import DeepResearchReportPipeline
 
 from app.engine.domain.interfaces import IOnyxEngine
 from app.engine.service.onyx_engine import OnyxEngine
@@ -292,12 +299,27 @@ class OnyxBootstrapper:
         qa_adapter = LlamaCppGenerationAdapter()
         qa_api = QAGenerationAPI(adapter=qa_adapter, orchestrator=orchestrator)
 
-        # --- Feature: Deep Research (Reasoner + Session Memory) ---
+        # --- Feature: Reasoned Answer (Reasoner + Session Memory) ---
         reasoner_adapter = QwenReasonerAdapter()
         reasoning_api = ReasoningAPI(adapter=reasoner_adapter, orchestrator=orchestrator)
 
         session_memory_repo = SessionMemoryRepository(db_manager)
         session_memory_api = SessionMemoryAPI(session_memory_repo)
+
+        # --- Feature: Deep Research Report ---
+        # ONE adapter instance, handed to the API and to BOTH report phases as their IModelLoader.
+        # That is what lets outline optimisation and every section write share a single residency of the
+        # ~5.7 GB GGUF instead of reloading it between the planner and the writer roles. Constructing a
+        # second adapter here would silently multiply a run's model-loading time.
+        report_adapter = LlamaCppReportAdapter()
+        report_repo = PostgresReportRepository(db_manager)
+        report_file_store = ReportFileStore()
+        report_api = ReportAuthoringAPI(
+            adapter=report_adapter,
+            orchestrator=orchestrator,
+            repository=report_repo,
+            file_store=report_file_store,
+        )
 
         # --- Orchestration: Common Batch Phases ---
         scan_phase = ScanPhase(job_manager, scanner)
@@ -353,6 +375,9 @@ class OnyxBootstrapper:
         retrieval_scrubber_phase = RetrievalScrubberPhase(job_manager, scrubber_api, async_service, scrubber_adapter)
         qa_generation_phase = QAGenerationPhase(job_manager, qa_api, async_service, qa_adapter)
         reasoner_phase = ReasonerPhase(job_manager, reasoning_api, async_service, reasoner_adapter)
+        # Both report phases take the SAME adapter instance -- see the Deep Research Report feature block.
+        research_scoping_phase = ResearchScopingPhase(job_manager, report_api, async_service, report_adapter)
+        report_authoring_phase = ReportAuthoringPhase(job_manager, report_api, async_service, report_adapter)
 
         # --- Orchestration: Pipelines ---
         media_pipeline = BatchMediaPipeline(
@@ -387,14 +412,24 @@ class OnyxBootstrapper:
                                           qa_generation_phase=qa_generation_phase,
                                           reasoner_phase=reasoner_phase)
 
-        live_deep_research_pipeline = LiveDeepResearchPipeline(
+        live_reasoning_pipeline = LiveReasoningPipeline(
             reasoner_phase=reasoner_phase,
             retrieval_phase=rag_retrieval_phase,
             reranking_phase=rag_reranking_phase,
             scrubber_phase=retrieval_scrubber_phase,
             qa_generation_phase=qa_generation_phase,
-            max_iterations=settings.DEEP_RESEARCH_MAX_ITERATIONS,
-            max_critique_retries=settings.DEEP_RESEARCH_MAX_CRITIQUE_RETRIES,
+            max_iterations=settings.REASONING_MAX_ITERATIONS,
+            max_critique_retries=settings.REASONING_MAX_CRITIQUE_RETRIES,
+        )
+
+        research_report_pipeline = DeepResearchReportPipeline(
+            retrieval_phase=rag_retrieval_phase,
+            reranking_phase=rag_reranking_phase,
+            scrubber_phase=retrieval_scrubber_phase,
+            scoping_phase=research_scoping_phase,
+            authoring_phase=report_authoring_phase,
+            report_api=report_api,
+            max_gather_rounds=settings.REPORT_MAX_GATHER_ROUNDS,
         )
 
         # --- Final Engine Assembly ---
@@ -406,9 +441,11 @@ class OnyxBootstrapper:
             live_verified_pipeline=live_verified_pipeline,
             live_qa_pipeline=live_qa_pipeline,
             storage_api=storage_api,
-            live_deep_research_pipeline=live_deep_research_pipeline,
+            live_reasoning_pipeline=live_reasoning_pipeline,
             session_memory_api=session_memory_api,
-            retrieval_api=retrieval_api
+            retrieval_api=retrieval_api,
+            research_report_pipeline=research_report_pipeline,
+            report_api=report_api
         )
 
         logger.info("Onyx Bootstrapper successfully constructed the Engine container.")

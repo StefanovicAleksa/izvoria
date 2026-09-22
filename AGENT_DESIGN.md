@@ -1,6 +1,12 @@
 # Design: multi-pass "deep research" inference layer for chat (revision 2)
 
-Status: design only — nothing in this document has been implemented yet.
+> **Status (2026-09-21):** this document describes the mode now called **Reasoned Answer**
+> (`OnyxEngine.chat_reasoned`, `LiveReasoningPipeline`, `SessionTurnMode.REASONING`). It was
+> originally shipped as "Deep Research"; the name moved to the separate multi-page report mode
+> (`app/features/deep_research_report/`), which is a different pipeline entirely. Names below are
+> pre-rename — the design they describe is unchanged.
+
+Status: implemented (commit `8052035`), then revised by `75f333c` and `7e9013c` — see `CHANGELOG.md` for what changed after this design was written.
 
 ## Context
 

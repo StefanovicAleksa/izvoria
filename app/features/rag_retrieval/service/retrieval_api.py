@@ -4,14 +4,16 @@
 import time
 import uuid
 import logging
-from typing import List
+from typing import Dict, List, Optional
 
 from app.core.config import settings
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.domain.entities import ModelManifest
 from app.core.model_manager.domain.enums import ModelType
 
-from app.features.rag_retrieval.domain.entities import SearchQuery, SearchResult, RetrievedChunk
+from app.features.rag_retrieval.domain.entities import (
+    BatchSearchResult, CorpusSweep, IndexedSource, RetrievedChunk, SearchQuery, SearchResult,
+)
 from app.features.rag_retrieval.domain.interfaces import IRetrievalRepository, IPromptEmbeddingAdapter
 from app.features.rag_retrieval.utils.error_mapper import map_retrieval_error
 
@@ -43,15 +45,10 @@ class RetrievalAPI:
         start_time = time.time()
 
         try:
-            # 1. Define the model requirements
-            manifest = ModelManifest(
-                model_type=ModelType.RAG_EMBEDDING,
-                model_path=settings.RAG_EMBEDDING_MODEL_PATH,
-                required_vram_mb=settings.RAG_EMBEDDING_VRAM_REQUIREMENT_MB
+            # 1-2. VRAM Orchestration: Load -> Embed -> Unload (Zero-Leakage Pattern)
+            loaded_model = self._orchestrator.acquire_model(
+                self._embedding_manifest(), self._embedding_adapter, wait_for_clear=True
             )
-
-            # 2. VRAM Orchestration: Load -> Embed -> Unload (Zero-Leakage Pattern)
-            loaded_model = self._orchestrator.acquire_model(manifest, self._embedding_adapter, wait_for_clear=True)
             try:
                 query_vector = self._embedding_adapter.embed_prompt(loaded_model, query.prompt)
             finally:
@@ -78,6 +75,133 @@ class RetrievalAPI:
 
         except Exception as e:
             raise map_retrieval_error(e, context=f"Processing search query: '{query.prompt}'") from e
+
+    def _embedding_manifest(self) -> ModelManifest:
+        return ModelManifest(
+            model_type=ModelType.RAG_EMBEDDING,
+            model_path=settings.RAG_EMBEDDING_MODEL_PATH,
+            required_vram_mb=settings.RAG_EMBEDDING_VRAM_REQUIREMENT_MB
+        )
+
+    def list_indexed_sources(self, min_chunks: int = 1) -> List[IndexedSource]:
+        """What is actually retrievable, as opposed to what was ingested. Needs no model."""
+        try:
+            return self._search_repo.list_indexed_sources(min_chunks)
+        except Exception as e:
+            raise map_retrieval_error(e, context="Listing indexed sources") from e
+
+    def search_batch(
+        self,
+        queries: List[SearchQuery],
+        sweep: Optional[CorpusSweep] = None,
+        candidates: Optional[int] = None,
+    ) -> BatchSearchResult:
+        """
+        Runs a whole fan-out -- and optionally a per-document sweep -- under ONE embedder acquisition.
+
+        This is the method the report mode's model-swap budget is built on. `search()` loads the embedder,
+        embeds one string, and unloads; doing that forty times costs forty loads of a 2.2 GB model, which on
+        a single-GPU box is minutes of pure loading. Here the model is acquired once, every distinct prompt
+        is embedded in one forward pass, and the SQL then runs with no model resident at all.
+
+        Distinct prompts are embedded once and their vectors reused, which matters because every one of the
+        sweep's per-source queries shares the topic's vector.
+        """
+        if not queries and sweep is None:
+            return BatchSearchResult()
+
+        start_time = time.time()
+        candidate_count = candidates or settings.RAG_RETRIEVAL_CANDIDATES
+
+        try:
+            prompts = [query.prompt for query in queries]
+            if sweep is not None:
+                prompts.append(sweep.prompt)
+
+            # Distinct, order-preserving: repeated prompts cost one forward pass, not one each.
+            unique_prompts = list(dict.fromkeys(prompts))
+
+            loaded_model = self._orchestrator.acquire_model(
+                self._embedding_manifest(), self._embedding_adapter, wait_for_clear=True
+            )
+            try:
+                vectors = self._embedding_adapter.embed_prompts(loaded_model, unique_prompts)
+            finally:
+                # Released before any SQL runs: the database work needs no VRAM, and the next stage's
+                # model should not have to wait on an embedder that is only holding the slot.
+                self._orchestrator.release_model(loaded_model, self._embedding_adapter, flush=True)
+
+            vector_by_prompt: Dict[str, List[float]] = dict(zip(unique_prompts, vectors))
+            logger.info(
+                f"Embedded {len(unique_prompts)} distinct prompt(s) for {len(queries)} quer(ies)"
+                f"{' plus a corpus sweep' if sweep is not None else ''} in one model acquisition."
+            )
+
+            results = [
+                SearchResult(
+                    query=query.prompt,
+                    results=self._search_repo.execute_hybrid_search(
+                        query_vector=vector_by_prompt[query.prompt],
+                        query_text=query.prompt,
+                        limit=max(query.limit, candidate_count),
+                        source_id_filter=query.source_id_filter,
+                    ),
+                    execution_time_ms=0,
+                )
+                for query in queries
+            ]
+
+            sweep_results: List[RetrievedChunk] = []
+            swept_source_count = 0
+            if sweep is not None:
+                sweep_results, swept_source_count = self._run_sweep(
+                    sweep, vector_by_prompt[sweep.prompt]
+                )
+
+            execution_time_ms = int((time.time() - start_time) * 1000)
+            logger.info(
+                f"Batch search returned {sum(len(r.results) for r in results)} fan-out chunk(s) and "
+                f"{len(sweep_results)} sweep chunk(s) from {swept_source_count} source(s) "
+                f"in {execution_time_ms}ms."
+            )
+
+            return BatchSearchResult(
+                results=results,
+                sweep_results=sweep_results,
+                swept_source_count=swept_source_count,
+                execution_time_ms=execution_time_ms,
+            )
+
+        except Exception as e:
+            raise map_retrieval_error(e, context=f"Executing a batch of {len(queries)} search(es)") from e
+
+    def _run_sweep(self, sweep: CorpusSweep, query_vector: List[float]) -> tuple:
+        """
+        The per-document sweep: pick the best-matching sources, then search inside each one.
+
+        Each picked source gets a full hybrid (dense + sparse) search via the existing search SQL, rather
+        than being served straight from the ANN probe that picked it. The probe only decides *where* to
+        look; letting it also decide *what* to return would throw away the keyword half of the retrieval
+        on exactly the sources the fan-out already failed to surface.
+        """
+        source_ids = self._search_repo.pick_sweep_sources(
+            query_vector=query_vector,
+            ann_depth=sweep.ann_depth,
+            max_sources=sweep.max_sources,
+        )
+        if not source_ids:
+            return [], 0
+
+        chunks: List[RetrievedChunk] = []
+        for source_id in source_ids:
+            chunks.extend(self._search_repo.execute_hybrid_search(
+                query_vector=query_vector,
+                query_text=sweep.prompt,
+                limit=sweep.per_source_limit,
+                source_id_filter=source_id,
+            ))
+
+        return chunks, len(source_ids)
 
     def get_chunks(self, chunk_ids: List[uuid.UUID]) -> List[RetrievedChunk]:
         """Chunks by id, in the given order; deleted ones are skipped. Needs no model."""
