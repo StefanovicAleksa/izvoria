@@ -20,4 +20,11 @@ class IngestionReport(BaseModel):
     vectors_created: int = 0
     clips_extracted: int = 0
 
+    # Document ingestion: pages converted, pages read by OCR, OCR pages that lost lines (indexed with text
+    # missing), and scanned pages with no text at all (not indexed). The last two are listed in `errors` too.
+    pages_converted: int = 0
+    pages_ocr: int = 0
+    pages_ocr_incomplete: int = 0
+    pages_unreadable: int = 0
+
     model_config = ConfigDict(frozen=True)

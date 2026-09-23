@@ -41,8 +41,14 @@ class PostgresRagRepository(IRagRepository):
                     VectorChunkModel(
                         source_id=source_id,
                         chunk_id=chunk.chunk_id,
+                        anchor_kind=chunk.anchor_kind.value,
                         start_sec=chunk.start_sec,
                         end_sec=chunk.end_sec,
+                        page_start=chunk.page_start,
+                        page_end=chunk.page_end,
+                        section_path=chunk.section_path,
+                        # Chunks arrive in reading order (a transcript's timeline, a document's pages)
+                        position=position,
                         text_payload=chunk.text_payload,
                         # Chunks built outside context unification may carry no separate raw text;
                         # their payload is then the only text available.
@@ -51,7 +57,7 @@ class PostgresRagRepository(IRagRepository):
                         speaker_labels=list(chunk.speaker_labels),
                         embedding=embedding
                     )
-                    for chunk, embedding in zip(chunks, embeddings)
+                    for position, (chunk, embedding) in enumerate(zip(chunks, embeddings))
                 ]
 
                 # bulk_save_objects safely ignores the Computed fts_document column

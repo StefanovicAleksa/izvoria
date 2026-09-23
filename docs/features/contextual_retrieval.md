@@ -16,6 +16,8 @@ Document sizing: if the whole labelled transcript fits `CONTEXTUAL_RETRIEVAL_N_C
 
 For each raw chunk it calls `ISLMContextAdapter.generate_context(model, full_document_text, chunk_text)`. The concrete `SLMContextAdapter` runs Llama 3.2 1B/3B or Qwen 2.5 via `llama_cpp` with a large `n_ctx` (`CONTEXTUAL_RETRIEVAL_N_CTX`, default 32768) and `flash_attn=True` "to prevent OOM on 32k contexts", `temperature=0.0`, `max_tokens=150`, plus defensive stripping of "Here is the context:" preambles the model sometimes adds. The model is lazy-imported inside a static method specifically to avoid a C-extension collision with PyTorch during application startup.
 
+**Documents.** `execute_document(StructuredDocument)` does the same for a document's section-aligned chunks (from `document_structuring`): the whole document (or its section, when it overflows) is the SLM's context, each chunk is shown under its heading path in brackets, and `DOCUMENT_CONTEXTUAL_SYSTEM_PROMPT` replaces the speaker-turn prompt (`generate_context(..., system_prompt=...)`). The chunk text is stored verbatim with its page/section anchor (`ContextualizedChunk.anchor_kind`, `page_start/end`, `section_path`).
+
 ## Inputs / Outputs
 
 Input: `DomainPhoneticCorrectedTranscript`. Output: `ContextualizedTranscript` (`chunks: List[ContextualizedChunk]`). `ContextualizedChunk.combined_text` (`context_string + "\n\n" + original_text`) is what actually gets embedded and full-text-indexed downstream.

@@ -7,6 +7,7 @@ import uuid
 from typing import List, Optional
 from sqlalchemy import text
 
+from app.core.anchors.domain.enums import AnchorKind
 from app.core.config import settings
 from app.core.database.service.manager import db_manager
 from app.features.rag_retrieval.domain.interfaces import IRetrievalRepository
@@ -62,6 +63,11 @@ _HYBRID_SEARCH_SQL = text("""
            v.speaker_labels,
            v.start_sec,
            v.end_sec,
+           v.anchor_kind,
+           v.page_start,
+           v.page_end,
+           v.section_path,
+           v.position,
            f.rrf_score,
            vc.extracted_file_id
     FROM fused f
@@ -72,26 +78,32 @@ _HYBRID_SEARCH_SQL = text("""
 """)
 
 
-# For each anchor chunk, the chunk that starts just before it and the one that starts just after it in the same
-# source: the transcript on either side of a hit, for answers that cross a chunk boundary.
+# For each anchor chunk, the chunk just before it and the one just after it in the same source's reading order:
+# the text on either side of a hit, for answers that cross a chunk boundary. Ordered by `position`, which is the
+# timeline for a transcript and page order for a document (whose start_sec is always 0.0), then by start_sec: a
+# row written before `position` existed (and not yet backfilled) has none, and its source is then ordered by time
+# exactly as before.
 _NEIGHBORS_SQL = text("""
     WITH anchors AS (
-        SELECT chunk_id, source_id, start_sec
+        SELECT chunk_id, source_id, COALESCE(position, -1) AS position, start_sec
         FROM vector_chunks
         WHERE chunk_id = ANY(CAST(:chunk_ids AS uuid[]))
     )
     SELECT DISTINCT ON (n.chunk_id)
            n.chunk_id, n.source_id, n.text_payload, n.raw_text, n.speaker_labels, n.start_sec, n.end_sec,
+           n.anchor_kind, n.page_start, n.page_end, n.section_path, n.position,
            vc.extracted_file_id
     FROM anchors a
     CROSS JOIN LATERAL (
         (SELECT v.* FROM vector_chunks v
-         WHERE v.source_id = a.source_id AND v.start_sec < a.start_sec
-         ORDER BY v.start_sec DESC LIMIT 1)
+         WHERE v.source_id = a.source_id
+           AND (COALESCE(v.position, -1), v.start_sec) < (a.position, a.start_sec)
+         ORDER BY COALESCE(v.position, -1) DESC, v.start_sec DESC LIMIT 1)
         UNION ALL
         (SELECT v.* FROM vector_chunks v
-         WHERE v.source_id = a.source_id AND v.start_sec > a.start_sec
-         ORDER BY v.start_sec ASC LIMIT 1)
+         WHERE v.source_id = a.source_id
+           AND (COALESCE(v.position, -1), v.start_sec) > (a.position, a.start_sec)
+         ORDER BY COALESCE(v.position, -1) ASC, v.start_sec ASC LIMIT 1)
     ) n
     LEFT JOIN video_clips vc ON vc.chunk_id = n.chunk_id
     ORDER BY n.chunk_id
@@ -100,6 +112,7 @@ _NEIGHBORS_SQL = text("""
 _CHUNKS_BY_ID_SQL = text("""
     SELECT DISTINCT ON (v.chunk_id)
            v.chunk_id, v.source_id, v.text_payload, v.raw_text, v.speaker_labels, v.start_sec, v.end_sec,
+           v.anchor_kind, v.page_start, v.page_end, v.section_path, v.position,
            vc.extracted_file_id
     FROM vector_chunks v
     LEFT JOIN video_clips vc ON vc.chunk_id = v.chunk_id
@@ -117,7 +130,9 @@ _INDEXED_SOURCES_SQL = text("""
            f.file_name,
            COUNT(*) AS chunk_count,
            MIN(v.start_sec) AS first_start_sec,
-           MAX(v.end_sec) AS last_end_sec
+           MAX(v.end_sec) AS last_end_sec,
+           MIN(v.anchor_kind) AS anchor_kind,
+           MAX(v.page_end) AS page_count
     FROM vector_chunks v
     JOIN sources s ON s.id = v.source_id
     LEFT JOIN files f ON f.id = s.file_id
@@ -160,6 +175,19 @@ _FTS_EXPRESSION_SQL = text("""
 _REGCONFIG = re.compile(r"'([a-z_]+)'::regconfig")
 
 
+def _anchor_fields(row) -> dict:
+    """Where a chunk row sits in its source: its time range, or its page range / section for a document."""
+    return {
+        "start_sec": float(row["start_sec"]),
+        "end_sec": float(row["end_sec"]),
+        "anchor_kind": AnchorKind(row["anchor_kind"]),
+        "page_start": row["page_start"],
+        "page_end": row["page_end"],
+        "section_path": row["section_path"],
+        "position": row["position"] or 0,
+    }
+
+
 class PostgresSearchRepository(IRetrievalRepository):
 
     def get_index_fts_config(self) -> Optional[str]:
@@ -187,6 +215,8 @@ class PostgresSearchRepository(IRetrievalRepository):
                         chunk_count=int(row["chunk_count"]),
                         first_start_sec=float(row["first_start_sec"] or 0.0),
                         last_end_sec=float(row["last_end_sec"] or 0.0),
+                        anchor_kind=AnchorKind(row["anchor_kind"] or AnchorKind.TIME.value),
+                        page_count=row["page_count"],
                     )
                     for row in rows
                 ]
@@ -231,8 +261,7 @@ class PostgresSearchRepository(IRetrievalRepository):
                         text_payload=row["text_payload"],
                         raw_text=row["raw_text"],
                         speaker_labels=list(row["speaker_labels"] or []),
-                        start_sec=float(row["start_sec"]),
-                        end_sec=float(row["end_sec"]),
+                        **_anchor_fields(row),
                         # Fetched by id for an earlier conversation turn, not ranked for this query
                         relevance_score=0.0,
                         extracted_file_id=row["extracted_file_id"]
@@ -262,8 +291,7 @@ class PostgresSearchRepository(IRetrievalRepository):
                         text_payload=row["text_payload"],
                         raw_text=row["raw_text"],
                         speaker_labels=list(row["speaker_labels"] or []),
-                        start_sec=float(row["start_sec"]),
-                        end_sec=float(row["end_sec"]),
+                        **_anchor_fields(row),
                         # Neighbours were not ranked; they are context for the chunk that was
                         relevance_score=0.0,
                         extracted_file_id=row["extracted_file_id"]
@@ -310,8 +338,7 @@ class PostgresSearchRepository(IRetrievalRepository):
                         text_payload=row["text_payload"],
                         raw_text=row["raw_text"],
                         speaker_labels=list(row["speaker_labels"] or []),
-                        start_sec=float(row["start_sec"]),
-                        end_sec=float(row["end_sec"]),
+                        **_anchor_fields(row),
                         relevance_score=float(row["rrf_score"]),
                         extracted_file_id=row["extracted_file_id"]
                     )

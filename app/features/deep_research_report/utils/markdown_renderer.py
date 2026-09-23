@@ -13,10 +13,11 @@ import re
 from datetime import datetime
 from typing import Dict, List, Optional
 
+from app.core.anchors.domain.enums import AnchorKind
 from app.core.language.service.language_api import get_language_pack
 from app.core.language.utils.script import cyrillic_to_latin, fold_to_ascii
 from app.features.deep_research_report.domain.entities import EvidenceEntry, Report
-from app.features.deep_research_report.utils.evidence_bank import format_timestamp
+from app.features.deep_research_report.utils.evidence_bank import entry_location
 
 # Emitted instead of a plain tag when the desktop renders the report, so a citation is clickable there
 # while the on-disk file stays plain text.
@@ -112,10 +113,12 @@ def _references(report: Report, entries: Dict[int, EvidenceEntry]) -> List[str]:
     if not cited:
         return [f"## {strings.references_heading}", "", strings.no_sources_cited, ""]
 
+    cites_documents = any(entries[number].anchor_kind is not AnchorKind.TIME for number in cited if number in entries)
+    header = strings.references_table_header_documents if cites_documents else strings.references_table_header
     rows = [
         f"## {strings.references_heading}",
         "",
-        *strings.references_table_header.splitlines(),
+        *header.splitlines(),
     ]
     for number in cited:
         entry = entries.get(number)
@@ -127,7 +130,7 @@ def _references(report: Report, entries: Dict[int, EvidenceEntry]) -> List[str]:
         speakers = ", ".join(entry.speaker_labels) if entry.speaker_labels else strings.no_speakers
         rows.append(
             f"| [Doc {number}] | {_escape_cell(entry.source_name)} | "
-            f"{format_timestamp(entry.start_sec)}–{format_timestamp(entry.end_sec)} | {_escape_cell(speakers)} |"
+            f"{_escape_cell(entry_location(entry))} | {_escape_cell(speakers)} |"
         )
 
     rows.append("")

@@ -7,7 +7,7 @@ from typing import Callable, Dict, List, Set
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.qa_generation.domain.entities import ConversationHistory, NumberedChunk
 from app.features.qa_generation.utils.citation_parser import number_for_reading
-from app.features.qa_generation.utils.context_packer import DOC_HEADER_TOKENS, chunk_source_text
+from app.features.qa_generation.utils.context_packer import chunk_source_text, header_tokens
 
 # Chat-template role markers around one message
 MESSAGE_OVERHEAD_TOKENS = 8
@@ -55,7 +55,7 @@ def pack_conversation(
     turn_template_tokens is the cost of an empty user message (the template around evidence and question).
     """
     def chunk_cost(chunk: RetrievedChunk) -> int:
-        return count_tokens(chunk_source_text(chunk)) + DOC_HEADER_TOKENS
+        return count_tokens(chunk_source_text(chunk)) + header_tokens(chunk)
 
     turns = history.turns
     owner: Dict[uuid.UUID, int] = {}

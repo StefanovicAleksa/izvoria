@@ -189,3 +189,50 @@ DOCUMENT NUMBERS THE REPORT CITES
 {allowed_doc_numbers}
 
 Write the executive summary."""
+
+
+# ==========================================
+# DOCUMENT VARIANTS
+# ==========================================
+# Used only when the corpus, the bank or a section's evidence holds a document excerpt. A report built from
+# recordings alone gets the prompts above unchanged, so it is written exactly as before documents existed.
+
+def _variant(prompt: str, *replacements) -> str:
+    for old, new in replacements:
+        assert old in prompt, old
+        prompt = prompt.replace(old, new)
+    return prompt
+
+
+SCOPE_DOCUMENTS_SYSTEM_PROMPT = _variant(
+    SCOPE_SYSTEM_PROMPT,
+    ("over a private, fixed archive of transcribed recordings.",
+     "over a private, fixed archive of transcribed recordings and documents."),
+    ("the recordings, their lengths,", "the recordings and documents, their lengths,"),
+)
+OUTLINE_DOCUMENTS_SYSTEM_PROMPT = _variant(
+    OUTLINE_SYSTEM_PROMPT,
+    ("its source, its timespan and its opening words.",
+     "its source, its location (a timespan, or a page and section) and its opening words."),
+)
+SECTION_DOCUMENTS_SYSTEM_PROMPT = _variant(
+    SECTION_SYSTEM_PROMPT,
+    ("The excerpts are verbatim transcript from recordings in a private archive. Each is labelled [Doc N] with "
+     "its timespan, and speaker labels appear inline.",
+     "The excerpts are verbatim text from a private archive: transcript from recordings, labelled [Doc N] with "
+     "their timespan and with speaker labels inline, or text from documents, labelled [Doc N] with their page "
+     "and section."),
+    ("Do not infer facts the transcripts do not state.", "Do not infer facts the excerpts do not state."),
+)
+
+
+def scope_system_prompt(has_documents: bool) -> str:
+    return SCOPE_DOCUMENTS_SYSTEM_PROMPT if has_documents else SCOPE_SYSTEM_PROMPT
+
+
+def outline_system_prompt(has_documents: bool) -> str:
+    return OUTLINE_DOCUMENTS_SYSTEM_PROMPT if has_documents else OUTLINE_SYSTEM_PROMPT
+
+
+def section_system_prompt(has_documents: bool) -> str:
+    return SECTION_DOCUMENTS_SYSTEM_PROMPT if has_documents else SECTION_SYSTEM_PROMPT

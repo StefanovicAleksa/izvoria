@@ -122,6 +122,8 @@ class ReportStrings(_Frozen):
     not_covered_item: str
     references_heading: str
     references_table_header: str
+    # The same header for a report citing a document, whose location column holds pages, not times
+    references_table_header_documents: str
     no_sources_cited: str
     unresolved_reference: str
     no_speakers: str
@@ -142,6 +144,27 @@ class ReportStrings(_Frozen):
         return singular if count == 1 else plural
 
 
+class DocumentRules(_Frozen):
+    """How documents in this language are located and split: citation labels, clause headings, and OCR."""
+    # "p. 7" / "pp. 7–8": the page label a document citation carries.
+    page_label: str
+    pages_label: str
+    # Joins the headings of a section path: "Article 7 Termination › 7.2".
+    section_separator: str = " › "
+    # A line matching one of these starts a new clause ("Article 7", "3. člen"), whatever its formatting.
+    clause_patterns: List[str] = Field(default_factory=list)
+    # RapidOCR recognition model for scanned pages ("latin"). None: this language has no trustworthy OCR model,
+    # so scanned pages are reported as unreadable instead of being indexed with text the model guessed.
+    ocr_rec_model: Optional[str] = None
+
+    @field_validator("clause_patterns")
+    @classmethod
+    def _patterns_compile(cls, patterns: List[str]) -> List[str]:
+        for pattern in patterns:
+            _compiles(pattern)
+        return patterns
+
+
 class LanguagePack(_Frozen):
     code: str = Field(pattern=r"^[a-z]{2,3}$")
     # English name, used inside English-language prompts ("Write ... in Serbian").
@@ -154,6 +177,7 @@ class LanguagePack(_Frozen):
     glossary: GlossaryRules
     answers: AnswerRules
     report: ReportStrings
+    documents: DocumentRules
     # Settings fields this language overrides (model paths, VRAM budgets, context sizes). Applied by
     # `app.core.config.Settings`, which is where they are read; kept here so a pack validates as a whole.
     models: Dict[str, object] = Field(default_factory=dict)

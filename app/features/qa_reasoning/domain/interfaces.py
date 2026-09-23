@@ -38,8 +38,12 @@ class IReasonerAdapter(IModelLoader, ABC):
         decision_history_block: str,
         prior_session_context: str,
         extra_context: str,
+        has_documents: bool = False,
     ) -> int:
-        """Tokens left for the evidence block once the rest of the reasoning prompt and the reply are counted."""
+        """
+        Tokens left for the evidence block once the rest of the reasoning prompt and the reply are counted.
+        `has_documents` selects the prompt that describes document excerpts too.
+        """
         pass
 
     @abstractmethod
@@ -57,6 +61,7 @@ class IReasonerAdapter(IModelLoader, ABC):
         prior_session_context: str,
         extra_context: str,
         evidence_tags: Dict[str, uuid.UUID],
+        has_documents: bool = False,
     ) -> ReasonerDecision:
         """
         Runs one reasoning turn: chain-of-thought over the evidence pool so far, plus exactly

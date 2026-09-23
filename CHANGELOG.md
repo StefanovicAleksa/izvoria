@@ -4,6 +4,33 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Recordings-only appliances see no change
+
+Document support had changed wording that transcript answers pass through: the QA answer prompt, the reasoner's prompts, report scoping/outline/section prompts, the planner's corpus overview, the references header ("Timespan" → "Location") and the CLI's timestamp line. Each is now back to its original text, and the document wording is a separate variant chosen only when a document excerpt is actually in play — per context for answers and sections (the token budget is computed for the variant that is sent), per evidence bank for the outline, per corpus for scoping. The query-rewrite prompt, which runs before anything is retrieved, is simply the original. `git diff` of every prompt file and language pack shows only added lines.
+
+Also: the startup backfill of `vector_chunks.position` sorted the whole table on every boot; it now checks an index that is empty once the backfill is done.
+
+## Tables keep their rows
+
+Document ingestion shipped with tables flattened, and on a real invoice it was worse than lost layout: MarkItDown read a borderless line-item table **column by column** ("Parking place", "Cleaning service", "2", "4", "EUR 40.00", ...), so no amount stayed with its item. The contextual SLM, the index and the answer model all saw disconnected values; "how much was parking?" had no row to match.
+
+Pages with tables are now re-read by `PdfplumberLayoutExtractor` (pdfplumber, which MarkItDown's own PDF converter uses) and emitted as Markdown tables; pages without tables keep MarkItDown's text. Ruled tables come from pdfplumber's line finder; borderless ones from **shared column gutters** — vertical strips several consecutive lines all leave empty, clearly wider than their word gaps. Scans use the same code on RapidOCR word boxes. On the dev appliance, "how many parking places were billed, at what unit price, and what is the total due?" is now answered correctly from the invoice's rows, cited to its page.
+
+Along the way: the integration fixtures generated PDFs at ~3 pt (Qt at 300 dpi writes 72-dpi units), which hid two bugs — pdfplumber's fixed 3-point word tolerance merging neighbouring cells (now size-relative) — and made scans unreadable. Fixtures are now real size. A gap-width rule for cells was tried first and dropped: OCR word spacing jitters across any single threshold.
+
+## Document ingestion: PDF and DOCX, cited by page
+
+Onyx indexed only recordings. Law-firm clients mostly hold documents — contracts, filings, invoices, letters — as a mix of born-digital and scanned PDFs. `OnyxEngine.ingest_documents()` (CLI option 9, the desktop's "Documents (PDF / DOCX)" mode) runs the new `BatchDocumentPipeline`: scan → ingest → `document_conversion` → `document_structuring` + contextual SLM → unification → indexing.
+
+**Cited by page, not by time.** Chunks now carry an anchor (`app/core/anchors`): a time range, a page range or a section path. `vector_chunks` gained `anchor_kind`, `page_start/end`, `section_path` and `position`; neighbours and reading order use `position`, since a document chunk's `start_sec` is 0.0. An existing database is upgraded at start-up (`VECTOR_CHUNKS_UPGRADE_DDL`, positions backfilled in time order), with no re-ingest. Transcript behaviour is unchanged: the whole unit suite passed before any new test was added, and transcript headers still cost the same context budget.
+
+**Choices, and what the checks turned up.**
+- **Converter.** Microsoft MarkItDown (MIT), after comparing Docling and Marker (Marker's weights licence restricts commercial use and competing products). MarkItDown drops empty pages and joins the rest, so PDFs are split with pypdfium2 and converted page by page. It reaches the network only via URL strings and its audio converter; the adapter uses bytes only and installs `[pdf,docx]` only.
+- **OCR.** RapidOCR PP-OCRv5 on the CPU, for English and Slovenian (`latin` model). A spike on synthetic scans found no model reading Serbian: the Cyrillic one lacks č ć đ š ž, the Latin one lacks Cyrillic, confidence could not choose between them (the Cyrillic model dropped "ž" from "može" at 0.95), and RapidOCR **silently dropped** two of six lines of a mixed-script letter. The adapter counts detected lines against read ones and reports incomplete pages; Serbian scanned pages are reported as unreadable.
+- **Three conversion bugs caught on real files before any test existed:** ligatures (`Deﬁnitions`) that no search matches, now expanded; a sparse born-digital table page sent to OCR and returned worse ("Monthty rent", "026"), now OCR'd only when an image covers the page; and page-number removal that deleted the years "2025"/"2026" from a rent table, now limited to edge lines near the real page number.
+
+**Known gaps.** Only PDF and DOCX. (Tables lost their rows — fixed in "Tables keep their rows" above.) No document classification, summary cards or typed fact extraction yet. OCR accuracy on real client scans is unmeasured.
+
 ## Language packs: English, Serbian and Slovenian appliances
 
 Onyx assumed English end to end. That covered the Whisper language, the domain scout (`whisper-tiny-en`), the Postgres stemmer, phonetic correction's letter names and spelling rules, the hallucination blacklist, stopwords, the visual grounding regexes, the refusal sentence, citation parsing and the report's boilerplate. Every one of those is now read from a validated **language pack**, `data/languages/<code>.toml` (new core module `app/core/language`, see `docs/core/language.md`). An appliance serves the one language named by `APPLIANCE_LANGUAGE`.

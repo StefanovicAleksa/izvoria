@@ -33,6 +33,7 @@ from app.core.jobs.domain.entities import CancellationToken
 from app.core.jobs.data.models import JOBS_UPGRADE_DDL
 from app.features.session_memory.data.models import SESSION_TURNS_UPGRADE_DDL
 from app.features.deep_research_report.data.models import RESEARCH_REPORT_UPGRADE_DDL
+from app.features.rag_storage.data.models import VECTOR_CHUNKS_UPGRADE_DDL
 from app.features.deep_research_report.domain.entities import (
     CorpusDigest, Report, ReportSummary, ResearchPlan, ResearchPlanProposal,
 )
@@ -41,6 +42,7 @@ from app.features.deep_research_report.service.report_api import ReportAuthoring
 
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.service.pipelines.batch_audio_pipeline import BatchAudioPipeline
+from app.orchestration.service.pipelines.batch_document_pipeline import BatchDocumentPipeline
 from app.orchestration.service.pipelines.live_retrieval_pipeline import LiveRetrievalPipeline
 from app.orchestration.service.pipelines.live_verified_retrieval_pipeline import LiveVerifiedRetrievalPipeline
 from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
@@ -71,7 +73,8 @@ class OnyxEngine(IOnyxEngine):
             session_memory_api: Optional[SessionMemoryAPI] = None,
             retrieval_api: Optional[RetrievalAPI] = None,
             research_report_pipeline: Optional[DeepResearchReportPipeline] = None,
-            report_api: Optional[ReportAuthoringAPI] = None
+            report_api: Optional[ReportAuthoringAPI] = None,
+            document_pipeline: Optional[BatchDocumentPipeline] = None
     ):
         self._async_service = async_model_service
         self._media_pipeline = media_pipeline
@@ -85,6 +88,7 @@ class OnyxEngine(IOnyxEngine):
         self._retrieval_api = retrieval_api
         self._research_report_pipeline = research_report_pipeline
         self._report_api = report_api
+        self._document_pipeline = document_pipeline
 
         self._state = EngineState.OFFLINE
         self._state_lock = threading.RLock()
@@ -108,7 +112,8 @@ class OnyxEngine(IOnyxEngine):
                 with db_manager.session() as session:
                     engine = session.get_bind()
                     Base.metadata.create_all(bind=engine)
-                    for statement in (*SESSION_TURNS_UPGRADE_DDL, *JOBS_UPGRADE_DDL, *RESEARCH_REPORT_UPGRADE_DDL):
+                    for statement in (*SESSION_TURNS_UPGRADE_DDL, *JOBS_UPGRADE_DDL, *RESEARCH_REPORT_UPGRADE_DDL,
+                                      *VECTOR_CHUNKS_UPGRADE_DDL):
                         session.execute(text(statement))
 
                 # An index built for another language can't be searched with this one's stemmer
@@ -226,6 +231,24 @@ class OnyxEngine(IOnyxEngine):
             self._aggregate_metrics(results, errors, metrics)
         except Exception as e:
             raise map_engine_error(e, context=f"Audio Ingestion [{target_path}]")
+        finally:
+            self._cleanup_after_ingestion()
+
+        return self._build_report(target_path, metrics, errors, time.time() - start_time)
+
+    def ingest_documents(self, target_path: str) -> IngestionReport:
+        if self._document_pipeline is None:
+            raise EngineOfflineError("Document ingestion is not wired into this engine instance.")
+        self._prepare_for_ingestion()
+        start_time = time.time()
+        errors: Dict[str, str] = {}
+        metrics: Dict[str, int] = {"scanned": 0, "success": 0, "failed": 0, "vectors": 0, "clips": 0}
+
+        try:
+            results = self._document_pipeline.process_directory(target_path)
+            self._aggregate_metrics(results, errors, metrics)
+        except Exception as e:
+            raise map_engine_error(e, context=f"Document Ingestion [{target_path}]")
         finally:
             self._cleanup_after_ingestion()
 
@@ -633,6 +656,22 @@ class OnyxEngine(IOnyxEngine):
                 if getattr(item, "success", False):
                     metrics_dict["clips"] += getattr(item, "extracted_clips_count", 0)
 
+        if PipelinePhase.DOCUMENT_CONVERSION in pipeline_results:
+            for item in pipeline_results[PipelinePhase.DOCUMENT_CONVERSION].items:
+                if not getattr(item, "success", False):
+                    continue
+                for key, field in (("pages", "pages_total"), ("pages_ocr", "pages_ocr"),
+                                   ("pages_ocr_incomplete", "pages_ocr_incomplete"),
+                                   ("pages_unreadable", "pages_unreadable")):
+                    metrics_dict[key] = metrics_dict.get(key, 0) + getattr(item, field, 0)
+                # Not a failure -- the document is indexed -- but text is missing from it, and a person relying
+                # on the index has to know which file to check by hand
+                if item.pages_ocr_incomplete or item.pages_unreadable:
+                    error_dict[f"document_pages_{item.source_id}"] = (
+                        f"Source {item.source_id}: {item.pages_unreadable} scanned page(s) could not be read and "
+                        f"are not indexed; {item.pages_ocr_incomplete} page(s) lost lines to OCR."
+                    )
+
         for phase, result in pipeline_results.items():
             if result.status in [PhaseStatus.FAILED, PhaseStatus.PARTIAL_SUCCESS]:
                 for idx, err_str in enumerate(result.errors):
@@ -644,5 +683,8 @@ class OnyxEngine(IOnyxEngine):
             target_path=target_path, total_files_scanned=metrics["scanned"],
             successful_ingestions=metrics["success"], failed_ingestions=metrics["failed"],
             errors=errors, total_duration_seconds=round(duration, 2),
-            vectors_created=metrics["vectors"], clips_extracted=metrics["clips"]
+            vectors_created=metrics["vectors"], clips_extracted=metrics["clips"],
+            pages_converted=metrics.get("pages", 0), pages_ocr=metrics.get("pages_ocr", 0),
+            pages_ocr_incomplete=metrics.get("pages_ocr_incomplete", 0),
+            pages_unreadable=metrics.get("pages_unreadable", 0)
         )

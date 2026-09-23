@@ -568,3 +568,45 @@ class TestReportMapping:
 
         assert "[Doc 1](onyx://doc/1)" in document.markdown
         assert document.evidence == ()
+
+
+class TestDocuments:
+    def test_a_document_hit_carries_its_page_and_opens_as_a_document(self, gateway_and_engine):
+        from app.core.anchors.domain.enums import AnchorKind
+        from onyx_desktop.domain.enums import SearchMode
+
+        gateway, engine = gateway_and_engine
+        chunk = make_chunk(extracted_file_id=None, physical_path="/vault/lease.pdf", start_sec=0.0, end_sec=0.0,
+                           anchor_kind=AnchorKind.PAGE, page_start=7, page_end=7,
+                           section_path="Article 7 Termination", speaker_labels=[],
+                           raw_text="Thirty days' notice.")
+        engine.search_standard.return_value = SearchResult(query="q", results=[chunk], execution_time_ms=1)
+
+        evidence = gateway.search("q", SearchMode.STANDARD, 5).hits[0].as_evidence()
+
+        assert evidence.location == "p. 7 · Article 7 Termination"
+        assert evidence.media_kind is MediaKind.DOCUMENT
+        assert evidence.is_playable is True
+
+    def test_a_transcript_hit_has_no_document_location(self, gateway_and_engine):
+        from onyx_desktop.domain.enums import SearchMode
+
+        gateway, engine = gateway_and_engine
+        engine.search_standard.return_value = SearchResult(
+            query="q", results=[make_chunk(physical_path="/vault/clip.mp4")], execution_time_ms=1)
+
+        assert gateway.search("q", SearchMode.STANDARD, 5).hits[0].location == ""
+
+    def test_document_mode_runs_document_ingestion(self, gateway_and_engine):
+        from onyx_desktop.domain.enums import IngestMode
+
+        gateway, engine = gateway_and_engine
+        engine.ingest_documents.return_value = MagicMock(
+            target_path="/docs", total_files_scanned=2, successful_ingestions=2, failed_ingestions=0,
+            vectors_created=30, clips_extracted=0, pages_converted=17, total_duration_seconds=12.0, errors={})
+
+        summary = gateway.ingest("/docs", IngestMode.DOCUMENT)
+
+        engine.ingest_documents.assert_called_once_with("/docs")
+        engine.ingest_videos.assert_not_called()
+        assert summary.pages_converted == 17

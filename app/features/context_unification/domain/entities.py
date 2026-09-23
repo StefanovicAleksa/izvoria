@@ -2,10 +2,11 @@
 # Path: app/features/context_unification/domain/entities.py
 
 import uuid
-from typing import List
+from typing import List, Optional
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field, ConfigDict
 
+from app.core.anchors.domain.enums import AnchorKind
 from app.features.visual_context_synthesis.domain.entities import VisualContextFrame
 
 
@@ -17,9 +18,15 @@ class UnifiedChunk(BaseModel):
     """
     chunk_id: uuid.UUID
 
-    # Exact time bounds from the audio transcript
+    # Exact time bounds from the audio transcript; 0.0 for document chunks (see anchor_kind)
     start_sec: float
     end_sec: float
+
+    # Where a citation of this chunk points: a time range, a page range, or a document section
+    anchor_kind: AnchorKind = AnchorKind.TIME
+    page_start: Optional[int] = None
+    page_end: Optional[int] = None
+    section_path: Optional[str] = None
 
     # The stitched string: [Audio Context] + [Visual Context] + Raw Text
     text_payload: str = Field(description="The fully assembled string ready for vector embedding.")

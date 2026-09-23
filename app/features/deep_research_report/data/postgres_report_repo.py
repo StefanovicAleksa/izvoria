@@ -7,6 +7,7 @@ from typing import List, Optional
 
 from sqlalchemy import delete, func, select
 
+from app.core.anchors.domain.enums import AnchorKind
 from app.core.database import exceptions as db_exc
 from app.core.database.domain.interfaces import IDatabaseManager
 from app.features.deep_research_report.data.models import (
@@ -116,6 +117,10 @@ class PostgresReportRepository(IReportRepository):
                         source_name=entry.source_name,
                         start_sec=entry.start_sec,
                         end_sec=entry.end_sec,
+                        anchor_kind=entry.anchor_kind.value,
+                        page_start=entry.page_start,
+                        page_end=entry.page_end,
+                        section_path=entry.section_path,
                         speaker_labels=list(entry.speaker_labels),
                         digest=entry.digest,
                         origin=entry.origin.value,
@@ -366,6 +371,10 @@ class PostgresReportRepository(IReportRepository):
                 source_name=e.source_name,
                 start_sec=e.start_sec,
                 end_sec=e.end_sec,
+                anchor_kind=AnchorKind(e.anchor_kind or AnchorKind.TIME.value),
+                page_start=e.page_start,
+                page_end=e.page_end,
+                section_path=e.section_path,
                 speaker_labels=list(e.speaker_labels or []),
                 digest=e.digest or "",
                 origin=EvidenceOrigin(e.origin or EvidenceOrigin.FAN_OUT.value),

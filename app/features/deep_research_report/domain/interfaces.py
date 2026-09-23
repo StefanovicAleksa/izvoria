@@ -43,7 +43,8 @@ class IReportLlmAdapter(IModelLoader, ABC):
         pass
 
     @abstractmethod
-    def get_section_token_budget(self, model: LoadedModel, section: OutlineSection, topic: str) -> int:
+    def get_section_token_budget(self, model: LoadedModel, section: OutlineSection, topic: str,
+                                 has_documents: bool = False) -> int:
         """
         Tokens left for a section's evidence block once its prompt and the generated section are counted.
         Capped by REPORT_SECTION_EVIDENCE_TOKENS: the window is large, but prefill is the cost driver.
@@ -68,6 +69,7 @@ class IReportLlmAdapter(IModelLoader, ABC):
         plan: ResearchPlan,
         evidence_digest: str,
         asked_block: str = "",
+        has_documents: bool = False,
     ) -> OutlineAssignment:
         """
         Re-assigns the outline against the evidence actually gathered, returning sections carrying their
@@ -99,6 +101,7 @@ class IReportLlmAdapter(IModelLoader, ABC):
         evidence_block: str,
         allowed_doc_numbers: List[int],
         outline_context: str,
+        has_documents: bool = False,
     ) -> str:
         """
         Writes one section as Markdown, citing `[Doc N]` from `allowed_doc_numbers` only.

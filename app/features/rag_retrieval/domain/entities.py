@@ -5,6 +5,8 @@ import uuid
 from typing import List, Optional
 from pydantic import BaseModel, Field, ConfigDict
 
+from app.core.anchors.domain.enums import AnchorKind
+
 
 class SearchQuery(BaseModel):
     """Represents the incoming search request from the user/UI."""
@@ -32,8 +34,16 @@ class RetrievedChunk(BaseModel):
     raw_text: str = Field(default="", description="Verbatim speaker/timestamp-labelled transcript text.")
     speaker_labels: List[str] = Field(default_factory=list)
 
+    # Time range for transcript chunks; 0.0 for document chunks, which carry a page range or section instead
     start_sec: float
     end_sec: float
+    anchor_kind: AnchorKind = AnchorKind.TIME
+    page_start: Optional[int] = None
+    page_end: Optional[int] = None
+    section_path: Optional[str] = None
+
+    # Order of the chunk within its source; reading order and neighbour lookup use it, never start_sec
+    position: int = 0
 
     # Reciprocal Rank Fusion (RRF) combined score
     relevance_score: float = Field(..., description="The unified score from Dense + Sparse search.")
@@ -69,6 +79,9 @@ class IndexedSource(BaseModel):
     chunk_count: int
     first_start_sec: float = 0.0
     last_end_sec: float = 0.0
+    # A document's kind and length, so a prompt can say "12 pages" instead of "about 00:00:00 long"
+    anchor_kind: AnchorKind = AnchorKind.TIME
+    page_count: Optional[int] = None
 
     model_config = ConfigDict(frozen=True)
 

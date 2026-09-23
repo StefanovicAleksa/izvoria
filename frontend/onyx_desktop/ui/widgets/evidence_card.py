@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 from onyx_desktop.domain.entities import Evidence
 from onyx_desktop.domain.enums import MediaKind
 from onyx_desktop.ui import theme
-from onyx_desktop.utils.formatting import score, speaker_summary, timespan
+from onyx_desktop.utils.formatting import location, score, speaker_summary, timespan
 
 
 class EvidenceCard(QFrame):
@@ -66,7 +66,7 @@ class EvidenceCard(QFrame):
         chip.setProperty("role", "chip")
         header.addWidget(chip)
 
-        span = QLabel(timespan(self._evidence.start_sec, self._evidence.end_sec))
+        span = QLabel(location(self._evidence))
         span.setProperty("role", "subtle")
         header.addWidget(span)
 
@@ -131,7 +131,10 @@ class EvidenceCard(QFrame):
             return button
 
         button.clicked.connect(lambda: self.openRequested.emit(self._evidence))
-        if self._evidence.media_kind is MediaKind.FULL_SOURCE:
+        if self._evidence.media_kind is MediaKind.DOCUMENT:
+            button.setText("Open document ↗")
+            button.setToolTip(f"Opens the whole document — the excerpt is at {location(self._evidence)}")
+        elif self._evidence.media_kind is MediaKind.FULL_SOURCE:
             button.setText("Open recording ↗")
             button.setToolTip(
                 "No clip was cut for this chunk, so the whole recording opens — skip to "

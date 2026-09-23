@@ -54,10 +54,12 @@ class TestReasoningAPI:
         api.reason("What happened?", [kept, too_long], [], prior_session_context="prior", extra_context="gap")
 
         loaded = mock_orchestrator.acquire_model.return_value
+        # Transcript evidence only: the original reasoning prompt, for the budget and the turn alike
         mock_adapter.get_evidence_token_budget.assert_called_once_with(
-            loaded, "What happened?", "(No prior reasoning turns.)", "prior", "gap"
+            loaded, "What happened?", "(No prior reasoning turns.)", "prior", "gap", has_documents=False
         )
         call_kwargs = mock_adapter.reason.call_args.kwargs
+        assert call_kwargs["has_documents"] is False
         assert call_kwargs["evidence_block"] == "[E1] (0.0s-1.0s):\nshort text"
         assert call_kwargs["evidence_tags"] == {"E1": kept.chunk_id}
 

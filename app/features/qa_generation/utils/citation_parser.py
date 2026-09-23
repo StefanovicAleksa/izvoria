@@ -6,15 +6,17 @@ import uuid
 from functools import lru_cache
 from typing import Collection, Dict, List, Optional, Tuple
 
+from app.core.anchors.utils.formatting import format_location
 from app.core.language.service.language_api import get_language_pack
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.qa_generation.domain.entities import RAGContextBlock, QACitation
 from app.features.qa_generation.utils.context_packer import order_for_reading, strip_repeated_overlap
 
 
-def _format_timestamp(seconds: float) -> str:
-    total = max(0, int(seconds))
-    return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+def format_chunk_location(chunk: RetrievedChunk) -> str:
+    """Where a chunk sits in its source, as a citation header shows it: a time range, or a page and section."""
+    return format_location(chunk.anchor_kind, chunk.start_sec, chunk.end_sec,
+                           chunk.page_start, chunk.page_end, chunk.section_path)
 
 
 def build_numbered_context_block(numbered_chunks: List[Tuple[int, RetrievedChunk]]) -> RAGContextBlock:
@@ -39,7 +41,8 @@ def build_numbered_context_block(numbered_chunks: List[Tuple[int, RetrievedChunk
 
         source_text = strip_repeated_overlap(previous, chunk)
         previous = chunk
-        header = f"{doc_id} ({_format_timestamp(chunk.start_sec)}–{_format_timestamp(chunk.end_sec)})"
+        location = format_chunk_location(chunk)
+        header = f"{doc_id} ({location})" if location else doc_id
 
         # Format the text injected into the LLM context window
         formatted_parts.append(f"{header}\n{source_text}\n")
@@ -154,7 +157,11 @@ def parse_citations(
                 extracted_file_id=chunk.extracted_file_id,
                 physical_path=getattr(chunk, 'physical_path', None),
                 start_sec=chunk.start_sec,
-                end_sec=chunk.end_sec
+                end_sec=chunk.end_sec,
+                anchor_kind=chunk.anchor_kind,
+                page_start=chunk.page_start,
+                page_end=chunk.page_end,
+                section_path=chunk.section_path
             ))
 
     # Ensure deterministic ordering for the UI based on Document Number

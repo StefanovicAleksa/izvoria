@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 from app.features.rag_retrieval.data.postgres_search_repo import (
     PostgresSearchRepository, _CHUNKS_BY_ID_SQL, _FTS_EXPRESSION_SQL, _HYBRID_SEARCH_SQL, _NEIGHBORS_SQL
 )
+from app.core.anchors.domain.enums import AnchorKind
 from app.features.rag_retrieval.exceptions.base import RetrievalError
 
 
@@ -30,6 +31,7 @@ class TestPostgresSearchRepository:
             "speaker_labels": ["Speaker_0"],
             "start_sec": 10.5,
             "end_sec": 15.0,
+            "anchor_kind": "time", "page_start": None, "page_end": None, "section_path": None, "position": 3,
             "rrf_score": 0.033,
             "extracted_file_id": expected_file_id
         }
@@ -71,7 +73,7 @@ class TestPostgresSearchRepository:
         mock_result = MagicMock()
         mock_result.mappings().all.return_value = [{
             "chunk_id": uuid.uuid4(), "source_id": uuid.uuid4(), "text_payload": "p", "raw_text": "r",
-            "speaker_labels": None, "start_sec": 0, "end_sec": 1, "rrf_score": 0.01, "extracted_file_id": None
+            "speaker_labels": None, "start_sec": 0, "end_sec": 1, "anchor_kind": "time", "page_start": None, "page_end": None, "section_path": None, "position": 3, "rrf_score": 0.01, "extracted_file_id": None
         }]
         session_mock.execute.return_value = mock_result
 
@@ -103,6 +105,7 @@ class TestPostgresSearchRepository:
             "chunk_id": uuid.uuid4(), "source_id": uuid.uuid4(), "text_payload": "payload",
             "raw_text": "[Speaker_0 @ 00:00:01]: Before.", "speaker_labels": None,
             "start_sec": 1, "end_sec": 9, "extracted_file_id": None,
+            "anchor_kind": "time", "page_start": None, "page_end": None, "section_path": None, "position": 1,
         }
         session_mock.execute.return_value.mappings.return_value.all.return_value = [row]
 
@@ -127,8 +130,11 @@ class TestPostgresSearchRepository:
     def test_neighbors_query_takes_one_chunk_each_side_within_the_source(self):
         sql = str(_NEIGHBORS_SQL)
 
-        assert "v.source_id = a.source_id AND v.start_sec < a.start_sec" in sql
-        assert "v.source_id = a.source_id AND v.start_sec > a.start_sec" in sql
+        # Reading order first (a document's chunks all have start_sec 0.0), then time for rows with no position
+        assert "(COALESCE(v.position, -1), v.start_sec) < (a.position, a.start_sec)" in sql
+        assert "(COALESCE(v.position, -1), v.start_sec) > (a.position, a.start_sec)" in sql
+        assert "ORDER BY COALESCE(v.position, -1) DESC, v.start_sec DESC LIMIT 1" in sql
+        assert "ORDER BY COALESCE(v.position, -1) ASC, v.start_sec ASC LIMIT 1" in sql
         assert sql.count("LIMIT 1") == 2
         assert "DISTINCT ON (n.chunk_id)" in sql
 
@@ -145,6 +151,7 @@ class TestPostgresSearchRepository:
             "chunk_id": str(chunk_id), "source_id": str(uuid.uuid4()), "text_payload": "payload",
             "raw_text": "[Speaker_0 @ 00:00:01]: Hello.", "speaker_labels": ["Speaker_0"],
             "start_sec": 1, "end_sec": 9, "extracted_file_id": None,
+            "anchor_kind": "time", "page_start": None, "page_end": None, "section_path": None, "position": 1,
         }
 
     @patch("app.features.rag_retrieval.data.postgres_search_repo.db_manager")
@@ -182,6 +189,24 @@ class TestPostgresSearchRepository:
 
         assert "LEFT JOIN video_clips vc ON vc.chunk_id = v.chunk_id" in sql
         assert "v.chunk_id = ANY(CAST(:chunk_ids AS uuid[]))" in sql
+
+
+    @patch("app.features.rag_retrieval.data.postgres_search_repo.db_manager")
+    def test_maps_a_document_row_to_its_page_anchor(self, mock_db_manager):
+        session_mock = MagicMock()
+        mock_db_manager.session.return_value.__enter__.return_value = session_mock
+        chunk_id = uuid.uuid4()
+        row = {
+            "chunk_id": chunk_id, "source_id": uuid.uuid4(), "text_payload": "[Document Context: lease]\n\nText",
+            "raw_text": "Text", "speaker_labels": [], "start_sec": 0.0, "end_sec": 0.0, "extracted_file_id": None,
+            "anchor_kind": "page", "page_start": 7, "page_end": 8, "section_path": "Article 7", "position": 12,
+        }
+        session_mock.execute.return_value.mappings.return_value.all.return_value = [row]
+
+        [chunk] = PostgresSearchRepository().fetch_chunks([chunk_id])
+
+        assert chunk.anchor_kind is AnchorKind.PAGE
+        assert (chunk.page_start, chunk.page_end, chunk.section_path, chunk.position) == (7, 8, "Article 7", 12)
 
 
 class TestGetIndexFtsConfig:

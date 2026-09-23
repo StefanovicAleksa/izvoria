@@ -84,3 +84,18 @@ QUERY_REWRITE_USER_TEMPLATE = """
 
 Rewrite the follow-up question as a standalone search query. Return the JSON.
 """
+
+
+# The reasoning prompt when the evidence pool holds document excerpts. Only then: a pool of transcripts alone gets
+# REASONER_SYSTEM_PROMPT unchanged, so an appliance with only recordings reasons exactly as before documents existed.
+_RECORDINGS_ONLY = "an Enterprise client's own ingested recordings (legal/medical transcripts and video)."
+assert _RECORDINGS_ONLY in REASONER_SYSTEM_PROMPT
+REASONER_DOCUMENTS_SYSTEM_PROMPT = REASONER_SYSTEM_PROMPT.replace(
+    _RECORDINGS_ONLY,
+    "an Enterprise client's own ingested material: recordings (legal/medical transcripts and video) and documents "
+    "(contracts, letters, invoices, filings), each excerpt tagged with its time range or its page and section."
+)
+
+
+def reasoner_system_prompt(has_documents: bool) -> str:
+    return REASONER_DOCUMENTS_SYSTEM_PROMPT if has_documents else REASONER_SYSTEM_PROMPT

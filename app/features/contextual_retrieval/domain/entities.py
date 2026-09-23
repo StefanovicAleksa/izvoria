@@ -2,10 +2,11 @@
 # Path: app/features/contextual_retrieval/domain/entities.py
 
 import uuid
-from typing import List
+from typing import List, Optional
 from datetime import datetime, timezone
 from pydantic import BaseModel, Field, ConfigDict
 
+from app.core.anchors.domain.enums import AnchorKind
 from app.features.sentence_reconstruction.domain.entities import ReconstructedSentence
 
 
@@ -20,6 +21,12 @@ class ContextualizedChunk(BaseModel):
     # Added safe defaults to prevent PyCharm/Pydantic initialization warnings
     start_sec: float = Field(default=0.0)
     end_sec: float = Field(default=0.0)
+
+    # Document chunks are located by page or section instead of time (start_sec/end_sec stay 0.0)
+    anchor_kind: AnchorKind = Field(default=AnchorKind.TIME)
+    page_start: Optional[int] = Field(default=None)
+    page_end: Optional[int] = Field(default=None)
+    section_path: Optional[str] = Field(default=None)
 
     # The raw chunk text and its generated context
     original_text: str = Field(default="", description="The grouped text from the reconstructed sentences.")

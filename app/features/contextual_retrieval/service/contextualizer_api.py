@@ -9,9 +9,11 @@ from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.enums import ModelType
 
+from app.features.document_structuring.domain.entities import StructuredChunk, StructuredDocument
 from app.features.domain_phonetic_correction.domain.entities import DomainPhoneticCorrectedTranscript
 from app.features.sentence_reconstruction.domain.entities import ReconstructedSentence
 from app.features.contextual_retrieval.domain.interfaces import IContextualRepository, ISLMContextAdapter
+from app.features.contextual_retrieval.data.prompts import DOCUMENT_CONTEXTUAL_SYSTEM_PROMPT
 from app.features.contextual_retrieval.domain.entities import ContextualizedTranscript, ContextualizedChunk
 from app.features.contextual_retrieval.utils.chunker import build_rag_chunks
 from app.features.contextual_retrieval.utils.document_window import build_document_sections, assign_section
@@ -122,23 +124,100 @@ class ContextualizerAPI:
         except Exception as e:
             raise map_contextual_error(e, context=f"ContextualizerAPI.execute for Source {transcript.source_id}") from e
 
+    def execute_document(
+            self,
+            document: StructuredDocument,
+            release_after: bool = True
+    ) -> ContextualizedTranscript:
+        """
+        Situates each chunk of a structured document within the whole document, as `execute` does for a
+        transcript. The chunk text is stored verbatim; the SLM also sees the headings the chunk sits under.
+        """
+        try:
+            existing_record = self._repo.get_by_source_id(document.source_id)
+            if existing_record:
+                logger.info(f"Contextualized document exists for Source {document.source_id}. Skipping.")
+                return existing_record
+
+            if not document.chunks:
+                return self._repo.save(ContextualizedTranscript(source_id=document.source_id, chunks=[]))
+
+            loaded_model = None
+            contextualized_chunks: List[ContextualizedChunk] = []
+            chunk_texts = [chunk.text for chunk in document.chunks]
+
+            try:
+                loaded_model = self._orchestrator.acquire_model(self._manifest, self._slm_adapter)
+
+                sections = self._plan_sections(loaded_model, "\n\n".join(chunk_texts), chunk_texts)
+                if len(sections) > 1:
+                    logger.info(
+                        f"Document for Source {document.source_id} exceeds the context window; "
+                        f"situating chunks within {len(sections)} overlapping document sections."
+                    )
+                section_texts: Dict[int, str] = {}
+
+                for idx, chunk in enumerate(document.chunks):
+                    logger.info(f"  -> Generating Context for Chunk {idx + 1}/{len(document.chunks)}...")
+                    section_idx = assign_section(sections, idx, idx)
+                    if section_idx not in section_texts:
+                        start, end = sections[section_idx]
+                        section_texts[section_idx] = "\n\n".join(chunk_texts[start:end])
+
+                    context_string = self._slm_adapter.generate_context(
+                        model=loaded_model,
+                        full_document_text=section_texts[section_idx],
+                        chunk_text=_with_section_path(chunk),
+                        system_prompt=DOCUMENT_CONTEXTUAL_SYSTEM_PROMPT
+                    )
+
+                    contextualized_chunks.append(
+                        ContextualizedChunk(
+                            anchor_kind=document.anchor_kind,
+                            page_start=chunk.page_start,
+                            page_end=chunk.page_end,
+                            section_path=chunk.section_path,
+                            original_text=chunk.text,
+                            context_string=context_string
+                        )
+                    )
+
+            finally:
+                if loaded_model and release_after:
+                    self._orchestrator.release_model(loaded_model, self._slm_adapter, flush=True)
+
+            return self._repo.save(ContextualizedTranscript(source_id=document.source_id, chunks=contextualized_chunks))
+
+        except Exception as e:
+            raise map_contextual_error(e, context=f"ContextualizerAPI.execute_document for Source {document.source_id}") from e
+
     def _plan_document_sections(
             self,
             model: LoadedModel,
             sentences: List[ReconstructedSentence]
     ) -> List[Tuple[int, int]]:
+        # Per-sentence costs include a speaker label each, which over-estimates merged turns (safe side).
+        return self._plan_sections(
+            model,
+            format_speaker_turns(sentences, include_timestamps=False),
+            [format_speaker_turns([s], include_timestamps=False) for s in sentences]
+        )
+
+    def _plan_sections(self, model: LoadedModel, whole_text: str, unit_texts: List[str]) -> List[Tuple[int, int]]:
         """
-        Uses the whole transcript as the document whenever it fits the context budget (one stable
-        prompt prefix for every chunk). Otherwise splits it into overlapping sections; a whole
-        transcript that overflows n_ctx used to fail the source at this phase.
+        Uses the whole transcript or document as the context whenever it fits the budget (one stable prompt
+        prefix for every chunk). Otherwise splits it into overlapping sections of units (sentences, or document
+        chunks); a whole transcript that overflows n_ctx used to fail the source at this phase.
         """
         budget = settings.CONTEXTUAL_RETRIEVAL_N_CTX - settings.CONTEXTUAL_RETRIEVAL_RESERVED_TOKENS
 
-        if self._slm_adapter.count_tokens(model, format_speaker_turns(sentences, include_timestamps=False)) <= budget:
-            return [(0, len(sentences))]
+        if self._slm_adapter.count_tokens(model, whole_text) <= budget:
+            return [(0, len(unit_texts))]
 
-        # Per-sentence costs include a speaker label each, which over-estimates merged turns (safe side).
-        token_counts = [
-            self._slm_adapter.count_tokens(model, format_speaker_turns([s], include_timestamps=False)) for s in sentences
-        ]
+        token_counts = [self._slm_adapter.count_tokens(model, text) for text in unit_texts]
         return build_document_sections(token_counts, budget)
+
+
+def _with_section_path(chunk: StructuredChunk) -> str:
+    """The chunk as the SLM reads it: the headings it sits under, then its text."""
+    return f"[{chunk.section_path}]\n{chunk.text}" if chunk.section_path else chunk.text

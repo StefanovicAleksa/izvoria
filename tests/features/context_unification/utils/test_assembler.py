@@ -2,6 +2,8 @@
 # Path: tests/features/context_unification/utils/test_assembler.py
 
 import uuid
+
+from app.core.anchors.domain.enums import AnchorKind
 from app.features.contextual_retrieval.domain.entities import ContextualizedTranscript, ContextualizedChunk
 from app.features.visual_context_synthesis.domain.entities import VisualTimeline, VisualTimelineChunk, \
     VisualContextFrame
@@ -98,3 +100,21 @@ class TestContextUnificationAssembler:
         )
         assert unified_chunk.text_payload == unified_chunk.context_text + "\n\n" + raw
         assert unified_chunk.speaker_labels == ["Speaker_1", "Speaker_0"]
+
+
+class TestDocumentChunks:
+    def test_document_chunk_carries_its_anchor_and_document_context(self):
+        chunk = ContextualizedChunk(
+            anchor_kind=AnchorKind.PAGE, page_start=7, page_end=8, section_path="Article 7 Termination",
+            original_text="Article 7 Termination\n\nThirty days' notice.", context_string="The lease's termination clause."
+        )
+        transcript = ContextualizedTranscript(source_id=uuid.uuid4(), chunks=[chunk])
+
+        [unified] = assemble_unified_chunks(transcript, None)
+
+        assert unified.context_text == "[Document Context: The lease's termination clause.]\n[Section: Article 7 Termination]"
+        assert unified.raw_text == "Article 7 Termination\n\nThirty days' notice."
+        assert unified.text_payload == f"{unified.context_text}\n\n{unified.raw_text}"
+        assert (unified.anchor_kind, unified.page_start, unified.page_end) == (AnchorKind.PAGE, 7, 8)
+        assert unified.section_path == "Article 7 Termination"
+        assert unified.speaker_labels == []

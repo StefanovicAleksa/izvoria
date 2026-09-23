@@ -9,13 +9,14 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from app.core.anchors.domain.enums import AnchorKind
 from app.core.language.service.language_api import get_language_pack
 from app.core.config import settings
 from app.core.model_manager.domain.entities import LoadedModel, ModelManifest
 from app.core.model_manager.utils.llama_cpp_chat import build_llama, chat_completion, strip_reasoning
 from app.features.deep_research_report.data.prompts import (
-    NO_EVIDENCE_SECTION, OUTLINE_SYSTEM_PROMPT, OUTLINE_USER_TEMPLATE, SCOPE_SYSTEM_PROMPT,
-    SCOPE_USER_TEMPLATE, SECTION_CITATION_RETRY_PROMPT, SECTION_SYSTEM_PROMPT, SECTION_USER_TEMPLATE,
+    NO_EVIDENCE_SECTION, OUTLINE_USER_TEMPLATE, SCOPE_USER_TEMPLATE, SECTION_CITATION_RETRY_PROMPT,
+    SECTION_USER_TEMPLATE, outline_system_prompt, scope_system_prompt, section_system_prompt,
     SUMMARY_SYSTEM_PROMPT, SUMMARY_USER_TEMPLATE,
 )
 from app.features.deep_research_report.domain.entities import (
@@ -83,7 +84,8 @@ class LlamaCppReportAdapter(IReportLlmAdapter):
         except Exception as e:
             raise map_report_error(e, context="Counting tokens") from e
 
-    def get_section_token_budget(self, model: LoadedModel, section: OutlineSection, topic: str) -> int:
+    def get_section_token_budget(self, model: LoadedModel, section: OutlineSection, topic: str,
+                                 has_documents: bool = False) -> int:
         """
         What is left for a section's excerpts, then capped at REPORT_SECTION_EVIDENCE_TOKENS.
 
@@ -92,7 +94,7 @@ class LlamaCppReportAdapter(IReportLlmAdapter):
         """
         try:
             llm: Any = model.model_instance
-            fixed = self.count_tokens(model, get_language_pack().localize_prompt(SECTION_SYSTEM_PROMPT) + self._section_user_content(
+            fixed = self.count_tokens(model, get_language_pack().localize_prompt(section_system_prompt(has_documents)) + self._section_user_content(
                 topic, section, evidence_block="", allowed_doc_numbers=[], outline_context=""
             ))
             available = llm.n_ctx() - fixed - settings.REPORT_SECTION_MAX_TOKENS - self.TEMPLATE_MARGIN_TOKENS
@@ -107,7 +109,8 @@ class LlamaCppReportAdapter(IReportLlmAdapter):
     def scope(self, model: LoadedModel, topic: str, corpus: CorpusDigest) -> ResearchPlan:
         try:
             messages = [
-                {"role": "system", "content": get_language_pack().localize_prompt(SCOPE_SYSTEM_PROMPT.format(
+                {"role": "system", "content": get_language_pack().localize_prompt(scope_system_prompt(
+                    _has_documents(corpus)).format(
                     max_sections=settings.REPORT_MAX_SECTIONS,
                     max_sub_questions=settings.REPORT_MAX_SUB_QUESTIONS,
                 ))},
@@ -127,12 +130,27 @@ class LlamaCppReportAdapter(IReportLlmAdapter):
     def _corpus_overview(corpus: CorpusDigest) -> str:
         if not corpus.sources:
             return "(The archive has no indexed recordings.)"
+        if not _has_documents(corpus):
+            # Recordings only: the overview the planner has always been shown
+            lines = [
+                f"{corpus.indexed_source_count} indexed recording(s), {corpus.indexed_chunk_count} excerpt(s) total."
+            ]
+            for source in corpus.sources:
+                duration = format_timestamp(source.last_end_sec - source.first_start_sec)
+                lines.append(f"- {source.name} ({source.chunk_count} excerpts, about {duration} long)")
+            return "\n".join(lines)
+
         lines = [
-            f"{corpus.indexed_source_count} indexed recording(s), {corpus.indexed_chunk_count} excerpt(s) total."
+            f"{corpus.indexed_source_count} indexed source(s), {corpus.indexed_chunk_count} excerpt(s) total."
         ]
         for source in corpus.sources:
-            duration = format_timestamp(source.last_end_sec - source.first_start_sec)
-            lines.append(f"- {source.name} ({source.chunk_count} excerpts, about {duration} long)")
+            if source.anchor_kind is AnchorKind.TIME:
+                extent = f"recording, about {format_timestamp(source.last_end_sec - source.first_start_sec)} long"
+            elif source.page_count:
+                extent = f"document, {source.page_count} page(s)"
+            else:
+                extent = "document"
+            lines.append(f"- {source.name} ({source.chunk_count} excerpts, {extent})")
         return "\n".join(lines)
 
     @staticmethod
@@ -217,13 +235,14 @@ class LlamaCppReportAdapter(IReportLlmAdapter):
             plan: ResearchPlan,
             evidence_digest: str,
             asked_block: str = "",
+            has_documents: bool = False,
     ) -> OutlineAssignment:
         try:
             outline_block = "\n".join(
                 f"- [{s.key}] {s.title}: {s.brief or '(no brief)'}" for s in plan.sections
             )
             messages = [
-                {"role": "system", "content": get_language_pack().localize_prompt(OUTLINE_SYSTEM_PROMPT)},
+                {"role": "system", "content": get_language_pack().localize_prompt(outline_system_prompt(has_documents))},
                 {"role": "user", "content": OUTLINE_USER_TEMPLATE.format(
                     topic=plan.topic, outline_block=outline_block, bank_index=evidence_digest,
                     # "" in round 1 and in deep mode, which is what keeps the prompt identical to the
@@ -322,6 +341,7 @@ class LlamaCppReportAdapter(IReportLlmAdapter):
             evidence_block: str,
             allowed_doc_numbers: List[int],
             outline_context: str,
+            has_documents: bool = False,
     ) -> str:
         """
         Writes one section and, if the draft cites nothing, re-prompts once within the same acquisition.
@@ -334,7 +354,7 @@ class LlamaCppReportAdapter(IReportLlmAdapter):
         try:
             llm: Any = model.model_instance
             messages = [
-                {"role": "system", "content": get_language_pack().localize_prompt(SECTION_SYSTEM_PROMPT)},
+                {"role": "system", "content": get_language_pack().localize_prompt(section_system_prompt(has_documents))},
                 {"role": "user", "content": self._section_user_content(
                     topic, section, evidence_block, allowed_doc_numbers, outline_context
                 )},
@@ -432,3 +452,7 @@ class LlamaCppReportAdapter(IReportLlmAdapter):
         except json.JSONDecodeError:
             return None
         return parsed if isinstance(parsed, dict) else None
+
+
+def _has_documents(corpus: CorpusDigest) -> bool:
+    return any(source.anchor_kind is not AnchorKind.TIME for source in corpus.sources)

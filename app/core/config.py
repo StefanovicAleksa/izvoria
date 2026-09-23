@@ -165,6 +165,22 @@ class Settings(BaseSettings):
     CONTEXTUAL_RETRIEVAL_N_CTX: int = 32768
     CONTEXTUAL_RETRIEVAL_RESERVED_TOKENS: int = 1500
 
+    # --- Document ingestion (PDF / DOCX) ---
+    # RapidOCR PP-OCRv5 models, fetched once by scripts/download_ocr_models.py. OCR runs on the CPU; when these
+    # files are missing, scanned pages are reported as unreadable rather than downloaded at runtime.
+    DOC_OCR_MODEL_DIR: str = "models/rapidocr"
+    # Scanned pages are rendered at this resolution before OCR
+    DOC_OCR_DPI: int = 300
+    # A PDF page is treated as scanned (and OCR'd) only when BOTH hold: its text layer has fewer letters than
+    # this, and images cover at least DOC_SCANNED_IMAGE_COVERAGE of it. A sparse born-digital page (a heading and
+    # a table) keeps its exact text layer instead of being replaced by OCR's reading of it.
+    DOC_MIN_TEXT_LETTERS_PER_PAGE: int = 40
+    DOC_SCANNED_IMAGE_COVERAGE: float = 0.5
+    # Chunk budget for documents; a chunk never crosses a top-level clause
+    DOC_CHUNK_MAX_WORDS: int = 250
+    # A document shorter than this (a receipt, a one-page letter) is indexed as one chunk
+    DOC_SHORT_DOCUMENT_WORDS: int = 400
+
     VISUAL_CUE_DETECTION_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
     VISUAL_CUE_DETECTION_VRAM_REQUIREMENT_MB: float = 5000.0
 

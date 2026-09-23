@@ -90,6 +90,19 @@ class DomainPhoneticCorrectionJobResult(BaseModel):
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 
+class DocumentConversionJobResult(BaseModel):
+    source_id: uuid.UUID
+    success: bool
+    converted_document_id: Optional[uuid.UUID] = None
+    pages_total: int = 0
+    pages_ocr: int = 0
+    # Pages whose OCR lost detected lines, and scanned pages with no text at all: indexed incompletely or not
+    # at all, and reported rather than hidden
+    pages_ocr_incomplete: int = 0
+    pages_unreadable: int = 0
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
 class ContextualRetrievalJobResult(BaseModel):
     source_id: uuid.UUID
     success: bool

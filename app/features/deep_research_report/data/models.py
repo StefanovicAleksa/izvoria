@@ -121,6 +121,10 @@ class ResearchReportEvidenceModel(Base):
 
     start_sec: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
     end_sec: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
+    anchor_kind: Mapped[str] = mapped_column(String, nullable=False, server_default="time")
+    page_start: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    page_end: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    section_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     speaker_labels: Mapped[List[str]] = mapped_column(JSONB, nullable=False, default=list)
     digest: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
 
@@ -158,4 +162,9 @@ RESEARCH_REPORT_UPGRADE_DDL: tuple = (
     # defaults say.
     "ALTER TABLE research_reports ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'deep'",
     "ALTER TABLE research_reports ADD COLUMN IF NOT EXISTS rounds_used INTEGER NOT NULL DEFAULT 1",
+    # Added with document ingestion. Evidence stored before it is transcript evidence, located by time.
+    "ALTER TABLE research_report_evidence ADD COLUMN IF NOT EXISTS anchor_kind TEXT NOT NULL DEFAULT 'time'",
+    "ALTER TABLE research_report_evidence ADD COLUMN IF NOT EXISTS page_start INTEGER",
+    "ALTER TABLE research_report_evidence ADD COLUMN IF NOT EXISTS page_end INTEGER",
+    "ALTER TABLE research_report_evidence ADD COLUMN IF NOT EXISTS section_path TEXT",
 )

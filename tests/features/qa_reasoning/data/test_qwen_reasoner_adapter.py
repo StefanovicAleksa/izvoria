@@ -219,3 +219,16 @@ class TestQwenReasonerAdapter:
 
         with pytest.raises(JSONReasonerParseError):
             adapter.rewrite_query(loaded, "Q", "prior")
+
+
+class TestPromptForDocuments:
+    def test_the_document_prompt_only_extends_the_opening_line(self):
+        from app.features.qa_reasoning.data.prompts import (
+            QUERY_REWRITE_SYSTEM_PROMPT, REASONER_DOCUMENTS_SYSTEM_PROMPT, REASONER_SYSTEM_PROMPT,
+            reasoner_system_prompt,
+        )
+
+        assert reasoner_system_prompt(False) is REASONER_SYSTEM_PROMPT
+        assert reasoner_system_prompt(True) is REASONER_DOCUMENTS_SYSTEM_PROMPT
+        assert "and documents" in REASONER_DOCUMENTS_SYSTEM_PROMPT and "and documents" not in REASONER_SYSTEM_PROMPT
+        assert "transcript search engine" in QUERY_REWRITE_SYSTEM_PROMPT

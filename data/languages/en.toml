@@ -115,6 +115,9 @@ not_covered_item = "- **{title}** — no evidence in the indexed corpus supporte
 references_heading = "References"
 references_table_header = """| Doc | Source | Timespan | Speakers |
 | --- | --- | --- | --- |"""
+# A report that cites a document: its rows give a page and section, not a time range
+references_table_header_documents = """| Doc | Source | Location | Speakers |
+| --- | --- | --- | --- |"""
 no_sources_cited = "_No sources were cited._"
 unresolved_reference = "_unresolved_"
 no_speakers = "—"
@@ -134,6 +137,16 @@ exhaustive = "exhaustive"
 [report.nouns]
 excerpt = ["excerpt", "excerpts"]
 source = ["source", "sources"]
+
+[documents]
+page_label = "p."
+pages_label = "pp."
+# A line starting with one of these opens a new clause, however the PDF formatted it.
+clause_patterns = [
+    '^(?:ARTICLE|Article|SECTION|Section|CLAUSE|Clause|SCHEDULE|Schedule|ANNEX|Annex|APPENDIX|Appendix)\s+[0-9IVXLC]+',
+]
+# PP-OCRv5 "latin" recognition model; its alphabet covers English.
+ocr_rec_model = "latin"
 
 # English runs on the default models in app/core/config.py; nothing to override.
 [models]

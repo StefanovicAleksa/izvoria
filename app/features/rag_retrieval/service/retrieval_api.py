@@ -243,7 +243,7 @@ class RetrievalAPI:
             anchors = [chunk.chunk_id for chunk in chunks[:top_k]]
             present = {chunk.chunk_id for chunk in chunks}
             neighbors = [n for n in self._search_repo.fetch_neighbors(anchors) if n.chunk_id not in present]
-            neighbors.sort(key=lambda n: (str(n.source_id), n.start_sec))
+            neighbors.sort(key=lambda n: (str(n.source_id), n.position, n.start_sec))
 
             if neighbors:
                 logger.info(f"Added {len(neighbors)} neighbouring chunks around the top {len(anchors)} results.")

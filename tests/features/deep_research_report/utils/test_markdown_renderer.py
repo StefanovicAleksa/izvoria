@@ -6,6 +6,7 @@ from datetime import datetime
 
 import pytest
 
+from app.core.anchors.domain.enums import AnchorKind
 from app.features.deep_research_report.domain.entities import (
     EvidenceEntry, Report, ReportSection, ResearchPlan,
 )
@@ -256,3 +257,18 @@ class TestRenderInTheApplianceLanguage:
         markdown = render(_report(sections=[], summary="", evidence=[]))
 
         assert "## Viri\n\n_Noben vir ni bil citiran._" in markdown
+
+
+class TestDocumentReferences:
+    def test_document_evidence_is_located_by_page_and_section(self):
+        contract = EvidenceEntry(
+            doc_number=1, chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), source_name="lease.pdf",
+            start_sec=0.0, end_sec=0.0, anchor_kind=AnchorKind.PAGE, page_start=7, page_end=7,
+            section_path="Article 7 Termination", digest="The Tenant may terminate...",
+        )
+
+        markdown = render(_report(evidence=[contract, _entry(2), _entry(3)]))
+
+        assert "| Doc | Source | Location | Speakers |" in markdown
+        assert "| [Doc 1] | lease.pdf | p. 7 · Article 7 Termination | — |" in markdown
+        assert "| [Doc 3] | Deposition — Ramirez 2024-03-11 | 00:12:31–00:13:04 | SPEAKER_01 |" in markdown

@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
 from onyx_desktop.domain.entities import Evidence
 from onyx_desktop.domain.enums import MediaKind
 from onyx_desktop.ui.system_open import open_source
-from onyx_desktop.utils.formatting import speaker_summary, timespan
+from onyx_desktop.utils.formatting import location, speaker_summary, timespan
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ class SourcePanel(QWidget):
         self._problem.setVisible(False)
 
         self._chip.setText(evidence.doc_label)
-        self._span.setText(timespan(evidence.start_sec, evidence.end_sec))
+        self._span.setText(location(evidence))
         self._excerpt.setText(
             evidence.excerpt or "(no transcript text is stored for this chunk)"
         )
@@ -152,7 +152,14 @@ class SourcePanel(QWidget):
         self._path.setText(evidence.clip_path or "")
         self._path.setVisible(bool(evidence.clip_path))
 
-        if evidence.media_kind is MediaKind.CLIP:
+        if evidence.media_kind is MediaKind.DOCUMENT:
+            self._kind_note.setText(
+                f"This opens the whole document. The excerpt above is at {location(evidence)}."
+            )
+            self._open.setText("Open document")
+            self._open.setEnabled(True)
+            self._open.setToolTip("A system viewer cannot be told which page to show, so turn to the page above")
+        elif evidence.media_kind is MediaKind.CLIP:
             self._kind_note.setText(
                 "This file is the cited excerpt itself — it opens at the right moment."
             )
@@ -194,7 +201,7 @@ class SourcePanel(QWidget):
             return
         clipboard = QGuiApplication.clipboard()
         if clipboard is not None:
-            clipboard.setText(timespan(self._evidence.start_sec, self._evidence.end_sec))
+            clipboard.setText(location(self._evidence))
 
     def _on_open(self) -> None:
         if self._evidence is None:

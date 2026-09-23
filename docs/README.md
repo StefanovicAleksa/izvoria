@@ -25,6 +25,8 @@ The batch ingestion pipeline (`BatchMediaPipeline` for video, `BatchAudioPipelin
 15. [context_unification](features/context_unification.md) — merge audio + visual context
 15.5 / 16. [clip_extractor](features/clip_extractor.md) + [rag_storage](features/rag_storage.md) — run concurrently: clip extraction (CPU) and RAG embedding/indexing (GPU)
 
+**Documents** (`BatchDocumentPipeline`, PDF / DOCX): scanner → storage → [document_conversion](features/document_conversion.md) (per-page MarkItDown, OCR for scans) → [document_structuring](features/document_structuring.md) + [contextual_retrieval](features/contextual_retrieval.md) (`execute_document`) → context_unification → rag_storage. Chunks are page- or section-anchored; see [core/anchors.md](core/anchors.md).
+
 **Query time** (not part of batch ingestion):
 
 - Standard search → [rag_retrieval](features/rag_retrieval.md) (hybrid dense + sparse search)
@@ -38,6 +40,7 @@ See [orchestration.md](orchestration.md) for the full Phase/Pipeline inventory a
 - [core/database.md](core/database.md) — SQLAlchemy engine, session management
 - [core/jobs.md](core/jobs.md) — job lifecycle/audit-trail tracking
 - [core/model_manager.md](core/model_manager.md) — VRAM-budget-driven model load/unload orchestrator
+- [core/anchors.md](core/anchors.md) — where a chunk sits in its source (time, page, section) and how citations print it
 - [core/language.md](core/language.md) — language packs: every language-specific rule, per appliance language (en, sr, sl)
 
 ## Composition layer

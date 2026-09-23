@@ -3,6 +3,7 @@
 
 import uuid
 import pytest
+from app.core.anchors.domain.enums import AnchorKind
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.qa_generation.utils.citation_parser import (
     build_context_block, build_numbered_context_block, doc_numbers, number_for_reading, parse_citations,
@@ -217,3 +218,29 @@ class TestCitationJoinersByLanguage:
         appliance_language("en")
 
         assert normalize_citation_tags("See [Doc 1 i 2].", 2) == "See [Doc 1 i 2]."
+
+
+class TestDocumentCitations:
+    @pytest.fixture
+    def contract_chunk(self):
+        return RetrievedChunk(
+            chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload="[Document Context: lease]\n\nThe Tenant...",
+            raw_text="The Tenant may terminate on 30 days' notice.", start_sec=0.0, end_sec=0.0,
+            anchor_kind=AnchorKind.PAGE, page_start=7, page_end=8, section_path="Article 7 Termination",
+            position=4, relevance_score=0.9
+        )
+
+    def test_header_shows_page_and_section_instead_of_a_zero_timestamp(self, contract_chunk):
+        block = build_numbered_context_block([(3, contract_chunk)])
+
+        assert block.formatted_text.startswith(
+            "[Doc 3] (pp. 7–8 · Article 7 Termination)\nThe Tenant may terminate on 30 days' notice.")
+        assert "00:00:00" not in block.formatted_text
+
+    def test_citation_carries_the_document_anchor(self, contract_chunk):
+        citations = parse_citations("Thirty days [Doc 1].", [contract_chunk], {"[Doc 1]": contract_chunk.chunk_id})
+
+        assert len(citations) == 1
+        assert citations[0].anchor_kind is AnchorKind.PAGE
+        assert (citations[0].page_start, citations[0].page_end) == (7, 8)
+        assert citations[0].section_path == "Article 7 Termination"

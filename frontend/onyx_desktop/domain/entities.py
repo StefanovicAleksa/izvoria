@@ -44,6 +44,9 @@ class Evidence:
     speakers: Tuple[str, ...] = ()
     clip_path: Optional[str] = None
     media_kind: MediaKind = MediaKind.UNRESOLVED
+    # Where a document excerpt sits ("p. 7 · Article 7 Termination"), formatted by the gateway. Empty for a
+    # recording, whose place is its time range; a document's start_sec/end_sec are 0.0.
+    location: str = ""
 
     # Only meaningful for ranked search hits; a hydration read returns 0.0/None for these,
     # so they stay out of citation cards.
@@ -120,6 +123,7 @@ class SearchHit:
     speakers: Tuple[str, ...] = ()
     clip_path: Optional[str] = None
     media_kind: MediaKind = MediaKind.UNRESOLVED
+    location: str = ""
 
     def as_evidence(self) -> Evidence:
         """Search hits feed the same evidence card and player as citations do."""
@@ -133,6 +137,7 @@ class SearchHit:
             speakers=self.speakers,
             clip_path=self.clip_path,
             media_kind=self.media_kind,
+            location=self.location,
             relevance_score=self.relevance_score,
             rerank_score=self.rerank_score,
         )
@@ -153,6 +158,7 @@ class IngestionSummary:
     failed: int = 0
     vectors_created: int = 0
     clips_extracted: int = 0
+    pages_converted: int = 0
     duration_seconds: float = 0.0
     errors: Tuple[Tuple[str, str], ...] = ()
 

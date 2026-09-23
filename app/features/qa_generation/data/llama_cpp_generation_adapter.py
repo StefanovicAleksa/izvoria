@@ -5,7 +5,7 @@ import gc
 import json
 import re
 import logging
-from typing import Any, List, Dict
+from typing import Any, List, Dict, Optional
 from pathlib import Path
 
 from app.core.language.service.language_api import get_language_pack
@@ -69,7 +69,8 @@ class LlamaCppGenerationAdapter(IQAGenerationAdapter):
         except Exception as e:
             raise map_qa_error(e, context="Counting tokens") from e
 
-    def get_context_token_budget(self, model: LoadedModel, user_query: str, include_critique: bool) -> int:
+    def get_context_token_budget(self, model: LoadedModel, user_query: str, include_critique: bool,
+                                 system_prompt: Optional[str] = None) -> int:
         """
         Tokens left for the context block. The answer prompt holds the block plus the answer being generated;
         the critique prompt holds the same block plus the full draft plus its own verdict, so with a critique
@@ -80,7 +81,8 @@ class LlamaCppGenerationAdapter(IQAGenerationAdapter):
             n_ctx = llm.n_ctx()
             answer_tokens = settings.QA_GENERATION_MAX_ANSWER_TOKENS
             pack = get_language_pack()
-            fixed = self.count_tokens(model, pack.localize_prompt(QA_SYSTEM_PROMPT) + QA_USER_TEMPLATE.format(
+            answer_prompt = system_prompt if system_prompt is not None else pack.localize_prompt(QA_SYSTEM_PROMPT)
+            fixed = self.count_tokens(model, answer_prompt + QA_USER_TEMPLATE.format(
                 context_block="", user_query=user_query))
             budget = n_ctx - fixed - answer_tokens - self.TEMPLATE_MARGIN_TOKENS
 

@@ -22,8 +22,11 @@ from app.features.deep_research_report.domain.entities import (
     OutlineSection, ResearchPlan, SubQuestion,
 )
 from app.features.session_memory.data.models import SESSION_TURNS_UPGRADE_DDL
+from app.features.rag_storage.data.models import VECTOR_CHUNKS_UPGRADE_DDL
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
-from app.orchestration.domain.entities import PhaseBatchResult, ReasonedChatResponse, ConversationChatResult
+from app.orchestration.domain.entities import (
+    DocumentConversionJobResult, PhaseBatchResult, ReasonedChatResponse, ConversationChatResult,
+)
 from app.features.storage.domain.entities import Source, SourceType
 
 
@@ -116,7 +119,8 @@ class TestOnyxEngineUnit:
         engine.start()
 
         executed = [str(call.args[0]) for call in session.execute.call_args_list]
-        assert executed == [*SESSION_TURNS_UPGRADE_DDL, *JOBS_UPGRADE_DDL, *RESEARCH_REPORT_UPGRADE_DDL]
+        assert executed == [*SESSION_TURNS_UPGRADE_DDL, *JOBS_UPGRADE_DDL, *RESEARCH_REPORT_UPGRADE_DDL,
+                            *VECTOR_CHUNKS_UPGRADE_DDL]
         assert all(
             "ADD COLUMN IF NOT EXISTS" in statement
             for statement in executed
@@ -701,3 +705,58 @@ class TestProposeResearchPlanJobCount:
 
         deep_run_jobs = 1 + 12 + 1 + 8 + 1
         assert proposal.expected_job_count >= deep_run_jobs
+
+
+class TestIngestDocuments:
+    @pytest.fixture
+    def document_pipeline(self):
+        return Mock()
+
+    @pytest.fixture
+    def engine(self, document_pipeline):
+        return OnyxEngine(
+            async_model_service=Mock(), media_pipeline=Mock(), audio_pipeline=Mock(), live_pipeline=Mock(),
+            live_verified_pipeline=Mock(), live_qa_pipeline=Mock(), storage_api=Mock(),
+            document_pipeline=document_pipeline,
+        )
+
+    def test_raises_if_offline(self, engine):
+        with pytest.raises(EngineOfflineError):
+            engine.ingest_documents("/dummy/path")
+
+    def test_raises_if_not_wired(self):
+        engine = OnyxEngine(async_model_service=Mock(), media_pipeline=Mock(), audio_pipeline=Mock(),
+                            live_pipeline=Mock(), live_verified_pipeline=Mock(), live_qa_pipeline=Mock(),
+                            storage_api=Mock())
+        engine._state = EngineState.ONLINE
+
+        with pytest.raises(EngineOfflineError, match="Document ingestion"):
+            engine.ingest_documents("/dummy/path")
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_reports_page_counts_and_lists_documents_with_missing_text(self, _, engine, document_pipeline):
+        engine.start()
+        clean, scanned = uuid.uuid4(), uuid.uuid4()
+        document_pipeline.process_directory.return_value = {
+            PipelinePhase.SCAN: PhaseBatchResult(phase=PipelinePhase.SCAN, status=PhaseStatus.COMPLETED,
+                                                 successful_count=2, items=[]),
+            PipelinePhase.DOCUMENT_CONVERSION: PhaseBatchResult(
+                phase=PipelinePhase.DOCUMENT_CONVERSION, status=PhaseStatus.COMPLETED, successful_count=2, items=[
+                    DocumentConversionJobResult(source_id=clean, success=True, pages_total=12),
+                    DocumentConversionJobResult(source_id=scanned, success=True, pages_total=3, pages_ocr=3,
+                                                pages_ocr_incomplete=1, pages_unreadable=1),
+                ]),
+            PipelinePhase.RAG_INDEXING: PhaseBatchResult(
+                phase=PipelinePhase.RAG_INDEXING, status=PhaseStatus.COMPLETED, successful_count=2,
+                items=[Mock(success=True, dense_vectors_saved=9), Mock(success=True, dense_vectors_saved=2)]),
+        }
+
+        report = engine.ingest_documents("/docs")
+
+        document_pipeline.process_directory.assert_called_once_with("/docs")
+        assert (report.pages_converted, report.pages_ocr, report.pages_ocr_incomplete, report.pages_unreadable) == (
+            15, 3, 1, 1)
+        assert report.vectors_created == 11 and report.successful_ingestions == 2
+        assert list(report.errors) == [f"document_pages_{scanned}"]
+        assert "1 scanned page(s) could not be read" in report.errors[f"document_pages_{scanned}"]
+        assert engine.get_state() == EngineState.ONLINE

@@ -19,6 +19,27 @@ Lines start with a speaker label and timestamp, e.g. "[Speaker_0 @ 00:12:31]: ..
 5. CITATION PLACEMENT: Place the citation tag immediately after the factual claim it supports, before the sentence's period. Do not group all citations at the end of the response.
 </CRITICAL_RULES>"""
 
+# The same prompt when the context holds document excerpts as well as (or instead of) transcripts. Only then:
+# with nothing but transcripts in the context the model gets QA_SYSTEM_PROMPT unchanged, so an appliance that
+# ingests only recordings answers exactly as it did before documents existed.
+_TRANSCRIPT_CONTEXT_FORMAT = """Each context block is a verbatim transcript excerpt from the client's own recordings, introduced by a document tag and its time range, e.g. "[Doc 1] (00:12:31–00:14:02)".
+Lines start with a speaker label and timestamp, e.g. "[Speaker_0 @ 00:12:31]: ...". Speaker labels are anonymous diarization IDs, not names."""
+_MIXED_CONTEXT_FORMAT = """Each context block is a verbatim excerpt from the client's own material, introduced by a document tag and its location. There are two kinds:
+- A transcript excerpt from a recording, located by its time range, e.g. "[Doc 1] (00:12:31–00:14:02)". Its lines start with a speaker label and timestamp, e.g. "[Speaker_0 @ 00:12:31]: ...". Speaker labels are anonymous diarization IDs, not names.
+- A document excerpt (a contract, letter, invoice, filing...), located by its page and section, e.g. "[Doc 2] (p. 7 · Article 7 Termination)". Its text is the document's own wording."""
+_TRANSCRIPT_ATTRIBUTION = """3. ATTRIBUTION: When you report what was said, attribute it to the speaker label shown in the transcript. Never invent names or roles for a speaker label unless the transcript itself states them."""
+_MIXED_ATTRIBUTION = """3. ATTRIBUTION: When you report what was said in a recording, attribute it to the speaker label shown in the transcript. Never invent names or roles for a speaker label unless the transcript itself states them. When you report what a document says, attribute it to the document, not to a speaker."""
+assert _TRANSCRIPT_CONTEXT_FORMAT in QA_SYSTEM_PROMPT and _TRANSCRIPT_ATTRIBUTION in QA_SYSTEM_PROMPT
+QA_DOCUMENTS_SYSTEM_PROMPT = (QA_SYSTEM_PROMPT
+                              .replace(_TRANSCRIPT_CONTEXT_FORMAT, _MIXED_CONTEXT_FORMAT)
+                              .replace(_TRANSCRIPT_ATTRIBUTION, _MIXED_ATTRIBUTION))
+
+
+def qa_system_prompt(has_documents: bool) -> str:
+    """The answer prompt for a context that does or does not hold document excerpts."""
+    return QA_DOCUMENTS_SYSTEM_PROMPT if has_documents else QA_SYSTEM_PROMPT
+
+
 # The answer rule 1 of QA_SYSTEM_PROMPT prescribes. Prompts are written in English and localised per appliance
 # (LanguagePack.localize_prompt swaps this sentence for the pack's refusal); the refusal returned without a model is
 # the pack's `answers.refusal`.
