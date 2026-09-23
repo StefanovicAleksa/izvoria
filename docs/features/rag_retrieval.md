@@ -25,3 +25,8 @@ The first stage of all three live pipelines — `LiveRetrievalPipeline` (standar
 ## Gotchas / design notes
 
 This is the natural, already-stable hook for building an agent on top of RAG — no need to reimplement hybrid search, just call `RetrievalAPI.search()` (or `IRetrievalRepository.execute_hybrid_search()` one layer down) and, if hallucination-filtered context is needed, follow it with `retrieval_hallucination_scrubber`.
+
+## Language
+
+The sparse leg uses `settings.FTS_LANGUAGE_CONFIG`, taken from the language pack: `english`, `serbian` (Snowball; stems Cyrillic, Latin, ekavian and ijekavian to one stem) or `simple` (Slovenian; Postgres ships no stemmer). A query is embedded and keyword-matched in the index's script (`_search_text`: a Serbian query typed in Cyrillic searches the Latin index), while results stay keyed by the prompt as written. `RetrievalAPI.verify_index_language()` runs at `OnyxEngine.start()` and raises `IndexLanguageMismatchError` when `vector_chunks.fts_document` was generated with another configuration (`PostgresSearchRepository.get_index_fts_config()` reads it from `pg_attrdef`).
+

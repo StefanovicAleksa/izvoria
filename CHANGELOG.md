@@ -4,6 +4,34 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Language packs: English, Serbian and Slovenian appliances
+
+Onyx assumed English end to end. That covered the Whisper language, the domain scout (`whisper-tiny-en`), the Postgres stemmer, phonetic correction's letter names and spelling rules, the hallucination blacklist, stopwords, the visual grounding regexes, the refusal sentence, citation parsing and the report's boilerplate. Every one of those is now read from a validated **language pack**, `data/languages/<code>.toml` (new core module `app/core/language`, see `docs/core/language.md`). An appliance serves the one language named by `APPLIANCE_LANGUAGE`.
+
+**Why not a translation layer.** Translating transcripts to English would put model-written text under every citation, multiply ASR errors by MT errors, and hide mis-hearings from phonetic correction (a translated mis-hearing no longer sounds like the term). So nothing is translated: the index and the answers stay in the spoken language.
+
+**English doesn't move.** `en.toml` holds exactly the values that used to be hard-coded, and English prompts are byte-for-byte unchanged (`localize_prompt` is a no-op for English). The existing unit suite passed unchanged apart from two fixtures that now build the English config explicitly: the hallucination blacklist and the transcription adapter mock's `detect_language`.
+
+**What Serbian and Slovenian get.**
+- **Small models.** Gemma 4 E4B replaces Llama 3.2 3B and Qwen2.5-3B, neither of which covers these languages, in five stages: domain classifier, contextual retrieval, visual synthesis, phonetic verification, visual hallucination correction. Verified on the dev box: it loads through each adapter, including the GBNF-constrained ones and contextual retrieval at 32K context (~6 GB), and handles Serbian input correctly.
+- **Domain scout.** Uses large-v3.
+- **Punctuation.** Whisper's own. The fullstop classifier was trained only on en/de/fr/it.
+- **Serbian script.** Serbian transcripts and queries are normalised Cyrillic → Latin, the exact direction, word by word so timestamps align. Postgres' `serbian` stemmer maps both scripts and both variants to one stem; Slovenian uses `simple`, because Postgres ships no Slovenian stemmer.
+- **Output language.** Answers, refusals, reports, and the generated context stored beside the transcript are written in the appliance's language. The VLM stays English.
+
+**Two new safety checks.**
+- **`LanguageMismatchError` (transcription).** Whisper's language ID runs over the first 30 s of speech. A file it confidently hears in another language is rejected, not forced: forced, Whisper translates or invents fluent text, which would be indexed as if someone had said it. Serbian audio detected as Croatian or Bosnian is accepted.
+- **`IndexLanguageMismatchError` (engine start).** An index whose keyword column was generated for another language refuses to start, instead of silently searching with the wrong stemmer.
+
+**Glossaries are per language.** They live in `data/glossaries/<code>/`; the English ones moved to `en/`. The Wikidata miner collects the pack's label languages (Serbian: `sr`, `sr-el`, transliterated to Latin).
+
+**Known gaps.**
+- Serbian and Slovenian have no glossaries yet, so phonetic correction skips itself.
+- Their phonetic matching has no inflection handling: a term replaces a span in its dictionary form. This needs work before those glossaries are trusted.
+- Their hallucination patterns are unverified seeds.
+- The desktop UI is English.
+- Whisper's word error rate on real Serbian/Slovenian client audio has not been measured. Measure it before selling either language.
+
 ## A gathering round is only entered when it has something new to ask
 
 Exhaustive mode kept no record of what it had already searched for, so it re-searched it.

@@ -38,6 +38,7 @@ See [orchestration.md](orchestration.md) for the full Phase/Pipeline inventory a
 - [core/database.md](core/database.md) — SQLAlchemy engine, session management
 - [core/jobs.md](core/jobs.md) — job lifecycle/audit-trail tracking
 - [core/model_manager.md](core/model_manager.md) — VRAM-budget-driven model load/unload orchestrator
+- [core/language.md](core/language.md) — language packs: every language-specific rule, per appliance language (en, sr, sl)
 
 ## Composition layer
 

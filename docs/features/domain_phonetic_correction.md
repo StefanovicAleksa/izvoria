@@ -74,3 +74,8 @@ The gate in front of it could not tell these apart from real fixes.
 **Other.**
 - The Qwen model shares its weights file with visual hallucination correction, but has its own `ModelType`.
 - `utils/sentence_splitter.py` is no longer used by this feature; `tests/features/sentence_reconstruction` still covers it.
+
+## Language
+
+The phonetic key's alphabet, letter folds, spelling rewrites, silent letters and spelled-out letter names, the candidate tokenizer, the rogue-zero sanitizer and the plural/verb-suffix rules all come from the language pack's `[phonetic]` table (`../core/language.md`). The English pack holds the values the code used to hard-code. Serbian and Slovenian set `plural_suffix = ""`: a term replaces a mis-heard span in its dictionary form, since a replacement can't reproduce a case ending. Inflection-aware matching is still needed before sr/sl glossaries are trusted. Glossaries are read from `data/glossaries/<code>/`.
+
