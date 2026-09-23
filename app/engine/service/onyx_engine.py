@@ -111,6 +111,10 @@ class OnyxEngine(IOnyxEngine):
                     for statement in (*SESSION_TURNS_UPGRADE_DDL, *JOBS_UPGRADE_DDL, *RESEARCH_REPORT_UPGRADE_DDL):
                         session.execute(text(statement))
 
+                # An index built for another language can't be searched with this one's stemmer
+                if self._retrieval_api is not None:
+                    self._retrieval_api.verify_index_language()
+
                 self._force_aggressive_garbage_collection()
 
                 self._state = EngineState.ONLINE

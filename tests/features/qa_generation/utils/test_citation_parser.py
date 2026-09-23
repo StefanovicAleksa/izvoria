@@ -200,3 +200,20 @@ class TestConversationNumbering:
         citations = parse_citations("X [Doc 11]. Y [Doc 4, 5].", [a, b], mapping)
 
         assert [(c.doc_id, c.chunk_id) for c in citations] == [("[Doc 4]", a.chunk_id), ("[Doc 11]", b.chunk_id)]
+
+
+class TestCitationJoinersByLanguage:
+    @pytest.mark.parametrize("code, text", [
+        ("sr", "Tako je [Doc 1 i 2]."),
+        ("sl", "Tako je [Doc 1 in 2]."),
+        ("sr", "Tako je [Doc 1 and 2]."),      # English stays accepted: the prompts are written in English
+    ])
+    def test_language_joiner_groups_are_split_into_tags(self, appliance_language, code, text):
+        appliance_language(code)
+
+        assert normalize_citation_tags(text, 2) == "Tako je [Doc 1][Doc 2]."
+
+    def test_joiner_of_another_language_is_not_a_citation(self, appliance_language):
+        appliance_language("en")
+
+        assert normalize_citation_tags("See [Doc 1 i 2].", 2) == "See [Doc 1 i 2]."

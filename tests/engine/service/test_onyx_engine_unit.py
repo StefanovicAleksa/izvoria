@@ -7,6 +7,8 @@ from unittest.mock import Mock, patch
 
 from app.engine.service.onyx_engine import OnyxEngine
 from app.engine.domain.enums import EngineState
+from app.engine.exceptions.base import EngineError
+from app.features.rag_retrieval.exceptions import IndexLanguageMismatchError
 from app.engine.domain.entities import IngestionReport
 from app.engine.exceptions.lifecycle import EngineOfflineError
 from app.features.rag_retrieval.domain.entities import SearchQuery
@@ -91,6 +93,21 @@ class TestOnyxEngineUnit:
         assert engine.get_state() == EngineState.OFFLINE
         mock_async_service.shutdown.assert_called_once()
         mock_db_manager.dispose.assert_called_once()
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_start_verifies_the_index_was_built_for_this_language(self, mock_db_manager, engine, mock_retrieval_api):
+        engine.start()
+
+        mock_retrieval_api.verify_index_language.assert_called_once_with()
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_start_fails_on_an_index_built_for_another_language(self, mock_db_manager, engine, mock_retrieval_api):
+        mock_retrieval_api.verify_index_language.side_effect = IndexLanguageMismatchError("built for 'english'")
+
+        with pytest.raises(EngineError, match="built for 'english'"):
+            engine.start()
+
+        assert engine.get_state() == EngineState.ERROR
 
     @patch('app.engine.service.onyx_engine.db_manager')
     def test_start_adds_multi_turn_columns_to_an_existing_session_turns_table(self, mock_db_manager, engine):

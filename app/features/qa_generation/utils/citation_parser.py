@@ -3,8 +3,10 @@
 
 import re
 import uuid
+from functools import lru_cache
 from typing import Collection, Dict, List, Optional, Tuple
 
+from app.core.language.service.language_api import get_language_pack
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.qa_generation.domain.entities import RAGContextBlock, QACitation
 from app.features.qa_generation.utils.context_packer import order_for_reading, strip_repeated_overlap
@@ -71,8 +73,16 @@ def doc_numbers(doc_mapping: Dict[str, uuid.UUID]) -> set:
 # Any bracket that starts with "Doc"/"Docs", e.g. [Doc 1], [doc 2], [Doc 1, Doc 3], [Doc 1, 3], [Docs 2-4], [Doc 1 and 2]
 _CITATION_GROUP = re.compile(r"\[\s*Docs?\b[^\[\]]*\]", re.IGNORECASE)
 _CITATION_NUMBER = re.compile(r"(\d+)\s*[-–—]\s*(\d+)|(\d+)")
-# What a citation group may contain besides numbers; anything else means the bracket is not a citation
-_CITATION_FILLER = re.compile(r"docs?|and|\d+|[\s,;&.\-–—]", re.IGNORECASE)
+
+
+@lru_cache(maxsize=8)
+def _citation_filler(joiners: Tuple[str, ...]) -> re.Pattern:
+    """
+    What a citation group may contain besides numbers; anything else means the bracket is not a citation. The
+    joining words are the language pack's ("and", "i", "in") plus English, the language the prompts are written in.
+    """
+    words = "|".join(re.escape(word) for word in sorted({"and", *joiners}))
+    return re.compile(rf"docs?|\b(?:{words})\b|\d+|[\s,;&.\-–—]", re.IGNORECASE)
 _MAX_RANGE_SPAN = 20
 
 
@@ -87,9 +97,11 @@ def normalize_citation_tags(
     valid_numbers) point at no evidence and are dropped, since a tag that resolves to nothing would look like a
     citation without being one.
     """
+    filler = _citation_filler(tuple(get_language_pack().text.citation_joiners))
+
     def _rewrite(match: re.Match) -> str:
         body = match.group(0)[1:-1]
-        if _CITATION_FILLER.sub("", body):
+        if filler.sub("", body):
             return match.group(0)
 
         numbers: List[int] = []

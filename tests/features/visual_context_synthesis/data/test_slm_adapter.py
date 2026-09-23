@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.enums import ModelType
 from app.features.visual_context_synthesis.data.slm_adapter import VisualSLMAdapter
+from app.features.visual_context_synthesis.data.prompts import VISUAL_SYNTHESIS_SYSTEM_PROMPT
 from app.features.visual_context_synthesis.exceptions.model import VisualSLMLoadError
 
 
@@ -75,3 +76,20 @@ class TestVisualSLMAdapter:
         mock_llm.close.assert_called_once()
         assert loaded_model.model_instance is None
         mock_gc.assert_called_once()
+
+class TestSynthesisLanguage:
+    def test_slovenian_appliance_asks_for_slovenian_context(self, appliance_language):
+        """The VLM describes frames in English; the context stored beside a Slovenian transcript is Slovenian."""
+        appliance_language("sl")
+        llm = MagicMock(**{"create_chat_completion.return_value": {"choices": [{"message": {"content": "Graf."}}]}})
+        manifest = ModelManifest(model_type=ModelType.VISUAL_CONTEXT_SYNTHESIS, model_path="/m.gguf",
+                                 required_vram_mb=1)
+
+        VisualSLMAdapter().synthesize_context(
+            LoadedModel(manifest=manifest, model_instance=llm),
+            [{"start_sec": 0.0, "end_sec": 5.0, "representative_description": "A line chart.", "frame_ids": []}]
+        )
+
+        system_prompt = llm.create_chat_completion.call_args.kwargs["messages"][0]["content"]
+        assert system_prompt.startswith(VISUAL_SYNTHESIS_SYSTEM_PROMPT)
+        assert "in Slovenian" in system_prompt

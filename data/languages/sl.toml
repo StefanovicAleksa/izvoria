@@ -120,7 +120,7 @@ wikidata_languages = ["sl", "la"]
 
 [answers]
 refusal = "Na to ne morem odgovoriti na podlagi podanega konteksta."
-output_instruction = "Write every piece of text you produce in Slovenian, even though these instructions are in English. The source material is in Slovenian: never translate it into English. Keep [Doc N] tags, speaker labels and JSON keys exactly as specified."
+output_instruction = "Write every piece of text you produce in Slovenian, even though these instructions are in English. The source material is in Slovenian: never translate it into English. Keep [Doc N] tags, speaker labels, JSON keys and any exact reply word these instructions prescribe (such as NO_EVIDENCE) unchanged."
 transcript_instruction = "The transcript is in Slovenian. Never translate it: every word you do not correct must stay exactly as written."
 
 [report]

@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from app.features.rag_retrieval.data.postgres_search_repo import (
-    PostgresSearchRepository, _CHUNKS_BY_ID_SQL, _HYBRID_SEARCH_SQL, _NEIGHBORS_SQL
+    PostgresSearchRepository, _CHUNKS_BY_ID_SQL, _FTS_EXPRESSION_SQL, _HYBRID_SEARCH_SQL, _NEIGHBORS_SQL
 )
 from app.features.rag_retrieval.exceptions.base import RetrievalError
 
@@ -182,3 +182,26 @@ class TestPostgresSearchRepository:
 
         assert "LEFT JOIN video_clips vc ON vc.chunk_id = v.chunk_id" in sql
         assert "v.chunk_id = ANY(CAST(:chunk_ids AS uuid[]))" in sql
+
+
+class TestGetIndexFtsConfig:
+    @pytest.mark.parametrize("expression, config", [
+        ("to_tsvector('english'::regconfig, (text_payload)::text)", "english"),
+        ("to_tsvector('serbian'::regconfig, (text_payload)::text)", "serbian"),
+        (None, None),                    # vector_chunks not created yet
+        ("text_payload", None),          # not a tsvector expression at all
+    ])
+    @patch("app.features.rag_retrieval.data.postgres_search_repo.db_manager")
+    def test_reads_the_regconfig_from_the_generated_column(self, mock_db_manager, expression, config):
+        session = mock_db_manager.session.return_value.__enter__.return_value
+        session.execute.return_value.scalar.return_value = expression
+
+        assert PostgresSearchRepository().get_index_fts_config() == config
+        assert session.execute.call_args.args[0] is _FTS_EXPRESSION_SQL
+
+    @patch("app.features.rag_retrieval.data.postgres_search_repo.db_manager")
+    def test_database_failure_is_a_retrieval_error(self, mock_db_manager):
+        mock_db_manager.session.side_effect = RuntimeError("connection refused")
+
+        with pytest.raises(RetrievalError):
+            PostgresSearchRepository().get_index_fts_config()

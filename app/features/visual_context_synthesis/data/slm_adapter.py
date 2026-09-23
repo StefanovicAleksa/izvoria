@@ -5,6 +5,7 @@ import os
 import gc
 from typing import Any, List, Dict
 
+from app.core.language.service.language_api import get_language_pack
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.features.visual_context_synthesis.domain.interfaces import IVisualSLMAdapter
 from app.features.visual_context_synthesis.data.prompts import (
@@ -79,7 +80,7 @@ class VisualSLMAdapter(IVisualSLMAdapter):
             # 2. Inference
             response = llm.create_chat_completion(
                 messages=[
-                    {"role": "system", "content": VISUAL_SYNTHESIS_SYSTEM_PROMPT},
+                    {"role": "system", "content": get_language_pack().localize_prompt(VISUAL_SYNTHESIS_SYSTEM_PROMPT)},
                     {"role": "user", "content": user_content}
                 ],
                 max_tokens=200,

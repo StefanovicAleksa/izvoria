@@ -5,8 +5,10 @@ import pytest
 import uuid
 from unittest.mock import MagicMock
 
+from app.core.config import settings
+from app.features.rag_retrieval.exceptions import IndexLanguageMismatchError
 from app.features.rag_retrieval.service.retrieval_api import RetrievalAPI
-from app.features.rag_retrieval.domain.entities import SearchQuery, RetrievedChunk
+from app.features.rag_retrieval.domain.entities import CorpusSweep, SearchQuery, RetrievedChunk
 from app.core.model_manager.domain.entities import LoadedModel
 
 
@@ -316,3 +318,69 @@ class TestListIndexedSources:
 
         mocks["search_repo"].list_indexed_sources.assert_called_once_with(1)
         mocks["orchestrator"].acquire_model.assert_not_called()
+
+
+class TestRetrievalAPIScript:
+    """A Serbian index is Latin, so a query typed in Cyrillic is searched in Latin."""
+
+    @pytest.fixture
+    def mocks(self):
+        return {
+            "orchestrator": MagicMock(),
+            "embedding_adapter": MagicMock(**{"embed_prompt.return_value": [0.1],
+                                              "embed_prompts.side_effect": lambda _, prompts: [[0.1]] * len(prompts)}),
+            "search_repo": MagicMock(**{"execute_hybrid_search.return_value": [],
+                                        "pick_sweep_sources.return_value": [uuid.uuid4()]}),
+        }
+
+    @pytest.fixture
+    def api(self, mocks):
+        return RetrievalAPI(mocks["orchestrator"], mocks["embedding_adapter"], mocks["search_repo"])
+
+    def test_search_embeds_and_keyword_matches_the_latin_text(self, api, mocks, appliance_language):
+        appliance_language("sr")
+
+        result = api.search(SearchQuery(prompt="Шта је лекар рекао?", limit=5))
+
+        assert mocks["embedding_adapter"].embed_prompt.call_args.args[1] == "Šta je lekar rekao?"
+        assert mocks["search_repo"].execute_hybrid_search.call_args.kwargs["query_text"] == "Šta je lekar rekao?"
+        assert result.query == "Шта је лекар рекао?"
+
+    def test_search_batch_keeps_results_keyed_by_the_callers_prompt(self, api, mocks, appliance_language):
+        appliance_language("sr")
+
+        result = api.search_batch([SearchQuery(prompt="терапија", limit=5)],
+                                  sweep=CorpusSweep(prompt="дијагноза"))
+
+        assert mocks["embedding_adapter"].embed_prompts.call_args.args[1] == ["terapija", "dijagnoza"]
+        texts = [c.kwargs["query_text"] for c in mocks["search_repo"].execute_hybrid_search.call_args_list]
+        assert texts == ["terapija", "dijagnoza"]
+        assert [r.query for r in result.results] == ["терапија"]
+
+    def test_english_prompt_is_searched_as_written(self, api, mocks):
+        api.search(SearchQuery(prompt="What did Лекар say?", limit=5))
+
+        assert mocks["embedding_adapter"].embed_prompt.call_args.args[1] == "What did Лекар say?"
+
+
+class TestVerifyIndexLanguage:
+    @pytest.fixture
+    def repo(self):
+        return MagicMock()
+
+    @pytest.fixture
+    def api(self, repo):
+        return RetrievalAPI(MagicMock(), MagicMock(), repo)
+
+    @pytest.mark.parametrize("indexed", ["english", None])
+    def test_matching_or_absent_index_passes(self, api, repo, indexed):
+        repo.get_index_fts_config.return_value = indexed
+
+        api.verify_index_language()
+
+    def test_index_built_for_another_language_is_refused(self, api, repo, monkeypatch):
+        monkeypatch.setattr(settings, "FTS_LANGUAGE_CONFIG", "serbian")
+        repo.get_index_fts_config.return_value = "english"
+
+        with pytest.raises(IndexLanguageMismatchError, match="'english'.*'serbian'"):
+            api.verify_index_language()

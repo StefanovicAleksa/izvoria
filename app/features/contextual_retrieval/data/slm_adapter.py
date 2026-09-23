@@ -7,6 +7,7 @@ import re
 import logging
 from typing import Any
 
+from app.core.language.service.language_api import get_language_pack
 from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.features.contextual_retrieval.domain.interfaces import ISLMContextAdapter
@@ -92,7 +93,7 @@ class SLMContextAdapter(ISLMContextAdapter):
 
             response = llm.create_chat_completion(
                 messages=[
-                    {"role": "system", "content": CONTEXTUAL_SYSTEM_PROMPT},
+                    {"role": "system", "content": get_language_pack().localize_prompt(CONTEXTUAL_SYSTEM_PROMPT)},
                     {"role": "user", "content": user_content}
                 ],
                 max_tokens=150,  # Cap the output to ensure it remains a "short succinct context"

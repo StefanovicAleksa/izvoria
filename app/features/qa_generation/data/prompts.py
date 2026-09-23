@@ -1,6 +1,8 @@
 # Canvas: qa_generation_prompts_v2
 # Path: app/features/qa_generation/data/prompts.py
 
+from app.core.language.domain.entities import ENGLISH_REFUSAL
+
 QA_SYSTEM_PROMPT = """You are an expert analytical assistant for Enterprise Professionals.
 Your task is to accurately answer the user's question using ONLY the provided context blocks.
 
@@ -17,8 +19,10 @@ Lines start with a speaker label and timestamp, e.g. "[Speaker_0 @ 00:12:31]: ..
 5. CITATION PLACEMENT: Place the citation tag immediately after the factual claim it supports, before the sentence's period. Do not group all citations at the end of the response.
 </CRITICAL_RULES>"""
 
-# The answer rule 1 of QA_SYSTEM_PROMPT prescribes; returned directly when there is no evidence to show the model
-NO_EVIDENCE_ANSWER = "I cannot answer this based on the provided context."
+# The answer rule 1 of QA_SYSTEM_PROMPT prescribes. Prompts are written in English and localised per appliance
+# (LanguagePack.localize_prompt swaps this sentence for the pack's refusal); the refusal returned without a model is
+# the pack's `answers.refusal`.
+NO_EVIDENCE_ANSWER = ENGLISH_REFUSAL
 
 QA_USER_TEMPLATE = """
 [RETRIEVED CONTEXT]

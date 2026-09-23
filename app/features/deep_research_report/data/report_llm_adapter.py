@@ -9,6 +9,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from app.core.language.service.language_api import get_language_pack
 from app.core.config import settings
 from app.core.model_manager.domain.entities import LoadedModel, ModelManifest
 from app.core.model_manager.utils.llama_cpp_chat import build_llama, chat_completion, strip_reasoning
@@ -91,7 +92,7 @@ class LlamaCppReportAdapter(IReportLlmAdapter):
         """
         try:
             llm: Any = model.model_instance
-            fixed = self.count_tokens(model, SECTION_SYSTEM_PROMPT + self._section_user_content(
+            fixed = self.count_tokens(model, get_language_pack().localize_prompt(SECTION_SYSTEM_PROMPT) + self._section_user_content(
                 topic, section, evidence_block="", allowed_doc_numbers=[], outline_context=""
             ))
             available = llm.n_ctx() - fixed - settings.REPORT_SECTION_MAX_TOKENS - self.TEMPLATE_MARGIN_TOKENS
@@ -106,10 +107,10 @@ class LlamaCppReportAdapter(IReportLlmAdapter):
     def scope(self, model: LoadedModel, topic: str, corpus: CorpusDigest) -> ResearchPlan:
         try:
             messages = [
-                {"role": "system", "content": SCOPE_SYSTEM_PROMPT.format(
+                {"role": "system", "content": get_language_pack().localize_prompt(SCOPE_SYSTEM_PROMPT.format(
                     max_sections=settings.REPORT_MAX_SECTIONS,
                     max_sub_questions=settings.REPORT_MAX_SUB_QUESTIONS,
-                )},
+                ))},
                 {"role": "user", "content": SCOPE_USER_TEMPLATE.format(
                     topic=topic,
                     corpus_overview=self._corpus_overview(corpus),
@@ -222,7 +223,7 @@ class LlamaCppReportAdapter(IReportLlmAdapter):
                 f"- [{s.key}] {s.title}: {s.brief or '(no brief)'}" for s in plan.sections
             )
             messages = [
-                {"role": "system", "content": OUTLINE_SYSTEM_PROMPT},
+                {"role": "system", "content": get_language_pack().localize_prompt(OUTLINE_SYSTEM_PROMPT)},
                 {"role": "user", "content": OUTLINE_USER_TEMPLATE.format(
                     topic=plan.topic, outline_block=outline_block, bank_index=evidence_digest,
                     # "" in round 1 and in deep mode, which is what keeps the prompt identical to the
@@ -333,7 +334,7 @@ class LlamaCppReportAdapter(IReportLlmAdapter):
         try:
             llm: Any = model.model_instance
             messages = [
-                {"role": "system", "content": SECTION_SYSTEM_PROMPT},
+                {"role": "system", "content": get_language_pack().localize_prompt(SECTION_SYSTEM_PROMPT)},
                 {"role": "user", "content": self._section_user_content(
                     topic, section, evidence_block, allowed_doc_numbers, outline_context
                 )},
@@ -349,7 +350,7 @@ class LlamaCppReportAdapter(IReportLlmAdapter):
             )
             messages += [
                 {"role": "assistant", "content": draft},
-                {"role": "user", "content": SECTION_CITATION_RETRY_PROMPT},
+                {"role": "user", "content": get_language_pack().localize_prompt(SECTION_CITATION_RETRY_PROMPT)},
             ]
             return self._complete(model, messages, settings.REPORT_SECTION_MAX_TOKENS)
 
@@ -379,7 +380,7 @@ class LlamaCppReportAdapter(IReportLlmAdapter):
     ) -> str:
         try:
             messages = [
-                {"role": "system", "content": SUMMARY_SYSTEM_PROMPT},
+                {"role": "system", "content": get_language_pack().localize_prompt(SUMMARY_SYSTEM_PROMPT)},
                 {"role": "user", "content": SUMMARY_USER_TEMPLATE.format(
                     topic=topic,
                     section_digest=section_digest or "(The report has no written sections.)",

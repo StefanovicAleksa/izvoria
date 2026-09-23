@@ -2,6 +2,7 @@
 # Path: app/features/rag_retrieval/data/postgres_search_repo.py
 
 import logging
+import re
 import uuid
 from typing import List, Optional
 from sqlalchemy import text
@@ -149,7 +150,28 @@ _SWEEP_SOURCES_SQL = text("""
 """)
 
 
+# The generation expression of vector_chunks.fts_document, e.g. "to_tsvector('english'::regconfig, text_payload)"
+_FTS_EXPRESSION_SQL = text("""
+    SELECT pg_get_expr(d.adbin, d.adrelid) AS expression
+    FROM pg_attrdef d
+    JOIN pg_attribute a ON a.attrelid = d.adrelid AND a.attnum = d.adnum
+    WHERE d.adrelid = to_regclass('vector_chunks') AND a.attname = 'fts_document'
+""")
+_REGCONFIG = re.compile(r"'([a-z_]+)'::regconfig")
+
+
 class PostgresSearchRepository(IRetrievalRepository):
+
+    def get_index_fts_config(self) -> Optional[str]:
+        try:
+            with db_manager.session() as session:
+                expression = session.execute(_FTS_EXPRESSION_SQL).scalar()
+            if expression is None:
+                return None
+            match = _REGCONFIG.search(expression)
+            return match.group(1) if match else None
+        except Exception as e:
+            raise map_retrieval_error(e, context="Reading the index's text search configuration") from e
 
     def list_indexed_sources(self, min_chunks: int = 1) -> List[IndexedSource]:
         try:

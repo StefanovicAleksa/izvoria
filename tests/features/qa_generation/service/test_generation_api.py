@@ -373,3 +373,61 @@ class TestCitationGuard:
         first, second = [call[0][1] for call in mocks["adapter"].generate_conversation_answer.call_args_list]
         assert second == first + [{"role": "assistant", "content": "Uncited."},
                                   {"role": "user", "content": CITATION_RETRY_PROMPT}]
+
+
+class TestAnswersInTheApplianceLanguage:
+    """A Serbian appliance answers, refuses and is asked to cite in Serbian; the grounding rules are unchanged."""
+
+    SERBIAN_REFUSAL = "Ne mogu da odgovorim na ovo na osnovu dostupnog konteksta."
+
+    @pytest.fixture
+    def mocks(self):
+        adapter = MagicMock()
+        adapter.get_context_token_budget.return_value = 4000
+        adapter.get_conversation_token_budget.return_value = 100_000
+        adapter.count_tokens.side_effect = lambda model, text: len(text.split())
+        return {"adapter": adapter, "orchestrator": MagicMock()}
+
+    @pytest.fixture
+    def api(self, mocks, appliance_language):
+        appliance_language("sr")
+        return QAGenerationAPI(adapter=mocks["adapter"], orchestrator=mocks["orchestrator"])
+
+    def test_no_evidence_refuses_in_serbian(self, api):
+        assert api.generate("Šta je rekao lekar?", []).generated_answer == self.SERBIAN_REFUSAL
+
+    def test_system_prompt_uses_the_serbian_refusal_and_asks_for_serbian(self, api, mocks):
+        mocks["adapter"].generate_answer.return_value = "Lekar je rekao da je stabilan [Doc 1]."
+
+        api.generate("Šta je rekao lekar?", [_chunk()])
+
+        system_prompt = mocks["adapter"].generate_answer.call_args.kwargs["system_prompt"]
+        assert self.SERBIAN_REFUSAL in system_prompt
+        assert NO_EVIDENCE_ANSWER not in system_prompt
+        assert "<OUTPUT_LANGUAGE>" in system_prompt and "in Serbian" in system_prompt
+
+    @pytest.mark.parametrize("refusal", [SERBIAN_REFUSAL, NO_EVIDENCE_ANSWER])
+    def test_a_refusal_in_either_language_is_not_sent_back_for_citations(self, api, mocks, refusal):
+        mocks["adapter"].generate_answer.return_value = refusal
+
+        assert api.generate("Q", [_chunk()]).generated_answer == refusal
+        mocks["adapter"].generate_conversation_answer.assert_not_called()
+
+    def test_citation_retry_is_localized_and_uncited_answer_becomes_the_serbian_refusal(self, api, mocks):
+        mocks["adapter"].generate_answer.return_value = "Nešto."
+        mocks["adapter"].generate_conversation_answer.return_value = "Nešto drugo."
+
+        response = api.generate("Q", [_chunk()])
+
+        retry = mocks["adapter"].generate_conversation_answer.call_args[0][1][-1]["content"]
+        assert self.SERBIAN_REFUSAL in retry and NO_EVIDENCE_ANSWER not in retry
+        assert response.generated_answer == self.SERBIAN_REFUSAL
+
+    def test_conversation_system_prompt_is_localized(self, api, mocks):
+        mocks["adapter"].generate_conversation_answer.return_value = "Da [Doc 1]."
+
+        api.generate_conversation("Q", [_chunk()], ConversationHistory())
+
+        system_prompt = mocks["adapter"].generate_conversation_answer.call_args[0][1][0]["content"]
+        assert system_prompt.startswith(QA_SYSTEM_PROMPT.replace(NO_EVIDENCE_ANSWER, self.SERBIAN_REFUSAL))
+        assert "<CONVERSATION_RULES>" in system_prompt and system_prompt.rstrip().endswith("</OUTPUT_LANGUAGE>")
