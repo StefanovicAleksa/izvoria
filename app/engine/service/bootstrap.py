@@ -6,6 +6,7 @@ import typing
 from typing import Callable, Optional
 
 from app.core.config import settings
+from app.core.language.service.language_api import get_language_pack
 from app.core.database.service.manager import db_manager
 from app.core.jobs.data.repositories import JobRepository
 from app.core.jobs.service.manager import JobManager
@@ -47,6 +48,7 @@ from app.features.diarization.data.nemo_adapter import NeMoDiarizationAdapter
 from app.features.sentence_reconstruction.data.repositories import PostgresSentenceRepository
 from app.features.sentence_reconstruction.service.reconstruction_api import SentenceReconstructionAPI
 from app.features.sentence_reconstruction.data.punctuation_adapter import PunctuationAdapter
+from app.features.sentence_reconstruction.data.whisper_punctuation_adapter import WhisperPunctuationAdapter
 
 from app.features.domain_phonetic_correction.data.repositories import DomainPhoneticRepository
 from app.features.domain_phonetic_correction.data.qwen_adapter import QwenDomainAdapter
@@ -218,7 +220,10 @@ class OnyxBootstrapper:
                                          required_vram_mb=settings.DIARIZATION_VRAM_REQUIREMENT_MB)
 
         sentence_repo = PostgresSentenceRepository(db_manager)
-        real_punctuation_adapter = PunctuationAdapter()
+        # The fullstop classifier only knows en/de/fr/it; other languages keep the punctuation Whisper wrote
+        real_punctuation_adapter = (
+            PunctuationAdapter() if get_language_pack().punctuation.source == "model" else WhisperPunctuationAdapter()
+        )
         reconstruction_api = SentenceReconstructionAPI(sentence_repo, orchestrator, real_punctuation_adapter)
         punctuation_path = getattr(settings, "PUNCTUATION_MODEL_PATH", "models/fullstop-punctuation-multilingual-base")
         punctuation_manifest = ModelManifest(model_type=ModelType.SENTENCE_RECONSTRUCTION, model_path=punctuation_path,

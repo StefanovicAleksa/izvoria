@@ -4,6 +4,12 @@
 from typing import List
 from pydantic import BaseModel, ConfigDict, Field
 
+# Whisper hallucinations that appear whatever language is being transcribed
+LANGUAGE_NEUTRAL_BLACKLIST = (
+    r"(?i)(^MBC Network$|^KBS$|^NHK$)",  # Asian broadcasting network hallucinations
+    r"(?i)(\[Music\]|\[Silence\]|\[Applause\])",
+)
+
 
 class CorrectionConfig(BaseModel):
     """
@@ -21,13 +27,9 @@ class CorrectionConfig(BaseModel):
     min_avg_logprob: float = Field(default=-1.0)
     max_compression_ratio: float = Field(default=2.4)
 
-    # Global Regex Blacklist
-    blacklist_patterns: List[str] = Field(default_factory=lambda: [
-        r"(?i)(subscribe|like and subscribe|thank you for watching)",
-        r"(?i)(amara\.org|subtitles by)",
-        r"(?i)(^MBC Network$|^KBS$|^NHK$)",  # Asian broadcasting network hallucinations
-        r"(?i)(\[Music\]|\[Silence\]|\[Applause\])"
-    ])
+    # Regex Blacklist. Phrases Whisper invents in one particular language (YouTube outros, subtitle credits)
+    # come from the language pack and are added by CorrectionAPI; these are artifacts of any language.
+    blacklist_patterns: List[str] = Field(default_factory=lambda: list(LANGUAGE_NEUTRAL_BLACKLIST))
 
     model_config = ConfigDict(frozen=True)
 

@@ -5,12 +5,11 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 from typing import List, NamedTuple, Optional, Sequence
 
+from app.core.language.service.language_api import get_language_pack
 from app.features.domain_phonetic_correction.domain.entities import PhoneticCandidate
 from app.features.domain_phonetic_correction.utils.phonetic_key import letters_only, phonetic_key, spelled_letters
 from app.features.transcription.domain.entities import TranscriptWord
 
-# A word, number or contraction; inner dots/hyphens/apostrophes stay inside the token ("13.50.45", "pre-planning")
-_TOKEN = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9'’.\-]*[A-Za-z0-9])?")
 MAX_SPAN_TOKENS = 5
 # Every token of a span must supply at least this share of its letters to the match, so a span can't absorb
 # neighbouring words ("the bund" -> "Bunds") while real split mis-hearings ("a cute angina") still match
@@ -33,8 +32,19 @@ class _Term(NamedTuple):
     acronym: bool
 
 
+@lru_cache(maxsize=16)
+def _token_pattern(alphabet: str) -> re.Pattern:
+    """A word, number or contraction; inner dots/hyphens/apostrophes stay inside the token ("13.50.45", "pre-planning")."""
+    return re.compile(f"[{alphabet}0-9](?:[{alphabet}0-9'’.\\-]*[{alphabet}0-9])?", re.IGNORECASE)
+
+
+def _plural_suffix() -> str:
+    return get_language_pack().phonetic.plural_suffix
+
+
 def _singular(word: str) -> str:
-    return word[:-1] if len(word) > 3 and word.endswith("s") else word
+    suffix = _plural_suffix()
+    return word[:-len(suffix)] if suffix and len(word) > 3 and word.endswith(suffix) else word
 
 
 def _word_parts(text: str) -> List[str]:
@@ -56,7 +66,8 @@ def _prepare_term(term: str) -> Optional[_Term]:
 
 
 def _tokenize(text: str) -> List[_Token]:
-    return [_Token(m.group(0), m.start(), m.end()) for m in _TOKEN.finditer(text)]
+    pattern = _token_pattern(get_language_pack().phonetic.alphabet)
+    return [_Token(m.group(0), m.start(), m.end()) for m in pattern.finditer(text)]
 
 
 def _token_probabilities(tokens: List[_Token], words: Sequence[TranscriptWord]) -> List[Optional[float]]:
@@ -90,15 +101,20 @@ def _match_number(term: str, heard_tokens: List[_Token], acronym: bool) -> Optio
     """
     if acronym:
         return term
+    rules = get_language_pack().phonetic
     heard_last = letters_only(heard_tokens[-1].text)
     term_last = letters_only(term.split()[-1])
     # A heard verb form never becomes a noun term ("burned" -> "Bund"): that would change the grammar, not the spelling
-    if any(heard_last.endswith(suffix) and not term_last.endswith(suffix) for suffix in ("ed", "ing")):
+    if any(heard_last.endswith(suffix) and not term_last.endswith(suffix) for suffix in rules.verb_suffixes):
         return None
-    heard_plural = heard_last.endswith("s")
-    term_plural = len(term) > 3 and term.endswith("s") and not term.endswith("ss")
+    suffix = rules.plural_suffix
+    if not suffix:
+        # An inflected language: the term's own form is the only spelling anyone confirmed
+        return term
+    heard_plural = heard_last.endswith(suffix)
+    term_plural = len(term) > 3 and term.endswith(suffix) and not term.endswith(suffix * 2)
     if term_plural and not heard_plural:
-        return term[:-1]
+        return term[:-len(suffix)]
     if heard_plural and not term_plural:
         return None
     return term
@@ -205,15 +221,17 @@ def find_term_candidates(
                         continue
                     # A singular heard word is compared with the singular of a plural term ("burn" with "Bund")
                     term_letters, term_key = term.letters, term.key
-                    if _match_number(term.text, span_tokens, term.acronym) == term.text[:-1]:
-                        term_letters = term.letters[:-1]
+                    suffix = _plural_suffix()
+                    if suffix and _match_number(term.text, span_tokens, term.acronym) == term.text[:-len(suffix)]:
+                        term_letters = term.letters[:-len(suffix)]
                         term_key = phonetic_key(term_letters)
                     letter_similarity = _similarity(heard_letters, term_letters)
                     if letter_similarity < MIN_LETTER_SIMILARITY:
                         continue
                     score = (letter_similarity + _key_similarity(heard_letters, term_key)) / 2
                     # A plural term compared in its singular form loses the final "s" of its last word
-                    term_parts = term.parts if term_letters == term.letters else term.parts[:-1] + [term.parts[-1][:-1]]
+                    term_parts = (term.parts if term_letters == term.letters
+                                  else term.parts[:-1] + [term.parts[-1][:-len(suffix)]])
                     if score >= min_similarity and not _spans_cover_each_other(span_tokens, term_parts, term_letters):
                         continue
 

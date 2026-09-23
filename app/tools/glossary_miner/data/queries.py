@@ -17,15 +17,15 @@ SELECT DISTINCT ?item ?itemLabel ?alias ?aliasLang WHERE {{
     ?item wdt:P31/wdt:P279* wd:{parent_id} .
   }}
 
-  # Ensure we only fetch items that actually have an English label
+  # Ensure we only fetch items that actually have a label in the appliance's language
   ?item rdfs:label ?itemLabel .
-  FILTER (LANG(?itemLabel) = "en")
+  FILTER (LANG(?itemLabel) IN ({label_languages}))
 
   # Optionally fetch synonyms
   OPTIONAL {{
     ?item skos:altLabel ?alias .
     BIND(LANG(?alias) AS ?aliasLang)
-    FILTER (?aliasLang IN ("en", "la"))
+    FILTER (?aliasLang IN ({alias_languages}))
   }}
 }}
 LIMIT {limit}

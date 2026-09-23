@@ -3,6 +3,7 @@
 
 import os
 import gc
+import numpy as np
 import torch
 import torchaudio
 from typing import List, Optional, Any, Tuple
@@ -15,6 +16,8 @@ from app.features.vad.domain.entities import VadMap, VadSegment
 from app.features.transcription.utils.error_mapper import map_transcription_error
 
 SAMPLE_RATE = 16000
+# Whisper judges language from one 30 s window, so that much speech is all the language guard needs
+LANGUAGE_DETECTION_SEC = 30
 
 # Speech separated by at most this much silence is transcribed as one span
 MERGE_GAP_SEC = 2.0
@@ -162,18 +165,7 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
     ) -> List[TranscriptSegment]:
         try:
             whisper_model: Any = model.model_instance
-
-            # FIX: Removed backend="soundfile" so torchcodec can natively parse .mp4 and .wav via GPU
-            waveform, sample_rate = torchaudio.load(audio_path)
-
-            if waveform.shape[0] > 1:
-                waveform = torch.mean(waveform, dim=0, keepdim=True)
-
-            if sample_rate != SAMPLE_RATE:
-                resampler = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=SAMPLE_RATE)
-                waveform = resampler(waveform)
-
-            waveform_1d = waveform.squeeze(0).numpy()
+            waveform_1d = self._load_waveform(audio_path)
             total_duration = len(waveform_1d) / SAMPLE_RATE
             min_slice_sec = settings.WHISPER_MIN_SLICE_SEC
 
@@ -239,6 +231,44 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
 
         except Exception as e:
             raise map_transcription_error(e) from e
+
+    def detect_language(self, model: LoadedModel, audio_path: str, vad_map: VadMap) -> Optional[Tuple[str, float]]:
+        try:
+            waveform_1d = self._load_waveform(audio_path)
+            speech = []
+            collected = 0
+            for segment in vad_map.segments:
+                clip = waveform_1d[int(segment.start_sec * SAMPLE_RATE):int(segment.end_sec * SAMPLE_RATE)]
+                speech.append(clip)
+                collected += len(clip)
+                if collected >= LANGUAGE_DETECTION_SEC * SAMPLE_RATE:
+                    break
+            if collected == 0:
+                return None
+
+            # Speech only: silence and music between VAD segments would dilute Whisper's language ID
+            language, probability, _ = model.model_instance.detect_language(
+                audio=np.concatenate(speech)[:LANGUAGE_DETECTION_SEC * SAMPLE_RATE],
+                language_detection_segments=1
+            )
+            return language, float(probability)
+        except Exception as e:
+            raise map_transcription_error(e) from e
+
+    @staticmethod
+    def _load_waveform(audio_path: str) -> Any:
+        """The file as a 16 kHz mono float array, the only input faster-whisper accepts."""
+        # FIX: Removed backend="soundfile" so torchcodec can natively parse .mp4 and .wav via GPU
+        waveform, sample_rate = torchaudio.load(audio_path)
+
+        if waveform.shape[0] > 1:
+            waveform = torch.mean(waveform, dim=0, keepdim=True)
+
+        if sample_rate != SAMPLE_RATE:
+            resampler = torchaudio.transforms.Resample(orig_freq=sample_rate, new_freq=SAMPLE_RATE)
+            waveform = resampler(waveform)
+
+        return waveform.squeeze(0).numpy()
 
     @staticmethod
     def _to_domain_segment(segment: Any, offset_sec: float) -> TranscriptSegment:

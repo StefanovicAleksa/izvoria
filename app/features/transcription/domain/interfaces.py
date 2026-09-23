@@ -3,7 +3,7 @@
 
 import uuid
 from abc import ABC, abstractmethod
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 from app.core.model_manager.domain.entities import LoadedModel
 from app.core.model_manager.domain.interfaces import IModelLoader
@@ -23,6 +23,14 @@ class ITranscriptionAdapter(IModelLoader, ABC):
             hotwords: Optional[str] = None,
             initial_prompt: Optional[str] = None
     ) -> List[TranscriptSegment]:
+        pass
+
+    @abstractmethod
+    def detect_language(self, model: LoadedModel, audio_path: str, vad_map: VadMap) -> Optional[Tuple[str, float]]:
+        """
+        Whisper's language ID over the file's first ~30 s of detected speech: (language code, probability),
+        or None when there is no speech to judge.
+        """
         pass
 
 class ITranscriptRepository(ABC):

@@ -14,7 +14,7 @@ class WikidataItem(BaseModel):
     Aliases are natively grouped by their ISO language code directly from the SPARQL query.
     """
     item_id: str = Field(description="The Q-identifier from Wikidata (e.g., Q32098)")
-    label: str = Field(description="The primary English name of the term.")
+    label: str = Field(description="The primary name of the term, in the appliance's language.")
     aliases_by_lang: Dict[str, List[str]] = Field(
         default_factory=dict,
         description="A dictionary mapping language codes to aliases (e.g., {'en': ['Heart Attack'], 'la': ['Infarctus myocardii']})."

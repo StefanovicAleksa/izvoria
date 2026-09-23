@@ -2,9 +2,10 @@
 # Canvas: config_v3
 
 import os
+import tomllib
 from pathlib import Path
-from typing import Optional
-from pydantic import Field
+from typing import Annotated, Optional
+from pydantic import Field, TypeAdapter, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 APP_ENV = os.environ.get("ENV", "development")
@@ -55,8 +56,12 @@ class Settings(BaseSettings):
 
     @property
     def GLOSSARY_DIR(self) -> Path:
-        """Centralized location for industry-specific knowledge bases."""
-        path = Path(self.GLOSSARY_PATH) if self.GLOSSARY_PATH else self.BASE_DIR / "data" / "glossaries"
+        """
+        Centralized location for industry-specific knowledge bases, one directory per language
+        (data/glossaries/<APPLIANCE_LANGUAGE>/): a glossary's terms are words of one language.
+        """
+        base = Path(self.GLOSSARY_PATH) if self.GLOSSARY_PATH else self.BASE_DIR / "data" / "glossaries"
+        path = base / self.APPLIANCE_LANGUAGE
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -82,7 +87,19 @@ class Settings(BaseSettings):
     APPLIANCE_INDUSTRY: str = "GENERAL"
     # Sub-domains the router scores at least this high (0-10) feed Whisper hotwords and the phonetic dictionary
     DOMAIN_ROUTER_MIN_SCORE: int = 5
+
+    # ==========================================
+    # LANGUAGE
+    # ==========================================
+    # The ONE language this appliance transcribes, indexes and answers in. Every language-specific rule
+    # lives in its pack, data/languages/<code>.toml (see app/core/language).
     APPLIANCE_LANGUAGE: str = "en"
+    # Overrides the language pack directory (tests point it at fixture packs).
+    LANGUAGE_PACKS_PATH: str = ""
+
+    @property
+    def LANGUAGE_PACKS_DIR(self) -> Path:
+        return Path(self.LANGUAGE_PACKS_PATH) if self.LANGUAGE_PACKS_PATH else self.BASE_DIR / "data" / "languages"
 
     # ==========================================
     # MODEL PATHS & VRAM REQUIREMENTS
@@ -190,6 +207,7 @@ class Settings(BaseSettings):
     # Size of the RRF-fused candidate pool handed to the reranker
     RAG_RETRIEVAL_CANDIDATES: int = 40
     # Postgres text search configuration for the sparse (FTS) leg. Used in DDL, so restricted to identifiers.
+    # Taken from the language pack's [search] table unless set explicitly.
     FTS_LANGUAGE_CONFIG: str = Field(default="english", pattern=r"^[a-z_]+$")
 
     RAG_RERANKER_MODEL_PATH: str = "models/bge-reranker-v2-m3"
@@ -273,6 +291,37 @@ class Settings(BaseSettings):
 
     # Multi-turn chat: most recent turns of a session shown to the answer model and the reasoner
     CHAT_HISTORY_MAX_TURNS: int = 20
+
+    @model_validator(mode="after")
+    def _apply_language_pack(self) -> "Settings":
+        """
+        Applies the language pack's settings overrides: its [models] table (a language the default small models
+        can't handle gets a model that can) and its FTS configuration. A field set explicitly -- environment,
+        .env file or constructor -- always wins over the pack.
+
+        Only these two tables are read here, straight from the TOML: the full pack is validated by
+        app/core/language, which imports this module and so can't be imported by it.
+        """
+        path = self.LANGUAGE_PACKS_DIR / f"{self.APPLIANCE_LANGUAGE}.toml"
+        if not path.is_file():
+            raise ValueError(f"APPLIANCE_LANGUAGE='{self.APPLIANCE_LANGUAGE}' has no language pack at {path}")
+        with open(path, "rb") as f:
+            pack = tomllib.load(f)
+
+        overrides = dict(pack.get("models", {}))
+        if "search" in pack and "fts_config" in pack["search"]:
+            overrides["FTS_LANGUAGE_CONFIG"] = pack["search"]["fts_config"]
+
+        fields = type(self).model_fields
+        for name, value in overrides.items():
+            if name not in fields:
+                raise ValueError(f"Language pack {path.name} overrides unknown setting '{name}'")
+            if name not in self.model_fields_set:
+                # Validated against the field's own type and constraints (e.g. the FTS identifier pattern)
+                field = fields[name]
+                field_type = Annotated[field.annotation, *field.metadata] if field.metadata else field.annotation
+                setattr(self, name, TypeAdapter(field_type).validate_python(value))
+        return self
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,

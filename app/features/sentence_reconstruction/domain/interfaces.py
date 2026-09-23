@@ -18,6 +18,11 @@ class IPunctuationAdapter(IModelLoader, ABC):
     Replaces the old ISentenceAdapter (SaT model).
     """
 
+    @property
+    def requires_model(self) -> bool:
+        """False for an adapter that tags words without loading anything; callers then skip acquiring a model."""
+        return True
+
     @abstractmethod
     def predict_punctuation(self, model: LoadedModel, words: List[TranscriptWord]) -> List[PunctuatedWord]:
         """

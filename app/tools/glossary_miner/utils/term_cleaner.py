@@ -2,7 +2,10 @@
 # Path: app/features/glossary_miner/utils/term_cleaner.py
 
 import re
-from typing import List, Set
+from typing import List, Optional, Set
+
+from app.core.language.service.language_api import get_language_pack
+from app.core.language.utils.script import normalize_script
 from app.tools.glossary_miner.domain.entities import WikidataItem
 
 
@@ -12,25 +15,27 @@ def clean_and_extract_terms(raw_items: List[WikidataItem]) -> List[str]:
     Applies strict regex and length heuristics.
     """
     valid_terms: Set[str] = set()
+    # Terms are written the way the transcript is (Serbian Wikidata labels are mostly Cyrillic; transcripts Latin)
+    script = get_language_pack().transcription.script
 
     for item in raw_items:
-        # 1. Add the primary English label
-        _add_if_valid(item.label, valid_terms)
+        # 1. Add the primary label, in the appliance's language
+        _add_if_valid(item.label, valid_terms, script)
 
-        # 2. Iterate through English and Latin aliases
-        for lang in ["en", "la"]:
-            aliases = item.aliases_by_lang.get(lang, [])
+        # 2. Iterate through every alias language the miner collected
+        for aliases in item.aliases_by_lang.values():
             for alias in aliases:
-                _add_if_valid(alias, valid_terms)
+                _add_if_valid(alias, valid_terms, script)
 
     # Return a sorted list for deterministic JSON output
     return sorted(list(valid_terms))
 
 
-def _add_if_valid(term: str, collection: Set[str]) -> None:
+def _add_if_valid(term: str, collection: Set[str], script: Optional[str] = None) -> None:
     """Internal heuristic engine to validate and clean a single term."""
     if not term:
         return
+    term = normalize_script(term, script)
 
     # 1. Length Constraint: Whisper hotwords degrade if they are long phrases.
     # Count words by splitting on spaces.

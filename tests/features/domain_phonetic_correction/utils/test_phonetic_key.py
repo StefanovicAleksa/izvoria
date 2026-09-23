@@ -43,3 +43,35 @@ class TestSpelledLetters:
 
     def test_empty_for_no_tokens(self) -> None:
         assert spelled_letters([]) == ""
+
+
+class TestPhoneticKeyInOtherLanguages:
+    """The same key built from the Serbian and Slovenian packs' alphabets, folds and letter names."""
+
+    @pytest.mark.parametrize("heard, term", [
+        ("Ćirić", "Čirić"),        # č and ć are the commonest Serbian mis-hearing
+        ("džak", "đak"),           # so are dž and đ
+        ("infarkd", "infarkt"),    # voiced/voiceless pairs
+        ("zrak", "srak"),
+    ])
+    def test_serbian_confusable_spellings_share_a_key(self, appliance_language, heard, term):
+        appliance_language("sr")
+        assert phonetic_key(heard) == phonetic_key(term)
+
+    def test_serbian_letters_are_kept_not_stripped(self, appliance_language):
+        appliance_language("sr")
+        assert letters_only("Šećer-12, Đorđe!") == "šećer12đorđe"
+
+    def test_english_pack_still_strips_letters_outside_a_to_z(self, appliance_language):
+        appliance_language("en")
+        assert letters_only("Šećer") == "eer"
+
+    @pytest.mark.parametrize("code, tokens, letters", [
+        ("sr", ["e", "ka", "ge"], "ekg"),
+        ("sr", ["ce", "te"], "ct"),
+        ("sl", ["em", "er", "i"], "mri"),
+        ("sl", ["me", "re", "i"], "mri"),
+    ])
+    def test_spelled_out_acronyms_use_native_letter_names(self, appliance_language, code, tokens, letters):
+        appliance_language(code)
+        assert spelled_letters(tokens) == letters

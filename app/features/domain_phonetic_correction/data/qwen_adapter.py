@@ -5,6 +5,7 @@ import gc
 import logging
 from typing import List, Any, Dict
 
+from app.core.language.service.language_api import get_language_pack
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.features.domain_phonetic_correction.domain.interfaces import IDomainPhoneticPatchAdapter
 from app.features.domain_phonetic_correction.domain.entities import PhoneticCandidate
@@ -77,7 +78,10 @@ class QwenDomainAdapter(IDomainPhoneticPatchAdapter):
         try:
             llm: Any = model.model_instance
             grammar = self._get_grammar(_CHOICE_GRAMMAR)
-            system_content = PHONETIC_VERIFY_SYSTEM_PROMPT.format(domain=domain)
+            # Tells the model which language it is reading; English prompts come back unchanged
+            system_content = get_language_pack().localize_transcript_prompt(
+                PHONETIC_VERIFY_SYSTEM_PROMPT.format(domain=domain)
+            )
             verdicts: List[bool] = []
 
             for candidate in candidates:

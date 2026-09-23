@@ -87,6 +87,37 @@ class TestFasterWhisperAdapter:
         mock_get_whisper.assert_called_once_with(manifest.model_path)
 
     @patch(f"{ADAPTER}.torchaudio")
+    def test_detect_language_judges_only_speech_up_to_thirty_seconds(self, mock_torchaudio, manifest):
+        """Silence between VAD segments is left out, and Whisper sees at most one 30 s window of speech."""
+        audio = torch.arange(16000 * 60, dtype=torch.float32).unsqueeze(0)
+        mock_torchaudio.load.return_value = (audio, 16000)
+        whisper = MagicMock()
+        whisper.detect_language.return_value = ("sr", 0.91, [("sr", 0.91)])
+
+        detection = FasterWhisperAdapter().detect_language(
+            LoadedModel(manifest=manifest, model_instance=whisper), "/mock/path.wav", _vad((1.0, 2.0), (10.0, 50.0))
+        )
+
+        assert detection == ("sr", 0.91)
+        kwargs = whisper.detect_language.call_args.kwargs
+        assert kwargs["language_detection_segments"] == 1
+        assert len(kwargs["audio"]) == 16000 * 30
+        assert kwargs["audio"][0] == 16000.0             # starts at the first speech, not at 0 s
+        assert kwargs["audio"][16000] == 16000.0 * 10    # the 8 s of silence after it is skipped
+
+    @patch(f"{ADAPTER}.torchaudio")
+    def test_detect_language_without_speech_returns_none(self, mock_torchaudio, manifest):
+        mock_torchaudio.load.return_value = (torch.zeros(1, 16000), 16000)
+        whisper = MagicMock()
+
+        detection = FasterWhisperAdapter().detect_language(
+            LoadedModel(manifest=manifest, model_instance=whisper), "/mock/path.wav", _vad()
+        )
+
+        assert detection is None
+        whisper.detect_language.assert_not_called()
+
+    @patch(f"{ADAPTER}.torchaudio")
     def test_short_segments_are_widened_not_skipped(self, mock_torchaudio, manifest, mock_settings):
         """An isolated 0.1s "Yes." used to be skipped (< 6400 samples) and silently lost."""
         mock_torchaudio.load.return_value = (torch.zeros(1, 16000 * 10), 16000)

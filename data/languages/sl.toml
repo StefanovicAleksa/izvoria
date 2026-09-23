@@ -1,0 +1,164 @@
+# Slovenian language pack.
+
+code = "sl"
+name = "Slovenian"
+
+[transcription]
+whisper_language = "sl"
+# Whisper's language ID sometimes labels Slovenian speech as Croatian; accepted so only a file that is
+# genuinely in another language is rejected.
+accepted_detections = ["sl", "hr"]
+min_detection_probability = 0.5
+# Seed list: subtitle credits and channel outros Whisper is known to invent over silence. Confirm against
+# real Slovenian transcripts before relying on it -- a pattern here deletes a segment.
+hallucination_patterns = [
+    '(?i)(podnapise|podnapisi\s*:|prevedel\s*:|prevedla\s*:|prevod\s*:)',
+    '(?i)(titlovi\.com|podnapisi\.net)',
+    '(?i)(naročite se|hvala za ogled|hvala, ker ste gledali)',
+]
+
+[punctuation]
+# The fullstop classifier was never trained on Slovenian; Whisper large-v3 punctuates Slovenian itself.
+source = "whisper"
+
+[search]
+# Postgres ships no Slovenian stemmer: `simple` lowercases without stemming, so inflected forms only meet on
+# the dense (BGE-M3) leg of hybrid search.
+fts_config = "simple"
+
+[text]
+citation_joiners = ["in"]
+stopwords = [
+    "a", "ali", "bi", "bil", "bila", "bile", "bili", "bilo", "biti", "bo", "bodo", "bom", "bomo", "boste", "bi",
+    "da", "do", "dokler", "ga", "iz", "in", "ja", "jaz", "je", "jih", "jim", "jo", "ju", "k", "kaj", "kajti",
+    "kako", "kar", "ker", "ki", "kje", "ko", "kot", "le", "me", "med", "mi", "mu", "na", "nad", "naj", "nam",
+    "nas", "ne", "nekaj", "neki", "ni", "nič", "niso", "nje", "njega", "njemu", "njih", "njo", "o", "ob", "od",
+    "on", "ona", "one", "oni", "ono", "pa", "po", "pod", "pri", "pred", "preko", "s", "sam", "se", "sem", "si",
+    "smo", "so", "ste", "še", "ta", "tako", "tam", "te", "tega", "temu", "ti", "tisti", "to", "tudi", "tu",
+    "v", "vam", "vas", "ve", "vendar", "vse", "vsi", "z", "za", "že",
+]
+
+[phonetic]
+alphabet = "a-zčšž"
+# Slovenian spelling is phonemic, so the key only needs the letters Whisper confuses to collapse together.
+fold = { "č" = "c", "š" = "s", "ž" = "z" }
+# Digraphs collapse to their main sound, then voiced and voiceless pairs share one symbol
+rewrites = [
+    ['lj', 'l'], ['nj', 'n'],
+    ['d', 't'], ['b', 'p'], ['g', 'k'], ['v', 'f'], ['z', 's'],
+]
+silent_letters = "aeiou"
+head_vowels = "eiou"
+# No plural or verb-ending handling: a replacement can't reproduce case endings ("infarkta" is not "infarkt"),
+# so inflection-aware matching is needed before phonetic correction is trusted on this language's glossaries.
+plural_suffix = ""
+verb_suffixes = []
+
+# Both naming styles are in use ("el"/"le", "em"/"me", ...)
+[phonetic.letter_names]
+a = "a"
+b = "b"
+be = "b"
+c = "c"
+ce = "c"
+"č" = "č"
+"če" = "č"
+d = "d"
+de = "d"
+e = "e"
+f = "f"
+ef = "f"
+fe = "f"
+g = "g"
+ge = "g"
+h = "h"
+ha = "h"
+i = "i"
+j = "j"
+je = "j"
+k = "k"
+ka = "k"
+l = "l"
+el = "l"
+le = "l"
+m = "m"
+em = "m"
+me = "m"
+n = "n"
+en = "n"
+ne = "n"
+o = "o"
+p = "p"
+pe = "p"
+q = "q"
+ku = "q"
+r = "r"
+er = "r"
+re = "r"
+s = "s"
+es = "s"
+se = "s"
+"š" = "š"
+"še" = "š"
+t = "t"
+te = "t"
+u = "u"
+v = "v"
+ve = "v"
+w = "w"
+x = "x"
+iks = "x"
+y = "y"
+ipsilon = "y"
+z = "z"
+ze = "z"
+"ž" = "ž"
+"že" = "ž"
+
+[glossary]
+wikidata_languages = ["sl", "la"]
+
+[answers]
+refusal = "Na to ne morem odgovoriti na podlagi podanega konteksta."
+output_instruction = "Write every piece of text you produce in Slovenian, even though these instructions are in English. The source material is in Slovenian: never translate it into English. Keep [Doc N] tags, speaker labels and JSON keys exactly as specified."
+transcript_instruction = "The transcript is in Slovenian. Never translate it: every word you do not correct must stay exactly as written."
+
+[report]
+executive_summary = "Povzetek"
+not_covered_heading = "Ni zajeto v razpoložljivem gradivu"
+not_covered_item = "- **{title}** — noben dokaz v indeksiranem gradivu tega ne podpira."
+references_heading = "Viri"
+references_table_header = """| Doc | Vir | Časovni razpon | Govorci |
+| --- | --- | --- | --- |"""
+no_sources_cited = "_Noben vir ni bil citiran._"
+unresolved_reference = "_nerazrešeno_"
+no_speakers = "—"
+# Slovenian nouns take four forms after a number, so the templates name counts instead of agreeing with them
+generated = "> Poročilo je ustvaril Onyx {generated}. Citirani odlomki: {cited}; viri: {sources}."
+coverage_partial = "> Pokritost: pregledano {swept} od {indexed} indeksiranih virov."
+coverage_all = "> Pokritost: pregledani so vsi indeksirani viri ({indexed})."
+rounds_many = "> Število krogov iskanja: {rounds} (način: {mode}); poznejši krogi so ponovno iskali dokaze za razdelke, ki jih prvi prehod ni mogel podpreti."
+rounds_single = "> Iskanje v enem krogu (način: {mode})."
+scrubber = "> Filter pridobivanja: {state}."
+scrubber_enabled = "vklopljen"
+scrubber_disabled = "izklopljen"
+
+[report.mode_names]
+deep = "poglobljeni"
+exhaustive = "izčrpni"
+
+# Llama 3.2 3B and Qwen2.5-3B don't cover Slovenian; Gemma 4 E4B (~140 languages) replaces them.
+# whisper-tiny-en is English-only, so the domain scout uses the main Whisper model.
+[models]
+DISCOVERY_SCOUT_MODEL_PATH = "models/faster-whisper-large-v3"
+DISCOVERY_SCOUT_VRAM_REQUIREMENT_MB = 3500.0
+DOMAIN_CLASSIFIER_MODEL_PATH = "models/google_gemma-4-E4B-it-Q4_K_M.gguf"
+DOMAIN_CLASSIFIER_MODEL_VRAM_REQUIREMENT_MB = 5500.0
+CONTEXTUAL_RETRIEVAL_MODEL_PATH = "models/google_gemma-4-E4B-it-Q4_K_M.gguf"
+CONTEXTUAL_RETRIEVAL_VRAM_REQUIREMENT_MB = 5500.0
+VISUAL_CONTEXT_SYNTHESIS_MODEL_PATH = "models/google_gemma-4-E4B-it-Q4_K_M.gguf"
+VISUAL_CONTEXT_SYNTHESIS_VRAM_REQUIREMENT_MB = 5500.0
+DOMAIN_PHONETIC_CORRECTION_MODEL_PATH = "models/google_gemma-4-E4B-it-Q4_K_M.gguf"
+DOMAIN_PHONETIC_CORRECTION_VRAM_REQUIREMENT_MB = 5500.0
+VISUAL_HALLUCINATION_CORRECTION_MODEL_PATH = "models/google_gemma-4-E4B-it-Q4_K_M.gguf"
+VISUAL_HALLUCINATION_CORRECTION_VRAM_REQUIREMENT_MB = 5500.0

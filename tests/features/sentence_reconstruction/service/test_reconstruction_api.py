@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from app.features.transcription.domain.entities import Transcript, TranscriptSegment, TranscriptWord
 from app.features.sentence_reconstruction.service.reconstruction_api import SentenceReconstructionAPI
+from app.features.sentence_reconstruction.data.whisper_punctuation_adapter import WhisperPunctuationAdapter
 from app.features.sentence_reconstruction.domain.entities import ReconstructedTranscript, ReconstructedSentence
 from app.features.sentence_reconstruction.exceptions.assembly import MissingDiarizationError
 from app.features.sentence_reconstruction.exceptions.model import PunctuationExecutionError
@@ -151,3 +152,22 @@ class TestSentenceReconstructionAPI:
             loaded_model_mock, mocks["adapter"], flush=True
         )
         mocks["repo"].save.assert_not_called()
+
+class TestSentenceReconstructionAPIWithoutModel:
+    def test_model_free_adapter_reconstructs_without_acquiring_anything(self):
+        """Whisper-punctuated languages must not load (or release) the fullstop classifier."""
+        source_id = uuid.uuid4()
+        repo = MagicMock(**{"get_by_source_id.return_value": None, "save.side_effect": lambda t: t})
+        orchestrator = MagicMock()
+        adapter = WhisperPunctuationAdapter()
+        words = [TranscriptWord(start_sec=0.0, end_sec=0.4, word=" Dobar"),
+                 TranscriptWord(start_sec=0.4, end_sec=0.8, word=" dan.")]
+        transcript = Transcript(source_id=source_id, segments=[
+            TranscriptSegment(start_sec=0.0, end_sec=0.8, text="Dobar dan.", words=words, speaker_id="Speaker_0")
+        ])
+
+        result = SentenceReconstructionAPI(repo, orchestrator, adapter).reconstruct_transcript(transcript)
+
+        assert [s.text for s in result.sentences] == ["Dobar dan."]
+        orchestrator.acquire_model.assert_not_called()
+        orchestrator.release_model.assert_not_called()

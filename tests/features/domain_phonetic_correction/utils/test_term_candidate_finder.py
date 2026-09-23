@@ -99,3 +99,29 @@ class TestFindTermCandidates:
     def test_no_terms_or_empty_text(self) -> None:
         assert find_term_candidates("in the burn", [], [], 0.7, 0.6, 1.67, 0.95) == []
         assert _find("") == []
+
+
+class TestSerbianCandidates:
+    def test_misheard_serbian_term_with_diacritics_is_a_candidate(self, appliance_language):
+        appliance_language("sr")
+
+        candidates = find_term_candidates("Snimak pokazuje akutni infarkd miokarda.", [], ["infarkt miokarda"],
+                                          0.7, 0.6, 1.67, 0.95)
+
+        assert [(c.heard, c.replacement) for c in candidates] == [("infarkd miokarda", "infarkt miokarda")]
+
+    def test_words_with_serbian_letters_are_whole_tokens(self, appliance_language):
+        """With an a-z tokenizer "Šećer" split into "e" and "er" and could never match a term."""
+        appliance_language("sr")
+
+        candidates = find_term_candidates("Nivo šećera je visok.", [], ["šećer"], 0.7, 0.6, 1.67, 0.95)
+
+        assert all(c.heard != "e" for c in candidates)
+
+    def test_inflected_form_is_not_treated_as_a_plural(self, appliance_language):
+        """Serbian has no "-s" plural: the English singularisation must never strip a Serbian word's ending."""
+        appliance_language("sr")
+
+        candidates = find_term_candidates("Uzeli smo tri stenta.", [], ["stents"], 0.7, 0.6, 1.67, 0.95)
+
+        assert all(c.replacement == "stents" for c in candidates)

@@ -48,3 +48,10 @@ class TestTermCleaner:
 
         results = clean_and_extract_terms([item1, item2])
         assert results == ["Apple", "Zebra"]
+
+class TestTermCleanerInSerbian:
+    def test_cyrillic_labels_become_latin_like_the_transcripts(self, appliance_language):
+        appliance_language("sr")
+        item = WikidataItem(item_id="Q1", label="Инфаркт миокарда", aliases_by_lang={"sr-el": ["srčani udar"]})
+
+        assert clean_and_extract_terms([item]) == ["Infarkt miokarda", "srčani udar"]

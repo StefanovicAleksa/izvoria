@@ -11,6 +11,10 @@ def map_transcription_error(e: Exception) -> exc.TranscriptionError:
     Translates raw system, CTranslate2, Faster-Whisper, and DB exceptions into
     highly specific typed Domain Exceptions for the Transcription feature.
     """
+    # Already a Transcription exception (e.g. LanguageMismatchError): never re-wrap it
+    if isinstance(e, exc.TranscriptionError):
+        return e
+
     error_msg = str(e).lower()
 
     # 1. Local Model Missing Error

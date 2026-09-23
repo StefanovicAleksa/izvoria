@@ -4,11 +4,14 @@
 import uuid
 from typing import Tuple, Optional
 
+from app.core.language.service.language_api import get_language_pack
 from app.features.transcription.domain.interfaces import ITranscriptRepository
 from app.features.vad.domain.interfaces import IVadRepository
 
 from app.features.hallucination_correction.domain.interfaces import IHallucinationCorrectionAPI
-from app.features.hallucination_correction.domain.entities import CorrectionConfig, CorrectionTelemetry
+from app.features.hallucination_correction.domain.entities import (
+    CorrectionConfig, CorrectionTelemetry, LANGUAGE_NEUTRAL_BLACKLIST,
+)
 from app.features.hallucination_correction.utils.heuristics import CorrectionHeuristicsEngine
 from app.features.hallucination_correction.utils.error_mapper import map_correction_error
 from app.features.hallucination_correction.exceptions.validation import MissingPrerequisiteError
@@ -29,7 +32,9 @@ class CorrectionAPI(IHallucinationCorrectionAPI):
     ):
         self._transcript_repo = transcript_repository
         self._vad_repo = vad_repository
-        self._config = config or CorrectionConfig()
+        self._config = config or CorrectionConfig(blacklist_patterns=[
+            *get_language_pack().transcription.hallucination_patterns, *LANGUAGE_NEUTRAL_BLACKLIST
+        ])
 
     def process_transcript(self, source_id: uuid.UUID) -> Tuple[any, CorrectionTelemetry]:
         """

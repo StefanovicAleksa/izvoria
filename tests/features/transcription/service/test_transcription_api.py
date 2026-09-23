@@ -3,12 +3,15 @@
 
 import uuid
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from app.features.transcription.service.transcription_api import TranscriptionAPI
 from app.features.transcription.domain.entities import Transcript, TranscriptSegment, TranscriptWord
 from app.features.vad.domain.entities import VadMap, VadSegment
 from app.features.transcription.exceptions.model import CTranslateEngineError
+from app.features.transcription.exceptions import LanguageMismatchError
+
+API_MODULE = "app.features.transcription.service.transcription_api"
 
 
 class TestTranscriptionAPI:
@@ -18,7 +21,7 @@ class TestTranscriptionAPI:
             "repo": MagicMock(),
             "vad_repo": MagicMock(),
             "orchestrator": MagicMock(),
-            "adapter": MagicMock()
+            "adapter": MagicMock(**{"detect_language.return_value": ("en", 0.98)})
         }
 
     @pytest.fixture
@@ -138,3 +141,105 @@ class TestTranscriptionAPI:
             loaded_model_mock, mocks["adapter"], flush=True
         )
         mocks["repo"].save.assert_not_called()
+
+class TestTranscriptionAPILanguage:
+    """The language guard and script normalisation, run as the appliance's configured language."""
+
+    @pytest.fixture
+    def mocks(self):
+        return {
+            "repo": MagicMock(**{"get_by_source_id.return_value": None, "save.side_effect": lambda t: t}),
+            "vad_repo": MagicMock(),
+            "orchestrator": MagicMock(),
+            "adapter": MagicMock()
+        }
+
+    @pytest.fixture
+    def api(self, mocks):
+        return TranscriptionAPI(mocks["repo"], mocks["vad_repo"], mocks["orchestrator"], mocks["adapter"])
+
+    @pytest.fixture
+    def as_language(self, language_pack):
+        def activate(code):
+            patcher = patch(f"{API_MODULE}.get_language_pack", return_value=language_pack(code))
+            patcher.start()
+            return patcher
+        patchers = []
+        yield lambda code: patchers.append(activate(code))
+        for patcher in patchers:
+            patcher.stop()
+
+    @staticmethod
+    def _vad(mocks, source_id):
+        vad_map = VadMap(source_id=source_id, segments=[VadSegment(start_sec=0, end_sec=5.0, confidence=0.99)])
+        mocks["vad_repo"].get_map_by_source_id.return_value = vad_map
+        return vad_map
+
+    def test_rejects_file_confidently_in_another_language_and_releases_model(self, api, mocks, as_language):
+        as_language("sr")
+        source_id = uuid.uuid4()
+        vad_map = self._vad(mocks, source_id)
+        loaded = mocks["orchestrator"].acquire_model.return_value
+        mocks["adapter"].detect_language.return_value = ("en", 0.97)
+
+        with pytest.raises(LanguageMismatchError, match="'en'"):
+            api.process_audio(source_id, "/a.wav", release_after=True)
+
+        mocks["adapter"].detect_language.assert_called_once_with(loaded, "/a.wav", vad_map)
+        mocks["adapter"].transcribe.assert_not_called()
+        mocks["repo"].save.assert_not_called()
+        mocks["orchestrator"].release_model.assert_called_once_with(loaded, mocks["adapter"], flush=True)
+
+    @pytest.mark.parametrize("detection", [("hr", 0.9), ("bs", 0.9), ("sr", 0.99), ("en", 0.3)])
+    def test_transcribes_accepted_or_unsure_detections(self, api, mocks, as_language, detection):
+        """Whisper often calls Serbian Croatian or Bosnian; an unsure guess is never grounds to reject."""
+        as_language("sr")
+        self._vad(mocks, uuid.uuid4())
+        mocks["adapter"].detect_language.return_value = detection
+        mocks["adapter"].transcribe.return_value = []
+
+        api.process_audio(uuid.uuid4(), "/a.wav")
+
+        assert mocks["adapter"].transcribe.call_args.kwargs["language"] == "sr"
+
+    def test_no_speech_to_judge_skips_the_guard(self, api, mocks, as_language):
+        as_language("sl")
+        self._vad(mocks, uuid.uuid4())
+        mocks["adapter"].detect_language.return_value = None
+        mocks["adapter"].transcribe.return_value = []
+
+        api.process_audio(uuid.uuid4(), "/a.wav")
+
+        assert mocks["adapter"].transcribe.call_args.kwargs["language"] == "sl"
+
+    def test_serbian_cyrillic_is_saved_in_latin_word_by_word(self, api, mocks, as_language):
+        as_language("sr")
+        source_id = uuid.uuid4()
+        self._vad(mocks, source_id)
+        mocks["adapter"].detect_language.return_value = ("sr", 0.99)
+        words = [TranscriptWord(start_sec=0.0, end_sec=0.5, word=" Лекар"),
+                 TranscriptWord(start_sec=0.5, end_sec=1.0, word=" је"),
+                 TranscriptWord(start_sec=1.0, end_sec=1.6, word=" Љубиша.")]
+        mocks["adapter"].transcribe.return_value = [
+            TranscriptSegment(start_sec=0.0, end_sec=1.6, text="Лекар је Љубиша.", words=words, avg_logprob=-0.2)
+        ]
+
+        result = api.process_audio(source_id, "/a.wav")
+
+        segment = result.segments[0]
+        assert segment.text == "Lekar je Ljubiša."
+        assert [(w.word, w.start_sec, w.end_sec) for w in segment.words] == [
+            (" Lekar", 0.0, 0.5), (" je", 0.5, 1.0), (" Ljubiša.", 1.0, 1.6)
+        ]
+        assert segment.avg_logprob == -0.2
+
+    def test_english_text_is_never_rewritten(self, api, mocks, as_language):
+        as_language("en")
+        self._vad(mocks, uuid.uuid4())
+        mocks["adapter"].detect_language.return_value = ("en", 0.99)
+        segment = TranscriptSegment(start_sec=0.0, end_sec=1.0, text="Лекар", words=[])
+        mocks["adapter"].transcribe.return_value = [segment]
+
+        result = api.process_audio(uuid.uuid4(), "/a.wav")
+
+        assert result.segments == [segment]

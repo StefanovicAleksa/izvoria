@@ -5,7 +5,7 @@ import concurrent.futures
 import logging
 from typing import List, Optional
 
-from app.core.config import settings
+from app.core.language.service.language_api import get_language_pack
 from app.core.jobs.service.manager import JobManager
 from app.core.jobs.domain.entities import JobRequest
 from app.core.jobs.domain.enums import JobType
@@ -97,7 +97,7 @@ class TranscribePhase:
                     logger.warning(f"Failed to fetch Domain Hints for {source_id}: {str(ex)}")
                     hotwords, initial_prompt = None, None
 
-                language = settings.APPLIANCE_LANGUAGE
+                language = get_language_pack().transcription.whisper_language
 
                 request = JobRequest(
                     job_type=JobType.TRANSCRIBE,
