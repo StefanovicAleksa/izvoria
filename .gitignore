@@ -74,6 +74,7 @@ Thumbs.db
 
 *.txt
 !requirements.txt
+!requirements-dev.txt
 
 *.db
 
