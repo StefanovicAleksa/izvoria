@@ -110,6 +110,7 @@ An appliance serves **one** language, `APPLIANCE_LANGUAGE` (`en`, `sr`, `sl`). E
   shadow the root `tests` package and break collection of the whole existing suite, so filenames carry a `_unit`
   suffix to stay globally unique.
   Run: `QT_QPA_PLATFORM=offscreen pytest frontend/tests`
+- **Measurements (not tests):** `scripts/eval/` holds GPU evaluation scripts run by hand. `rag_eval.py` scores retrieval/answers on the dev DB; `language_benchmark` downloads real speech per language (FLEURS, ParlaSpeech-RS, YouTube lectures from `sources.toml`), ingests it into its own `onyx_bench_<code>` database and reports WER, the language guard, throughput and retrieval/answer quality: `venv/bin/python -m scripts.eval.language_benchmark all --language sr sl en` (needs `requirements-dev.txt`; results under `onyx_data/benchmarks/`).
 - **Both:** bare `pytest` runs everything (`pytest.ini`'s `testpaths = tests integration_tests frontend/tests`).
 - No CI is configured yet — these commands must be run manually.
 - When adding a feature: write unit tests immediately (mirrored directory, mocked). Add an integration test if the feature touches the DB or loads a real model, and make it self-skip gracefully when the resource isn't available rather than failing hard.
