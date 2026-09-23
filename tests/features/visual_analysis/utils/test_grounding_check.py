@@ -182,3 +182,27 @@ class TestDropMarksCopiedFromOtherFrames:
         unrelated = FrameObservation(shows="chart", legible_text=["Wedge break"], marks="horizontal line at the break")
 
         assert drop_marks_copied_from_other_frames([own, unrelated]) == [own, unrelated]
+
+
+class TestGroundingInSerbian:
+    SPEECH = "Ovde vidimo da je pritisak pacijenta porastao na sto šezdeset posle terapije."
+
+    def test_serbian_function_words_do_not_hide_a_speech_copy(self, appliance_language):
+        """Words like "da", "je", "na" would otherwise count as content and dilute the copy test."""
+        appliance_language("sr")
+        observation = FrameObservation(shows="chart", legible_text=[
+            "pritisak pacijenta porastao je na",       # read out of the speech, not off the frame
+            "Krvni pritisak (mmHg)",
+        ])
+
+        grounded = ground_observation(observation, self.SPEECH)
+
+        assert grounded.legible_text == ["Krvni pritisak (mmHg)"]
+
+    def test_cyrillic_slide_text_is_compared_with_the_latin_speech(self, appliance_language):
+        appliance_language("sr")
+        observation = FrameObservation(shows="slide", legible_text=["пацијента порастао после терапије", "Табела 2"])
+
+        grounded = ground_observation(observation, self.SPEECH)
+
+        assert grounded.legible_text == ["Табела 2"]

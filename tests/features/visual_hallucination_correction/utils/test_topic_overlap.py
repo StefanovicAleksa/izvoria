@@ -34,3 +34,24 @@ class TestSharesTopic:
     ])
     def test_unrelated_or_unquoted_evidence_goes_to_the_checker(self, descriptions) -> None:
         assert shares_topic(TRANSCRIPT, descriptions, min_shared=2) is False
+
+
+class TestTopicOverlapInOtherLanguages:
+    def test_serbian_words_with_diacritics_are_whole_words(self, appliance_language):
+        appliance_language("sr")
+
+        shared = shared_on_screen_topic("Šećer u krvi je visok kod pacijenta.", ['Slide reads "Šećer u krvi pacijenta"'])
+
+        assert shared == {"šećer", "krvi", "pacijenta"}
+
+    def test_cyrillic_slide_matches_latin_speech(self, appliance_language):
+        appliance_language("sr")
+
+        assert shares_topic("Terapija insulinom je počela u martu.", ['Text: "Терапија инсулином"'], min_shared=2)
+
+    def test_slovenian_function_words_are_not_topic(self, appliance_language):
+        appliance_language("sl")
+
+        shared = shared_on_screen_topic("To je tudi zdravljenje bolnika.", ['Slide: "tudi zdravljenje"'])
+
+        assert shared == {"zdravljenje"}

@@ -1,7 +1,11 @@
 # Path: app/features/visual_analysis/utils/grounding_check.py
 
 import re
-from typing import List, Optional, Set
+from functools import lru_cache
+from typing import FrozenSet, List, Optional, Set
+
+from app.core.language.service.language_api import get_language_pack
+from app.core.language.utils.script import normalize_script
 
 from app.features.visual_analysis.domain.entities import FrameObservation
 
@@ -48,9 +52,23 @@ def _numbers(text: str) -> Set[str]:
     return {n.strip(".,:/-") for n in _NUMBER.findall(text)}
 
 
+@lru_cache(maxsize=8)
+def _function_words(language: str) -> FrozenSet[str]:
+    """
+    The frame's own fields are English (the VLM describes in English), but on-screen text and the speech are in
+    the appliance's language: another language adds its pack's function words. English keeps the list above.
+    """
+    pack = get_language_pack()
+    return frozenset(_FUNCTION_WORDS if language == "en" else _FUNCTION_WORDS | set(pack.text.stopwords))
+
+
 def _content_tokens(text: str) -> List[str]:
+    pack = get_language_pack()
+    function_words = _function_words(pack.code)
+    # A Cyrillic slide compared with a Latin transcript: one script for both
+    text = normalize_script(text, pack.transcription.script)
     tokens = (t.strip(".,:;!?'\"()").lower() for t in text.split())
-    return [t for t in tokens if t and t not in _FUNCTION_WORDS]
+    return [t for t in tokens if t and t not in function_words]
 
 
 def _is_generic_mark(marks: str) -> bool:
