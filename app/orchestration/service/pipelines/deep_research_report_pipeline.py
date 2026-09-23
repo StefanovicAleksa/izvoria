@@ -615,15 +615,18 @@ class DeepResearchReportPipeline:
             return []
 
         # The reranking phase reads `search_id`/`success` off whatever job result it is handed, so the
-        # per-query bookkeeping is shimmed into the shape it already understands.
+        # per-query bookkeeping is shimmed into the shape it already understands. The `search_id` is
+        # minted here and kept, because it is the only thing that survives the phase to say which
+        # sub-question a returned payload belongs to -- see below.
+        search_ids = [uuid.uuid4() for _ in results]
         pairs = [
             (
                 RagRetrievalJobResult(
-                    search_id=uuid.uuid4(), success=True, retrieved_chunks_count=len(result.results)
+                    search_id=search_id, success=True, retrieved_chunks_count=len(result.results)
                 ),
                 result,
             )
-            for result in results
+            for search_id, result in zip(search_ids, results)
         ]
 
         rerank_result = self._reranking_phase.execute(pairs, top_n=settings.REPORT_RERANK_TOP_N)
@@ -633,18 +636,22 @@ class DeepResearchReportPipeline:
             )
             return [(question, result.results) for (question, _), result in zip(queries, results)]
 
-        # Paired positionally against the ORIGINAL results, not against the successes only: the phase
-        # emits one item per input in order, with a None payload where a single query's rerank failed.
-        # Filtering to successes first would shift every later query onto the wrong sub-question.
-        payloads = [payload for _, payload in rerank_result.items]
+        # Matched by `search_id`, NOT by position. The phase skips any input it considers unsuccessful
+        # rather than emitting a placeholder for it, so a positional pairing would silently shift every
+        # later query onto the wrong sub-question's chunks -- a report citing evidence under the wrong
+        # heading, with nothing failing. Nothing on this path hands it an unsuccessful input today; the
+        # id makes that a property of the data instead of an invariant the caller has to keep true.
+        reranked_by_id = {
+            job_result.search_id: payload
+            for job_result, payload in rerank_result.items
+            if payload is not None and getattr(job_result, "search_id", None) is not None
+        }
+
         ranked: List[Tuple[str, List[RetrievedChunk]]] = []
-        for index, (question, _) in enumerate(queries):
-            payload = payloads[index] if index < len(payloads) else None
-            if payload is not None:
-                ranked.append((question, payload.results))
-            elif index < len(results):
-                # That one query keeps its RRF order rather than losing its evidence entirely.
-                ranked.append((question, results[index].results))
+        for (question, _), search_id, result in zip(queries, search_ids, results):
+            payload = reranked_by_id.get(search_id)
+            # A query whose own rerank job failed keeps its RRF order rather than losing its evidence.
+            ranked.append((question, payload.results if payload is not None else result.results))
         return ranked
 
     def _scrub(

@@ -4,8 +4,6 @@
 import logging
 import threading
 import time
-import sys
-import os
 import uuid
 import gc
 from typing import Dict, List, Optional
@@ -397,11 +395,16 @@ class OnyxEngine(IOnyxEngine):
                 plan=report.plan,
                 corpus=report.corpus or CorpusDigest(indexed_source_count=report.indexed_source_count,
                                                     indexed_chunk_count=0),
-                # One search job and one outline job PER ROUND, then one job per section and one
-                # summary. The caller needs a denominator up front: unlike ingestion, a report knows how
-                # much work it is about to do. Exhaustive mode's ceiling is used, so the bar can only
-                # finish early -- never run past 100%.
-                expected_job_count=(settings.REPORT_MAX_GATHER_ROUNDS * 2) + sections + 1,
+                # The caller needs a denominator up front: unlike ingestion, a report knows how much
+                # work it is about to do. Counted against the job types the report view actually ticks
+                # on -- per round, one batched search plus ONE RERANK JOB PER SUB-QUESTION plus one
+                # outline pass, then one job per section and one summary. The rerank fan-out was the
+                # term missing here: with 12 sub-questions the bar reached 100% at the outline pass and
+                # sat there through all eight section writes, which are the slowest part of the run.
+                # Exhaustive mode's round ceiling is used, so the bar can still only finish early.
+                expected_job_count=(
+                    settings.REPORT_MAX_GATHER_ROUNDS * (2 + sub_questions) + sections + 1
+                ),
                 estimated_minutes=self._estimate_minutes(sections, sub_questions),
             )
         except Exception as e:
@@ -639,63 +642,3 @@ class OnyxEngine(IOnyxEngine):
             errors=errors, total_duration_seconds=round(duration, 2),
             vectors_created=metrics["vectors"], clips_extracted=metrics["clips"]
         )
-
-    def interactive_cli(self) -> None:
-        while True:
-            os.system('cls' if os.name == 'nt' else 'clear')
-            print("=======================================================")
-            print("          O N Y X   E N T E R P R I S E   A I          ")
-            print("=======================================================\n")
-            print("1. File Ingestion [Video Pipeline]")
-            print("2. File Ingestion [Audio Pipeline]")
-            print("3. Fast Retrieval [Standard RAG]")
-            print("4. Context-Aware Retrieval [Verified SLM Scrubber]")
-            print("5. Chat with Data [RAG -> LLM Synthesis]")
-            print("6. Shutdown Engine")
-
-            choice = input("\nChoice (1-6): ").strip()
-
-            try:
-                if choice == "1":
-                    path = input("Enter target directory path for Video Ingestion: ").strip()
-                    report = self.ingest_videos(path)
-                    print(
-                        f"\n[Complete] Success: {report.successful_ingestions} | Failed: {report.failed_ingestions} | Vectors: {report.vectors_created}")
-                    if report.errors: print(f"[Errors]: {report.errors}")
-                    input("\nPress Enter...")
-                elif choice == "2":
-                    path = input("Enter target directory path for Audio Ingestion: ").strip()
-                    report = self.ingest_audios(path)
-                    print(
-                        f"\n[Complete] Success: {report.successful_ingestions} | Failed: {report.failed_ingestions} | Vectors: {report.vectors_created}")
-                    if report.errors: print(f"[Errors]: {report.errors}")
-                    input("\nPress Enter...")
-                elif choice == "3":
-                    prompt = input("Enter your search query: ").strip()
-                    results = self.search_standard(SearchQuery(prompt=prompt))
-                    for idx, chunk in enumerate(results.results, 1):
-                        print(
-                            f"\n--- Result {idx} ---\nPath: {getattr(chunk, 'physical_path', 'Unknown')}\nContent: {chunk.text_payload}")
-                    input("\nPress Enter...")
-                elif choice == "4":
-                    prompt = input("Enter your high-precision search query: ").strip()
-                    results = self.search_verified(SearchQuery(prompt=prompt))
-                    for idx, chunk in enumerate(results.results, 1):
-                        print(
-                            f"\n--- Verified Result {idx} ---\nPath: {getattr(chunk, 'physical_path', 'Unknown')}\nContent: {chunk.text_payload}")
-                    input("\nPress Enter...")
-                elif choice == "5":
-                    prompt = input("Enter your question: ").strip()
-                    response = self.chat(SearchQuery(prompt=prompt))
-                    print(f"\n--- Onyx AI ---\n{response.generated_answer}")
-                    print(f"\n[Citations Used: {len(response.citations)}]")
-                    for idx, citation in enumerate(response.citations, 1):
-                        print(f"  {citation.doc_id} {citation.physical_path or 'Unresolved path'} "
-                              f"({citation.start_sec}s - {citation.end_sec}s)")
-                    input("\nPress Enter...")
-                elif choice == "6":
-                    self.stop()
-                    sys.exit(0)
-            except Exception as e:
-                print(f"\n[ERROR]: {str(e)}")
-                input("\nPress Enter...")

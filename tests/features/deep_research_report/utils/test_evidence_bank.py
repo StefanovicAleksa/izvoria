@@ -108,6 +108,42 @@ class TestDedupeHits:
 
         assert deduped[0][2] == "strong"
 
+    def test_a_negatively_reranked_occurrence_still_beats_an_unreranked_sweep_hit(self):
+        """
+        The two scores live on different scales, so the reranked occurrence must win outright.
+
+        A cross-encoder emits raw logits and RAG_RERANK_MIN_SCORE always keeps a query's top candidate
+        however it scored, so a rescued hit can sit at -2.0 while the sweep's RRF hit sits at ~0.016.
+        Comparing the raw numbers handed the sweep copy the win, which dropped the chunk's rerank_score,
+        flipped its origin to SWEEP and cleared found_by -- so the sub-question that actually surfaced it
+        got credited nothing in QueryAttempt.chunks_added.
+        """
+        source_id = uuid.uuid4()
+        reranked = _chunk(source_id, relevance_score=0.03, rerank_score=-2.0)
+        swept = reranked.model_copy(update={"relevance_score": 0.016, "rerank_score": None})
+
+        deduped = dedupe_hits([
+            (swept, EvidenceOrigin.SWEEP, None),
+            (reranked, EvidenceOrigin.FAN_OUT, "the question that found it"),
+        ])
+
+        assert len(deduped) == 1
+        chunk, origin, found_by = deduped[0]
+        assert chunk.rerank_score == -2.0
+        assert origin == EvidenceOrigin.FAN_OUT
+        assert found_by == "the question that found it"
+
+    def test_the_winner_is_independent_of_the_order_the_occurrences_arrive_in(self):
+        source_id = uuid.uuid4()
+        reranked = _chunk(source_id, relevance_score=0.03, rerank_score=-2.0)
+        swept = reranked.model_copy(update={"relevance_score": 0.016, "rerank_score": None})
+
+        forwards = dedupe_hits([(reranked, EvidenceOrigin.FAN_OUT, "q"), (swept, EvidenceOrigin.SWEEP, None)])
+        backwards = dedupe_hits([(swept, EvidenceOrigin.SWEEP, None), (reranked, EvidenceOrigin.FAN_OUT, "q")])
+
+        assert forwards[0][1] == EvidenceOrigin.FAN_OUT
+        assert backwards[0][1] == EvidenceOrigin.FAN_OUT
+
     def test_distinct_chunks_are_all_kept(self):
         source_id = uuid.uuid4()
         hits = [(_chunk(source_id, start_sec=i * 10), EvidenceOrigin.FAN_OUT, "q") for i in range(4)]

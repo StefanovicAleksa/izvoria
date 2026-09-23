@@ -59,7 +59,10 @@ class BackgroundModelWorker:
             if done.cancelled() or done.exception() is not None:
                 return
             try:
-                self._orchestrator.release_model(done.result(), loader, flush=True)
+                # release_PRELOAD, not release_model: by the time this callback runs the model may
+                # have been handed to somebody else, and freeing it under them aborts the process
+                # inside llama.cpp rather than raising. The orchestrator makes that check atomically.
+                self._orchestrator.release_preload(done.result(), loader)
             except Exception as e:
                 logger.error(f"Failed to release discarded preload: {e}")
 

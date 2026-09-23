@@ -30,7 +30,7 @@ Public API surface:
 - `search_verified(query) -> SearchResult` — delegates to `LiveVerifiedRetrievalPipeline` (adds SLM hallucination scrubbing on top of standard search).
 - `chat(query) -> QAResponse` — delegates to `LiveQAPipeline`, then hydrates each citation's `physical_path` the same way as search results (extracted clip via `extracted_file_id`, otherwise the source file).
 - If any live call fails, the engine calls `release_all()` before re-raising, so the next request never waits on a model the failed call left resident.
-- `interactive_cli()` — a blocking terminal REPL (menu: video ingest, audio ingest, standard search, verified search, chat, shutdown) — the current dev/demo entry point, invoked by `app/main.py`.
+- There is no CLI on the engine itself. `app/main.py` owns the terminal menu and drives these methods; the desktop app drives the same ones through `frontend/onyx_desktop/data/engine_gateway.py`. (`OnyxEngine.interactive_cli()` was a second, stale copy of that menu — it had never been called and was missing Reasoned Answer and Report mode, and has been removed.)
 
 ## Gotchas / design notes
 

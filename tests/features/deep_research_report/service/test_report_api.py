@@ -525,6 +525,35 @@ class TestRenderAndFinalize:
         assert report is not None
         repository.finalize.assert_not_called()
 
+    def test_render_partial_returns_nothing_when_the_report_cannot_be_read_at_all(
+            self, api, repository, file_store
+    ):
+        """
+        This runs on the cancel path. A repository that fails the first read is likely to fail the
+        re-read too, and an unmapped SQLAlchemy error escaping the feature boundary there would turn a
+        clean user-requested stop into a crash.
+        """
+        repository.get_report.side_effect = RuntimeError("connection reset")
+
+        report, path = api.render_partial(uuid.uuid4())
+
+        assert report is None
+        assert path is None
+        file_store.write_markdown.assert_not_called()
+
+    def test_render_partial_still_returns_the_report_when_only_the_file_write_failed(
+            self, api, repository, file_store
+    ):
+        report_id = uuid.uuid4()
+        stored = self._report(report_id)
+        repository.get_report.return_value = stored
+        file_store.write_markdown.side_effect = OSError("disk full")
+
+        report, path = api.render_partial(report_id)
+
+        assert report is stored
+        assert path is None
+
     def test_render_partial_writes_nothing_when_no_section_was_written(self, api, repository, file_store):
         report_id = uuid.uuid4()
         empty = self._report(report_id)

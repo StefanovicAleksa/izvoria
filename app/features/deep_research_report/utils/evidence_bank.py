@@ -14,7 +14,9 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from app.features.deep_research_report.domain.entities import EvidenceEntry
 from app.features.deep_research_report.domain.enums import EvidenceOrigin
-from app.features.qa_generation.utils.context_packer import chunk_source_text, order_for_reading
+from app.features.qa_generation.utils.context_packer import (
+    DOC_HEADER_TOKENS, chunk_source_text, order_for_reading,
+)
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 
 # How much of a chunk's transcript the planner sees per bank entry. Long enough to judge relevance, short
@@ -48,18 +50,34 @@ def dedupe_hits(
     The best-scoring occurrence wins, so a chunk keeps the score of the query it matched best. `found_by`
     and `origin` come from that same occurrence, which is why a chunk that both a sub-question and the
     sweep found is attributed to whichever ranked it higher rather than to whichever ran first.
+
+    "Higher" is only meaningful within one scale. A reranked occurrence therefore beats an unreranked one
+    outright, whatever the numbers say -- see `_rank_key`.
     """
     best: Dict[uuid.UUID, Tuple[RetrievedChunk, EvidenceOrigin, Optional[str]]] = {}
     for chunk, origin, found_by in hits:
         existing = best.get(chunk.chunk_id)
-        if existing is None or _score(chunk) > _score(existing[0]):
+        if existing is None or _rank_key(chunk) > _rank_key(existing[0]):
             best[chunk.chunk_id] = (chunk, origin, found_by)
     return list(best.values())
 
 
-def _score(chunk: RetrievedChunk) -> float:
-    """Rerank score when the cross-encoder ran, RRF score otherwise."""
-    return chunk.rerank_score if chunk.rerank_score is not None else chunk.relevance_score
+def _rank_key(chunk: RetrievedChunk) -> Tuple[int, float]:
+    """
+    Sorts reranked occurrences above unreranked ones first, and only then by score.
+
+    The two scores are not comparable. A cross-encoder emits raw logits -- commonly negative for a weak
+    pair, and `RAG_RERANK_MIN_SCORE` always keeps a query's top candidate however it scored -- while RRF
+    yields small positives around 1/(k+rank). Comparing them directly let a sweep hit at 0.016 beat the
+    reranked occurrence of the same chunk at -2.0, which silently cost that chunk its `rerank_score`,
+    flipped its `origin` to SWEEP and dropped its `found_by`. That last one is not cosmetic: `found_by`
+    is what credits a sub-question in `QueryAttempt.chunks_added`, so an exhaustive round would read
+    "NOTHING NEW -- these words are not in this archive" about a query that had in fact found something,
+    and re-word a query that was working.
+    """
+    if chunk.rerank_score is not None:
+        return (1, chunk.rerank_score)
+    return (0, chunk.relevance_score)
 
 
 def number_bank(
@@ -176,8 +194,6 @@ def pack_section_evidence(
     so a shorter one further down can still use the remaining room. Kept separate because the report packs
     (number, chunk) pairs whose numbers are already fixed bank-wide, while the chat path numbers as it packs.
     """
-    from app.features.qa_generation.utils.context_packer import DOC_HEADER_TOKENS
-
     selected: List[Tuple[int, RetrievedChunk]] = []
     used = 0
     for number, chunk in pairs:

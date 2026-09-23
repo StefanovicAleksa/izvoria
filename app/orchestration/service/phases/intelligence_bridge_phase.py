@@ -41,7 +41,17 @@ class IntelligenceBridgePhase:
 
     def preload_model(self) -> None:
         """Triggers the background loading of the Phi-3.5 NLP model."""
+        # Discard any preload a previous call fired but nobody resolved: overwriting `_preload_future`
+        # makes the old one unreachable, and a model nothing can release parks the next
+        # `acquire_model(..., wait_for_clear=True)` forever, for the rest of the process.
+        self.discard_preload()
         self._preload_future = self._async_service.trigger_preload(self._manifest, self._adapter)
+
+    def discard_preload(self) -> None:
+        """Releases a preload that execute() never resolved (e.g. the pipeline halted early)."""
+        if self._preload_future:
+            future, self._preload_future = self._preload_future, None
+            self._async_service.discard_preload(future, self._adapter)
 
     def execute(self, diarize_results: List[DiarizeJobResult]) -> PhaseBatchResult:
         """

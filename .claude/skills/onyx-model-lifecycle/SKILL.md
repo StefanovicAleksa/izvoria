@@ -38,6 +38,7 @@ Read the matching reference file before writing the new one, and copy its shape.
 
 ### `acquire_model(manifest, loader, wait_for_clear=False)`
 1. **Residency check.** If a model with the same **`(model_type, model_path)`** is resident, it is returned as-is and nothing is loaded. The same weights file under a different `ModelType` is *not* shared: adapters load identical GGUFs with different settings (e.g. `n_ctx`).
+   - This is a **shared instance, not a refcounted handle**. `release_model` frees on the first call, however many callers were handed the model — which is deliberate: `release_after=False` means a holder's acquires intentionally outnumber its releases, so freeing on a balanced count would leak. The orchestrator counts hand-outs per model id only so `release_preload` can tell an abandoned preload from one somebody has since taken.
 2. **Optional wait** (`wait_for_clear=True`). The call polls until no model is resident, or its own model is. There is **no time limit**: the resident model belongs to a phase that is still working, and a batch phase takes as long as its input needs. (A 120 s limit, added in `3bfde2d` and removed again, failed a 74-minute ingestion whose visual analysis took 174 s.)
 3. **Swap.** Every other resident model is released. This makes the pool effectively single-slot: acquiring model B evicts model A.
 4. **Deep flush** of CUDA memory.
@@ -67,6 +68,7 @@ There is no reload API.
 - `resolve_preload(future)` blocks until the load finishes and returns the `LoadedModel`, or raises the mapped `ModelManagerError`.
 - `trigger_unload(...)` is **synchronous** and bypasses the worker. Never unload through the worker queue (`BackgroundModelWorker.unload_model`): it would sit behind a parked preload and deadlock.
 - `discard_preload(future, loader)`: a queued preload is cancelled; a running or finished one has its model released as soon as it loads. This is what stops a halted pipeline from leaving a model loaded with nobody to release it.
+- That release goes through **`orchestrator.release_preload`, never `release_model`** — it is the one release made by a background callback on behalf of a caller that walked away, so by the time it runs the model may have been handed to somebody else. `release_preload` checks the hand-out count and the free under the same lock as `acquire_model`, so either the acquire lands first and the discard becomes a no-op, or the discard frees first and the acquire loads a fresh copy. Calling `release_model` there instead is a **use-after-free**: the holder is inside llama.cpp when the weights go, so the process aborts in `free_model` rather than raising. Covered by `integration_tests/core/model_manager/test_orchestrator_race_condition.py`.
 
 ## 3. Adapter (`app/features/<name>/data/<model>_adapter.py`)
 

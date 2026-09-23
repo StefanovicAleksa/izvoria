@@ -61,3 +61,53 @@ def test_background_preload_does_not_evict_active_model():
 
     finally:
         async_service.shutdown()
+
+def test_discarding_a_preload_does_not_free_a_model_another_caller_is_using():
+    """
+    USE-AFTER-FREE RACE TEST.
+
+    `discard_preload` releases from a background callback, on behalf of a caller that walked away.
+    `acquire_model` serves a resident model straight out of its idempotency check, with no refcount.
+    So between the preload loading a model and the discard releasing it, somebody else can be holding
+    that exact instance -- and the release frees it under them.
+
+    It is not an exception. The holder is inside llama.cpp when the weights go, so the process aborts
+    in `free_model`; the friendlier version is the instance turning into None mid-call. This exercises
+    the whole AsyncModelService -> BackgroundModelWorker -> orchestrator path with mocked loaders, so
+    it is deterministic and needs no GPU.
+    """
+    mock_monitor = Mock()
+    mock_monitor.get_vram_status.return_value = Mock(free_vram_mb=24000.0)
+
+    orchestrator = ModelManagerOrchestrator(mock_monitor)
+    async_service = AsyncModelService(BackgroundModelWorker(orchestrator))
+
+    try:
+        manifest = ModelManifest(
+            model_type=ModelType.REPORT_AUTHORING, model_path="report_model", required_vram_mb=10
+        )
+        loader = Mock()
+        loader.load.return_value = LoadedModel(manifest=manifest, model_instance="REPORT_WEIGHTS")
+
+        future = async_service.trigger_preload(manifest, loader)
+        preloaded = async_service.resolve_preload(future)
+
+        # A caller takes the resident model -- served by the idempotency check, not a second load.
+        in_use = orchestrator.acquire_model(manifest, loader)
+        assert in_use is preloaded
+        assert loader.load.call_count == 1
+
+        # The abandoned preload's release runs here: the future is already done, so the callback fires
+        # synchronously on this thread, which pins the interleaving the threaded version hits by chance.
+        async_service.discard_preload(future, loader)
+
+        loader.unload.assert_not_called(), "the model a caller is holding must not be freed"
+        assert orchestrator._active_models[in_use.id].model_instance == "REPORT_WEIGHTS"
+
+        # And the holder's own release must still free it, so nothing is leaked by the reprieve.
+        async_service.trigger_unload(in_use, loader, flush=True)
+        loader.unload.assert_called_once_with(in_use)
+        assert in_use.id not in orchestrator._active_models
+
+    finally:
+        async_service.shutdown()

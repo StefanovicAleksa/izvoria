@@ -809,3 +809,71 @@ class TestExhaustiveRounds:
         assert retrieval.execute_sweep.call_count == 2
         # The budget allowed five; the run still wrote instead of burning the remaining three.
         assert authoring.execute_report.call_count == 3
+
+
+class TestRerankAttribution:
+    """
+    `_rerank` must attribute a reranked pool back to the sub-question that produced it.
+
+    `RagRerankingPhase.execute` skips any input whose job result is unsuccessful rather than emitting a
+    placeholder, so pairing its output positionally against the queries shifts every later query onto
+    another sub-question's chunks. Nothing fails, and the report cites evidence under the wrong heading.
+    """
+
+    @staticmethod
+    def _pipeline(reranking):
+        return DeepResearchReportPipeline(
+            retrieval_phase=Mock(),
+            reranking_phase=reranking,
+            scrubber_phase=Mock(),
+            scoping_phase=Mock(),
+            authoring_phase=Mock(),
+            report_api=Mock(),
+        )
+
+    def test_each_question_keeps_its_own_reranked_chunks_when_a_middle_query_is_skipped(self):
+        first, second, third = _chunk(0), _chunk(100), _chunk(200)
+        queries = [("q1", Mock()), ("q2", Mock()), ("q3", Mock())]
+        results = [
+            SearchResult(query="q1", results=[first]),
+            SearchResult(query="q2", results=[second]),
+            SearchResult(query="q3", results=[third]),
+        ]
+
+        reranking = Mock()
+
+        def execute(pairs, top_n):
+            # The phase's real behaviour: an input it does not process contributes NO item at all.
+            emitted = [
+                (RagRerankingJobResult(search_id=job.search_id, success=True, reranked_chunks_count=1),
+                 payload)
+                for job, payload in pairs
+                if payload.query != "q2"
+            ]
+            return PhaseBatchResult(
+                phase=PipelinePhase.RAG_RERANKING, status=PhaseStatus.COMPLETED,
+                total_processed=len(emitted), successful_count=len(emitted), items=emitted,
+            )
+
+        reranking.execute.side_effect = execute
+
+        ranked = self._pipeline(reranking)._rerank(REPORT_ID, queries, results)
+
+        assert [question for question, _ in ranked] == ["q1", "q2", "q3"]
+        assert ranked[0][1] == [first]
+        # q2 was skipped by the phase, so it falls back to its own RRF order -- not q3's chunks.
+        assert ranked[1][1] == [second]
+        assert ranked[2][1] == [third]
+
+    def test_a_failed_phase_keeps_every_query_on_its_own_rrf_order(self):
+        queries = [("q1", Mock()), ("q2", Mock())]
+        results = [SearchResult(query="q1", results=[_chunk(0)]),
+                   SearchResult(query="q2", results=[_chunk(50)])]
+        reranking = Mock()
+        reranking.execute.return_value = PhaseBatchResult(
+            phase=PipelinePhase.RAG_RERANKING, status=PhaseStatus.FAILED, errors=["no weights"],
+        )
+
+        ranked = self._pipeline(reranking)._rerank(REPORT_ID, queries, results)
+
+        assert ranked == [("q1", results[0].results), ("q2", results[1].results)]

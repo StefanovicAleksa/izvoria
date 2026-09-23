@@ -16,6 +16,9 @@ from app.features.session_memory.domain.entities import SessionTurn
 from app.features.session_memory.domain.enums import SessionTurnMode
 from app.core.jobs.data.models import JOBS_UPGRADE_DDL
 from app.features.deep_research_report.data.models import RESEARCH_REPORT_UPGRADE_DDL
+from app.features.deep_research_report.domain.entities import (
+    OutlineSection, ResearchPlan, SubQuestion,
+)
 from app.features.session_memory.data.models import SESSION_TURNS_UPGRADE_DDL
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import PhaseBatchResult, ReasonedChatResponse, ConversationChatResult
@@ -604,3 +607,80 @@ class TestOnyxEngineReadSideAccess:
     def test_list_sources_is_refused_while_offline(self, engine):
         with pytest.raises(EngineOfflineError):
             engine.list_sources()
+
+
+class TestProposeResearchPlanJobCount:
+    """
+    `expected_job_count` is the Report view's progress-bar denominator, so it has to count the same
+    job types the view ticks on (`_REPORT_PHASES`). The rerank fan-out is the easy term to miss: the
+    reranking phase runs one `run_job` PER SUB-QUESTION, not one per round.
+
+    Standalone rather than a subclass of TestOnyxEngineUnit, which would re-run that whole class here.
+    """
+
+    @pytest.fixture
+    def pipeline(self):
+        return Mock()
+
+    @pytest.fixture
+    def engine(self, pipeline):
+        engine = OnyxEngine(
+            async_model_service=Mock(),
+            media_pipeline=Mock(),
+            audio_pipeline=Mock(),
+            live_pipeline=Mock(),
+            live_verified_pipeline=Mock(),
+            live_qa_pipeline=Mock(),
+            storage_api=Mock(),
+            research_report_pipeline=pipeline,
+            report_api=Mock(),
+        )
+        engine._state = EngineState.ONLINE
+        return engine
+
+    @staticmethod
+    def _proposed(sections: int, sub_questions: int):
+        report_id = uuid.uuid4()
+        keys = [f"s{index}" for index in range(sections)]
+        plan = ResearchPlan(
+            report_id=report_id,
+            topic="ECB rate decisions",
+            sections=[
+                OutlineSection(key=key, title=f"Section {index}", order_index=index)
+                for index, key in enumerate(keys)
+            ],
+            sub_questions=[
+                SubQuestion(text=f"question {index}", section_key=keys[index % len(keys)], order_index=index)
+                for index in range(sub_questions)
+            ],
+        )
+        report = Mock()
+        report.id = report_id
+        report.plan = plan
+        report.corpus = None
+        report.indexed_source_count = 3
+        return report
+
+    def test_the_denominator_covers_one_rerank_job_per_sub_question(self, engine, pipeline):
+        pipeline.propose_plan.return_value = self._proposed(sections=8, sub_questions=12)
+
+        with patch("app.engine.service.onyx_engine.settings") as mock_settings:
+            mock_settings.REPORT_MAX_GATHER_ROUNDS = 3
+            proposal = engine.propose_research_plan("ECB rate decisions")
+
+        # per round: 1 batched search + 12 rerank jobs + 1 outline pass; then 8 sections + 1 summary.
+        assert proposal.expected_job_count == 3 * (2 + 12) + 8 + 1
+
+    def test_the_denominator_is_never_below_a_single_deep_run(self, engine, pipeline):
+        """
+        A deep run is one round. The bar may finish early (exhaustive's ceiling is used) but must never
+        under-count a deep run's jobs, or it would pin at 100% while the sections are still being written.
+        """
+        pipeline.propose_plan.return_value = self._proposed(sections=8, sub_questions=12)
+
+        with patch("app.engine.service.onyx_engine.settings") as mock_settings:
+            mock_settings.REPORT_MAX_GATHER_ROUNDS = 3
+            proposal = engine.propose_research_plan("ECB rate decisions")
+
+        deep_run_jobs = 1 + 12 + 1 + 8 + 1
+        assert proposal.expected_job_count >= deep_run_jobs

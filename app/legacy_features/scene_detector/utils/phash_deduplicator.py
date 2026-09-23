@@ -1,10 +1,13 @@
 # Canvas: scene_detector_phash_v2
-# Path: app/features/scene_detector/utils/phash_deduplicator.py
+# Path: app/legacy_features/scene_detector/utils/phash_deduplicator.py
 
+import logging
 from pathlib import Path
 from typing import List, Tuple
 from PIL import Image
 import imagehash
+
+logger = logging.getLogger(__name__)
 
 
 class PhashDeduplicator:
@@ -50,7 +53,7 @@ class PhashDeduplicator:
                 # GRACEFUL DEGRADATION:
                 # If a specific image is corrupted, delete it and skip to the next one.
                 # We DO NOT crash the entire batch over one bad frame.
-                print(f"[WARNING] Dropping corrupted frame at {timestamp}s: {e}")
+                logger.warning(f"Dropping corrupted frame at {timestamp}s: {e}")
                 self._safe_delete(file_path)
                 continue
 

@@ -58,7 +58,10 @@ class TestBackgroundModelWorker:
         future.set_result(loaded)
         worker.discard_preload(future, loader)
 
-        mock_orchestrator.release_model.assert_called_once_with(loaded, loader, flush=True)
+        # release_preload, not release_model: the orchestrator has to check nobody has taken the model
+        # since, because freeing one that is in use aborts the process instead of raising.
+        mock_orchestrator.release_preload.assert_called_once_with(loaded, loader)
+        mock_orchestrator.release_model.assert_not_called()
         worker.shutdown()
 
     def test_discard_preload_releases_running_load_once_it_completes(self):
@@ -69,10 +72,10 @@ class TestBackgroundModelWorker:
         future = concurrent.futures.Future()
         future.set_running_or_notify_cancel()
         worker.discard_preload(future, loader)
-        mock_orchestrator.release_model.assert_not_called()
+        mock_orchestrator.release_preload.assert_not_called()
 
         future.set_result(loaded)
-        mock_orchestrator.release_model.assert_called_once_with(loaded, loader, flush=True)
+        mock_orchestrator.release_preload.assert_called_once_with(loaded, loader)
         worker.shutdown()
 
     def test_discard_preload_ignores_failed_load(self):
@@ -84,7 +87,7 @@ class TestBackgroundModelWorker:
         future.set_exception(RuntimeError("load failed"))
         worker.discard_preload(future, MagicMock())
 
-        mock_orchestrator.release_model.assert_not_called()
+        mock_orchestrator.release_preload.assert_not_called()
         worker.shutdown()
 
     def test_release_all_delegates_to_orchestrator(self):

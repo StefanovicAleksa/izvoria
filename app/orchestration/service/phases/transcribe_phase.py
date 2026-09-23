@@ -2,7 +2,7 @@
 # Path: app/orchestration/service/phases/transcribe_phase.py
 
 import concurrent.futures
-import traceback
+import logging
 from typing import List, Optional
 
 from app.core.config import settings
@@ -21,6 +21,8 @@ from app.features.domain_adaptation.domain.interfaces import IDomainAdaptationRe
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import PhaseBatchResult, VadJobResult, TranscribeJobResult
+
+logger = logging.getLogger(__name__)
 
 
 class TranscribePhase:
@@ -92,7 +94,7 @@ class TranscribePhase:
                     hotwords = getattr(glossary, "hotword_string", None) if glossary else None
                     initial_prompt = getattr(glossary, "initial_prompt_string", None) if glossary else None
                 except Exception as ex:
-                    print(f"\n[WARNING] Failed to fetch Domain Hints for {source_id}: {str(ex)}")
+                    logger.warning(f"Failed to fetch Domain Hints for {source_id}: {str(ex)}")
                     hotwords, initial_prompt = None, None
 
                 language = settings.APPLIANCE_LANGUAGE
@@ -120,9 +122,12 @@ class TranscribePhase:
 
                 except Exception as e:
                     err_msg = str(e)
-                    # Explicit Print statements to ensure we see the exact stack trace if it fails again
-                    print(f"\n[CRITICAL ERROR] TranscribePhase failed processing audio for source {source_id}:")
-                    traceback.print_exc()
+                    # Logged with the traceback attached: transcription failures are the ones most often
+                    # diagnosed after the fact from a log file, where a bare message is not enough.
+                    logger.error(
+                        f"TranscribePhase failed processing audio for source {source_id}: {err_msg}",
+                        exc_info=True,
+                    )
                     results.append(TranscribeJobResult(source_id=source_id, success=False, error_message=err_msg))
                     errors.append(f"Failed Transcription for Source {source_id}: {err_msg}")
                     failed_count += 1

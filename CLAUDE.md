@@ -72,12 +72,13 @@ All GPU/VRAM-consuming code must go through `app/core/model_manager/`:
 - **Preload-ahead**: Phases that know they'll need a model soon can call `AsyncModelService.trigger_preload()` to start loading it on a background thread (`BackgroundModelWorker`, a 1-worker `ThreadPoolExecutor`) while other I/O-bound work continues, then `resolve_preload()` to block on it when actually needed. `trigger_unload()` is deliberately synchronous (bypasses the worker pool) so it can't deadlock behind a parked preload task.
 - Admission control (`OutOfVramError`) budgets **on-disk weight size + learned "backpack" + 500 MB**. The backpack (peak activation/overhead memory beyond the weights, per model path) is learned by a telemetry thread and kept in memory only, so it starts at 0 on every process start. `<FEATURE>_VRAM_REQUIREMENT_MB` is only used when the weights path doesn't exist — still set it, conservatively.
 - Always release what you acquire, in a `finally` block, so a failure mid-feature doesn't leak VRAM for the rest of the process.
+- **`acquire_model` hands out a shared instance, not a refcounted handle** — `release_model` frees on the first call no matter how many callers hold it. That is deliberate (`release_after=False` makes acquires outnumber releases by design), so any release made *on behalf of* someone else must go through `release_preload`, which checks under the orchestrator's lock whether anyone has taken the model since. Freeing one that is in use aborts the process inside llama.cpp's `free_model` rather than raising.
 - Before writing or changing code that loads a model, follow the **`onyx-model-lifecycle`** skill (`.claude/skills/onyx-model-lifecycle/SKILL.md`): adapter, feature API, Phase and pipeline patterns, preload/discard, and how to test them.
 
 ## Tech stack
 
 - **Language / runtime:** Python, no web framework and no server anywhere — `app/main.py` is a CLI entrypoint
-  (`OnyxEngine.interactive_cli()`), and `frontend/main.py` is a PySide6 (Qt6) desktop app that drives the same
+  (its own numbered menu, driving `OnyxEngine`), and `frontend/main.py` is a PySide6 (Qt6) desktop app that drives the same
   `OnyxEngine` **in-process** on a background thread. See `docs/frontend.md` and `frontend/README.md`.
 - **Storage:** PostgreSQL + `pgvector`, a **single database for both relational and vector data** (jobs, transcripts, and the `vector_chunks` table with both an `embedding` column and an auto-generated `fts_document` tsvector column live side by side). Run via Docker: `docker-compose.yaml` defines `db_dev` (port 5432, `pgvector/pgvector:pg15`) and `db_test` (port 5433), both bootstrapped from `scripts/init.sql`. **There is no application Dockerfile** — only the databases are containerized; the app itself runs from a local venv.
 - **ORM / DB access:** SQLAlchemy + `psycopg2-binary` (sync, not async).

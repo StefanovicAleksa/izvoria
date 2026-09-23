@@ -1,4 +1,3 @@
-# Canvas: rag_retrieval_phase_v1
 # Path: app/orchestration/service/phases/rag_retrieval_phase.py
 
 import logging
@@ -247,11 +246,8 @@ class RagRetrievalPhase:
 
         try:
             for search_id, query in queries:
-                # We use a string fallback "rag_retrieval" in case the enum is missing in legacy environments
-                job_type = getattr(JobType, "RAG_RETRIEVAL", JobType("rag_retrieval"))
-
                 request = JobRequest(
-                    job_type=job_type,
+                    job_type=JobType.RAG_RETRIEVAL,
                     source_id=None,  # Live inference jobs aren't strictly bound to a single source_id
                     input_params={"search_id": str(search_id), "prompt": query.prompt}
                 )

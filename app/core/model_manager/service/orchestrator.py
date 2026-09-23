@@ -24,6 +24,12 @@ class ModelManagerOrchestrator:
         self._monitor = vram_monitor
         self._active_models: Dict[uuid.UUID, LoadedModel] = {}
         self._active_loaders: Dict[uuid.UUID, IModelLoader] = {}
+        # How many times each resident model has been handed out by acquire_model. Used ONLY by
+        # release_preload, to tell an abandoned preload apart from one somebody has since taken.
+        # Deliberately not a refcount: `release_after=False` means a holder's acquires intentionally
+        # outnumber its releases (a Phase holds one residency across many feature-API calls), so
+        # freeing on a balanced count would leak every model the report path loads.
+        self._handouts: Dict[uuid.UUID, int] = {}
         self._historical_backpacks: Dict[str, float] = {}
         self._lock = threading.RLock()
 
@@ -64,7 +70,7 @@ class ModelManagerOrchestrator:
         with self._lock:
             resident = self._find_resident(manifest)
             if resident:
-                return resident
+                return self._hand_out(resident)
 
         # 2. Prevent Race Conditions: Background preloads must wait for active inference to finish
         if wait_for_clear:
@@ -74,7 +80,7 @@ class ModelManagerOrchestrator:
             # Double check idempotency after acquiring lock
             resident = self._find_resident(manifest)
             if resident:
-                return resident
+                return self._hand_out(resident)
 
             # 3. Swap logic: If VRAM is occupied, release existing models
             if self._active_models:
@@ -109,6 +115,7 @@ class ModelManagerOrchestrator:
                 loaded_model = loader.load(manifest)
                 self._active_models[loaded_model.id] = loaded_model
                 self._active_loaders[loaded_model.id] = loader
+                self._handouts[loaded_model.id] = 1
 
                 self._monitor.reset_peak_stats()
                 return loaded_model
@@ -116,6 +123,44 @@ class ModelManagerOrchestrator:
             except Exception as e:
                 self._monitor.flush_memory()
                 raise map_model_manager_error(e) from e
+
+    def _hand_out(self, model: LoadedModel) -> LoadedModel:
+        """Records that a resident model has been given to one more caller. Callers must hold `self._lock`."""
+        self._handouts[model.id] = self._handouts.get(model.id, 0) + 1
+        return model
+
+    def release_preload(self, loaded_model: LoadedModel, loader: IModelLoader) -> None:
+        """
+        Releases a preload nobody resolved -- unless somebody has taken the model in the meantime.
+
+        This is the fire-and-forget release. Every other release is made by the code holding the model,
+        which knows it has finished with it; this one is made by a background callback on behalf of a
+        caller that walked away, and by the time it runs the model may have been handed to somebody else.
+
+        Freeing it unconditionally is a use-after-free: `acquire_model` returns a resident model straight
+        out of the idempotency check, so a phase can be mid-generation on the very instance this callback
+        frees. That is an abort inside llama.cpp (`free_model`), not an exception -- the process dies.
+
+        The check and the free both happen under `self._lock`, and `acquire_model` counts its hand-out
+        under the same lock, so the two orderings are the only ones possible: either the acquire lands
+        first and this becomes a no-op, or this frees first and the acquire loads a fresh copy.
+        """
+        with self._lock:
+            if loaded_model.id not in self._active_models:
+                return
+
+            handouts = self._handouts.get(loaded_model.id, 0)
+            if handouts > 1:
+                # Somebody acquired it after the preload did. Drop only the preload's own claim; the
+                # holder's release_model frees it when it is actually finished.
+                self._handouts[loaded_model.id] = handouts - 1
+                logger.info(
+                    f"Abandoned preload of {loaded_model.manifest.model_type.value} is still in use by "
+                    f"another caller; leaving it resident."
+                )
+                return
+
+            self.release_model(loaded_model, loader, flush=True)
 
     def release_model(self, loaded_model: LoadedModel, loader: IModelLoader, flush: bool = True) -> None:
         with self._lock:
@@ -128,6 +173,7 @@ class ModelManagerOrchestrator:
 
                 if loaded_model.id in self._active_loaders:
                     del self._active_loaders[loaded_model.id]
+                self._handouts.pop(loaded_model.id, None)
 
                 if flush:
                     self._monitor.flush_memory()

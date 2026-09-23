@@ -177,3 +177,108 @@ class TestModelManagerOrchestrator:
 
         assert result == loaded
         assert mock_loader.load.call_count == 1
+
+
+class TestReleasePreload:
+    """
+    `release_preload` is the fire-and-forget release used by `discard_preload`'s done-callback.
+
+    Every other release is made by the code holding the model, which knows it has finished. This one
+    runs on a background thread on behalf of a caller that walked away, and by then the model may have
+    been handed to somebody else -- freeing it there is a use-after-free that aborts the process inside
+    llama.cpp's `free_model` rather than raising.
+    """
+
+    @pytest.fixture
+    def mock_monitor(self):
+        monitor = MagicMock()
+        monitor.get_vram_status.return_value = VramStatus(
+            total_vram_mb=12000.0, used_vram_mb=2000.0, free_vram_mb=10000.0
+        )
+        monitor.get_pytorch_memory_stats.return_value = (0.0, 0.0)
+        return monitor
+
+    @pytest.fixture
+    def manifest(self):
+        return ModelManifest(
+            model_type=ModelType.VAD, model_path="models/dummy_model.bin", required_vram_mb=1000.0
+        )
+
+    @pytest.fixture
+    def loader(self, manifest):
+        loader = MagicMock()
+        loader.load.return_value = LoadedModel(manifest=manifest, model_instance="fake_tensor")
+        return loader
+
+    def test_an_abandoned_preload_nobody_took_is_released(self, mock_monitor, loader, manifest):
+        orchestrator = ModelManagerOrchestrator(mock_monitor)
+        preloaded = orchestrator.acquire_model(manifest, loader, wait_for_clear=True)
+
+        orchestrator.release_preload(preloaded, loader)
+
+        loader.unload.assert_called_once_with(preloaded)
+        assert orchestrator.acquire_model(manifest, loader) is not None
+        assert loader.load.call_count == 2, "the model should have to be loaded again"
+
+    def test_a_preload_somebody_else_acquired_is_left_resident(self, mock_monitor, loader, manifest):
+        """The crash: the callback must not free the instance another caller is mid-generation on."""
+        orchestrator = ModelManagerOrchestrator(mock_monitor)
+        preloaded = orchestrator.acquire_model(manifest, loader, wait_for_clear=True)
+
+        # A phase resolves the preload and takes the model -- served straight from the idempotency check.
+        in_use = orchestrator.acquire_model(manifest, loader)
+        assert in_use is preloaded
+
+        orchestrator.release_preload(preloaded, loader)
+
+        loader.unload.assert_not_called()
+        assert orchestrator.acquire_model(manifest, loader) is preloaded
+        assert loader.load.call_count == 1, "the model must still be resident"
+
+    def test_the_holder_can_still_release_it_afterwards(self, mock_monitor, loader, manifest):
+        orchestrator = ModelManagerOrchestrator(mock_monitor)
+        preloaded = orchestrator.acquire_model(manifest, loader, wait_for_clear=True)
+        in_use = orchestrator.acquire_model(manifest, loader)
+
+        orchestrator.release_preload(preloaded, loader)
+        orchestrator.release_model(in_use, loader)
+
+        loader.unload.assert_called_once_with(in_use)
+        orchestrator.acquire_model(manifest, loader)
+        assert loader.load.call_count == 2, "a discarded-then-released model must not stay resident"
+
+    def test_releasing_a_preload_twice_is_harmless(self, mock_monitor, loader, manifest):
+        orchestrator = ModelManagerOrchestrator(mock_monitor)
+        preloaded = orchestrator.acquire_model(manifest, loader, wait_for_clear=True)
+
+        orchestrator.release_preload(preloaded, loader)
+        orchestrator.release_preload(preloaded, loader)
+
+        assert loader.unload.call_count == 1
+
+    def test_a_model_that_was_already_evicted_is_ignored(self, mock_monitor, loader, manifest):
+        orchestrator = ModelManagerOrchestrator(mock_monitor)
+        preloaded = orchestrator.acquire_model(manifest, loader, wait_for_clear=True)
+        orchestrator.release_all({})
+        loader.unload.reset_mock()
+
+        orchestrator.release_preload(preloaded, loader)
+
+        loader.unload.assert_not_called()
+
+    def test_the_hold_pattern_still_frees_on_one_release(self, mock_monitor, loader, manifest):
+        """
+        The report path's shape: a Phase resolves one preload, the feature API acquires the same
+        manifest once per job (`release_after=False`, so it never releases), and the Phase's `finally`
+        releases once. Counting hand-outs must not turn that into a leak.
+        """
+        orchestrator = ModelManagerOrchestrator(mock_monitor)
+        held = orchestrator.acquire_model(manifest, loader, wait_for_clear=True)
+        for _ in range(5):
+            assert orchestrator.acquire_model(manifest, loader) is held
+
+        orchestrator.release_model(held, loader)
+
+        loader.unload.assert_called_once_with(held)
+        orchestrator.acquire_model(manifest, loader)
+        assert loader.load.call_count == 2, "one release must free it however many times it was handed out"

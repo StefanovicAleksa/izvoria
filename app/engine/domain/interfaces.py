@@ -172,10 +172,3 @@ class IOnyxEngine(ABC):
     def list_sources(self) -> List[Source]:
         """Everything ingested into the vault, newest first, each with its file row attached."""
         pass
-
-    @abstractmethod
-    def interactive_cli(self) -> None:
-        """
-        Launches an interactive command-line interface for operating the appliance.
-        """
-        pass

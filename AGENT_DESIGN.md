@@ -240,7 +240,7 @@ and 1, respectively) rather than open-ended.
   self-skipping with a descriptive reason if the Qwen2.5-7B weights aren't
   present on the machine (matching every other model-dependent integration
   test).
-- Manual check via `OnyxEngine.interactive_cli()`: ask a multi-part question
+- Manual check via `app/main.py`'s menu: ask a multi-part question
   that needs two distinct retrieval passes, confirm the final answer's citations
   span both passes and the trace shows the Reasoner's intermediate decisions;
   ask a genuinely unanswerable question and confirm it still refuses rather than

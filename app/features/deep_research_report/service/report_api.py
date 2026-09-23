@@ -446,26 +446,37 @@ class ReportAuthoringAPI:
         except Exception as e:
             raise map_report_error(e, context=f"Rendering and finalizing report {report_id}") from e
 
-    def render_partial(self, report_id: uuid.UUID) -> Tuple[Report, Optional[str]]:
+    def render_partial(self, report_id: uuid.UUID) -> Tuple[Optional[Report], Optional[str]]:
         """
         Renders whatever a cancelled or failed run produced, without marking it COMPLETED.
 
         A stopped report is still worth reading: the sections that were written are cited and valid, and a
         person who cancelled after twenty minutes should get those twenty minutes of work rather than an
         empty row. The file is written; the status is left as-is so `resume` still knows what is pending.
+
+        Returns `(None, None)` for a report that cannot be read at all -- this runs on the cancel path,
+        where raising would turn a clean stop into a crash, so the caller decides what an unreadable
+        report means. The report is optional in the return type for that reason.
         """
         try:
             report = self._repository.get_report(report_id)
             if report is None or not report.written_sections:
-                return (report, None) if report else (None, None)
+                return report, None
 
             path = self._file_store.write_markdown(report_id, markdown_renderer.render(report))
             return report, path
 
         except Exception as e:
             logger.error(f"Could not render the partial report {report_id}: {e}")
-            report = self._repository.get_report(report_id)
-            return report, None
+            # Re-read rather than reuse `report`, which may be unbound if the read itself was what
+            # failed. Guarded, because a repository that just failed is likely to fail again, and an
+            # unmapped repository exception escaping here would leave the feature boundary as a raw
+            # SQLAlchemy error -- and would do it on the cancel path, of all places.
+            try:
+                return self._repository.get_report(report_id), None
+            except Exception as read_error:
+                logger.error(f"Could not read report {report_id} back either: {read_error}")
+                return None, None
 
     # ==========================================
     # 6. READS / STATUS

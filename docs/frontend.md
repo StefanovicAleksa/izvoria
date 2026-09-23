@@ -6,7 +6,7 @@ it fits the rest of the system.
 
 ## Why it exists
 
-Until now the appliance was operable only through `OnyxEngine.interactive_cli()` (`app/main.py`).
+Until now the appliance was operable only through `app/main.py`'s numbered menu.
 The product's central claim is that every answer is traceable to its source, and a terminal cannot
 deliver that: it prints a path and a timestamp and leaves the user to go find the video. The
 desktop app closes that loop — click a citation, read the verbatim words it came from, and
