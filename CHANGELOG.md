@@ -4,6 +4,12 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Old databases catch up through the baseline, not through today's models
+
+Introduced in `9ed948e` (the migration commit), found by the first revision after it (`0002`). A database from before migrations was caught up with `create_all()`, which builds a missing table from *today's* models. That included columns from later revisions, whose own migrations then failed adding them. An appliance ingested before image support (no `image_descriptions` table) would have stopped booting with `DuplicateColumn: ocr_withheld_lines`.
+
+The catch-up now runs the frozen statements for the tables the database has, then revision `0001` itself, which creates only the tables and indexes that are missing (`if_not_exists`), in the baseline's shape. Then it upgrades to head like any other database. The integration test's fake old database lacks `image_descriptions`, so it covers this. A copy of the dev database migrates to `0002` with its data kept and no drift. The tests that asserted "revision is 0001" now assert the head.
+
 ## Capitals are a heading only when they stand alone
 
 Found by ingesting Project Gutenberg's *Adventures of Sherlock Holmes* (EPUB and TXT). A line in capitals counted as a title, so dialogue ("“BALLARAT.”", "“HUNTER.”") displaced the book's own title. From the fifth story on, every EPUB chunk was filed under "“BALLARAT.” › V. …", and 36 chunks of *The Copper Beeches* were cited as section "“HUNTER.”". The same rule broke contracts. A hard-wrapped, all-caps liability disclaimer was cut into one "heading" per line, and later citations named "OR IN CONNECTION WITH THIS AGREEMENT, EVEN IF ADVISED OF THE" as their section.

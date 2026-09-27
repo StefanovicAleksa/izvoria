@@ -10,10 +10,8 @@ from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.database import exceptions as exc
-from app.core.database.data.engine import Base
-from app.core.database.data.migrations.pre_alembic import PRE_ALEMBIC_CATCH_UP
+from app.core.database.data.migrations.pre_alembic import catch_up_statements
 from app.core.database.utils.error_mapper import map_database_error
-from app.core.database.utils.model_registry import import_all_models
 
 logger = logging.getLogger(__name__)
 
@@ -42,19 +40,21 @@ def upgrade_to_head(engine: Engine) -> None:
     Brings the database to the newest schema, in one transaction: Postgres DDL is transactional, so a revision
     that fails leaves the database exactly as it was, and the raised DBMigrationError stops the engine booting.
 
-    A database from before Alembic is first caught up to the baseline with create_all() and the frozen
-    pre-Alembic statements, then stamped, so an appliance full of ingested data is kept, not reset.
+    A database from before Alembic first gets the frozen pre-Alembic statements for the tables it has, then the
+    baseline -- which creates only the tables and indexes it lacks -- then is upgraded like any other. An
+    appliance full of ingested data is kept, not reset.
     """
     try:
         with engine.begin() as connection:
             config = _config(connection)
             if _is_pre_alembic(connection):
-                logger.info(f"Database predates migrations: catching it up and stamping revision {BASELINE_REVISION}.")
-                import_all_models()
-                Base.metadata.create_all(bind=connection)
-                for statement in PRE_ALEMBIC_CATCH_UP:
+                # The tables it has get their missing columns first; then the baseline creates only what is still
+                # missing, in its own shape. create_all() built a missing table from today's models instead, and the
+                # later revision that adds one of its columns failed.
+                logger.info(f"Database predates migrations: catching it up to revision {BASELINE_REVISION}.")
+                for statement in catch_up_statements(set(inspect(connection).get_table_names())):
                     connection.execute(text(statement))
-                command.stamp(config, BASELINE_REVISION)
+                command.upgrade(config, BASELINE_REVISION)
             command.upgrade(config, "head")
     except exc.DatabaseError:
         raise

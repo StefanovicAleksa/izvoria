@@ -64,3 +64,21 @@ TYPE_ALIGNMENT: tuple = (
 
 PRE_ALEMBIC_CATCH_UP: tuple = (*SESSION_TURNS_CATCH_UP, *JOBS_CATCH_UP, *RESEARCH_REPORT_CATCH_UP,
                                *VECTOR_CHUNKS_CATCH_UP, *TYPE_ALIGNMENT)
+
+
+def catch_up_statements(existing_tables: set) -> list:
+    """
+    The statements for the tables this old database already has, in order. They run before the baseline, whose
+    indexes need the columns they add (ix_vector_chunks_source_position needs `position`); a table the database
+    lacks is created by the baseline instead, already in the baseline's shape.
+    """
+    return [statement for statement in PRE_ALEMBIC_CATCH_UP
+            if statement.startswith("DROP INDEX IF EXISTS") or _table_of(statement) in existing_tables]
+
+
+def _table_of(statement: str) -> str:
+    words = statement.replace("(", " ").split()
+    for keyword in ("TABLE", "UPDATE", "ON"):
+        if keyword in words:
+            return words[words.index(keyword) + 1]
+    raise ValueError(f"No table in catch-up statement: {statement[:60]}")

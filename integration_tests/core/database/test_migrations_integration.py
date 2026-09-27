@@ -12,9 +12,13 @@ from sqlalchemy.engine import make_url
 
 from app.core.config import settings
 from app.core.database.data.engine import Base
-from app.core.database.service.migrations import BASELINE_REVISION, _config, upgrade_to_head
+from alembic.script import ScriptDirectory
+
+from app.core.database.service.migrations import MIGRATIONS_DIR, _config, upgrade_to_head
 
 pytestmark = pytest.mark.integration
+
+HEAD = ScriptDirectory(str(MIGRATIONS_DIR)).get_current_head()
 
 SCRATCH_DB = "onyx_test_migrations"
 
@@ -76,7 +80,7 @@ class TestMigrationsIntegration:
     def test_empty_database_reaches_head_with_no_drift_from_the_models(self, scratch_engine):
         upgrade_to_head(scratch_engine)
 
-        assert _revision(scratch_engine) == BASELINE_REVISION
+        assert _revision(scratch_engine) == HEAD
         # Fails when a model changes without a revision: generate one with `alembic revision --autogenerate`
         assert _drift(scratch_engine) == []
 
@@ -84,7 +88,7 @@ class TestMigrationsIntegration:
         upgrade_to_head(scratch_engine)
         upgrade_to_head(scratch_engine)
 
-        assert _revision(scratch_engine) == BASELINE_REVISION
+        assert _revision(scratch_engine) == HEAD
 
     def test_baseline_stems_keyword_search_in_the_appliance_language(self, scratch_engine):
         upgrade_to_head(scratch_engine)
@@ -121,7 +125,7 @@ class TestMigrationsIntegration:
 
         upgrade_to_head(scratch_engine)
 
-        assert _revision(scratch_engine) == BASELINE_REVISION
+        assert _revision(scratch_engine) == HEAD
         assert _drift(scratch_engine) == []
         with scratch_engine.connect() as connection:
             chunks = connection.execute(text(
