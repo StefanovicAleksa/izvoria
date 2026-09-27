@@ -80,6 +80,67 @@ class TestBorderlessTables:
         assert tables == 0 and "|" not in text
 
 
+    def test_a_wide_timetable_is_still_a_table(self):
+        """15 columns, like the 1900 railway timetable whose Norfolk row stayed flat text under a cap of 8."""
+        header = line(0, *[(60 * i, f"C{i}") for i in range(15)])
+        rows = [line(12 * (r + 1), *[(60 * i, f"{r}.{i:02d}") for i in range(15)]) for r in range(3)]
+
+        text, tables = render_page(page(header, *rows))
+
+        assert tables == 1
+        assert text.splitlines()[0] == "| " + " | ".join(f"C{i}" for i in range(15)) + " |"
+        assert text.splitlines()[2] == "| " + " | ".join(f"0.{i:02d}" for i in range(15)) + " |"
+
+
+class TestTableInPieces:
+    """Found on a 1900 railway timetable: its header and body were detected as two tables that didn't line up."""
+
+    COLUMNS = (0, 100, 200, 300)
+
+    def _row(self, y, *texts):
+        return line(y, *[(x, text) for x, text in zip(self.COLUMNS, texts) if text])
+
+    def test_header_marker_line_and_body_become_one_table(self):
+        boxes = page(
+            self._row(0, "Sunday", "Berk.", "STATIONS", "Day"),
+            self._row(12, "only.", "Exp.", "", "Exp."),
+            self._row(24, "A.M.", "P.M.", "Leave.", "A.M."),
+            self._row(36, "P.M."),                                   # a lone marker line breaks detection
+            self._row(48, "4.22", "7.23", "NORFOLK", "1.02"),
+            self._row(60, "4.46", "7.45", "WINSTED", "1.24"),
+            self._row(72, "5.01", "8.00", "HARTFORD", "1.38"),
+        )
+
+        text, tables = render_page(boxes)
+
+        assert tables == 1
+        assert text.splitlines()[0] == "| Sunday | Berk. | STATIONS | Day |"
+        assert "| 4.22 | 7.23 | NORFOLK | 1.02 |" in text.splitlines()
+
+    def test_a_title_across_the_columns_keeps_the_pieces_apart(self):
+        title = line(36, (0, "Trains to New York stop at every station"))
+        boxes = page(
+            self._row(0, "Sunday", "Berk.", "STATIONS", "Day"),
+            self._row(12, "only.", "Exp.", "", "Exp."),
+            self._row(24, "A.M.", "P.M.", "Leave.", "A.M."),
+            title,
+            self._row(48, "4.22", "7.23", "NORFOLK", "1.02"),
+            self._row(60, "4.46", "7.45", "WINSTED", "1.24"),
+            self._row(72, "5.01", "8.00", "HARTFORD", "1.38"),
+        )
+
+        text, tables = render_page(boxes)
+
+        assert tables == 2
+        assert "Trains to New York stop at every station" in text.splitlines()
+
+    def test_a_word_in_a_gutter_goes_to_the_nearest_column_not_the_last(self):
+        from app.features.document_conversion.utils.layout import _column_of
+        columns = [(0, 50), (100, 150), (200, 250), (300, 350)]
+        assert _column_of(Box(55, 65, 0, 10, "d"), columns) == 0
+        assert _column_of(Box(180, 195, 0, 10, "W"), columns) == 2
+
+
 class TestProseIsNotATable:
     def test_justified_prose_whose_word_gaps_line_up_by_chance(self):
         """

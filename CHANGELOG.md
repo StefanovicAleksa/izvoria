@@ -4,6 +4,12 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Wide tables, and tables found in pieces
+
+A 1900 railway timetable (15 columns) stayed flat text: `MAX_TABLE_COLUMNS` was 8. With the cap at 16, its body became a table but its header didn't. Wider header cells, a lone "P. M." line and a row crossed by a rotated caption each ended detection. Pieces at most 3 lines apart are now re-cut along the later piece's columns, unless a line between them runs across the columns like a title. A word whose centre falls in a gutter goes to the nearest column instead of the last. The timetable is now one table, with "Sunday / only." over "4.22".
+
+The layout is right, but the answer isn't yet. Qwen3.5-9B still reads the Sunday train to Norfolk as "10:06" (the Hartford column), and in thinking mode it looped for 16 000 tokens before settling on "7:48". Rendering rows as labelled cells ("Sunday only.: 4.22 · …") got it to the right column on the wrong half of the page ("TRAINS FROM / TO NEW YORK" spans half the columns), and made another question worse, so it wasn't adopted. RapidTable's SLANet-plus structure model was also tried on the page; it lost more cells than the layout rules. Treat values read out of wide scanned tables as needing the citation checked.
+
 ## Handwriting OCR can't read is no longer indexed as text
 
 OCR never invents a line, but on handwriting it writes gibberish. An 1839 letter was indexed as "Analbeig aftea long apok by thelvelist hak mith…", labelled as text read by OCR. The image check now also runs in reverse: an OCR line under 0.7 confidence is kept only if the vision model read the same words. On an image where most lines are that uncertain (handwriting), every line under 0.9 needs that confirmation. `IOcrEngine.recognize` takes a `select_lines` hook so this happens before layout (tables keep their shape), and PDFs are unchanged.

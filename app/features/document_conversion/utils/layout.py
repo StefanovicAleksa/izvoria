@@ -27,9 +27,15 @@ _PARAGRAPH_GAP = 0.7
 # A borderless table needs at least this many rows (header included), every one with at least two cells. Two
 # aligned lines are too easily a coincidence -- a date beside a place name -- to be called a table.
 MIN_TABLE_ROWS = 3
-MAX_TABLE_COLUMNS = 8
+# A railway timetable or a financial statement easily has 15 columns; with a cap of 8 such a table stayed flat text,
+# and an answer read "10.06" from the wrong column of a row that had lost its cells. Prose is kept out by the gutter
+# and cell-length rules, not by this cap.
+MAX_TABLE_COLUMNS = 16
 # Side-by-side prose (a bilingual contract) also leaves a shared gutter; table cells are short
 MAX_MEAN_WORDS_PER_CELL = 6.0
+# A table the detector found in two pieces -- its header, a few lines it couldn't place (a lone "P. M.", a row a
+# rotated caption crosses), then the body -- is joined when at most this many lines separate the pieces
+MAX_LINES_BETWEEN_TABLE_PIECES = 3
 # A gutter must be clearly wider than the gaps between the words inside the cells. Word gaps in justified prose
 # can line up across a few lines by chance, but such a "gutter" is only as wide as a word gap.
 MIN_GUTTER_TO_WORD_GAP = 1.5
@@ -86,18 +92,24 @@ def render_page(boxes: Sequence[Box], tables: Sequence[RenderedTable] = ()) -> T
     items: List[Tuple[float, float, str, bool]] = []  # (top, bottom, text, is_table)
 
     height = _line_height(boxes)
+    spans: List[Tuple[int, int, str]] = []  # (first line, line after the last, Markdown)
     index = 0
-    table_count = len(tables)
     while index < len(lines):
         found = _table_at(lines, index, height)
         if found is not None:
-            end, table = found
-            items.append((lines[index].top, lines[end - 1].bottom, table, True))
-            table_count += 1
-            index = end
-            continue
-        items.append((lines[index].top, lines[index].bottom, lines[index].text, False))
-        index += 1
+            spans.append((index, found[0], found[1]))
+            index = found[0]
+        else:
+            index += 1
+    spans = _join_table_pieces(lines, spans, height)
+
+    table_count = len(tables) + len(spans)
+    index = 0
+    for start, end, table in spans:
+        items.extend((line.top, line.bottom, line.text, False) for line in lines[index:start])
+        items.append((lines[start].top, lines[end - 1].bottom, table, True))
+        index = end
+    items.extend((line.top, line.bottom, line.text, False) for line in lines[index:])
 
     items.extend((t.top, t.bottom, t.markdown, True) for t in tables)
     items.sort(key=lambda item: item[0])
@@ -153,6 +165,52 @@ def _table_at(lines: List[Line], start: int, height: float) -> Optional[Tuple[in
     return best
 
 
+def _join_table_pieces(lines: List[Line], spans: List[Tuple[int, int, str]],
+                       height: float) -> List[Tuple[int, int, str]]:
+    """
+    Joins a table found in pieces into one, cut along the columns of its later piece (the body, usually the
+    widest). Without it a timetable's header ("Sunday only", "Berk. Exp.") and its rows ended up in two tables
+    whose columns didn't line up, and an answer read "10.06" from the wrong column. Joined only when no word of
+    the lines in between runs across a whole gutter, as a title or a sentence would.
+    """
+    joined: List[Tuple[int, int, str]] = []
+    for start, end, table in spans:
+        if joined and start - joined[-1][1] <= MAX_LINES_BETWEEN_TABLE_PIECES:
+            first = joined[-1][0]
+            columns, _ = _columns(lines[start:end], height)
+            if not any(_spans_a_gutter(line, columns, height) for line in lines[first:end]):
+                joined[-1] = (first, end, markdown_table([_split_row(row, columns) for row in lines[first:end]]))
+                continue
+        joined.append((start, end, table))
+    return joined
+
+
+def _spans_a_gutter(line: Line, columns: List[Tuple[float, float]], height: float) -> bool:
+    """
+    The line runs across the columns like a title or a sentence: its words bridge -- leave no gutter-sized hole
+    in -- at least half of the gutters they reach (one box per word, so no single box need cover one). A header
+    has cells wider than the body's, and two of them may nearly touch over one gutter ("M'tain |Sunday", 16 px
+    apart), but it stays open over the rest. Punctuation doesn't count -- OCR boxed one bracket 230 px wide.
+    """
+    words = [box for box in line.boxes if any(ch.isalnum() for ch in box.text)]
+    if not words:
+        return False
+    left, right = min(box.x0 for box in words), max(box.x1 for box in words)
+    reached = bridged = 0
+    for g0, g1 in ((a[1], b[0]) for a, b in zip(columns, columns[1:])):
+        if g1 <= g0 or g1 <= left or g0 >= right:
+            continue
+        reached += 1
+        covered = sorted((max(box.x0, g0), min(box.x1, g1)) for box in words if box.x1 > g0 and box.x0 < g1)
+        reach, hole = g0, 0.0
+        for x0, x1 in covered:
+            hole = max(hole, x0 - reach)
+            reach = max(reach, x1)
+        hole = max(hole, g1 - reach)
+        bridged += hole < _MIN_GUTTER * height
+    return bridged > 0 and bridged >= reached / 2
+
+
 def _columns(rows: List[Line], height: float) -> Tuple[List[Tuple[float, float]], float]:
     """
     Column extents between the gutters the rows share -- the strips no word of any row covers -- and the width
@@ -184,8 +242,11 @@ def _word_gap(rows: List[Line], columns: List[Tuple[float, float]]) -> float:
 
 
 def _column_of(box: Box, columns: List[Tuple[float, float]]) -> int:
+    """The column holding the box's centre, or, for a centre in a gutter, the nearest column (not the last)."""
     centre = (box.x0 + box.x1) / 2
-    return next((i for i, (x0, x1) in enumerate(columns) if x0 <= centre <= x1), len(columns) - 1)
+    return min(range(len(columns)),
+               key=lambda i: 0.0 if columns[i][0] <= centre <= columns[i][1]
+               else min(abs(centre - columns[i][0]), abs(centre - columns[i][1])))
 
 
 def _split_row(row: Line, columns: List[Tuple[float, float]]) -> List[str]:
