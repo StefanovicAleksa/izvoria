@@ -71,7 +71,7 @@ It is cross-cutting, like `config`. The consumers are:
 
 ## Gotchas / design notes
 
-- **Changing `APPLIANCE_LANGUAGE` on an existing index fails startup** with `IndexLanguageMismatchError`. The `fts_document` column is generated with the old stemmer at table creation, and there are no migrations. Reset the database and re-ingest.
+- **Changing `APPLIANCE_LANGUAGE` on an existing index fails startup** with `IndexLanguageMismatchError`. The `fts_document` column is generated with the old stemmer at table creation, and no migration regenerates it. Reset the database and re-ingest.
 - **A file in the wrong language is rejected, not transcribed.** `TranscriptionAPI` runs Whisper's language ID over the first 30 s of VAD speech. A confident detection outside `accepted_detections` raises `LanguageMismatchError`. Forcing a language on foreign speech makes Whisper translate or invent fluent text, which would look grounded in the index.
 - **sr/sl phonetic correction has no inflection handling** (`plural_suffix = ""`). A glossary term replaces a mis-heard span in its dictionary form, so a case ending can be lost ("infarkta" → "infarkt"). Needs inflection-aware matching before sr/sl glossaries are trusted.
 - **The sr/sl hallucination patterns are seeds.** Confirm them against real transcripts: a pattern deletes a whole segment.

@@ -1,5 +1,6 @@
 from contextlib import contextmanager
 from typing import Generator
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -32,6 +33,9 @@ class DatabaseManager(IDatabaseManager):
             raise exc.SystemError(f"Unexpected System Error: {str(e)}", original_exception=e) from e
         finally:
             session.close()
+
+    def get_engine(self) -> Engine:
+        return self._engine_wrapper.get_engine()
 
     def dispose(self) -> None:
         self._engine_wrapper.dispose_engine()

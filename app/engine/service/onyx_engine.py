@@ -8,11 +8,10 @@ import uuid
 import gc
 from typing import Dict, List, Optional
 
-from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.database.service.manager import db_manager
-from app.core.database.data.engine import Base
+from app.core.database.service.migrations import upgrade_to_head
 from app.core.model_manager.service.async_model_service import AsyncModelService
 
 from app.engine.domain.interfaces import IOnyxEngine
@@ -30,10 +29,6 @@ from app.features.qa_generation.domain.entities import QAResponse, ConversationH
 from app.features.session_memory.service.session_memory_api import SessionMemoryAPI
 from app.features.session_memory.domain.enums import SessionTurnMode
 from app.core.jobs.domain.entities import CancellationToken
-from app.core.jobs.data.models import JOBS_UPGRADE_DDL
-from app.features.session_memory.data.models import SESSION_TURNS_UPGRADE_DDL
-from app.features.deep_research_report.data.models import RESEARCH_REPORT_UPGRADE_DDL
-from app.features.rag_storage.data.models import VECTOR_CHUNKS_UPGRADE_DDL
 from app.features.deep_research_report.domain.entities import (
     CorpusDigest, Report, ReportSummary, ResearchPlan, ResearchPlanProposal,
 )
@@ -112,12 +107,8 @@ class OnyxEngine(IOnyxEngine):
             logger.info("Booting Onyx Enterprise AI Engine...")
 
             try:
-                with db_manager.session() as session:
-                    engine = session.get_bind()
-                    Base.metadata.create_all(bind=engine)
-                    for statement in (*SESSION_TURNS_UPGRADE_DDL, *JOBS_UPGRADE_DDL, *RESEARCH_REPORT_UPGRADE_DDL,
-                                      *VECTOR_CHUNKS_UPGRADE_DDL):
-                        session.execute(text(statement))
+                # Creates a fresh database, or brings an existing one to this build's schema without touching its data
+                upgrade_to_head(db_manager.get_engine())
 
                 # An index built for another language can't be searched with this one's stemmer
                 if self._retrieval_api is not None:

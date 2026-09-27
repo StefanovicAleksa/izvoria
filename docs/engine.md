@@ -22,7 +22,7 @@ Notably, `HallucinationScrubberPhase` and `IntelligenceBridgePhase` (see `legacy
 
 Public API surface:
 
-- `start()` — creates all DB tables (`Base.metadata.create_all`), forces a GC/CUDA cache clear, transitions to `ONLINE`.
+- `start()` — migrates the database to the newest schema (`upgrade_to_head`, see `docs/core/database.md`), verifies the index language, forces a GC/CUDA cache clear, transitions to `ONLINE`.
 - `stop()` — GC, `async_service.shutdown()`, `db_manager.dispose()`, transitions `OFFLINE`.
 - `get_state() -> EngineState`.
 - `ingest_videos(target_path) -> IngestionReport` / `ingest_audios(target_path) -> IngestionReport` — locks the engine into `INGESTING` (raises `EngineBusyError`/`EngineOfflineError` otherwise), delegates to `BatchMediaPipeline.process_directory()` / `BatchAudioPipeline.process_directory()`, aggregates per-phase results into scanned/success/failed/vectors/clips metrics plus a per-phase error dict, evicts every resident model (`AsyncModelService.release_all`) and always unlocks in `finally`.

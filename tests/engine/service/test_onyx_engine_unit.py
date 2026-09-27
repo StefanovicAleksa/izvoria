@@ -8,6 +8,7 @@ from unittest.mock import Mock, patch
 from app.engine.service.onyx_engine import OnyxEngine
 from app.engine.domain.enums import EngineState
 from app.engine.exceptions.base import EngineError
+from app.core.database.exceptions import DBMigrationError
 from app.features.rag_retrieval.exceptions import IndexLanguageMismatchError
 from app.engine.domain.entities import IngestionReport
 from app.engine.exceptions.lifecycle import EngineOfflineError
@@ -16,18 +17,21 @@ from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.qa_generation.domain.entities import QAResponse, QACitation, ConversationHistory
 from app.features.session_memory.domain.entities import SessionTurn
 from app.features.session_memory.domain.enums import SessionTurnMode
-from app.core.jobs.data.models import JOBS_UPGRADE_DDL
-from app.features.deep_research_report.data.models import RESEARCH_REPORT_UPGRADE_DDL
 from app.features.deep_research_report.domain.entities import (
     OutlineSection, ResearchPlan, SubQuestion,
 )
-from app.features.session_memory.data.models import SESSION_TURNS_UPGRADE_DDL
-from app.features.rag_storage.data.models import VECTOR_CHUNKS_UPGRADE_DDL
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import (
     DocumentConversionJobResult, PhaseBatchResult, ReasonedChatResponse, ConversationChatResult,
 )
 from app.features.storage.domain.entities import Source, SourceType
+
+
+@pytest.fixture(autouse=True)
+def mock_upgrade_to_head():
+    """start() migrates the database; every test here runs against a mocked one."""
+    with patch('app.engine.service.onyx_engine.upgrade_to_head') as upgrade:
+        yield upgrade
 
 
 class TestOnyxEngineUnit:
@@ -89,7 +93,7 @@ class TestOnyxEngineUnit:
         # Test Start
         engine.start()
         assert engine.get_state() == EngineState.ONLINE
-        mock_db_manager.session.assert_called_once()
+        mock_db_manager.get_engine.assert_called_once_with()
 
         # Test Stop
         engine.stop()
@@ -113,34 +117,25 @@ class TestOnyxEngineUnit:
         assert engine.get_state() == EngineState.ERROR
 
     @patch('app.engine.service.onyx_engine.db_manager')
-    def test_start_adds_multi_turn_columns_to_an_existing_session_turns_table(self, mock_db_manager, engine):
-        session = mock_db_manager.session.return_value.__enter__.return_value
+    def test_start_migrates_the_database_before_checking_the_index(self, mock_db_manager, engine, mock_retrieval_api,
+                                                                    mock_upgrade_to_head):
+        order = []
+        mock_upgrade_to_head.side_effect = lambda _: order.append("migrate")
+        mock_retrieval_api.verify_index_language.side_effect = lambda: order.append("verify")
 
         engine.start()
 
-        executed = [str(call.args[0]) for call in session.execute.call_args_list]
-        assert executed == [*SESSION_TURNS_UPGRADE_DDL, *JOBS_UPGRADE_DDL, *RESEARCH_REPORT_UPGRADE_DDL,
-                            *VECTOR_CHUNKS_UPGRADE_DDL]
-        assert all(
-            "ADD COLUMN IF NOT EXISTS" in statement
-            for statement in executed
-            if statement.startswith("ALTER TABLE")
-        )
+        mock_upgrade_to_head.assert_called_once_with(mock_db_manager.get_engine.return_value)
+        assert order == ["migrate", "verify"]
 
     @patch('app.engine.service.onyx_engine.db_manager')
-    def test_start_backfills_the_renamed_reasoning_mode(self, mock_db_manager, engine):
-        """
-        SessionTurn parses `mode` into SessionTurnMode, so a row still on the pre-rename 'deep_research'
-        value fails validation and breaks the whole conversation. There is no migration framework, so the
-        backfill lives in the upgrade DDL that start() runs -- if it is ever dropped, this fails.
-        """
-        session = mock_db_manager.session.return_value.__enter__.return_value
+    def test_start_fails_when_the_migration_fails(self, mock_db_manager, engine, mock_upgrade_to_head):
+        mock_upgrade_to_head.side_effect = DBMigrationError("column already exists")
 
-        engine.start()
+        with pytest.raises(EngineError):
+            engine.start()
 
-        executed = [str(call.args[0]) for call in session.execute.call_args_list]
-        assert "UPDATE session_turns SET mode = 'reasoning' WHERE mode = 'deep_research'" in executed
-        assert "UPDATE jobs SET job_type = 'reasoning_turn' WHERE job_type = 'deep_research_reasoning'" in executed
+        assert engine.get_state() == EngineState.ERROR
 
     def test_ingest_videos_raises_if_offline(self, engine):
         with pytest.raises(EngineOfflineError):

@@ -61,25 +61,3 @@ class VectorChunkModel(Base):
 
     def __repr__(self):
         return f"<VectorChunkModel(chunk_id={self.chunk_id}, source_id={self.source_id})>"
-
-
-# There are no migrations: create_all() never alters a table that already exists. OnyxEngine.start() runs these
-# after create_all(). Every statement must be idempotent -- this runs on every boot.
-VECTOR_CHUNKS_UPGRADE_DDL: tuple = (
-    # Added with document ingestion. Chunks indexed before it are transcripts: time-anchored, and read in
-    # start_sec order, which is what the position backfill reproduces.
-    "ALTER TABLE vector_chunks ADD COLUMN IF NOT EXISTS anchor_kind TEXT NOT NULL DEFAULT 'time'",
-    "ALTER TABLE vector_chunks ADD COLUMN IF NOT EXISTS page_start INTEGER",
-    "ALTER TABLE vector_chunks ADD COLUMN IF NOT EXISTS page_end INTEGER",
-    "ALTER TABLE vector_chunks ADD COLUMN IF NOT EXISTS section_path TEXT",
-    "ALTER TABLE vector_chunks ADD COLUMN IF NOT EXISTS position INTEGER",
-    # Only rows from before the column have no position, and this runs on every boot: the partial index stays
-    # empty once they are backfilled, so the check below costs nothing instead of sorting the whole table
-    "CREATE INDEX IF NOT EXISTS ix_vector_chunks_position_missing ON vector_chunks (source_id) WHERE position IS NULL",
-    """UPDATE vector_chunks v SET position = ordered.rn - 1
-       FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY source_id ORDER BY start_sec, end_sec) AS rn
-             FROM vector_chunks
-             WHERE source_id IN (SELECT source_id FROM vector_chunks WHERE position IS NULL)) ordered
-       WHERE v.id = ordered.id AND v.position IS NULL""",
-    "CREATE INDEX IF NOT EXISTS ix_vector_chunks_source_position ON vector_chunks (source_id, position)",
-)

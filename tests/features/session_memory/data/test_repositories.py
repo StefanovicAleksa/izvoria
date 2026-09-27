@@ -97,7 +97,7 @@ class TestSessionMemoryRepository:
 
     def test_get_history_reads_a_pre_rename_mode_as_chat_instead_of_raising(self, repository, session):
         """
-        'deep_research' rows predate the rename to 'reasoning'. SESSION_TURNS_UPGRADE_DDL backfills them on
+        'deep_research' rows predate the rename to 'reasoning'. The pre-Alembic catch-up backfills them on
         boot, but a database reached without start() must still yield its turns: losing which entrypoint
         answered a turn is survivable, losing the turn is not.
         """

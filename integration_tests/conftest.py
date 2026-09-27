@@ -25,19 +25,12 @@ os.environ["GLOSSARY_PATH"] = _TEST_GLOSSARY_DIR
 
 from app.core.config import settings
 from app.core.database.service.manager import db_manager as core_db_manager
-from app.core.database.data.engine import Base
+from app.core.database.service.migrations import upgrade_to_head
+from app.core.database.utils.model_registry import import_all_models
 
-# Import models so SQLAlchemy "sees" them for create_all()
-from app.features.storage.data.models import SourceModel, FileModel  # noqa
-from app.core.jobs.data.models import JobModel  # noqa
-from app.features.rag_storage.data.models import VectorChunkModel # noqa
-
-# Register every feature's tables too. Otherwise a table exists only if some collected test file happens to
-# import its model (e.g. hybrid search joins `video_clips`, so live pipeline tests failed when run on their own).
-import importlib  # noqa: E402
-
-for _models_file in sorted(settings.BASE_DIR.glob("app/**/data/models.py")):
-    importlib.import_module(".".join(_models_file.relative_to(settings.BASE_DIR).with_suffix("").parts))
+# Register every feature's tables. Otherwise a table exists only if some collected test file happens to import its
+# model (e.g. hybrid search joins `video_clips`, so live pipeline tests failed when run on their own).
+import_all_models()
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -46,7 +39,7 @@ def setup_test_database():
     1. Waits for the Database to become responsive.
     2. Forcefully drops the public schema to bypass Foreign Key deadlocks.
     3. Re-enables pgvector extension.
-    4. Creates all tables (schema) required for the integration tests.
+    4. Builds the schema through the migrations, exactly as OnyxEngine.start() does on an appliance.
     5. Seeds dummy glossaries into the throwaway GLOSSARY_PATH directory (never data/glossaries).
     """
     real_engine = core_db_manager._engine_wrapper._engine  # noqa
@@ -71,8 +64,8 @@ def setup_test_database():
         # CRITICAL ADDITION: Re-enable pgvector after wiping the schema
         conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector;"))
 
-    # C. CREATE ALL TABLES WITH THE NEW SCHEMA
-    Base.metadata.create_all(bind=real_engine)
+    # C. BUILD THE SCHEMA THROUGH THE MIGRATIONS
+    upgrade_to_head(real_engine)
 
     # D. SEED MOCK GLOSSARIES FROM TEST RESOURCES
     # Copies your dummy json files so the tests don't crash looking for them

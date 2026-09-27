@@ -152,19 +152,3 @@ class ResearchReportSubQuestionModel(Base):
     question_text: Mapped[str] = mapped_column(Text, nullable=False)
     order_index: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     chunks_found: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
-
-
-# There are no migrations: create_all() never alters a table that already exists. OnyxEngine.start() runs
-# these after create_all(), so report tables from an earlier build gain later columns and value backfills.
-# Every statement must be idempotent -- this runs on every boot. Empty until the schema first changes.
-RESEARCH_REPORT_UPGRADE_DDL: tuple = (
-    # Added with Exhaustive mode. Reports created before it are deep, single-round, which is what the
-    # defaults say.
-    "ALTER TABLE research_reports ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'deep'",
-    "ALTER TABLE research_reports ADD COLUMN IF NOT EXISTS rounds_used INTEGER NOT NULL DEFAULT 1",
-    # Added with document ingestion. Evidence stored before it is transcript evidence, located by time.
-    "ALTER TABLE research_report_evidence ADD COLUMN IF NOT EXISTS anchor_kind TEXT NOT NULL DEFAULT 'time'",
-    "ALTER TABLE research_report_evidence ADD COLUMN IF NOT EXISTS page_start INTEGER",
-    "ALTER TABLE research_report_evidence ADD COLUMN IF NOT EXISTS page_end INTEGER",
-    "ALTER TABLE research_report_evidence ADD COLUMN IF NOT EXISTS section_path TEXT",
-)

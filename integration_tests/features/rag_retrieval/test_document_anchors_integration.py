@@ -14,7 +14,7 @@ from sqlalchemy import text as sa_text
 from app.core.anchors.domain.enums import AnchorKind
 from app.features.context_unification.domain.entities import UnifiedChunk
 from app.features.rag_retrieval.data.postgres_search_repo import PostgresSearchRepository
-from app.features.rag_storage.data.models import VECTOR_CHUNKS_UPGRADE_DDL
+from app.core.database.data.migrations.pre_alembic import VECTOR_CHUNKS_CATCH_UP
 from app.features.rag_storage.data.postgres_rag_repo import PostgresRagRepository
 from app.features.storage.data.models import FileModel, SourceModel
 
@@ -83,7 +83,7 @@ class TestDocumentAnchorsIntegration:
                      "end": start + 30, "emb": str([0.01] * 1024)})
 
             for _ in range(2):
-                for statement in VECTOR_CHUNKS_UPGRADE_DDL:
+                for statement in VECTOR_CHUNKS_CATCH_UP:
                     session.execute(sa_text(statement))
 
             rows = session.execute(sa_text(
