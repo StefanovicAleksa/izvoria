@@ -42,6 +42,9 @@ def print_report(report):
     if report.pages_converted:
         print(f"Pages:       {report.pages_converted} ({report.pages_ocr} by OCR, "
               f"{report.pages_ocr_incomplete} missing lines, {report.pages_unreadable} unreadable)")
+    if report.images_described:
+        print(f"Images:      {report.images_described} described ({report.images_text_unverified} with text "
+              f"unverified, {report.image_text_items_dropped} text items not confirmed by OCR and left out)")
     print("-" * 58)
 
     if report.errors:
@@ -312,9 +315,10 @@ def main():
             print("  6. Shutdown Appliance")
             print("  7. Reasoned Answer [Multi-Pass Reasoning]")
             print("  8. Deep Research Report [Multi-Page Cited Report]")
-            print("  9. Ingest Folders [Documents - PDF / DOCX]")
+            print("  9. Ingest Folders [Documents & Books - PDF / DOCX / EPUB / TXT / MD / HTML / RTF]")
+            print(" 10. Ingest Folders [Images - JPG / PNG / TIFF / WebP]")
 
-            choice = input("\n[Select Option 1-9] > ").strip()
+            choice = input("\n[Select Option 1-10] > ").strip()
 
             try:
                 if choice == '1':
@@ -358,10 +362,17 @@ def main():
                     run_research_report(engine, conversation_session_id)
 
                 elif choice == '9':
-                    raw_path = input("[Enter Absolute Path to Document Folder] > ").strip()
+                    raw_path = input("[Enter Absolute Path to Document / Book Folder] > ").strip()
                     if raw_path:
                         print("\n[SYSTEM] Evicting UI models... Initializing Document Pipeline.")
                         report = engine.ingest_documents(raw_path)
+                        print_report(report)
+
+                elif choice == '10':
+                    raw_path = input("[Enter Absolute Path to Image Folder] > ").strip()
+                    if raw_path:
+                        print("\n[SYSTEM] Evicting UI models... Initializing Image Pipeline.")
+                        report = engine.ingest_images(raw_path)
                         print_report(report)
 
                 elif choice == '6' or choice.lower() in ['exit', 'quit']:

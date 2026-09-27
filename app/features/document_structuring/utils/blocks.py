@@ -41,34 +41,39 @@ def parse_blocks(
     return blocks
 
 
-def _without_furniture(text: str, page_no: Optional[int], furniture: set) -> List[str]:
+def _without_furniture(text: str, page_no: Optional[int], furniture: set) -> List[Tuple[int, str]]:
     """
-    The page's lines minus its running header, footer and page number. Only the top and bottom lines are
-    candidates: "2025" in a table is a year, and a sentence that repeats across pages is still content.
+    The page's (line number, line) pairs minus its running header, footer and page number. Only the top and
+    bottom lines are candidates: "2025" in a table is a year, and a sentence that repeats across pages is still
+    content. Dropped lines keep their number, so the remaining lines are numbered as in the source.
     """
     lines = text.split("\n")
     content = [i for i, line in enumerate(lines) if line.strip()]
     edges = set(content[:_FURNITURE_LINES] + content[-_FURNITURE_LINES:])
-    return [line for i, line in enumerate(lines)
+    return [(i + 1, line) for i, line in enumerate(lines)
             if not (i in edges and _is_furniture(line, page_no, furniture))]
 
 
 def _page_blocks(page_no, lines, clause_patterns, normalize) -> List[Block]:
     blocks: List[Block] = []
-    paragraph: List[str] = []
-    table: List[str] = []
+    paragraph: List[Tuple[int, str]] = []
+    table: List[Tuple[int, str]] = []
+
+    def block(kind, numbered, text, level=0) -> Block:
+        return Block(kind=kind, text=normalize(text), page_no=page_no, level=level,
+                     line_start=numbered[0][0], line_end=numbered[-1][0])
 
     def flush_paragraph():
         if paragraph:
-            blocks.append(Block(kind=BlockKind.PARAGRAPH, text=normalize(" ".join(paragraph)), page_no=page_no))
+            blocks.append(block(BlockKind.PARAGRAPH, paragraph, " ".join(line for _, line in paragraph)))
             paragraph.clear()
 
     def flush_table():
         if table:
-            blocks.append(Block(kind=BlockKind.TABLE, text=normalize("\n".join(table)), page_no=page_no))
+            blocks.append(block(BlockKind.TABLE, table, "\n".join(line for _, line in table)))
             table.clear()
 
-    for raw in lines:
+    for line_no, raw in lines:
         line = raw.strip()
         if not line:
             flush_paragraph()
@@ -76,16 +81,16 @@ def _page_blocks(page_no, lines, clause_patterns, normalize) -> List[Block]:
             continue
         if line.startswith("|"):
             flush_paragraph()
-            table.append(line)
+            table.append((line_no, line))
             continue
         flush_table()
         heading = heading_level(line, clause_patterns)
         if heading:
             flush_paragraph()
             level, heading_text = heading
-            blocks.append(Block(kind=BlockKind.HEADING, text=normalize(heading_text), page_no=page_no, level=level))
+            blocks.append(block(BlockKind.HEADING, [(line_no, line)], heading_text, level))
             continue
-        paragraph.append(line)
+        paragraph.append((line_no, line))
 
     flush_paragraph()
     flush_table()

@@ -141,12 +141,25 @@ source = ["source", "sources"]
 [documents]
 page_label = "p."
 pages_label = "pp."
+line_label = "line"
+lines_label = "lines"
+image_label = "image"
 # A line starting with one of these opens a new clause, however the PDF formatted it.
 clause_patterns = [
     '^(?:ARTICLE|Article|SECTION|Section|CLAUSE|Clause|SCHEDULE|Schedule|ANNEX|Annex|APPENDIX|Appendix)\s+[0-9IVXLC]+',
+    # A book's chapters: the number must end the line or be followed by a separator ("CHAPTER IV. The Storm"),
+    # so a wrapped sentence such as "Chapter 3 of the Act provides that" is not taken for a heading.
+    '^(?:CHAPTER|Chapter|PART|Part|BOOK|Book)\s+(?:[0-9]+|[IVXLCDM]+|(?i:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty))(?:\s*[.:\-–—]\s*.*)?$',
+    '^(?:PROLOGUE|Prologue|EPILOGUE|Epilogue|PREFACE|Preface|INTRODUCTION|Introduction)\.?$',
 ]
 # PP-OCRv5 "latin" recognition model; its alphabet covers English.
 ocr_rec_model = "latin"
+
+# An image's excerpt is written by the vision model and OCR, never by the client: its labels say so.
+[images]
+description_label = "Image (machine description)"
+ocr_text_label = "Text on the image (read by OCR)"
+unverified_text_label = "Text the vision model read (not verified)"
 
 # English runs on the default models in app/core/config.py; nothing to override.
 [models]

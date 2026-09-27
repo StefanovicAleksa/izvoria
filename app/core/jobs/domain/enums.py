@@ -39,6 +39,9 @@ class JobType(str, Enum):
     DOCUMENT_CONVERSION = "document_conversion"
     DOCUMENT_CONTEXTUALIZATION = "document_contextualization"
 
+    # Image ingestion (standalone stills)
+    IMAGE_DESCRIPTION = "image_description"
+
     # NEW: Added both Live Inference Job Types
     RAG_RETRIEVAL = "rag_retrieval"
     RAG_RERANKING = "rag_reranking"

@@ -5,33 +5,56 @@ import uuid
 from pathlib import Path
 from typing import List, Optional
 
+from PIL import Image
+
 from app.core.config import settings
-from app.features.document_conversion.domain.entities import ConvertedDocument, PageContent
+from app.features.document_conversion.domain.entities import ConvertedDocument, OcrPage, PageContent
 from app.features.document_conversion.domain.enums import DocumentKind, ExtractionMethod
 from app.features.document_conversion.domain.interfaces import (
     IConvertedDocumentRepository, IMarkdownConverter, IOcrEngine, IPageLayoutExtractor, IPdfDocument, IPdfReader,
+    IRtfReader, ITextDecoder,
 )
 from app.features.document_conversion.exceptions import (
     OcrModelsMissingError, SourceDocumentMissingError, UnsupportedDocumentError,
 )
 from app.features.document_conversion.utils.error_mapper import map_conversion_error
-from app.features.document_conversion.utils.text import count_letters, normalize_extracted_text
+from app.features.document_conversion.utils.text import count_letters, normalize_extracted_text, normalize_text_lines
 from app.features.storage.service.storage_api import StorageAPI
 
 logger = logging.getLogger(__name__)
 
-DOCUMENT_KINDS = {".pdf": DocumentKind.PDF, ".docx": DocumentKind.DOCX}
+# Every suffix the document pipeline ingests; the pipeline's own filter is built from this
+DOCUMENT_KINDS = {
+    ".pdf": DocumentKind.PDF,
+    ".docx": DocumentKind.DOCX,
+    ".txt": DocumentKind.TXT,
+    ".md": DocumentKind.MARKDOWN,
+    ".markdown": DocumentKind.MARKDOWN,
+    ".html": DocumentKind.HTML,
+    ".htm": DocumentKind.HTML,
+    ".rtf": DocumentKind.RTF,
+    ".epub": DocumentKind.EPUB,
+}
+# Read line for line, so a chunk can cite the file's own line numbers
+LINE_KINDS = {DocumentKind.TXT, DocumentKind.MARKDOWN}
+# Converted to Markdown by MarkItDown, whose headings (`#`) become the sections a citation names
+MARKDOWN_CONVERTED_KINDS = {DocumentKind.DOCX: ".docx", DocumentKind.HTML: ".html", DocumentKind.EPUB: ".epub"}
 
 
 class DocumentConversionAPI:
     """
-    Turns an ingested PDF or DOCX into page-tagged Markdown.
+    Turns an ingested document -- PDF, DOCX, plain text, Markdown, HTML, RTF or an EPUB book -- into page-tagged
+    Markdown.
 
     A PDF is converted one page at a time: MarkItDown on a whole PDF joins the pages and drops the empty ones, so
     neither page numbers nor scanned pages would survive. A page is treated as scanned only when its text layer
     has next to no letters AND an image covers most of it; it is then handed to OCR -- or, on an appliance whose
     language has no OCR model, recorded as unreadable rather than indexed with guessed text. A sparse
     born-digital page keeps its exact text layer.
+
+    Everything else has no pages and becomes one `PageContent(page_no=None)`. Plain text and Markdown bypass
+    MarkItDown: it collapses runs of blank lines, which would shift every line number a citation shows. They are
+    decoded (any encoding) and cleaned line by line instead, keeping line N of the result on line N of the file.
     """
 
     def __init__(
@@ -41,7 +64,9 @@ class DocumentConversionAPI:
             pdf_reader: IPdfReader,
             markdown_converter: IMarkdownConverter,
             ocr_engine: Optional[IOcrEngine],
-            layout_extractor: Optional[IPageLayoutExtractor] = None
+            layout_extractor: Optional[IPageLayoutExtractor] = None,
+            text_decoder: Optional[ITextDecoder] = None,
+            rtf_reader: Optional[IRtfReader] = None
     ):
         self._repo = repository
         self._storage = storage_api
@@ -49,6 +74,8 @@ class DocumentConversionAPI:
         self._converter = markdown_converter
         self._ocr = ocr_engine
         self._layout = layout_extractor
+        self._text_decoder = text_decoder
+        self._rtf_reader = rtf_reader
 
     def execute(self, source_id: uuid.UUID) -> ConvertedDocument:
         try:
@@ -60,13 +87,12 @@ class DocumentConversionAPI:
             path = self._source_path(source_id)
             kind = DOCUMENT_KINDS.get(path.suffix.lower())
             if kind is None:
-                raise UnsupportedDocumentError(f"Not a PDF or DOCX file: {path.name}")
+                raise UnsupportedDocumentError(f"Not a supported document type: {path.name}")
 
             if kind is DocumentKind.PDF:
                 pages = self._convert_pdf(path)
             else:
-                text = normalize_extracted_text(self._converter.convert(path.read_bytes(), ".docx"))
-                pages = [PageContent(page_no=None, text=text)]
+                pages = [PageContent(page_no=None, text=self._convert_whole(kind, path.read_bytes()))]
 
             document = ConvertedDocument(source_id=source_id, kind=kind, pages=pages)
             logger.info(
@@ -77,6 +103,30 @@ class DocumentConversionAPI:
 
         except Exception as e:
             raise map_conversion_error(e, context=f"DocumentConversionAPI.execute for Source {source_id}") from e
+
+    def read_image(self, image_path: Path) -> Optional[OcrPage]:
+        """
+        OCR of a standalone image file, for features that index images. None when this appliance has no OCR
+        model for its language, or its models are not installed: the caller then has no reading to check against,
+        which is its to report. The image is downscaled to `IMAGE_OCR_MAX_SIDE` on its long side first.
+        """
+        if self._ocr is None:
+            return None
+        try:
+            with Image.open(image_path) as image:
+                image.seek(0)  # a multi-page TIFF: its first page
+                rgb = image.convert("RGB")
+            longest = max(rgb.size)
+            if longest > settings.IMAGE_OCR_MAX_SIDE:
+                scale = settings.IMAGE_OCR_MAX_SIDE / float(longest)
+                rgb = rgb.resize((max(1, int(rgb.width * scale)), max(1, int(rgb.height * scale))),
+                                 Image.Resampling.LANCZOS)
+            return self._ocr.recognize(rgb)
+        except OcrModelsMissingError as e:
+            logger.error(str(e))
+            return None
+        except Exception as e:
+            raise map_conversion_error(e, context=f"DocumentConversionAPI.read_image for {image_path.name}") from e
 
     def release(self) -> None:
         """Drops the OCR engine's models; called once a batch is done."""
@@ -91,6 +141,17 @@ class DocumentConversionAPI:
         if not path.is_file():
             raise SourceDocumentMissingError(f"Document file missing from the vault: {path}")
         return path
+
+    def _convert_whole(self, kind: DocumentKind, data: bytes) -> str:
+        if kind in LINE_KINDS:
+            if self._text_decoder is None:
+                raise UnsupportedDocumentError("No text decoder is configured for plain-text documents.")
+            return normalize_text_lines(self._text_decoder.decode(data))
+        if kind is DocumentKind.RTF:
+            if self._rtf_reader is None:
+                raise UnsupportedDocumentError("No RTF reader is configured.")
+            return normalize_extracted_text(self._rtf_reader.to_text(data))
+        return normalize_extracted_text(self._converter.convert(data, MARKDOWN_CONVERTED_KINDS[kind]))
 
     def _convert_pdf(self, path: Path) -> List[PageContent]:
         with self._pdf_reader.open(str(path)) as pdf:

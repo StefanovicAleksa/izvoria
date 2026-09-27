@@ -27,4 +27,10 @@ class IngestionReport(BaseModel):
     pages_ocr_incomplete: int = 0
     pages_unreadable: int = 0
 
+    # Image ingestion: images described, images whose text no OCR could check (an appliance without OCR), and
+    # text items the vision model read that OCR did not find -- left out of the index, and listed in `errors`
+    images_described: int = 0
+    images_text_unverified: int = 0
+    image_text_items_dropped: int = 0
+
     model_config = ConfigDict(frozen=True)

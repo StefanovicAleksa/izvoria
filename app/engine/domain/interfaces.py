@@ -59,6 +59,14 @@ class IOnyxEngine(ABC):
         pass
 
     @abstractmethod
+    def ingest_images(self, target_path: str) -> IngestionReport:
+        """
+        Runs the Batch Image Pipeline (vision model description, checked by OCR) on a directory.
+        Clears VRAM before starting, and preloads search models when finished.
+        """
+        pass
+
+    @abstractmethod
     def search_standard(self, query: SearchQuery) -> SearchResult:
         """
         Executes a fast, standard RAG hybrid search against the Onyx Vault.

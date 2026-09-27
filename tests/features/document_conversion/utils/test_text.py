@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.features.document_conversion.utils.text import count_letters, normalize_extracted_text
+from app.features.document_conversion.utils.text import count_letters, normalize_extracted_text, normalize_text_lines
 
 
 class TestCountLetters:
@@ -28,3 +28,19 @@ class TestNormalizeExtractedText:
 
     def test_keeps_diacritics(self):
         assert normalize_extracted_text("Najemnik plača za čas najema") == "Najemnik plača za čas najema"
+
+
+class TestNormalizeTextLines:
+    def test_keeps_every_line_including_leading_and_blank_ones(self):
+        raw = "\n\nCHAPTER I\n\n\n\nIt was night.\n"
+
+        assert normalize_text_lines(raw).split("\n") == ["", "", "CHAPTER I", "", "", "", "It was night.", ""]
+
+    @pytest.mark.parametrize("raw, expected", [
+        ("Deﬁnitions", "Definitions"),
+        ("  word\tword  ", "word word"),
+        ("one\r\ntwo\rthree", "one\ntwo\nthree"),
+        ("hyph­enated", "hyphenated"),
+    ])
+    def test_cleans_inside_lines_only(self, raw, expected):
+        assert normalize_text_lines(raw) == expected

@@ -4,7 +4,7 @@
 
 ## What it does
 
-Turns an ingested PDF or DOCX into page-tagged Markdown (`ConvertedDocument`): one `PageContent` per PDF page, each saying how its text was obtained (`text_layer`, `ocr`, or `none`). This is the document pipeline's equivalent of transcription — the text every later stage indexes and every citation quotes.
+Turns an ingested document into page-tagged Markdown (`ConvertedDocument`): one `PageContent` per PDF page, each saying how its text was obtained (`text_layer`, `ocr`, or `none`), or one unpaged `PageContent` for everything else — DOCX, and books and texts (TXT, Markdown, HTML, RTF, EPUB). This is the document pipeline's equivalent of transcription — the text every later stage indexes and every citation quotes.
 
 ## How it does it
 
@@ -37,7 +37,12 @@ Measured on generated invoices: every row of a bordered table, a borderless 4-co
 
 **DOCX** converts whole (one `PageContent(page_no=None)`); Word's headings arrive as Markdown `#` headings.
 
-**Air gap.** MarkItDown reaches the network only through `convert(<url string>)` and its audio converter's `recognize_google()`. The adapter calls only `convert_stream(bytes)` with `enable_plugins=False`, and only `markitdown[pdf,docx]` is installed (`[all]` adds Azure, YouTube and speech-recognition clients).
+**Books and texts.** `DOCUMENT_KINDS` in `service/conversion_api.py` is the one list of accepted suffixes; the pipeline's filter is built from it.
+- **TXT and Markdown** (`.txt`, `.md`, `.markdown`) do **not** go through MarkItDown. It runs `re.sub(r"\n{3,}", "\n\n")` on every result (`markitdown/_markitdown.py`), and `normalize_extracted_text` also collapses blank lines and strips the text; either would shift every line number these files are cited by. `CharsetTextDecoder` decodes them instead: UTF-8 (BOM dropped), otherwise charset-normalizer's best guess, so cp1250 Slovenian and cp1251 Serbian files read correctly. A file in no recognisable encoding raises `UndecodableTextError` rather than indexing mojibake. `normalize_text_lines` then does the same in-line cleanup as for PDFs but keeps every line, so line N of the stored text is line N of the file.
+- **EPUB and HTML** go through MarkItDown's own converters: EPUB is a zip of XHTML read with `zipfile` and `defusedxml` in spine order, with the title/author metadata as a first paragraph; `<h1>`… become `#` headings, so chapters become sections. `<script>` is dropped. Nothing is fetched.
+- **RTF** is read by `StripRtfReader` (striprtf, pure Python, no dependencies). The bytes are read as Latin-1 and the file's own `\ansicpg` code page decides what its escapes mean; a character that cannot be decoded shows as U+FFFD rather than vanishing.
+
+**Air gap.** MarkItDown reaches the network only through `convert(<url string>)` and its audio converter's `recognize_google()`. The adapter calls only `convert_stream(bytes)` with `enable_plugins=False`, and only `markitdown[pdf,docx]` is installed (`[all]` adds Azure, YouTube and speech-recognition clients). The EPUB and HTML converters are part of MarkItDown's core and local.
 
 ## Inputs / Outputs
 

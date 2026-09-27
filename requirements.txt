@@ -57,6 +57,11 @@ SPARQLWrapper>=2.0.0
 # whose audio converter sends audio to Google's web API. The adapter only ever calls convert_stream().
 markitdown[pdf,docx]==0.1.8
 pypdfium2>=4.30.0
+# Books & texts. EPUB and HTML go through MarkItDown's core converters (zipfile, defusedxml, BeautifulSoup: no
+# network). Plain text is decoded by charset-normalizer directly -- MarkItDown collapses blank lines, which would
+# shift cited line numbers. striprtf is pure Python with no dependencies.
+charset-normalizer>=3.3.0
+striprtf>=0.0.26
 # RapidOCR itself is in requirements-nodeps.txt (its opencv-python would overwrite opencv-python-headless);
 # these are the rest of its dependencies.
 pyclipper>=1.3.0

@@ -201,6 +201,15 @@ class Settings(BaseSettings):
     # call may generate up to 4x this
     VISION_MAX_NEW_TOKENS_PER_FRAME: int = 200
 
+    # --- Image ingestion (standalone stills, described by the VLM above) ---
+    # A still gets a sentence or two of description and up to 20 legible text items, so more room than a frame
+    IMAGE_DESCRIPTION_MAX_NEW_TOKENS: int = 500
+    # OCR reads the image with its long side capped at this: a 48 MP phone photo would otherwise take minutes on the
+    # CPU, and text a person can read survives the downscale
+    IMAGE_OCR_MAX_SIDE: int = 4000
+    # A text item the VLM reports is kept only when OCR read at least this share of its words (and every number)
+    IMAGE_TEXT_MIN_OCR_COVERAGE: float = 0.8
+
     # Frame extraction: Laplacian-variance sharpness floor and the per-chunk cap on visually distinct frames
     FRAME_BLUR_THRESHOLD: float = 100.0
     FRAME_MAX_PER_CHUNK: int = 4

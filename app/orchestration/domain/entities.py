@@ -110,6 +110,19 @@ class ContextualRetrievalJobResult(BaseModel):
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 
+class ImageDescriptionJobResult(ContextualRetrievalJobResult):
+    """
+    An image described and turned into its one-chunk contextualized transcript. A ContextualRetrievalJobResult, so
+    unification and indexing take it unchanged; the counts are what the ingestion report says about its text.
+    """
+    # OCR ran on the image; False on an appliance without OCR, whose text is then unverified
+    ocr_checked: bool = False
+    # Text items the vision model read that OCR did not: not indexed
+    text_items_dropped: int = 0
+    # OCR lost lines it had detected
+    ocr_incomplete: bool = False
+
+
 class VisualCueDetectionJobResult(BaseModel):
     source_id: uuid.UUID
     success: bool

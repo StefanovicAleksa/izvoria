@@ -82,6 +82,20 @@ class TestBatchDocumentPipeline:
             "rag_indexing.preload_model", "unification.execute", "rag_indexing.execute",
         ]
 
+    def test_books_and_texts_are_ingested_as_documents(self, pipeline, phases):
+        source_id = uuid.uuid4()
+        self._happy(phases, source_id)
+        phases["scan"].execute.return_value = PhaseBatchResult(
+            phase=PipelinePhase.SCAN, status=PhaseStatus.COMPLETED, successful_count=7,
+            items=["/in/novel.txt", "/in/notes.md", "/in/book.EPUB", "/in/page.html", "/in/letter.rtf",
+                   "/in/data.csv", "/in/talk.mp3"])
+
+        pipeline.process_directory("/in")
+
+        phases["ingest"].execute.assert_called_once_with(
+            ["/in/novel.txt", "/in/notes.md", "/in/book.EPUB", "/in/page.html", "/in/letter.rtf"],
+            SourceType.DOCUMENT)
+
     def test_no_documents_stops_before_ingest(self, pipeline, phases):
         phases["scan"].execute.return_value = PhaseBatchResult(
             phase=PipelinePhase.SCAN, status=PhaseStatus.COMPLETED, successful_count=1, items=["/in/a.mp4"])

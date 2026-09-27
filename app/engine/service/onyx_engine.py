@@ -43,6 +43,7 @@ from app.features.deep_research_report.service.report_api import ReportAuthoring
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.service.pipelines.batch_audio_pipeline import BatchAudioPipeline
 from app.orchestration.service.pipelines.batch_document_pipeline import BatchDocumentPipeline
+from app.orchestration.service.pipelines.batch_image_pipeline import BatchImagePipeline
 from app.orchestration.service.pipelines.live_retrieval_pipeline import LiveRetrievalPipeline
 from app.orchestration.service.pipelines.live_verified_retrieval_pipeline import LiveVerifiedRetrievalPipeline
 from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
@@ -74,7 +75,8 @@ class OnyxEngine(IOnyxEngine):
             retrieval_api: Optional[RetrievalAPI] = None,
             research_report_pipeline: Optional[DeepResearchReportPipeline] = None,
             report_api: Optional[ReportAuthoringAPI] = None,
-            document_pipeline: Optional[BatchDocumentPipeline] = None
+            document_pipeline: Optional[BatchDocumentPipeline] = None,
+            image_pipeline: Optional[BatchImagePipeline] = None
     ):
         self._async_service = async_model_service
         self._media_pipeline = media_pipeline
@@ -89,6 +91,7 @@ class OnyxEngine(IOnyxEngine):
         self._research_report_pipeline = research_report_pipeline
         self._report_api = report_api
         self._document_pipeline = document_pipeline
+        self._image_pipeline = image_pipeline
 
         self._state = EngineState.OFFLINE
         self._state_lock = threading.RLock()
@@ -249,6 +252,24 @@ class OnyxEngine(IOnyxEngine):
             self._aggregate_metrics(results, errors, metrics)
         except Exception as e:
             raise map_engine_error(e, context=f"Document Ingestion [{target_path}]")
+        finally:
+            self._cleanup_after_ingestion()
+
+        return self._build_report(target_path, metrics, errors, time.time() - start_time)
+
+    def ingest_images(self, target_path: str) -> IngestionReport:
+        if self._image_pipeline is None:
+            raise EngineOfflineError("Image ingestion is not wired into this engine instance.")
+        self._prepare_for_ingestion()
+        start_time = time.time()
+        errors: Dict[str, str] = {}
+        metrics: Dict[str, int] = {"scanned": 0, "success": 0, "failed": 0, "vectors": 0, "clips": 0}
+
+        try:
+            results = self._image_pipeline.process_directory(target_path)
+            self._aggregate_metrics(results, errors, metrics)
+        except Exception as e:
+            raise map_engine_error(e, context=f"Image Ingestion [{target_path}]")
         finally:
             self._cleanup_after_ingestion()
 
@@ -672,6 +693,24 @@ class OnyxEngine(IOnyxEngine):
                         f"are not indexed; {item.pages_ocr_incomplete} page(s) lost lines to OCR."
                     )
 
+        if PipelinePhase.IMAGE_DESCRIPTION in pipeline_results:
+            for item in pipeline_results[PipelinePhase.IMAGE_DESCRIPTION].items:
+                if not getattr(item, "success", False):
+                    continue
+                metrics_dict["images"] = metrics_dict.get("images", 0) + 1
+                if not item.ocr_checked:
+                    metrics_dict["images_unverified"] = metrics_dict.get("images_unverified", 0) + 1
+                dropped = item.text_items_dropped
+                metrics_dict["image_items_dropped"] = metrics_dict.get("image_items_dropped", 0) + dropped
+                # Not a failure -- the image is indexed -- but the vision model read text OCR could not find, and
+                # a person relying on the index should know it was left out rather than trusted
+                if dropped or item.ocr_incomplete:
+                    error_dict[f"image_text_{item.source_id}"] = (
+                        f"Source {item.source_id}: {dropped} text item(s) the vision model read were not found by "
+                        f"OCR and are not indexed" + ("; OCR lost lines it had detected." if item.ocr_incomplete
+                                                      else ".")
+                    )
+
         for phase, result in pipeline_results.items():
             if result.status in [PhaseStatus.FAILED, PhaseStatus.PARTIAL_SUCCESS]:
                 for idx, err_str in enumerate(result.errors):
@@ -686,5 +725,8 @@ class OnyxEngine(IOnyxEngine):
             vectors_created=metrics["vectors"], clips_extracted=metrics["clips"],
             pages_converted=metrics.get("pages", 0), pages_ocr=metrics.get("pages_ocr", 0),
             pages_ocr_incomplete=metrics.get("pages_ocr_incomplete", 0),
-            pages_unreadable=metrics.get("pages_unreadable", 0)
+            pages_unreadable=metrics.get("pages_unreadable", 0),
+            images_described=metrics.get("images", 0),
+            images_text_unverified=metrics.get("images_unverified", 0),
+            image_text_items_dropped=metrics.get("image_items_dropped", 0)
         )

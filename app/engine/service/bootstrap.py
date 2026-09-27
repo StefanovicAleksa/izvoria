@@ -61,8 +61,10 @@ from app.features.contextual_retrieval.service.contextualizer_api import Context
 from app.features.document_conversion.data.markitdown_converter import MarkItDownConverter
 from app.features.document_conversion.data.pdfium_reader import PdfiumReader
 from app.features.document_conversion.data.pdfplumber_layout import PdfplumberLayoutExtractor
+from app.features.document_conversion.data.plain_text_decoder import CharsetTextDecoder
 from app.features.document_conversion.data.rapidocr_engine import RapidOcrEngine
 from app.features.document_conversion.data.repositories import ConvertedDocumentRepository
+from app.features.document_conversion.data.rtf_reader import StripRtfReader
 from app.features.document_conversion.service.conversion_api import DocumentConversionAPI
 from app.features.document_structuring.service.structuring_api import DocumentStructuringAPI
 
@@ -76,6 +78,8 @@ from app.features.frame_extraction.utils.quality_filter import QualityFilter
 from app.features.frame_extraction.utils.frame_deduplicator import FrameDeduplicator
 
 from app.features.visual_analysis.data.vlm_adapter import QwenVLMAdapter
+from app.features.image_description.data.repositories import ImageDescriptionRepository
+from app.features.image_description.service.image_description_api import ImageDescriptionAPI
 from app.features.visual_analysis.data.repositories import VisualAnalysisRepository
 from app.features.visual_analysis.service.analysis_api import VisualAnalysisAPI
 
@@ -153,6 +157,8 @@ from app.orchestration.service.phases.report_authoring_phase import ReportAuthor
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.service.pipelines.batch_audio_pipeline import BatchAudioPipeline
 from app.orchestration.service.pipelines.batch_document_pipeline import BatchDocumentPipeline
+from app.orchestration.service.pipelines.batch_image_pipeline import BatchImagePipeline
+from app.orchestration.service.phases.image_description_phase import ImageDescriptionPhase
 from app.orchestration.service.pipelines.live_retrieval_pipeline import LiveRetrievalPipeline
 from app.orchestration.service.pipelines.live_verified_retrieval_pipeline import LiveVerifiedRetrievalPipeline
 from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
@@ -254,7 +260,7 @@ class OnyxBootstrapper:
         contextualizer_api = ContextualizerAPI(repository=contextual_repo, orchestrator=orchestrator,
                                                slm_adapter=real_slm_adapter)
 
-        # --- Features: Documents (PDF / DOCX) ---
+        # --- Features: Documents (PDF / DOCX) and books & texts (EPUB / TXT / MD / HTML / RTF) ---
         # OCR runs on the CPU and only for languages with a trustworthy recognition model; elsewhere scanned pages
         # are reported as unreadable (see data/languages/*.toml, documents.ocr_rec_model)
         ocr_rec_model = get_language_pack().documents.ocr_rec_model
@@ -264,7 +270,8 @@ class OnyxBootstrapper:
         conversion_api = DocumentConversionAPI(
             repository=converted_document_repo, storage_api=storage_api, pdf_reader=PdfiumReader(),
             markdown_converter=MarkItDownConverter(), ocr_engine=ocr_engine,
-            layout_extractor=PdfplumberLayoutExtractor()
+            layout_extractor=PdfplumberLayoutExtractor(), text_decoder=CharsetTextDecoder(),
+            rtf_reader=StripRtfReader()
         )
         structuring_api = DocumentStructuringAPI()
 
@@ -434,6 +441,21 @@ class OnyxBootstrapper:
             context_unification_phase=context_unification_phase, rag_indexing_phase=rag_indexing_phase
         )
 
+        # --- Images: the same VLM adapter instance as visual analysis (one loader per model), and the document
+        # feature's OCR to check the text the VLM reads ---
+        image_description_api = ImageDescriptionAPI(
+            repository=ImageDescriptionRepository(db_manager), storage_api=storage_api,
+            visual_api=visual_analysis_api, conversion_api=conversion_api
+        )
+        image_description_phase = ImageDescriptionPhase(
+            job_manager=job_manager, image_api=image_description_api, visual_api=visual_analysis_api,
+            contextualizer_api=contextualizer_api, async_model_service=async_service, loader=vlm_adapter
+        )
+        image_pipeline = BatchImagePipeline(
+            scan_phase=scan_phase, ingest_phase=ingest_phase, image_description_phase=image_description_phase,
+            context_unification_phase=context_unification_phase, rag_indexing_phase=rag_indexing_phase
+        )
+
         audio_pipeline = BatchAudioPipeline(
             scan_phase=scan_phase, ingest_phase=ingest_phase, extract_audio_phase=extract_audio_phase,
             vad_phase=vad_phase,
@@ -487,7 +509,8 @@ class OnyxBootstrapper:
             retrieval_api=retrieval_api,
             research_report_pipeline=research_report_pipeline,
             report_api=report_api,
-            document_pipeline=document_pipeline
+            document_pipeline=document_pipeline,
+            image_pipeline=image_pipeline
         )
 
         logger.info("Onyx Bootstrapper successfully constructed the Engine container.")

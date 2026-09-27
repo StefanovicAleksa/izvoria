@@ -14,6 +14,9 @@ class Block(BaseModel):
     kind: BlockKind
     text: str
     page_no: Optional[int] = None
+    # First and last line of the block in its page's text (from 1); for a source without pages, the file's lines
+    line_start: Optional[int] = None
+    line_end: Optional[int] = None
     # Heading depth (1 = document title, 2 = clause/article, 3+ = sub-clause); 0 for body blocks
     level: int = 0
 
@@ -26,6 +29,9 @@ class StructuredChunk(BaseModel):
     text: str
     page_start: Optional[int] = None
     page_end: Optional[int] = None
+    # The chunk's lines in its source file; cited only for sources without pages (plain text, Markdown)
+    line_start: Optional[int] = None
+    line_end: Optional[int] = None
     # Headings enclosing the chunk: "Article 7 Termination › 7.2 Notice"
     section_path: Optional[str] = None
 
@@ -38,7 +44,7 @@ class StructuredChunk(BaseModel):
 
 class StructuredDocument(BaseModel):
     source_id: uuid.UUID
-    # PAGE for a PDF, SECTION for a document without pages (DOCX)
+    # PAGE for a PDF, LINE for plain text and Markdown, SECTION for other documents without pages (DOCX, EPUB...)
     anchor_kind: AnchorKind
     chunks: List[StructuredChunk] = Field(default_factory=list)
 

@@ -11,6 +11,7 @@ from typing import List, Optional, Pattern, Tuple
 
 _MARKDOWN_HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*#*$")
 _NUMBERED = re.compile(r"^(\d+(?:\.\d+)*)\.?\s+\S")
+_NUMBER_THEN_PERIOD = re.compile(r"(?:\d|\b[IVXLCDM]+)\.$")
 # Longer than this, a line is a sentence that happens to start with a number or a capital
 MAX_HEADING_WORDS = 12
 
@@ -52,4 +53,5 @@ def heading_level(line: str, clause_patterns: List[Pattern]) -> Optional[Tuple[i
 
 
 def _ends_a_sentence(line: str) -> bool:
-    return line.endswith((".", ";", ",", ":")) and not re.search(r"\d\.$", line)
+    # "4.2." and a book's "CHAPTER IV." end in a period without being sentences
+    return line.endswith((".", ";", ",", ":")) and not _NUMBER_THEN_PERIOD.search(line)

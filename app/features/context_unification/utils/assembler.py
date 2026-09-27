@@ -48,7 +48,10 @@ def assemble_unified_chunks(
 
         # 3. Apply the formatting template
         is_document = audio_chunk.anchor_kind is not AnchorKind.TIME
-        if is_document:
+        if audio_chunk.anchor_kind is AnchorKind.IMAGE:
+            # A standalone image: its context is its file's metadata, and its "text" is already the description
+            context_lines = [f"[Image Context: {audio_context}]"]
+        elif is_document:
             # A document chunk has no audio and no frames: its context is the SLM's situating sentence and the
             # headings it sits under, which also give keyword search the section's vocabulary
             context_lines = [f"[Document Context: {audio_context}]"]

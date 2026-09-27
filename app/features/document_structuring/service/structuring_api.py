@@ -17,12 +17,16 @@ from app.features.document_structuring.utils.headings import compile_clause_patt
 
 logger = logging.getLogger(__name__)
 
+# Sources a reader can open and count lines in: their chunks cite line ranges. Other unpaged kinds (DOCX, HTML,
+# RTF, EPUB) are converted before their lines exist, so they cite the section a chunk sits in.
+_LINE_ANCHORED = {DocumentKind.TXT, DocumentKind.MARKDOWN}
+
 
 class DocumentStructuringAPI:
     """
     Cuts a converted document into retrieval chunks along its own structure: clause and title headings start a
     chunk, tables keep their rows together, a short document stays whole, and every chunk knows its pages and
-    the headings it sits under. Pure and fast -- no model, no storage.
+    the headings it sits under (its pages, or for plain text its lines). Pure and fast -- no model, no storage.
     """
 
     def execute(self, document: ConvertedDocument) -> StructuredDocument:
@@ -45,9 +49,17 @@ class DocumentStructuringAPI:
                 short_document_words=settings.DOC_SHORT_DOCUMENT_WORDS,
                 separator=pack.documents.section_separator,
             )
-            anchor_kind = AnchorKind.PAGE if document.kind is DocumentKind.PDF else AnchorKind.SECTION
+            anchor_kind = _anchor_kind(document.kind)
             logger.info(f"Structured Source {document.source_id}: {len(blocks)} blocks -> {len(chunks)} chunks.")
             return StructuredDocument(source_id=document.source_id, anchor_kind=anchor_kind, chunks=chunks)
 
         except Exception as e:
             raise map_structuring_error(e, context=f"Structuring Source {document.source_id}") from e
+
+
+def _anchor_kind(kind: DocumentKind) -> AnchorKind:
+    if kind is DocumentKind.PDF:
+        return AnchorKind.PAGE
+    if kind in _LINE_ANCHORED:
+        return AnchorKind.LINE
+    return AnchorKind.SECTION

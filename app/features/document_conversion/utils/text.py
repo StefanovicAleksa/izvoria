@@ -27,3 +27,14 @@ def normalize_extracted_text(text: str) -> str:
     text = text.translate(_LIGATURES).translate(_INVISIBLE)
     lines = [_HORIZONTAL_SPACE.sub(" ", line).strip() for line in text.replace("\r\n", "\n").split("\n")]
     return _BLANK_LINES.sub("\n\n", "\n".join(lines)).strip()
+
+
+def normalize_text_lines(text: str) -> str:
+    """
+    `normalize_extracted_text` for a source whose line numbers are cited: the same cleanup inside each line, but
+    every line is kept -- no blank lines collapsed, none trimmed from the start or end -- so line N of the result
+    is line N of the file a reader opens.
+    """
+    text = text.translate(_LIGATURES).translate(_INVISIBLE)
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    return "\n".join(_HORIZONTAL_SPACE.sub(" ", line).strip() for line in lines)

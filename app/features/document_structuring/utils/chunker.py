@@ -66,6 +66,8 @@ def build_chunks(blocks: List[Block], max_words: int, short_document_words: int,
 
 def _chunk(ordinal: int, group: List[Tuple[Block, Optional[str]]]) -> StructuredChunk:
     pages = [block.page_no for block, _ in group if block.page_no is not None]
+    starts = [block.line_start for block, _ in group if block.line_start is not None]
+    ends = [block.line_end for block, _ in group if block.line_end is not None]
     # The chunk's section is where its body sits: the path at its first non-heading block
     body_paths = [path for block, path in group if block.kind is not BlockKind.HEADING]
     section_path = body_paths[0] if body_paths else group[-1][1]
@@ -74,6 +76,8 @@ def _chunk(ordinal: int, group: List[Tuple[Block, Optional[str]]]) -> Structured
         text="\n\n".join(block.text for block, _ in group),
         page_start=min(pages) if pages else None,
         page_end=max(pages) if pages else None,
+        line_start=min(starts) if starts else None,
+        line_end=max(ends) if ends else None,
         section_path=section_path,
     )
 
@@ -100,6 +104,8 @@ def _split_paragraph(block: Block, max_words: int) -> List[Block]:
         current.append(sentence)
     if current:
         parts.append(" ".join(current))
+    # Each part keeps the whole paragraph's lines: a sentence split mid-line has no line of its own, and a range
+    # that covers the part is honest where a narrower guess might not be
     return [block.model_copy(update={"text": part}) for part in parts]
 
 

@@ -23,7 +23,7 @@ class OcrPage(BaseModel):
 
 
 class PageContent(BaseModel):
-    """One page of a PDF (page_no from 1), or a whole DOCX (page_no None)."""
+    """One page of a PDF (page_no from 1), or the whole of a source without pages -- DOCX, text, a book (page_no None)."""
     page_no: Optional[int] = None
     # Markdown text of the page, verbatim apart from whitespace
     text: str = ""

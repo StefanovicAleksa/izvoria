@@ -5,6 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Dict, List
 
+from app.features.document_conversion.service.conversion_api import DOCUMENT_KINDS
 from app.features.storage.domain.entities import SourceType
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
@@ -26,13 +27,13 @@ from app.orchestration.service.phases.rag_indexing_phase import RagIndexingPhase
 
 logger = logging.getLogger(__name__)
 
-DOCUMENT_EXTENSIONS = {'.pdf', '.docx'}
+DOCUMENT_EXTENSIONS = set(DOCUMENT_KINDS)
 
 
 class BatchDocumentPipeline:
     """
-    Scan -> ingest -> convert (PDF pages / DOCX to Markdown, OCR for scans) -> structure + contextualize ->
-    unify -> index. The only GPU phases are contextualization (the contextual SLM) and indexing (the embedder);
+    Scan -> ingest -> convert (PDF pages / DOCX / HTML / EPUB to Markdown, OCR for scans; plain text, Markdown and
+    RTF read as text) -> structure + contextualize -> unify -> index. Books and texts take this same path. The only GPU phases are contextualization (the contextual SLM) and indexing (the embedder);
     the SLM preloads in the background while the CPU-only conversion runs.
     """
 
@@ -85,7 +86,7 @@ class BatchDocumentPipeline:
                 p for p in scan_result.items if Path(p).suffix.lower() in DOCUMENT_EXTENSIONS
             ]
             if not document_paths:
-                logger.info("No PDF or DOCX files detected in target directory. Halting pipeline.")
+                logger.info("No supported document or text files detected in target directory. Halting pipeline.")
                 return pipeline_results
 
             ingest_result = self._ingest_phase.execute(document_paths, SourceType.DOCUMENT)

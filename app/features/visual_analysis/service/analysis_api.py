@@ -3,7 +3,8 @@
 
 import logging
 import uuid
-from typing import List, Set
+from pathlib import Path
+from typing import List, Optional, Set
 
 from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
@@ -13,13 +14,14 @@ from app.features.contextual_retrieval.domain.entities import ContextualizedChun
 from app.features.frame_extraction.domain.entities import ExtractedChunkFrames
 from app.features.storage.service.storage_api import StorageAPI
 
-from app.features.visual_analysis.domain.entities import ChunkVisualAnalysis, FrameAnalysis
+from app.features.visual_analysis.domain.entities import ChunkVisualAnalysis, FrameAnalysis, FrameObservation
 from app.features.visual_analysis.domain.interfaces import IVisualAnalysisRepository, IVisualLanguageModelAdapter
 from app.features.visual_analysis.utils.error_mapper import map_visual_analysis_error
 from app.features.visual_analysis.utils.grounding_check import (
     drop_items_already_reported,
     drop_marks_copied_from_other_frames,
-    ground_observation
+    ground_observation,
+    ground_still_image
 )
 from app.features.visual_analysis.utils.observation_renderer import render_observation
 
@@ -59,6 +61,16 @@ class VisualAnalysisAPI:
     def adapter(self) -> IVisualLanguageModelAdapter:
         """Exposes the internal adapter to the orchestrator for standardized loading/unloading."""
         return self._vlm_adapter
+
+    def describe_image(self, image_path: Path, vlm_model: LoadedModel) -> Optional[FrameObservation]:
+        """
+        Reads a standalone image with the already-loaded VLM (the caller owns its lifecycle): what it shows, the text
+        legible in it, and its marks, with interface chrome removed. None when the model gave nothing usable.
+        """
+        try:
+            return ground_still_image(self._vlm_adapter.describe_image(vlm_model, image_path))
+        except Exception as e:
+            raise map_visual_analysis_error(e, context=f"VisualAnalysisAPI.describe_image for {image_path.name}") from e
 
     def process_chunk(
         self,

@@ -291,6 +291,7 @@ class OnyxEngineGateway(IEngineGateway):
                         getattr(chunk, "physical_path", None) if chunk is not None else None,
                         getattr(chunk, "extracted_file_id", None) if chunk is not None else None,
                         self._is_document(entry),
+                        self._is_image(entry),
                     ),
                     location=self._location(entry),
                 ))
@@ -338,6 +339,7 @@ class OnyxEngineGateway(IEngineGateway):
                 IngestMode.VIDEO: engine.ingest_videos,
                 IngestMode.AUDIO: engine.ingest_audios,
                 IngestMode.DOCUMENT: engine.ingest_documents,
+                IngestMode.IMAGE: engine.ingest_images,
             }[mode]
             report = ingest(path)
             return IngestionSummary(
@@ -348,6 +350,7 @@ class OnyxEngineGateway(IEngineGateway):
                 vectors_created=report.vectors_created,
                 clips_extracted=report.clips_extracted,
                 pages_converted=report.pages_converted,
+                images_described=report.images_described,
                 duration_seconds=report.total_duration_seconds,
                 errors=tuple(sorted(report.errors.items())),
             )
@@ -454,7 +457,7 @@ class OnyxEngineGateway(IEngineGateway):
                 speakers=tuple(getattr(chunk, "speaker_labels", ()) or ()),
                 clip_path=citation.physical_path,
                 media_kind=self._media_kind(citation.physical_path, citation.extracted_file_id,
-                                            self._is_document(citation)),
+                                            self._is_document(citation), self._is_image(citation)),
                 location=self._location(citation),
             ))
         return tuple(evidence)
@@ -474,7 +477,8 @@ class OnyxEngineGateway(IEngineGateway):
             rerank_score=chunk.rerank_score,
             speakers=tuple(chunk.speaker_labels or ()),
             clip_path=path,
-            media_kind=self._media_kind(path, chunk.extracted_file_id, self._is_document(chunk)),
+            media_kind=self._media_kind(path, chunk.extracted_file_id, self._is_document(chunk),
+                                        self._is_image(chunk)),
             location=self._location(chunk),
         )
 
@@ -489,7 +493,8 @@ class OnyxEngineGateway(IEngineGateway):
             excerpt=chunk.raw_text or chunk.text_payload,
             speakers=tuple(chunk.speaker_labels or ()),
             clip_path=path,
-            media_kind=self._media_kind(path, chunk.extracted_file_id, self._is_document(chunk)),
+            media_kind=self._media_kind(path, chunk.extracted_file_id, self._is_document(chunk),
+                                        self._is_image(chunk)),
             location=self._location(chunk),
             # A hydration read is unranked: relevance is hard-coded 0.0 and rerank is None
             # upstream, so leaving both unset keeps meaningless numbers off the card.
@@ -497,23 +502,37 @@ class OnyxEngineGateway(IEngineGateway):
 
     @staticmethod
     def _media_kind(path: Optional[str], extracted_file_id: Optional[uuid.UUID],
-                    is_document: bool = False) -> MediaKind:
+                    is_document: bool = False, is_image: bool = False) -> MediaKind:
         """
         A chunk with an extracted clip gets a file that *is* the excerpt. Without one, the engine
         falls back to the entire original source (the audio-only pipeline cuts no clips), which
-        the player has to seek into. A document opens whole; its citation names the page.
+        the player has to seek into. A document opens whole; its citation names the page. An
+        image opens whole too, and its card previews it.
         """
         if not path:
             return MediaKind.UNRESOLVED
+        if is_image:
+            return MediaKind.IMAGE
         if is_document:
             return MediaKind.DOCUMENT
         return MediaKind.CLIP if extracted_file_id else MediaKind.FULL_SOURCE
 
     @staticmethod
-    def _is_document(item: Any) -> bool:
-        """A chunk, citation or report entry anchored by page or section rather than time."""
+    def _anchor_value(item: Any) -> Optional[str]:
         kind = getattr(item, "anchor_kind", None)
-        return getattr(kind, "value", kind) in ("page", "section")
+        return getattr(kind, "value", kind)
+
+    @classmethod
+    def _is_document(cls, item: Any) -> bool:
+        """
+        A chunk, citation or report entry anchored by anything but time: page, lines, section or
+        image. A missing anchor is a recording, as it was before documents existed.
+        """
+        return cls._anchor_value(item) not in (None, "time")
+
+    @classmethod
+    def _is_image(cls, item: Any) -> bool:
+        return cls._anchor_value(item) == "image"
 
     def _location(self, item: Any) -> str:
         """A document excerpt's "p. 7 · Article 7" label; empty for a recording, shown by its time range."""

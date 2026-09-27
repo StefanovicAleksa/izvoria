@@ -11,6 +11,11 @@ def english(language_pack):
 
 
 @pytest.fixture
+def serbian(language_pack):
+    return compile_clause_patterns(language_pack("sr").documents.clause_patterns)
+
+
+@pytest.fixture
 def slovenian(language_pack):
     return compile_clause_patterns(language_pack("sl").documents.clause_patterns)
 
@@ -45,4 +50,32 @@ class TestHeadingLevel:
 
     @pytest.mark.parametrize("line", ["3. člen", "3. ČLEN", "Člen 12", "Priloga 1"])
     def test_slovenian_clause_markers(self, slovenian, line):
+        assert heading_level(line, slovenian) == (2, line)
+
+
+class TestBookChapters:
+    @pytest.mark.parametrize("line", [
+        "CHAPTER I", "CHAPTER IV.", "Chapter 12", "Chapter Twelve", "CHAPTER XII — The Storm", "Book II: Winter",
+        "PART 3", "Prologue", "EPILOGUE",
+    ])
+    def test_english_chapters_start_a_clause_level_section(self, english, line):
+        assert heading_level(line, english) == (2, line)
+
+    @pytest.mark.parametrize("line", [
+        "Chapter 3 of the Act provides that the",
+        "Part of the reason he left was",
+        "Book I read last summer and",
+    ])
+    def test_wrapped_prose_that_starts_like_a_chapter_is_not_a_heading(self, english, line):
+        assert heading_level(line, english) is None
+
+    @pytest.mark.parametrize("line", ["GLAVA II", "Glava 3", "Поглавље 4. Олуја", "Deo I", "Uvod", "Пролог"])
+    def test_serbian_chapters_in_both_scripts(self, serbian, line):
+        assert heading_level(line, serbian) == (2, line)
+
+    def test_serbian_wrapped_prose_is_not_a_heading(self, serbian):
+        assert heading_level("Glava 3 zakona propisuje da se", serbian) is None
+
+    @pytest.mark.parametrize("line", ["Poglavje 4", "4. poglavje", "Del II: Zima", "Predgovor"])
+    def test_slovenian_chapters(self, slovenian, line):
         assert heading_level(line, slovenian) == (2, line)

@@ -118,3 +118,17 @@ class TestDocumentChunks:
         assert (unified.anchor_kind, unified.page_start, unified.page_end) == (AnchorKind.PAGE, 7, 8)
         assert unified.section_path == "Article 7 Termination"
         assert unified.speaker_labels == []
+
+
+class TestImageChunks:
+    def test_image_chunk_gets_image_context_and_keeps_its_description_as_citable_text(self):
+        chunk = ContextualizedChunk(anchor_kind=AnchorKind.IMAGE, original_text="Image (machine description): A dog.",
+                                    context_string="dog.jpg · 2025-03-14 10:02 · 640×480")
+        transcript = ContextualizedTranscript(source_id=uuid.uuid4(), chunks=[chunk])
+
+        [unified] = assemble_unified_chunks(transcript, None)
+
+        assert unified.context_text == "[Image Context: dog.jpg · 2025-03-14 10:02 · 640×480]"
+        assert unified.raw_text == "Image (machine description): A dog."
+        assert unified.text_payload == f"{unified.context_text}\n\n{unified.raw_text}"
+        assert unified.anchor_kind is AnchorKind.IMAGE

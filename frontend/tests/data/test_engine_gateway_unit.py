@@ -610,3 +610,51 @@ class TestDocuments:
         engine.ingest_documents.assert_called_once_with("/docs")
         engine.ingest_videos.assert_not_called()
         assert summary.pages_converted == 17
+
+
+class TestImagesAndLines:
+    def test_an_image_hit_is_located_as_image_and_opens_as_an_image(self, gateway_and_engine):
+        from app.core.anchors.domain.enums import AnchorKind
+        from onyx_desktop.domain.enums import SearchMode
+
+        gateway, engine = gateway_and_engine
+        chunk = make_chunk(extracted_file_id=None, physical_path="/vault/board.jpg", start_sec=0.0, end_sec=0.0,
+                           anchor_kind=AnchorKind.IMAGE, speaker_labels=[],
+                           raw_text="Image (machine description): A whiteboard.")
+        engine.search_standard.return_value = SearchResult(query="q", results=[chunk], execution_time_ms=1)
+
+        evidence = gateway.search("q", SearchMode.STANDARD, 5).hits[0].as_evidence()
+
+        assert evidence.location == "image"
+        assert evidence.media_kind is MediaKind.IMAGE
+
+    def test_a_line_anchored_hit_is_a_document_with_its_lines(self, gateway_and_engine):
+        """TXT/Markdown citations used to fall through as recordings: "Open recording", no location."""
+        from app.core.anchors.domain.enums import AnchorKind
+        from onyx_desktop.domain.enums import SearchMode
+
+        gateway, engine = gateway_and_engine
+        chunk = make_chunk(extracted_file_id=None, physical_path="/vault/novel.txt", start_sec=0.0, end_sec=0.0,
+                           anchor_kind=AnchorKind.LINE, page_start=120, page_end=164, section_path="CHAPTER IV.",
+                           speaker_labels=[], raw_text="It was night.")
+        engine.search_standard.return_value = SearchResult(query="q", results=[chunk], execution_time_ms=1)
+
+        evidence = gateway.search("q", SearchMode.STANDARD, 5).hits[0].as_evidence()
+
+        assert evidence.location == "lines 120–164 · CHAPTER IV."
+        assert evidence.media_kind is MediaKind.DOCUMENT
+
+    def test_image_mode_runs_image_ingestion(self, gateway_and_engine):
+        from onyx_desktop.domain.enums import IngestMode
+
+        gateway, engine = gateway_and_engine
+        engine.ingest_images.return_value = MagicMock(
+            target_path="/photos", total_files_scanned=3, successful_ingestions=3, failed_ingestions=0,
+            vectors_created=3, clips_extracted=0, pages_converted=0, images_described=3,
+            total_duration_seconds=40.0, errors={})
+
+        summary = gateway.ingest("/photos", IngestMode.IMAGE)
+
+        engine.ingest_images.assert_called_once_with("/photos")
+        engine.ingest_documents.assert_not_called()
+        assert summary.images_described == 3

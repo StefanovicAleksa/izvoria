@@ -93,7 +93,9 @@ assert _RECORDINGS_ONLY in REASONER_SYSTEM_PROMPT
 REASONER_DOCUMENTS_SYSTEM_PROMPT = REASONER_SYSTEM_PROMPT.replace(
     _RECORDINGS_ONLY,
     "an Enterprise client's own ingested material: recordings (legal/medical transcripts and video) and documents "
-    "(contracts, letters, invoices, filings), each excerpt tagged with its time range or its page and section."
+    "(contracts, letters, invoices, filings, books), each excerpt tagged with its time range or its page, lines or "
+    "section, and images, tagged \"(image)\", whose excerpt is a machine-written description of the picture and "
+    "any text read off it -- report those as what the image shows, never as the client's own words."
 )
 
 

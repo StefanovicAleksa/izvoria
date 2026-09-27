@@ -159,6 +159,7 @@ class IngestionSummary:
     vectors_created: int = 0
     clips_extracted: int = 0
     pages_converted: int = 0
+    images_described: int = 0
     duration_seconds: float = 0.0
     errors: Tuple[Tuple[str, str], ...] = ()
 

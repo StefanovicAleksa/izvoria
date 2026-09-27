@@ -34,6 +34,15 @@ class IVisualLanguageModelAdapter(IModelLoader, ABC):
         pass
 
 
+    @abstractmethod
+    def describe_image(self, model: LoadedModel, image_path: Path) -> Optional[FrameObservation]:
+        """
+        Reads one standalone image with no surrounding text: what it shows, the text legible in it, its marks.
+        None when the model produced nothing structured.
+        """
+        pass
+
+
 class IVisualAnalysisRepository(ABC):
     """
     Contract for persisting the ChunkVisualAnalysis ledger to PostgreSQL.

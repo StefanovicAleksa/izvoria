@@ -213,15 +213,16 @@ SCOPE_DOCUMENTS_SYSTEM_PROMPT = _variant(
 OUTLINE_DOCUMENTS_SYSTEM_PROMPT = _variant(
     OUTLINE_SYSTEM_PROMPT,
     ("its source, its timespan and its opening words.",
-     "its source, its location (a timespan, or a page and section) and its opening words."),
+     "its source, its location (a timespan, a page, lines or section, or \"image\") and its opening words."),
 )
 SECTION_DOCUMENTS_SYSTEM_PROMPT = _variant(
     SECTION_SYSTEM_PROMPT,
     ("The excerpts are verbatim transcript from recordings in a private archive. Each is labelled [Doc N] with "
      "its timespan, and speaker labels appear inline.",
      "The excerpts are verbatim text from a private archive: transcript from recordings, labelled [Doc N] with "
-     "their timespan and with speaker labels inline, or text from documents, labelled [Doc N] with their page "
-     "and section."),
+     "their timespan and with speaker labels inline, or text from documents, labelled [Doc N] with their page, "
+     "lines or section. An excerpt labelled \"(image)\" is different: a machine-written description of a picture "
+     "and any text read off it, which you report as what the image shows, never as the client's own words."),
     ("Do not infer facts the transcripts do not state.", "Do not infer facts the excerpts do not state."),
 )
 

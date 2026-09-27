@@ -56,6 +56,20 @@ class IMarkdownConverter(ABC):
         pass
 
 
+class ITextDecoder(ABC):
+    @abstractmethod
+    def decode(self, data: bytes) -> str:
+        """A plain-text file's bytes as text, whatever its encoding. Never adds, drops or joins a line."""
+        pass
+
+
+class IRtfReader(ABC):
+    @abstractmethod
+    def to_text(self, data: bytes) -> str:
+        """An RTF file's bytes as plain text, one paragraph per line."""
+        pass
+
+
 class IPageLayoutExtractor(ABC):
     @abstractmethod
     def extract(self, page_pdf: bytes) -> Optional[str]:

@@ -27,6 +27,8 @@ The batch ingestion pipeline (`BatchMediaPipeline` for video, `BatchAudioPipelin
 
 **Documents** (`BatchDocumentPipeline`, PDF / DOCX): scanner → storage → [document_conversion](features/document_conversion.md) (per-page MarkItDown, OCR for scans) → [document_structuring](features/document_structuring.md) + [contextual_retrieval](features/contextual_retrieval.md) (`execute_document`) → context_unification → rag_storage. Chunks are page- or section-anchored; see [core/anchors.md](core/anchors.md).
 
+**Images** (`BatchImagePipeline`, JPG / PNG / TIFF / WebP / BMP): scanner → storage → [image_description](features/image_description.md) (Qwen2-VL still-image description via [visual_analysis](features/visual_analysis.md), checked against RapidOCR via document_conversion) + contextual_retrieval (`execute_image`, no model) → context_unification → rag_storage. Chunks are image-anchored and their excerpt is labelled a machine description.
+
 **Query time** (not part of batch ingestion):
 
 - Standard search → [rag_retrieval](features/rag_retrieval.md) (hybrid dense + sparse search)

@@ -2,8 +2,10 @@
 # Path: app/features/contextual_retrieval/service/contextualizer_api.py
 
 import logging
+import uuid
 from typing import Dict, List, Tuple
 
+from app.core.anchors.domain.enums import AnchorKind
 from app.core.config import settings
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
@@ -124,6 +126,25 @@ class ContextualizerAPI:
         except Exception as e:
             raise map_contextual_error(e, context=f"ContextualizerAPI.execute for Source {transcript.source_id}") from e
 
+    def execute_image(self, source_id: uuid.UUID, excerpt: str, context_string: str) -> ContextualizedTranscript:
+        """
+        A standalone image as a one-chunk transcript, so unification and indexing take it like any other source.
+        No model: there is no wider source to situate a lone image in, so its context is the file's own metadata
+        (name, date taken, size) the caller renders.
+        """
+        try:
+            existing_record = self._repo.get_by_source_id(source_id)
+            if existing_record:
+                logger.info(f"Contextualized image exists for Source {source_id}. Skipping.")
+                return existing_record
+
+            chunk = ContextualizedChunk(anchor_kind=AnchorKind.IMAGE, original_text=excerpt,
+                                        context_string=context_string)
+            return self._repo.save(ContextualizedTranscript(source_id=source_id, chunks=[chunk]))
+
+        except Exception as e:
+            raise map_contextual_error(e, context=f"ContextualizerAPI.execute_image for Source {source_id}") from e
+
     def execute_document(
             self,
             document: StructuredDocument,
@@ -174,8 +195,8 @@ class ContextualizerAPI:
                     contextualized_chunks.append(
                         ContextualizedChunk(
                             anchor_kind=document.anchor_kind,
-                            page_start=chunk.page_start,
-                            page_end=chunk.page_end,
+                            page_start=_range_start(document, chunk),
+                            page_end=_range_end(document, chunk),
                             section_path=chunk.section_path,
                             original_text=chunk.text,
                             context_string=context_string
@@ -216,6 +237,15 @@ class ContextualizerAPI:
 
         token_counts = [self._slm_adapter.count_tokens(model, text) for text in unit_texts]
         return build_document_sections(token_counts, budget)
+
+
+def _range_start(document: StructuredDocument, chunk: StructuredChunk):
+    """A LINE anchor keeps its lines in the page fields (see AnchorKind): the one place they are put there."""
+    return chunk.line_start if document.anchor_kind is AnchorKind.LINE else chunk.page_start
+
+
+def _range_end(document: StructuredDocument, chunk: StructuredChunk):
+    return chunk.line_end if document.anchor_kind is AnchorKind.LINE else chunk.page_end
 
 
 def _with_section_path(chunk: StructuredChunk) -> str:

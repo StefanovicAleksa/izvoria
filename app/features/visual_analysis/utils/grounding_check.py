@@ -151,6 +151,34 @@ def ground_observation(observation: Optional[FrameObservation], transcript: str)
     return observation.model_copy(update={"legible_text": legible_text, "marks": marks, "speech_link": link})
 
 
+# A photo of a sign, a form or a whiteboard legitimately carries more text than a slide frame's eight items
+MAX_STILL_IMAGE_ITEMS = 20
+
+
+def ground_still_image(observation: Optional[FrameObservation]) -> Optional[FrameObservation]:
+    """
+    `ground_observation` for a standalone image, which has no speech to check against and no speaker to show.
+    A photo with no text and no marks is still evidence -- its description is all it has -- so it is kept; only an
+    empty answer is dropped. Legible text loses the same chrome as a frame's (websites, interface text, repeats),
+    and marks that don't say what they point at go. Nothing here can tell a misread item from a real one: that
+    check is OCR's, in image_description.
+    """
+    if observation is None or not observation.shows.strip():
+        return None
+
+    legible_text: List[str] = []
+    for item in observation.legible_text:
+        if (_WEBSITE.search(item) or _INTERFACE_TEXT.match(item.strip())
+                or item.casefold() in (kept.casefold() for kept in legible_text)):
+            continue
+        legible_text.append(item)
+
+    marks = observation.marks if observation.marks and not _is_generic_mark(observation.marks) else None
+    return observation.model_copy(update={
+        "legible_text": legible_text[:MAX_STILL_IMAGE_ITEMS], "marks": marks, "speech_link": None,
+    })
+
+
 def drop_items_already_reported(observation: FrameObservation, reported: Set[str]) -> Optional[FrameObservation]:
     """
     Removes text items an earlier frame of the same chunk already reported, and records the new ones in `reported`.

@@ -194,6 +194,20 @@ class TestExecuteDocument:
         assert second.section_path == "LEASE › Article 7 Termination"
         assert second.start_sec == 0.0 and second.sentences == []
 
+    def test_line_anchored_chunks_carry_their_lines_in_the_page_fields(self, api, mocks):
+        book = StructuredDocument(source_id=uuid.uuid4(), anchor_kind=AnchorKind.LINE, chunks=[
+            StructuredChunk(ordinal=0, text="CHAPTER I\n\nIt was night.", line_start=3, line_end=10,
+                            section_path="CHAPTER I"),
+            StructuredChunk(ordinal=1, text="CHAPTER II\n\nMorning.", line_start=12, line_end=40,
+                            section_path="CHAPTER II"),
+        ])
+
+        result = api.execute_document(book)
+
+        assert [(c.anchor_kind, c.page_start, c.page_end) for c in result.chunks] == [
+            (AnchorKind.LINE, 3, 10), (AnchorKind.LINE, 12, 40),
+        ]
+
     def test_slm_reads_the_whole_document_and_the_chunk_under_its_headings(self, api, mocks, document):
         api.execute_document(document)
 
@@ -239,3 +253,38 @@ class TestExecuteDocument:
         with pytest.raises(SLMInferenceError):
             api.execute_document(document)
         mocks["orchestrator"].release_model.assert_called_once()
+
+
+class TestExecuteImage:
+    @pytest.fixture
+    def mocks(self):
+        mocks = {"repo": MagicMock(), "orchestrator": MagicMock(spec=ModelManagerOrchestrator), "slm_adapter": MagicMock()}
+        mocks["repo"].get_by_source_id.return_value = None
+        mocks["repo"].save.side_effect = lambda transcript: transcript
+        return mocks
+
+    @pytest.fixture
+    def api(self, mocks):
+        return ContextualizerAPI(repository=mocks["repo"], orchestrator=mocks["orchestrator"],
+                                 slm_adapter=mocks["slm_adapter"])
+
+    def test_one_image_chunk_and_no_model(self, api, mocks):
+        source_id = uuid.uuid4()
+
+        result = api.execute_image(source_id, excerpt="Image (machine description): A dog.",
+                                   context_string="dog.jpg · 640×480")
+
+        [chunk] = result.chunks
+        assert result.source_id == source_id
+        assert (chunk.anchor_kind, chunk.original_text, chunk.context_string) == (
+            AnchorKind.IMAGE, "Image (machine description): A dog.", "dog.jpg · 640×480")
+        assert (chunk.start_sec, chunk.page_start, chunk.sentences) == (0.0, None, [])
+        mocks["orchestrator"].acquire_model.assert_not_called()
+        mocks["repo"].save.assert_called_once_with(result)
+
+    def test_existing_record_is_returned(self, api, mocks):
+        existing = ContextualizedTranscript(source_id=uuid.uuid4(), chunks=[])
+        mocks["repo"].get_by_source_id.return_value = existing
+
+        assert api.execute_image(existing.source_id, "x", "y") is existing
+        mocks["repo"].save.assert_not_called()

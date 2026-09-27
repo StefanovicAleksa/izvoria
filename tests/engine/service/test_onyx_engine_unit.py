@@ -760,3 +760,62 @@ class TestIngestDocuments:
         assert list(report.errors) == [f"document_pages_{scanned}"]
         assert "1 scanned page(s) could not be read" in report.errors[f"document_pages_{scanned}"]
         assert engine.get_state() == EngineState.ONLINE
+
+
+class TestIngestImages:
+    @pytest.fixture
+    def image_pipeline(self):
+        return Mock()
+
+    @pytest.fixture
+    def engine(self, image_pipeline):
+        return OnyxEngine(
+            async_model_service=Mock(), media_pipeline=Mock(), audio_pipeline=Mock(), live_pipeline=Mock(),
+            live_verified_pipeline=Mock(), live_qa_pipeline=Mock(), storage_api=Mock(),
+            image_pipeline=image_pipeline,
+        )
+
+    def test_raises_if_offline(self, engine):
+        with pytest.raises(EngineOfflineError):
+            engine.ingest_images("/dummy/path")
+
+    def test_raises_if_not_wired(self):
+        engine = OnyxEngine(async_model_service=Mock(), media_pipeline=Mock(), audio_pipeline=Mock(),
+                            live_pipeline=Mock(), live_verified_pipeline=Mock(), live_qa_pipeline=Mock(),
+                            storage_api=Mock())
+        engine._state = EngineState.ONLINE
+
+        with pytest.raises(EngineOfflineError, match="Image ingestion"):
+            engine.ingest_images("/dummy/path")
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_reports_image_counts_and_lists_images_with_unconfirmed_text(self, _, engine, image_pipeline):
+        from app.orchestration.domain.entities import ImageDescriptionJobResult
+        engine.start()
+        clean, invented, serbian = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        image_pipeline.process_directory.return_value = {
+            PipelinePhase.SCAN: PhaseBatchResult(phase=PipelinePhase.SCAN, status=PhaseStatus.COMPLETED,
+                                                 successful_count=4, items=[]),
+            PipelinePhase.IMAGE_DESCRIPTION: PhaseBatchResult(
+                phase=PipelinePhase.IMAGE_DESCRIPTION, status=PhaseStatus.PARTIAL_SUCCESS, successful_count=3,
+                failed_count=1, errors=["Failed Image Description for Source x: decode failed"], items=[
+                    ImageDescriptionJobResult(source_id=clean, success=True, ocr_checked=True),
+                    ImageDescriptionJobResult(source_id=invented, success=True, ocr_checked=True,
+                                              text_items_dropped=2),
+                    ImageDescriptionJobResult(source_id=serbian, success=True, ocr_checked=False),
+                    ImageDescriptionJobResult(source_id=uuid.uuid4(), success=False, text_items_dropped=5),
+                ]),
+            PipelinePhase.RAG_INDEXING: PhaseBatchResult(
+                phase=PipelinePhase.RAG_INDEXING, status=PhaseStatus.COMPLETED, successful_count=3,
+                items=[Mock(success=True, dense_vectors_saved=1)] * 3),
+        }
+
+        report = engine.ingest_images("/photos")
+
+        image_pipeline.process_directory.assert_called_once_with("/photos")
+        assert (report.images_described, report.images_text_unverified, report.image_text_items_dropped) == (3, 1, 2)
+        assert report.vectors_created == 3 and report.clips_extracted == 0
+        assert f"image_text_{invented}" in report.errors and f"image_text_{clean}" not in report.errors
+        assert "2 text item(s) the vision model read were not found by OCR" in report.errors[f"image_text_{invented}"]
+        assert "image_description_error_0" in report.errors
+        assert engine.get_state() == EngineState.ONLINE

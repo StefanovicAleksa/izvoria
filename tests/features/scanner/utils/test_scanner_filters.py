@@ -12,9 +12,15 @@ class TestScannerFilters:
         ("song.mp3", True),
         ("notes.txt", True),
         ("report.pdf", True),
+        ("book.epub", True),
+        ("notes.markdown", True),
+        ("page.htm", True),
+        ("letter.rtf", True),
         ("script.py", False),  # Code not allowed
         ("program.exe", False),  # Binary not allowed
-        ("image.jpg", False),  # Images (handled by different pipeline usually) - adjust based on requirements
+        ("image.jpg", True),  # Standalone images: the image pipeline
+        ("scan.TIFF", True),
+        ("photo.heic", False),  # HEIC needs a native decoder the appliance doesn't ship
         (".env", False),  # Config files not allowed
     ])
     def test_is_extension_allowed(self, filename, expected):
@@ -70,3 +76,35 @@ class TestScannerErrorMapper:
 
         assert isinstance(mapped, exc.ScannerError)
         assert "Unexpected scanner error" in str(mapped)
+
+class TestOnyxOutputIsNeverIngested:
+    """Frames, clips and extracted audio live in the vault's date shards, reports under REPORTS_DIR."""
+
+    @pytest.fixture
+    def layout(self, tmp_path, monkeypatch):
+        from app.core.config import settings
+        storage = tmp_path / "onyx_data"
+        reports = storage / "development" / "reports"
+        monkeypatch.setenv("ONYX_STORAGE_PATH", str(storage))
+        monkeypatch.setattr(type(settings), "REPORTS_DIR", property(lambda self: reports))
+        return storage, reports
+
+    @pytest.mark.parametrize("relative, expected", [
+        ("2026", True),                          # a vault year shard
+        ("2026/09/15", True),                    # frames and clips of that day
+        ("development/reports", True),           # model-written reports: never evidence
+        ("development/reports/2026/09", True),
+        ("benchmarks/sr/media", False),          # the language benchmark's input
+        ("development", False),
+    ])
+    def test_inside_the_storage_root(self, layout, relative, expected):
+        storage, _ = layout
+
+        assert filters.is_onyx_output(storage / relative) is expected
+
+    def test_a_client_folder_named_like_a_year_is_scanned(self, layout, tmp_path):
+        assert filters.is_onyx_output(tmp_path / "clients" / "2026") is False
+
+    def test_audio_list_covers_every_format_the_audio_pipeline_decodes(self):
+        assert {".ogg", ".opus", ".wma", ".aiff"} <= filters.AUDIO_EXTENSIONS
+        assert filters.is_extension_allowed(Path("/tmp/interview.opus"))

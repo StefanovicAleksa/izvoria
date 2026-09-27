@@ -173,3 +173,24 @@ class TestVisualAnalysisAPI:
         # VisualAnalysisAPI's try/except should catch this and route it through `map_visual_analysis_error`
         with pytest.raises(Exception, match="Unexpected failure in Visual Analysis"):
             api.process_chunk(source_id, chunk, extracted_frames, MagicMock(spec=LoadedModel))
+
+
+class TestDescribeImage:
+    def test_grounds_the_observation_without_a_transcript(self):
+        adapter = MagicMock()
+        adapter.describe_image.return_value = FrameObservation(
+            shows="A photo of a street sign", legible_text=["Main St", "www.example.com", "main st"], marks=None)
+        api = VisualAnalysisAPI(repository=MagicMock(), vlm_adapter=adapter, storage_api=MagicMock())
+        model = MagicMock(spec=LoadedModel)
+
+        result = api.describe_image(Path("/vault/sign.jpg"), model)
+
+        adapter.describe_image.assert_called_once_with(model, Path("/vault/sign.jpg"))
+        assert result == FrameObservation(shows="A photo of a street sign", legible_text=["Main St"])
+
+    def test_nothing_structured_is_none(self):
+        adapter = MagicMock()
+        adapter.describe_image.return_value = None
+        api = VisualAnalysisAPI(repository=MagicMock(), vlm_adapter=adapter, storage_api=MagicMock())
+
+        assert api.describe_image(Path("/vault/x.jpg"), MagicMock(spec=LoadedModel)) is None

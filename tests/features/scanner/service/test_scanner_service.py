@@ -88,3 +88,27 @@ class TestFileScannerService:
                 # Expect the Mapper to catch it and raise ScanPermissionError
                 with pytest.raises(exc.ScanPermissionError):
                     list(scanner.scan("/root"))
+
+class TestScannerSkipsOnyxOutput:
+    def test_vault_shards_and_reports_are_not_walked_into(self, tmp_path, monkeypatch):
+        from app.core.config import settings
+        storage = tmp_path / "onyx_data"
+        reports = storage / "development" / "reports"
+        monkeypatch.setenv("ONYX_STORAGE_PATH", str(storage))
+        monkeypatch.setattr(type(settings), "REPORTS_DIR", property(lambda self: reports))
+        for path in (storage / "2026" / "09" / "15" / "frame.jpg", reports / "report.md",
+                     storage / "benchmarks" / "sr" / "media" / "talk.wav", tmp_path / "client" / "photo.jpg"):
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x")
+
+        found = {f.file_name for f in FileScanner().scan(tmp_path)}
+
+        assert found == {"talk.wav", "photo.jpg"}
+
+    def test_pointing_straight_at_the_vault_yields_nothing(self, tmp_path, monkeypatch):
+        storage = tmp_path / "onyx_data"
+        (storage / "2026" / "09").mkdir(parents=True)
+        (storage / "2026" / "09" / "clip.mp4").write_bytes(b"x")
+        monkeypatch.setenv("ONYX_STORAGE_PATH", str(storage))
+
+        assert list(FileScanner().scan(storage / "2026")) == []

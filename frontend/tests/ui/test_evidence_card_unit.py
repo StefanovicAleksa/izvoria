@@ -130,3 +130,30 @@ class TestScores:
         without = card_for(qt_app, make_evidence(), show_scores=False)
         assert "rrf" not in label_text(without)
         without.close()
+
+
+class TestImageEvidence:
+    def test_an_image_card_previews_the_image_and_opens_it(self, qt_app, tmp_path):
+        from PySide6.QtGui import QImage
+        path = tmp_path / "board.png"
+        QImage(800, 400, QImage.Format.Format_RGB32).save(str(path))
+
+        card = card_for(qt_app, make_evidence(media_kind=MediaKind.IMAGE, clip_path=str(path), speakers=(),
+                                              excerpt="Image (machine description): A whiteboard.",
+                                              location="image"))
+
+        assert open_button(card).text() == "Open image ↗"
+        assert "machine description" in open_button(card).toolTip()
+        pixmap = card._thumbnail.pixmap()
+        assert card._thumbnail.isVisible() and (pixmap.width(), pixmap.height()) == (180, 90)
+        card.close()
+
+    def test_an_undecodable_image_has_no_preview_but_still_opens(self, qt_app, tmp_path):
+        path = tmp_path / "broken.png"
+        path.write_bytes(b"not an image")
+
+        card = card_for(qt_app, make_evidence(media_kind=MediaKind.IMAGE, clip_path=str(path)))
+
+        assert card._thumbnail.isVisible() is False
+        assert open_button(card).isEnabled()
+        card.close()

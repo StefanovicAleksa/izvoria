@@ -100,3 +100,25 @@ class TestShortMultiPageDocuments:
         chunks = build_chunks(blocks, max_words=250, short_document_words=400, separator=SEP)
 
         assert [(c.page_start, c.page_end) for c in chunks] == [(1, 1), (2, 2), (3, 3)]
+
+
+class TestChunkLineRanges:
+    def test_chunk_spans_the_lines_of_its_blocks(self):
+        blocks = [
+            Block(kind=BlockKind.HEADING, text="Chapter 1", level=2, line_start=3, line_end=3),
+            Block(kind=BlockKind.PARAGRAPH, text="It rained all night long. " * 60, line_start=5, line_end=40),
+            Block(kind=BlockKind.HEADING, text="Chapter 2", level=2, line_start=43, line_end=43),
+            Block(kind=BlockKind.PARAGRAPH, text=" ".join(["word"] * 200), line_start=45, line_end=70),
+        ]
+
+        chunks = build_chunks(blocks, max_words=250, short_document_words=400, separator=SEP)
+
+        # The long paragraph splits in two; both halves keep its whole line range rather than guessing
+        assert [(c.line_start, c.line_end, c.section_path) for c in chunks] == [
+            (3, 40, "Chapter 1"), (5, 40, "Chapter 1"), (43, 70, "Chapter 2"),
+        ]
+
+    def test_blocks_without_lines_give_a_chunk_without_lines(self):
+        [chunk] = build_chunks([Block(kind=BlockKind.PARAGRAPH, text="Memo text.")], 250, 400, SEP)
+
+        assert (chunk.line_start, chunk.line_end) == (None, None)

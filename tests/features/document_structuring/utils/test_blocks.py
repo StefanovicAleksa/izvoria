@@ -68,3 +68,24 @@ class TestParseBlocks:
         blocks = parse_blocks([(1, "Article 1 Ugovor\nЗакупац плаћа.")], PATTERNS, normalize=str.upper)
 
         assert [b.text for b in blocks] == ["ARTICLE 1 UGOVOR", "ЗАКУПАЦ ПЛАЋА."]
+
+
+class TestLineNumbers:
+    def test_blocks_record_their_source_lines(self):
+        text = "\n\nArticle 1 Terms\nThe rent is due\nevery month.\n\n\n| a | b |\n| 1 | 2 |\nLast line."
+
+        blocks = parse_blocks([(None, text)], PATTERNS)
+
+        assert [(b.kind, b.line_start, b.line_end) for b in blocks] == [
+            (BlockKind.HEADING, 3, 3),
+            (BlockKind.PARAGRAPH, 4, 5),
+            (BlockKind.TABLE, 8, 9),
+            (BlockKind.PARAGRAPH, 10, 10),
+        ]
+
+    def test_removed_page_furniture_does_not_renumber_the_lines_below_it(self):
+        pages = [(n, f"ACME LTD CONFIDENTIAL\nBody of page {n}.\nMore body.") for n in range(1, 5)]
+
+        blocks = parse_blocks(pages, PATTERNS)
+
+        assert all((b.line_start, b.line_end) == (2, 3) for b in blocks)

@@ -9,7 +9,8 @@ from PIL import Image
 from app.features.document_conversion.domain.entities import ConvertedDocument, OcrPage, PageContent
 from app.features.document_conversion.domain.enums import DocumentKind, ExtractionMethod
 from app.features.document_conversion.exceptions import (
-    DocumentConversionError, OcrModelsMissingError, SourceDocumentMissingError, UnsupportedDocumentError,
+    DocumentConversionError, OcrModelsMissingError, SourceDocumentMissingError, UndecodableTextError,
+    UnsupportedDocumentError,
 )
 from app.features.document_conversion.service.conversion_api import DocumentConversionAPI
 
@@ -54,7 +55,7 @@ def document_file(tmp_path):
     return make
 
 
-def _api(path, pdf=None, ocr=None, existing=None, layout=None):
+def _api(path, pdf=None, ocr=None, existing=None, layout=None, text_decoder=None, rtf_reader=None):
     repo = MagicMock()
     repo.get_by_source_id.return_value = existing
     repo.save.side_effect = lambda document: document
@@ -65,7 +66,8 @@ def _api(path, pdf=None, ocr=None, existing=None, layout=None):
     converter = MagicMock()
     if pdf is not None:
         converter.convert.side_effect = lambda data, ext: pdf.pages[int(data.decode().split("-")[1])][0]
-    return DocumentConversionAPI(repo, storage, reader, converter, ocr, layout), repo, converter
+    api = DocumentConversionAPI(repo, storage, reader, converter, ocr, layout, text_decoder, rtf_reader)
+    return api, repo, converter
 
 
 class TestPdfRouting:
@@ -209,7 +211,7 @@ class TestOtherInputs:
         repo.save.assert_not_called()
 
     def test_unsupported_extension_raises(self, document_file):
-        api, _, _ = _api(document_file("notes.txt"))
+        api, _, _ = _api(document_file("budget.xlsx"))
 
         with pytest.raises(UnsupportedDocumentError):
             api.execute(uuid.uuid4())
@@ -235,3 +237,124 @@ class TestOtherInputs:
         api.release()
 
         ocr.close.assert_called_once_with()
+
+
+@pytest.fixture
+def text_file(tmp_path):
+    def make(name, data):
+        path = tmp_path / name
+        path.write_bytes(data)
+        return path
+    return make
+
+
+class TestBooksAndTexts:
+    @pytest.mark.parametrize("name, kind", [
+        ("novel.txt", DocumentKind.TXT), ("notes.md", DocumentKind.MARKDOWN), ("notes.markdown", DocumentKind.MARKDOWN),
+    ])
+    def test_plain_text_is_decoded_not_sent_to_markitdown(self, text_file, name, kind):
+        decoder = MagicMock()
+        decoder.decode.return_value = "CHAPTER I\n\nIt was a dark night."
+        api, _, converter = _api(text_file(name, b"raw bytes"), text_decoder=decoder)
+
+        document = api.execute(uuid.uuid4())
+
+        decoder.decode.assert_called_once_with(b"raw bytes")
+        converter.convert.assert_not_called()
+        assert document.kind is kind
+        assert document.pages == [PageContent(page_no=None, text="CHAPTER I\n\nIt was a dark night.")]
+
+    def test_plain_text_keeps_every_line_so_cited_line_numbers_hold(self, text_file):
+        decoder = MagicMock()
+        decoder.decode.return_value = "\n\nTitle\r\n\n\n\nBody\tline  \n"
+        api, _, _ = _api(text_file("book.txt", b"x"), text_decoder=decoder)
+
+        [page] = api.execute(uuid.uuid4()).pages
+
+        assert page.text.split("\n") == ["", "", "Title", "", "", "", "Body line", ""]
+
+    @pytest.mark.parametrize("name, kind, extension", [
+        ("book.epub", DocumentKind.EPUB, ".epub"),
+        ("page.html", DocumentKind.HTML, ".html"),
+        ("page.htm", DocumentKind.HTML, ".html"),
+    ])
+    def test_epub_and_html_go_through_markitdown(self, text_file, name, kind, extension):
+        api, _, converter = _api(text_file(name, b"zip"))
+        converter.convert.return_value = "# Chapter 1\n\n\n\nCall me Ishmael."
+
+        document = api.execute(uuid.uuid4())
+
+        converter.convert.assert_called_once_with(b"zip", extension)
+        assert document.kind is kind
+        assert document.pages[0].text == "# Chapter 1\n\nCall me Ishmael."
+
+    def test_rtf_is_read_by_the_rtf_reader(self, text_file):
+        rtf_reader = MagicMock()
+        rtf_reader.to_text.return_value = "Glava 1\nTekst."
+        api, _, converter = _api(text_file("knjiga.rtf", b"{\\rtf1 x}"), rtf_reader=rtf_reader)
+
+        document = api.execute(uuid.uuid4())
+
+        rtf_reader.to_text.assert_called_once_with(b"{\\rtf1 x}")
+        converter.convert.assert_not_called()
+        assert document.kind is DocumentKind.RTF
+        assert document.pages[0].text == "Glava 1\nTekst."
+
+    def test_plain_text_without_a_decoder_is_unsupported(self, text_file):
+        api, _, _ = _api(text_file("novel.txt", b"x"))
+
+        with pytest.raises(UnsupportedDocumentError):
+            api.execute(uuid.uuid4())
+
+    def test_undecodable_text_keeps_its_type(self, text_file):
+        decoder = MagicMock()
+        decoder.decode.side_effect = UndecodableTextError("binary")
+        api, _, _ = _api(text_file("novel.txt", b"x"), text_decoder=decoder)
+
+        with pytest.raises(UndecodableTextError):
+            api.execute(uuid.uuid4())
+
+
+class TestReadImage:
+    def _api(self, ocr):
+        return DocumentConversionAPI(MagicMock(), MagicMock(), MagicMock(), MagicMock(), ocr)
+
+    def test_reads_the_image_with_ocr(self, tmp_path):
+        path = tmp_path / "sign.png"
+        Image.new("L", (300, 200), 255).save(path)
+        ocr = MagicMock()
+        ocr.recognize.return_value = OcrPage(text="EXIT", lines_detected=1, lines_read=1)
+
+        assert self._api(ocr).read_image(path) == OcrPage(text="EXIT", lines_detected=1, lines_read=1)
+        [image] = ocr.recognize.call_args.args
+        assert image.mode == "RGB" and image.size == (300, 200)
+
+    def test_a_huge_photo_is_downscaled_on_its_long_side(self, tmp_path, monkeypatch):
+        from app.core.config import settings
+        monkeypatch.setattr(settings, "IMAGE_OCR_MAX_SIDE", 100)
+        path = tmp_path / "big.png"
+        Image.new("RGB", (400, 200), "white").save(path)
+        ocr = MagicMock()
+        ocr.recognize.return_value = OcrPage()
+
+        self._api(ocr).read_image(path)
+
+        assert ocr.recognize.call_args.args[0].size == (100, 50)
+
+    def test_no_ocr_on_this_appliance_is_none(self, tmp_path):
+        assert self._api(None).read_image(tmp_path / "anything.png") is None
+
+    def test_missing_ocr_models_are_none_not_a_failure(self, tmp_path):
+        path = tmp_path / "sign.png"
+        Image.new("RGB", (10, 10)).save(path)
+        ocr = MagicMock()
+        ocr.recognize.side_effect = OcrModelsMissingError("models/rapidocr is empty")
+
+        assert self._api(ocr).read_image(path) is None
+
+    def test_undecodable_file_is_mapped(self, tmp_path):
+        path = tmp_path / "fake.png"
+        path.write_bytes(b"nope")
+
+        with pytest.raises(DocumentConversionError):
+            self._api(MagicMock()).read_image(path)

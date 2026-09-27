@@ -4,6 +4,45 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Images: described by the vision model, checked by OCR
+
+Clients hold standalone images: photographed whiteboards, scans saved as JPG, charts, X-rays, site photos. They have no speech and no document text, so they are understood only through vision. `OnyxEngine.ingest_images()` (CLI option 10, the desktop's "Images" mode) runs the new `BatchImagePipeline`: scan → ingest → `ImageDescriptionPhase` → unification → indexing. It uses one Qwen2-VL load for the whole batch, then the embedder. No transcript stage, contextual SLM or clip extraction runs.
+
+**The excerpt is machine-written, and says so.** An image has no words of its own, so what a citation quotes is written by the vision model and OCR. The product rule is that nothing is stated without grounding, so:
+- **Text the vision model reads is kept only if RapidOCR also reads it** (word for word, or 80% of its words including every number). A VLM writes plausible text that isn't there; OCR misreads characters but never invents a line. Items OCR didn't read are left out of the index and listed in the ingestion report. Unconfirmed quoted text and numbers inside the description become `[text not confirmed]` / `[number not confirmed]`.
+- The excerpt's blocks are labelled "Image (machine description)" and "Text on the image (read by OCR)", in the pack's language. The answer, reasoner and report prompts describe an `(image)` excerpt as a machine-written description to be reported as what the image shows, never as the client's words. Recordings-only prompts are unchanged.
+- **Serbian images are unverified.** There is no Serbian OCR, so the vision model's text is shown under a "not verified" label and counted in the report.
+- Descriptions are in English on every appliance (Qwen2-VL is weak in Serbian and Slovenian); text read off the image stays in its own language.
+
+**Reusing what exists.** The still-image mode is a second prompt on the existing `QwenVLMAdapter` (same instance, same `ModelType.VISION`), not a second loader. OCR is exposed as `DocumentConversionAPI.read_image`. `ContextualizerAPI.execute_image` stores a one-chunk transcript without a model, so unification and indexing are untouched. The new `AnchorKind.IMAGE` renders as "image" / "slika".
+
+**What the checks turned up.**
+- The video grounding (`ground_observation`) drops any frame with no legible text and no marks. That is right for a talking head and wrong for a photo, whose description is its only evidence, so still images get `ground_still_image`.
+- Run on a generated notice, a chart and the X-ray fixture, the real model matched OCR on every text item, reported the chart's red arrow as a mark, and described the X-ray without a diagnosis.
+
+**Desktop.** Cited images show a thumbnail on evidence cards and in the review panel, with "Open image ↗". Only the scaled size is decoded, and EXIF rotation is applied. This also fixes a bug from the books change: the gateway recognised only `page`/`section` anchors as documents, so TXT/Markdown citations showed no location and "Open recording".
+
+**Pipelines don't pick up each other's files, or Onyx's own.** The scan is shared and each mode keeps its own suffixes; the four lists are disjoint. Two gaps turned up while checking this, both older than images but made worse by them:
+- **The scanner walked into the vault.** Frames, clips and extracted audio live in `onyx_data/YYYY/…`, and reports in `onyx_data/<env>/reports/`. Pointing any mode at a folder containing them re-ingested Onyx's own files. After the books change, that included the model-written reports as source documents. The scanner now prunes both (`is_onyx_output`).
+- **Audio formats were dropped silently.** The audio pipeline accepted `.ogg`, `.opus`, `.wma`, `.aiff`, `.amr`, `.alac` and `.mka`, but the scanner only passed five formats. There is now one list, which the pipeline and the video ingest filter import.
+
+Documents scanned to JPG/TIFF stay images, by decision; scanned PDFs go only through the document pipeline.
+
+**Known gaps.** HEIC isn't accepted (pillow-heif is a native dependency). Multi-page TIFFs use their first page. Whether the 80% word rule is too strict for real handwriting hasn't been measured.
+
+## Books and texts: TXT, Markdown, EPUB, HTML and RTF, cited by line or chapter
+
+Clients also hold books, manuscripts, notes and exported web pages. None of the audio stages apply: their sentence and chunk types need speakers and timestamps. The document path already did everything plain text needs (structure along headings, situate each chunk with the contextual SLM, index), so books and texts are new **document kinds**, not a new pipeline. The "Documents" mode (CLI option 9, the desktop's "Documents & books") takes a folder mixing PDFs, DOCX and all of these.
+
+**Cited by line.** A plain-text or Markdown chunk cites the file's own lines, with its chapter: `[Doc 3] (lines 120–164 · CHAPTER IV.)`, a range anyone can check in an editor. This is a new `AnchorKind.LINE`, stored in the existing `page_start`/`page_end` columns (no DDL). Every consumer already rendered non-time anchors through `format_location`, so only the formatter changed. Labels come from the pack (`line_label`/`lines_label`: line/lines, vrstica/vrstice, red/redovi). EPUB, HTML, DOCX and RTF are converted before their lines exist, so they cite the chapter or section.
+
+**Decisions and what the checks turned up.**
+- **TXT and Markdown bypass MarkItDown.** Its plain-text path collapses runs of blank lines on every result, which would shift every cited line. They are decoded by charset-normalizer directly (cp1250/cp1251 files are common in Serbia and Slovenia) and cleaned line by line without dropping a line. The integration test reads the cited lines back out of the cp1250 file and finds the chunk's text there.
+- **EPUB and HTML use MarkItDown's own converters.** They are core and local (zipfile, defusedxml, BeautifulSoup), so there is no new dependency. **RTF** uses striprtf, pure Python, which honours the file's code page.
+- **Chapter headings are in the language packs.** "CHAPTER IV.", "Glava 3" / "Поглавље 4", "4. poglavje", "Prologue" and so on need the number to end the line or be followed by a separator, so a hard-wrapped "Chapter 3 of the Act provides that" stays prose. "CHAPTER IV." had been rejected as a sentence because of its final period; a period after a number or a Roman numeral no longer counts as a sentence end.
+
+**Known gaps.** A headingless EPUB/HTML/RTF cites only the file. A 100k-word novel is about 400 chunks, one SLM call each.
+
 ## Recordings-only appliances see no change
 
 Document support had changed wording that transcript answers pass through: the QA answer prompt, the reasoner's prompts, report scoping/outline/section prompts, the planner's corpus overview, the references header ("Timespan" → "Location") and the CLI's timestamp line. Each is now back to its original text, and the document wording is a separate variant chosen only when a document excerpt is actually in play — per context for answers and sections (the token budget is computed for the variant that is sent), per evidence bank for the outline, per corpus for scoping. The query-rewrite prompt, which runs before anything is retrieved, is simply the original. `git diff` of every prompt file and language pack shows only added lines.

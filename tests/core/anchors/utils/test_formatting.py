@@ -26,6 +26,15 @@ class TestFormatAnchor:
         # A page anchor whose page is unknown falls back to its section rather than inventing a page
         ("en", AnchorKind.PAGE, {"section_path": "Article 7"}, "Article 7"),
         ("en", AnchorKind.SECTION, {}, ""),
+        # A line anchor carries its lines in the page fields
+        ("en", AnchorKind.LINE, {"page_start": 12, "page_end": 12}, "line 12"),
+        ("en", AnchorKind.LINE, {"page_start": 120, "page_end": 164}, "lines 120–164"),
+        ("sl", AnchorKind.LINE, {"page_start": 3, "page_end": 9}, "vrstice 3–9"),
+        ("sr", AnchorKind.LINE, {"page_start": 3}, "red 3"),
+        ("en", AnchorKind.LINE, {"section_path": "Chapter 4"}, "Chapter 4"),
+        # An image is cited as a whole, in the pack's word for it
+        ("en", AnchorKind.IMAGE, {}, "image"),
+        ("sr", AnchorKind.IMAGE, {"section_path": "ignored"}, "slika"),
     ])
     def test_renders_each_kind_in_the_appliance_language(self, language_pack, code, kind, kwargs, expected):
         assert format_anchor(kind, rules=language_pack(code).documents, **kwargs) == expected
@@ -45,6 +54,12 @@ class TestFormatLocation:
                                    rules=language_pack("en").documents)
 
         assert location == "pp. 7–8 · Article 7 › 7.2"
+
+    def test_line_numbered_document_adds_its_section(self, language_pack):
+        location = format_location(AnchorKind.LINE, page_start=120, page_end=164, section_path="CHAPTER IV",
+                                   rules=language_pack("en").documents)
+
+        assert location == "lines 120–164 · CHAPTER IV"
 
     def test_transcript_location_is_only_its_time_range(self, language_pack):
         location = format_location(AnchorKind.TIME, 10, 20, section_path="ignored",

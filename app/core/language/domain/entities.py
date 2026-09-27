@@ -149,9 +149,15 @@ class DocumentRules(_Frozen):
     # "p. 7" / "pp. 7–8": the page label a document citation carries.
     page_label: str
     pages_label: str
+    # "line 12" / "lines 12–40": what a plain-text or Markdown citation carries -- the file's own line numbers.
+    line_label: str
+    lines_label: str
+    # "image": an image citation's location. The file itself is the whole source; there is nothing finer to point at.
+    image_label: str
     # Joins the headings of a section path: "Article 7 Termination › 7.2".
     section_separator: str = " › "
-    # A line matching one of these starts a new clause ("Article 7", "3. člen"), whatever its formatting.
+    # A line matching one of these starts a new clause ("Article 7", "3. člen") or a book's chapter ("Chapter 4",
+    # "Glava II"), whatever its formatting.
     clause_patterns: List[str] = Field(default_factory=list)
     # RapidOCR recognition model for scanned pages ("latin"). None: this language has no trustworthy OCR model,
     # so scanned pages are reported as unreadable instead of being indexed with text the model guessed.
@@ -163,6 +169,19 @@ class DocumentRules(_Frozen):
         for pattern in patterns:
             _compiles(pattern)
         return patterns
+
+
+class ImageRules(_Frozen):
+    """
+    The labels of an image's citable excerpt. An image has no words of its own, so its excerpt is written by the
+    vision model and OCR; these labels say so to the reader and to the answer model, in the appliance's language.
+    """
+    # Before the vision model's description: "Image (machine description)"
+    description_label: str
+    # Before the text OCR read off the image
+    ocr_text_label: str
+    # Before text only the vision model read, on an appliance without OCR to check it against
+    unverified_text_label: str
 
 
 class LanguagePack(_Frozen):
@@ -178,6 +197,7 @@ class LanguagePack(_Frozen):
     answers: AnswerRules
     report: ReportStrings
     documents: DocumentRules
+    images: ImageRules
     # Settings fields this language overrides (model paths, VRAM budgets, context sizes). Applied by
     # `app.core.config.Settings`, which is where they are read; kept here so a pack validates as a whole.
     models: Dict[str, object] = Field(default_factory=dict)

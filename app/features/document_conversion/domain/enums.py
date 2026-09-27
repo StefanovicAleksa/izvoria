@@ -6,6 +6,12 @@ from enum import Enum
 class DocumentKind(str, Enum):
     PDF = "pdf"
     DOCX = "docx"
+    # Plain text and Markdown are read verbatim, line for line: their chunks cite line numbers
+    TXT = "txt"
+    MARKDOWN = "markdown"
+    HTML = "html"
+    RTF = "rtf"
+    EPUB = "epub"
 
 
 class ExtractionMethod(str, Enum):

@@ -6,6 +6,12 @@
 
 Runs a vision-language model over each extracted frame to produce a text description grounded in the surrounding transcript context — turning raw pixels into text the RAG pipeline can actually index and cite.
 
+It also has a **still-image mode** for standalone images (see [image_description](image_description.md)). `QwenVLMAdapter.describe_image` sends one image with `STILL_IMAGE_SYSTEM_PROMPT` at the full pixel budget and `IMAGE_DESCRIPTION_MAX_NEW_TOKENS` (500).
+- The prompt has SHOWS (one or two sentences), TEXT (up to 20 items) and MARKS, with no speech and no LINK.
+- Its rules: never write a value you can't read; never name a person unless the name is written; describe findings on a medical image, never diagnose.
+- `VisualAnalysisAPI.describe_image` applies `ground_still_image`, which keeps a photo with no text or marks (its description is the evidence), unlike `ground_observation`, which would drop it.
+- The same adapter instance and `ModelType.VISION` manifest serve both modes, so the orchestrator knows about one VLM.
+
 ## How it does it
 
 `QwenVLMAdapter` loads Qwen2-VL-7B via **native Hugging Face Transformers** (not GGUF/llama.cpp — deliberately, due to a documented, unresolved upstream `llama.cpp` SIGSEGV in the Qwen-VL vision graph allocator; see Gotchas). The checkpoint is 4-bit pre-quantized on disk (bitsandbytes/nf4), and inference is bounded to `_MIN_PIXELS`/`_MAX_PIXELS` so a single frame can't blow the reserved VRAM budget.

@@ -2,6 +2,7 @@
 # Path: app/features/visual_analysis/data/vlm_adapter.py
 
 import gc
+import logging
 import os
 from pathlib import Path
 from typing import Any, List, Optional
@@ -13,12 +14,16 @@ from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.features.visual_analysis.domain.entities import FrameObservation
 from app.features.visual_analysis.domain.interfaces import IVisualLanguageModelAdapter
-from app.features.visual_analysis.data.prompts import FRAME_BLOCK_TEMPLATE, VLM_SYSTEM_PROMPT, VLM_USER_PROMPT_TEMPLATE
+from app.features.visual_analysis.data.prompts import (
+    FRAME_BLOCK_TEMPLATE, STILL_IMAGE_SYSTEM_PROMPT, STILL_IMAGE_USER_PROMPT, VLM_SYSTEM_PROMPT, VLM_USER_PROMPT_TEMPLATE,
+)
 from app.features.visual_analysis.utils.error_mapper import map_visual_analysis_error
-from app.features.visual_analysis.utils.frame_description_parser import parse_frame_observations
+from app.features.visual_analysis.utils.frame_description_parser import parse_frame_observation, parse_frame_observations
 
 # Bounds Qwen2-VL's dynamic-resolution vision tower so a single large frame can't
 # blow past the VRAM budget the Model Orchestrator reserved for this phase.
+logger = logging.getLogger(__name__)
+
 _MIN_PIXELS = 256 * 28 * 28
 _MAX_PIXELS = 1280 * 28 * 28
 
@@ -122,24 +127,8 @@ class QwenVLMAdapter(IVisualLanguageModelAdapter):
                 }
             ]
 
-            prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-            inputs = processor(text=[prompt], images=images, return_tensors="pt").to(hf_model.device)
-
-            with torch.inference_mode():
-                # Greedy decoding: evidence descriptions must be reproducible, and sampling invents details
-                generated_ids = hf_model.generate(
-                    **inputs,
-                    max_new_tokens=settings.VISION_MAX_NEW_TOKENS_PER_FRAME * frame_count,
-                    do_sample=False,
-                )
-
-            generated_ids_trimmed = [
-                out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-            ]
-            output_text = processor.batch_decode(
-                generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-            )[0]
-
+            output_text = self._generate(hf_model, processor, messages, images,
+                                         settings.VISION_MAX_NEW_TOKENS_PER_FRAME * frame_count)
             return parse_frame_observations(output_text, frame_count)
 
         except Exception as e:
@@ -147,10 +136,46 @@ class QwenVLMAdapter(IVisualLanguageModelAdapter):
                 e, context=f"Qwen2-VL analysis of {len(image_paths)} frame(s) starting at {image_paths[0].name}"
             ) from e
 
+    def describe_image(self, model: LoadedModel, image_path: Path) -> Optional[FrameObservation]:
+        try:
+            payload = model.model_instance
+            hf_model = payload["model"]
+            processor = payload["processor"]
+
+            # A lone image gets the processor's whole pixel budget: no other image shares the context window
+            image = self._open_image(image_path)
+            messages = [
+                {"role": "system", "content": STILL_IMAGE_SYSTEM_PROMPT},
+                {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": STILL_IMAGE_USER_PROMPT}]},
+            ]
+            output_text = self._generate(hf_model, processor, messages, [image],
+                                         settings.IMAGE_DESCRIPTION_MAX_NEW_TOKENS)
+            observation = parse_frame_observation(output_text)
+            if observation is None:
+                logger.warning(f"Qwen2-VL gave no SHOWS field for {image_path.name}; nothing structured to keep.")
+            return observation
+
+        except Exception as e:
+            raise map_visual_analysis_error(e, context=f"Qwen2-VL description of image {image_path.name}") from e
+
+    @staticmethod
+    def _generate(hf_model: Any, processor: Any, messages: List[dict], images: List[Any], max_new_tokens: int) -> str:
+        prompt = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = processor(text=[prompt], images=images, return_tensors="pt").to(hf_model.device)
+
+        with torch.inference_mode():
+            # Greedy decoding: evidence descriptions must be reproducible, and sampling invents details
+            generated_ids = hf_model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+
+        generated_ids_trimmed = [out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)]
+        return processor.batch_decode(
+            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
+        )[0]
+
     @staticmethod
     def _open_image(image_path: Path) -> Any:
         if not image_path.exists():
-            raise FileNotFoundError(f"Extracted frame missing from disk: {image_path}")
+            raise FileNotFoundError(f"Image missing from disk: {image_path}")
         with Image.open(image_path) as image:
             return image.convert("RGB")
 

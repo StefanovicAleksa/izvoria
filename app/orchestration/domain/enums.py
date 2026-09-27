@@ -31,6 +31,9 @@ class PipelinePhase(str, Enum):
     DOCUMENT_CONVERSION = "document_conversion"
     DOCUMENT_CONTEXTUALIZATION = "document_contextualization"
 
+    # Image ingestion (standalone stills)
+    IMAGE_DESCRIPTION = "image_description"
+
     # NEW: Live Inference Retrieval Phases
     RAG_RETRIEVAL = "rag_retrieval"
     RAG_RERANKING = "rag_reranking"

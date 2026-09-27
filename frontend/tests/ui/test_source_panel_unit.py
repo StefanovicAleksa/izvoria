@@ -150,3 +150,27 @@ class TestSourcePanel:
         panel.clear()
 
         assert panel._card.isVisible() is False
+
+
+class TestImageSource:
+    def test_an_image_shows_its_preview_and_warns_the_excerpt_is_a_description(self, panel, tmp_path):
+        from PySide6.QtGui import QImage
+        path = tmp_path / "scan.png"
+        QImage(200, 400, QImage.Format.Format_RGB32).save(str(path))
+
+        panel.show_evidence(make_evidence(tmp_path, media_kind=MediaKind.IMAGE, clip_path=str(path),
+                                          location="image"))
+
+        assert panel._open.text() == "Open image" and panel._open.isEnabled()
+        assert "machine description" in panel._kind_note.text()
+        assert panel._thumbnail.isVisible() and panel._thumbnail.pixmap().height() == 320
+
+    def test_the_preview_is_cleared_for_the_next_non_image(self, panel, tmp_path):
+        from PySide6.QtGui import QImage
+        path = tmp_path / "scan.png"
+        QImage(20, 20, QImage.Format.Format_RGB32).save(str(path))
+        panel.show_evidence(make_evidence(tmp_path, media_kind=MediaKind.IMAGE, clip_path=str(path)))
+
+        panel.show_evidence(make_evidence(tmp_path, media_kind=MediaKind.CLIP))
+
+        assert panel._thumbnail.isVisible() is False

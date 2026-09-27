@@ -13,7 +13,8 @@ class MarkItDownConverter(IMarkdownConverter):
 
     MarkItDown can reach the network in exactly two ways, both avoided here: `convert()` fetches an http(s) string
     with `requests`, and its audio converter sends audio to Google's speech API. This adapter only calls
-    `convert_stream()`, only hands it PDF pages and DOCX files, and never passes an `llm_client` or a Document
+    `convert_stream()`, only hands it PDF pages, DOCX, HTML and EPUB files (all converted locally: EPUB is
+    a zip of XHTML read with zipfile and defusedxml), and never passes an `llm_client` or a Document
     Intelligence endpoint. Plugins are off, so nothing installed later can register a converter.
     """
 

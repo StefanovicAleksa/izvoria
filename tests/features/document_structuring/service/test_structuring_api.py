@@ -33,6 +33,29 @@ class TestDocumentStructuringAPI:
         assert structured.anchor_kind is AnchorKind.SECTION
         assert structured.chunks[0].section_path == "Memo"
 
+    def test_plain_text_chunks_are_line_anchored_with_the_files_line_numbers(self):
+        text = "\n\nCHAPTER I\n\nIt was a dark night.\n\n\nCHAPTER II\n\nMorning came."
+        document = ConvertedDocument(source_id=uuid.uuid4(), kind=DocumentKind.TXT, pages=[PageContent(text=text)])
+
+        structured = DocumentStructuringAPI().execute(document)
+
+        assert structured.anchor_kind is AnchorKind.LINE
+        [chunk] = structured.chunks  # a short document stays whole
+        assert (chunk.line_start, chunk.line_end) == (3, 10)
+
+    @pytest.mark.parametrize("kind, expected", [
+        (DocumentKind.TXT, AnchorKind.LINE),
+        (DocumentKind.MARKDOWN, AnchorKind.LINE),
+        (DocumentKind.DOCX, AnchorKind.SECTION),
+        (DocumentKind.HTML, AnchorKind.SECTION),
+        (DocumentKind.RTF, AnchorKind.SECTION),
+        (DocumentKind.EPUB, AnchorKind.SECTION),
+    ])
+    def test_anchor_kind_follows_the_document_kind(self, kind, expected):
+        document = ConvertedDocument(source_id=uuid.uuid4(), kind=kind, pages=[PageContent(text="Some text.")])
+
+        assert DocumentStructuringAPI().execute(document).anchor_kind is expected
+
     def test_unreadable_pages_are_skipped(self):
         document = ConvertedDocument(source_id=uuid.uuid4(), kind=DocumentKind.PDF, pages=[
             PageContent(page_no=1, text="", method=ExtractionMethod.NONE),
