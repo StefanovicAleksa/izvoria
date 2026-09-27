@@ -10,7 +10,7 @@ from typing import Callable, List, Optional, Pattern, Sequence, Tuple
 
 from app.features.document_structuring.domain.entities import Block
 from app.features.document_structuring.domain.enums import BlockKind
-from app.features.document_structuring.utils.headings import heading_level
+from app.features.document_structuring.utils.headings import ends_a_line_of_thought, heading_level, is_capitals_title
 
 # Only the top and bottom lines of a page are checked for repeated headers/footers, so a phrase repeated in the
 # body ("The Tenant shall...") is never mistaken for page furniture
@@ -85,6 +85,12 @@ def _page_blocks(page_no, lines, clause_patterns, normalize) -> List[Block]:
             continue
         flush_table()
         heading = heading_level(line, clause_patterns)
+        # A line in capitals straight after an unfinished line is the rest of a shouted paragraph -- a contract's
+        # liability disclaimer, hard-wrapped -- not a title. Pulled out as headings, its lines named the section
+        # every later citation showed ("OR IN CONNECTION WITH THIS AGREEMENT, EVEN IF ADVISED OF THE").
+        if (heading and paragraph and not ends_a_line_of_thought(paragraph[-1][1])
+                and is_capitals_title(line, clause_patterns)):
+            heading = None
         if heading:
             flush_paragraph()
             level, heading_text = heading

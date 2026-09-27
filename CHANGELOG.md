@@ -4,6 +4,14 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Capitals are a heading only when they stand alone
+
+Found by ingesting Project Gutenberg's *Adventures of Sherlock Holmes* (EPUB and TXT). A line in capitals counted as a title, so dialogue ("“BALLARAT.”", "“HUNTER.”") displaced the book's own title. From the fifth story on, every EPUB chunk was filed under "“BALLARAT.” › V. …", and 36 chunks of *The Copper Beeches* were cited as section "“HUNTER.”". The same rule broke contracts. A hard-wrapped, all-caps liability disclaimer was cut into one "heading" per line, and later citations named "OR IN CONNECTION WITH THIS AGREEMENT, EVEN IF ADVISED OF THE" as their section.
+
+A line in capitals is now not a title if it opens a quotation, or ends a sentence (`.` `!` `?` — "CHAPTER IV." aside) or a clause (`,` `;`). It is also not a title if it directly continues an unfinished line: `blocks.py` keeps it in that paragraph. Colons still end titles ("RECITALS:"), and Markdown and clause headings are unchanged. The EPUB now files all twelve stories under the book, and the disclaimer stays one paragraph under "12. LIMITATION OF LIABILITY".
+
+The same run confirmed the line anchors. All 310 chunks of the TXT copy are found verbatim in the lines they cite (CRLF file).
+
 ## Whisper no longer drops speech silently
 
 The 2026-09-24 language benchmark found testimony missing from the index with no warning: faster-whisper's batched decoder, given a clip joining several utterances, can return only the last sentence. On FLEURS en `fleurs_01`, 13.2 % of the detected speech had no transcribed word. Two of three sentences at 13.2–38.0 s were gone.

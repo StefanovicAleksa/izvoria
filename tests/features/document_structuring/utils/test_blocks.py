@@ -70,6 +70,44 @@ class TestParseBlocks:
         assert [b.text for b in blocks] == ["ARTICLE 1 UGOVOR", "ЗАКУПАЦ ПЛАЋА."]
 
 
+class TestShoutedParagraphs:
+    """A contract's liability disclaimer, hard-wrapped in capitals, is a paragraph -- not a run of headings."""
+
+    def test_wrapped_capitals_paragraph_stays_one_paragraph_under_its_clause(self):
+        text = ("Article 12 Limitation of Liability\n\n"
+                "IN NO EVENT SHALL EITHER PARTY BE LIABLE FOR ANY INDIRECT,\n"
+                "INCIDENTAL OR CONSEQUENTIAL DAMAGES ARISING OUT OF\n"
+                "OR IN CONNECTION WITH THIS AGREEMENT, EVEN IF ADVISED OF THE\n"
+                "POSSIBILITY OF SUCH DAMAGES.")
+
+        blocks = parse_blocks([(1, text)], PATTERNS)
+
+        assert _kinds(blocks) == [
+            (BlockKind.HEADING, "Article 12 Limitation of Liability"),
+            (BlockKind.PARAGRAPH, "IN NO EVENT SHALL EITHER PARTY BE LIABLE FOR ANY INDIRECT, INCIDENTAL OR "
+                                  "CONSEQUENTIAL DAMAGES ARISING OUT OF OR IN CONNECTION WITH THIS AGREEMENT, EVEN "
+                                  "IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES."),
+        ]
+
+    def test_capitals_title_after_a_finished_sentence_is_still_a_heading(self):
+        text = "The parties agree as set out below.\nSCHEDULE OF RENT\nRent is due monthly."
+
+        blocks = parse_blocks([(1, text)], PATTERNS)
+
+        assert _kinds(blocks) == [
+            (BlockKind.PARAGRAPH, "The parties agree as set out below."),
+            (BlockKind.HEADING, "SCHEDULE OF RENT"),
+            (BlockKind.PARAGRAPH, "Rent is due monthly."),
+        ]
+
+    def test_clause_heading_after_an_unfinished_line_still_splits(self):
+        text = "The Tenant shall pay\nArticle 7 Termination\nOn notice."
+
+        blocks = parse_blocks([(1, text)], PATTERNS)
+
+        assert (BlockKind.HEADING, "Article 7 Termination") in _kinds(blocks)
+
+
 class TestLineNumbers:
     def test_blocks_record_their_source_lines(self):
         text = "\n\nArticle 1 Terms\nThe rent is due\nevery month.\n\n\n| a | b |\n| 1 | 2 |\nLast line."
