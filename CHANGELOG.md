@@ -4,6 +4,17 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Whisper no longer drops speech silently
+
+The 2026-09-24 language benchmark found testimony missing from the index with no warning: faster-whisper's batched decoder, given a clip joining several utterances, can return only the last sentence. On FLEURS en `fleurs_01`, 13.2 % of the detected speech had no transcribed word. Two of three sentences at 13.2–38.0 s were gone.
+
+`FasterWhisperAdapter.transcribe` now checks its own output against the VAD map. Any speech segment of at least 1 s with no word on it means something was dropped:
+- A batched clip holding such speech is **decoded again sequentially**, and its batched output is replaced (not merged, so nothing is duplicated).
+- Speech still wordless after that (a sequential decode can lose a clip's last sentence too, as at 584 s in the same file) is **decoded on its own**.
+- Whatever remains is logged as a warning with its seconds.
+
+`fleurs_01`: 13.2 % untranscribed → 0.0 %, with 6 of 31 clips re-decoded. Batched decoding stays the fast path.
+
 ## Database migrations (Alembic)
 
 An appliance holds months of ingested material, so "reset the database" can't be how a schema change ships. Until now `OnyxEngine.start()` ran `create_all()` and then per-feature tuples of idempotent `ALTER TABLE … ADD COLUMN IF NOT EXISTS` statements. That could add a column, but it couldn't rename, retype or drop one, and nothing recorded which build a database had reached.

@@ -3,6 +3,7 @@
 
 import os
 import gc
+import logging
 import numpy as np
 import torch
 import torchaudio
@@ -15,6 +16,8 @@ from app.features.transcription.domain.entities import TranscriptSegment, Transc
 from app.features.vad.domain.entities import VadMap, VadSegment
 from app.features.transcription.utils.error_mapper import map_transcription_error
 
+logger = logging.getLogger(__name__)
+
 SAMPLE_RATE = 16000
 # Whisper judges language from one 30 s window, so that much speech is all the language guard needs
 LANGUAGE_DETECTION_SEC = 30
@@ -25,6 +28,12 @@ MERGE_GAP_SEC = 2.0
 # faster-whisper's batched pipeline only transcribes the first 30s of any clip, so batched clips
 # stay safely below that. Longer uninterrupted speech goes through the sequential path instead.
 MAX_BATCH_CLIP_SEC = 29.5
+
+# A second of VAD speech with no word on it is a dropped utterance, not a cough. faster-whisper's batched decoder
+# sometimes returns only the last sentence of a clip that joins several utterances (2 of 3 lost on FLEURS en
+# 13.2-38.0 s); the sequential decoder recovers them. Word timings drift by a little, hence the tolerance.
+COVERAGE_MIN_SPEECH_SEC = 1.0
+COVERAGE_TOLERANCE_SEC = 0.2
 
 
 def _merge_vad_segments(segments: List[VadSegment], gap_threshold: float = MERGE_GAP_SEC) -> List[VadSegment]:
@@ -112,6 +121,39 @@ def _widen_to_min_duration(start: float, end: float, total_duration: float, min_
     return new_start, new_end
 
 
+def _is_covered(speech: VadSegment, segments: List[TranscriptSegment], tolerance: float) -> bool:
+    lo, hi = speech.start_sec - tolerance, speech.end_sec + tolerance
+    for seg in segments:
+        spans = [(w.start_sec, w.end_sec) for w in seg.words] or [(seg.start_sec, seg.end_sec)]
+        if any(start < hi and end > lo for start, end in spans):
+            return True
+    return False
+
+
+def _uncovered_speech(
+        speech_segments: List[VadSegment],
+        transcribed: List[TranscriptSegment],
+        min_speech_sec: float = COVERAGE_MIN_SPEECH_SEC,
+        tolerance: float = COVERAGE_TOLERANCE_SEC
+) -> List[VadSegment]:
+    """VAD speech of at least `min_speech_sec` that no transcribed word overlaps: speech the decoder dropped."""
+    return [
+        speech for speech in speech_segments
+        if speech.end_sec - speech.start_sec >= min_speech_sec and not _is_covered(speech, transcribed, tolerance)
+    ]
+
+
+def _clips_to_redecode(
+        clips: List[Tuple[float, float]],
+        speech_segments: List[VadSegment],
+        transcribed: List[TranscriptSegment]
+) -> List[Tuple[float, float]]:
+    """The batched clips holding speech that came back without a single word."""
+    dropped = _uncovered_speech(speech_segments, transcribed)
+    return [(start, end) for start, end in clips
+            if any(start <= (s.start_sec + s.end_sec) / 2.0 <= end for s in dropped)]
+
+
 class FasterWhisperAdapter(ITranscriptionAdapter):
     @staticmethod
     def _get_whisper_model(model_path: str) -> Any:
@@ -182,55 +224,87 @@ class FasterWhisperAdapter(ITranscriptionAdapter):
                 sequential_spans = [(s.start_sec, s.end_sec) for s in _merge_vad_segments(vad_map.segments)]
 
             segments_out: List[TranscriptSegment] = []
+            decode_options = dict(language=language, hotwords=safe_hotwords, initial_prompt=safe_prompt)
 
             # 1. Batched path: clips are decoded in parallel; returned timestamps are absolute
             if batched_clips:
-                clip_timestamps = []
+                widened_clips = []
                 for start, end in batched_clips:
                     w_start, w_end = _widen_to_min_duration(start, end, total_duration, min_slice_sec)
                     if w_end > w_start:
-                        clip_timestamps.append({"start": w_start, "end": w_end})
+                        widened_clips.append((w_start, w_end))
 
-                if clip_timestamps:
+                if widened_clips:
                     pipeline = self._get_batched_pipeline(whisper_model)
                     segments, _ = pipeline.transcribe(
                         audio=waveform_1d,
-                        language=language,
-                        clip_timestamps=clip_timestamps,
+                        clip_timestamps=[{"start": start, "end": end} for start, end in widened_clips],
                         batch_size=batch_size,
                         vad_filter=False,
-                        hotwords=safe_hotwords,
-                        initial_prompt=safe_prompt,
                         word_timestamps=True,
-                        condition_on_previous_text=False
+                        condition_on_previous_text=False,
+                        **decode_options
                     )
-                    for segment in segments:
-                        segments_out.append(self._to_domain_segment(segment, offset_sec=0.0))
+                    batched_out = [self._to_domain_segment(segment, offset_sec=0.0) for segment in segments]
+
+                    # A clip whose speech came back wordless is decoded again, sequentially, and its batched
+                    # output replaced rather than merged, so nothing it did return is duplicated
+                    redecode = _clips_to_redecode(widened_clips, vad_map.segments, batched_out)
+                    if redecode:
+                        logger.warning(
+                            f"Batched Whisper returned no words for speech in {len(redecode)} of "
+                            f"{len(widened_clips)} clips of {os.path.basename(audio_path)}; decoding them "
+                            f"sequentially."
+                        )
+                        batched_out = [
+                            seg for seg in batched_out
+                            if not any(start <= (seg.start_sec + seg.end_sec) / 2.0 <= end for start, end in redecode)
+                        ]
+                        for start, end in redecode:
+                            batched_out.extend(self._decode_span(whisper_model, waveform_1d, start, end, decode_options))
+                    segments_out.extend(batched_out)
 
             # 2. Sequential path: long uninterrupted speech (or batching disabled)
             for start, end in sequential_spans:
                 w_start, w_end = _widen_to_min_duration(start, end, total_duration, min_slice_sec)
-                audio_chunk = waveform_1d[int(w_start * SAMPLE_RATE):int(w_end * SAMPLE_RATE)]
-                if len(audio_chunk) == 0:
-                    continue
+                segments_out.extend(self._decode_span(whisper_model, waveform_1d, w_start, w_end, decode_options))
 
-                segments, _ = whisper_model.transcribe(
-                    audio=audio_chunk,
-                    language=language,
-                    vad_filter=False,
-                    hotwords=safe_hotwords,
-                    initial_prompt=safe_prompt,
-                    word_timestamps=True,
-                    condition_on_previous_text=False
+            # 3. Last resort: a clip decoded sequentially can still lose its final sentence. Speech that has no
+            # word yet is decoded on its own; being wordless, it can't duplicate anything already transcribed.
+            for speech in _uncovered_speech(vad_map.segments, segments_out):
+                w_start, w_end = _widen_to_min_duration(speech.start_sec, speech.end_sec, total_duration,
+                                                        min_slice_sec)
+                segments_out.extend(self._decode_span(whisper_model, waveform_1d, w_start, w_end, decode_options))
+
+            still_missing = _uncovered_speech(vad_map.segments, segments_out)
+            if still_missing:
+                logger.warning(
+                    f"{sum(s.end_sec - s.start_sec for s in still_missing):.1f}s of detected speech in "
+                    f"{os.path.basename(audio_path)} has no transcribed words ({len(still_missing)} VAD segments)."
                 )
-                for segment in segments:
-                    segments_out.append(self._to_domain_segment(segment, offset_sec=w_start))
 
             segments_out.sort(key=lambda s: s.start_sec)
             return segments_out
 
         except Exception as e:
             raise map_transcription_error(e) from e
+
+    def _decode_span(
+            self, whisper_model: Any, waveform_1d: Any, start: float, end: float, decode_options: dict
+    ) -> List[TranscriptSegment]:
+        """Sequential decode of one span of the file, with timestamps made absolute."""
+        audio_chunk = waveform_1d[int(start * SAMPLE_RATE):int(end * SAMPLE_RATE)]
+        if len(audio_chunk) == 0:
+            return []
+
+        segments, _ = whisper_model.transcribe(
+            audio=audio_chunk,
+            vad_filter=False,
+            word_timestamps=True,
+            condition_on_previous_text=False,
+            **decode_options
+        )
+        return [self._to_domain_segment(segment, offset_sec=start) for segment in segments]
 
     def detect_language(self, model: LoadedModel, audio_path: str, vad_map: VadMap) -> Optional[Tuple[str, float]]:
         try:
