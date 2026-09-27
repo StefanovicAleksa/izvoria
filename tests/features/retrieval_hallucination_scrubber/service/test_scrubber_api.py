@@ -96,3 +96,42 @@ class TestRetrievalScrubberAPI:
             api.scrub_retrieved_chunks("Find info", [chunk], release_after=True)
 
         mock_orchestrator.release_model.assert_called_once()
+
+
+class TestRerankTrust:
+    """The SLM rejected chunks the cross-encoder ranked first ("the sign says 'STOP' and not ..."); those skip it."""
+
+    @pytest.fixture
+    def adapter(self): return MagicMock()
+
+    @pytest.fixture
+    def api(self, adapter): return RetrievalScrubberAPI(adapter=adapter, orchestrator=MagicMock())
+
+    @staticmethod
+    def _chunk(text, rerank_score):
+        return RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload=text, start_sec=0,
+                              end_sec=5, relevance_score=0.5, rerank_score=rerank_score)
+
+    def test_confidently_reranked_chunk_is_kept_without_asking_the_slm(self, api, adapter, monkeypatch):
+        from app.core.config import settings
+        monkeypatch.setattr(settings, "RETRIEVAL_SCRUBBER_TRUST_RERANK_SCORE", 0.5)
+        sign, weak, unscored = self._chunk("STOP GIMAr MOntaz", 0.93), self._chunk("snow", 0.2), self._chunk("x", None)
+        adapter.evaluate_relevance.side_effect = lambda **kw: ScrubAudit(chunk_id=kw["chunk_id"], is_relevant=False,
+                                                                         discard_reason="The sign says STOP")
+
+        kept, audits = api.scrub_retrieved_chunks("What does the sign say?", [sign, weak, unscored])
+
+        assert kept == [sign]
+        assert [c.kwargs["chunk_id"] for c in adapter.evaluate_relevance.call_args_list] == [weak.chunk_id,
+                                                                                             unscored.chunk_id]
+        assert audits[0] == ScrubAudit(chunk_id=sign.chunk_id, is_relevant=True, kept_by_rerank_score=True)
+
+    def test_unset_threshold_judges_every_chunk(self, api, adapter, monkeypatch):
+        from app.core.config import settings
+        monkeypatch.setattr(settings, "RETRIEVAL_SCRUBBER_TRUST_RERANK_SCORE", None)
+        chunk = self._chunk("STOP", 0.99)
+        adapter.evaluate_relevance.return_value = ScrubAudit(chunk_id=chunk.chunk_id, is_relevant=False)
+
+        kept, _ = api.scrub_retrieved_chunks("What does the sign say?", [chunk])
+
+        assert kept == [] and adapter.evaluate_relevance.call_count == 1

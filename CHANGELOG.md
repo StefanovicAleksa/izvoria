@@ -4,6 +4,17 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## The scrubber no longer throws away the answer
+
+On the 2026-09-27 image test, chat refused "What does the green sign in the snow say?" although the sign was the reranker's first result. The relevance scrubber (Qwen2.5-7B) had rejected it: "The sign says 'STOP' and not 'GIMAr MOntaz MAutino'". Its wrong rejections share a pattern: it judges whether a chunk *answers* the question ("does not provide the specific year"), which its prompt says not to do.
+
+- **The reranker's confident picks skip the scrubber.** A chunk the cross-encoder scores ≥ `RETRIEVAL_SCRUBBER_TRUST_RERANK_SCORE` (0.5) is kept without asking the SLM (`ScrubAudit.kept_by_rerank_score`). Across 62 answerable and 21 unanswerable questions, the best candidate of an unanswerable question never scored above 0.01; the relevant chunk of an answerable one never below 0.29.
+- **The prompt asks what a chunk is about, not whether it answers.** It names transcripts, document text and image excerpts (description + OCR) as evidence, and says an answer's correctness is not its concern. A `chunk_subject` field precedes the verdict. A variant that quoted the closest passage broke the JSON (45 unparseable verdicts on Serbian); one with no preliminary field lost the image evidence again.
+
+Relevant chunk survives the scrubber (and chunks kept for unanswerable questions): en 10/10 → 10/10 (1 → 1), sl 9/10 → 9/10 (0 → 0), sr 32/32 → 32/32 (0 → 0), book + images 7/10 → **9/10** (0 → 0). The stop sign is now answered.
+
+The measurement needed fresh labels. `scripts/eval/rag_labels.json` names chunks the dev database lost when it was re-ingested on 2026-09-24, and so did the benchmark's `labels.json`. The benchmark's `--regenerate` never reached the child process that runs the stage, so `gen-questions` always kept the stale file. It is now forwarded; `gen-questions` also regenerates on its own when the database no longer holds the labelled chunks, and `measure-rag` refuses to score stale labels instead of reporting 0 %.
+
 ## Wide tables, and tables found in pieces
 
 A 1900 railway timetable (15 columns) stayed flat text: `MAX_TABLE_COLUMNS` was 8. With the cap at 16, its body became a table but its header didn't. Wider header cells, a lone "P. M." line and a row crossed by a rotated caption each ended detection. Pieces at most 3 lines apart are now re-cut along the later piece's columns, unless a line between them runs across the columns like a title. A word whose centre falls in a gutter goes to the nearest column instead of the last. The timetable is now one table, with "Sunday / only." over "4.22".

@@ -28,4 +28,10 @@ class ScrubAudit(BaseModel):
         description="True if the SLM produced an unparseable verdict and the chunk was kept by default."
     )
 
+    kept_by_rerank_score: bool = Field(
+        default=False,
+        description="True if the chunk skipped the SLM: the cross-encoder scored it at or above "
+                    "RETRIEVAL_SCRUBBER_TRUST_RERANK_SCORE."
+    )
+
     model_config = ConfigDict(frozen=True)

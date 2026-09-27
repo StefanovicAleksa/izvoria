@@ -72,12 +72,15 @@ def ensure_database(code: str) -> None:
         database.close()
 
 
-def run_in_language_process(stage: str, code: str) -> None:
-    """Runs one appliance stage in a child process configured as `code`'s appliance."""
+def run_in_language_process(stage: str, code: str, args: argparse.Namespace) -> None:
+    """Runs one appliance stage in a child process configured as `code`'s appliance, with the stage's options."""
     ensure_database(code)
     logger.info(f"[{code}] {stage}")
-    subprocess.run([sys.executable, "-m", "scripts.eval.language_benchmark", stage, "--language", code, "--in-process"],
-                   env=language_environment(code), cwd=REPO_ROOT, check=True)
+    # The child parses its own command line: an option not passed here never reaches the stage (--regenerate
+    # was silently dropped, so gen-questions always kept the old labels)
+    options = ["--questions-per-source", str(args.questions_per_source)] + (["--regenerate"] if args.regenerate else [])
+    subprocess.run([sys.executable, "-m", "scripts.eval.language_benchmark", stage, "--language", code, *options,
+                    "--in-process"], env=language_environment(code), cwd=REPO_ROOT, check=True)
 
 
 def run_stage(stage: str, code: str, args: argparse.Namespace) -> None:
@@ -91,7 +94,7 @@ def run_stage(stage: str, code: str, args: argparse.Namespace) -> None:
     elif stage == "prepare":
         prepare.prepare_all(fetch.fetch_all(code, sources, dirs), dirs)
     elif stage in APPLIANCE_STAGES and not args.in_process:
-        run_in_language_process(stage, code)
+        run_in_language_process(stage, code, args)
     elif stage == "ingest":
         from scripts.eval.language_benchmark import stages
         stages.ingest(dirs)
@@ -103,7 +106,11 @@ def run_stage(stage: str, code: str, args: argparse.Namespace) -> None:
         stages.guard(dirs)
     elif stage == "gen-questions":
         from scripts.eval.language_benchmark import stages
-        if dirs.labels.exists() and not args.regenerate:
+        stale = dirs.labels.exists() and stages.stale_label_ids(dirs)
+        if stale:
+            logger.warning(f"[{code}] {dirs.labels} names {len(stale)} chunk(s) this database no longer has (it was "
+                           f"re-ingested); regenerating it")
+        if dirs.labels.exists() and not args.regenerate and not stale:
             logger.info(f"[{code}] keeping existing {dirs.labels} (pass --regenerate to rewrite it)")
         else:
             stages.gen_questions(dirs, code, per_source=args.questions_per_source)

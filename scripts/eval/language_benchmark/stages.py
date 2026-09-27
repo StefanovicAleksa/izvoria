@@ -396,9 +396,28 @@ def _rank_summary(items: Dict[str, dict]) -> dict:
             "scrub_relevant_survives": sum(bool(item["scrub_hit"]) for item in items.values())}
 
 
+def stale_label_ids(dirs: LanguageDirs) -> List[str]:
+    """
+    The labels' chunk ids this database doesn't hold. Re-ingesting gives every chunk a new id, and labels written
+    before it then score every question as a miss -- 0 % retrieval, which reads as a broken search, not stale labels.
+    """
+    from sqlalchemy import text
+    from app.core.database.service.manager import db_manager
+
+    labels = json.loads(dirs.labels.read_text(encoding="utf-8"))
+    prefixes = [p for item in labels.get("answerable", []) for p in item.get("relevant", [])]
+    with db_manager.session() as session:
+        ids = {row[0] for row in session.execute(text("SELECT chunk_id::text FROM vector_chunks"))}
+    return [p for p in prefixes if not any(i.startswith(p) for i in ids)]
+
+
 def measure_rag(dirs: LanguageDirs) -> dict:
     from scripts.eval.rag_eval import run_answer, run_retrieval
 
+    stale = stale_label_ids(dirs)
+    if stale:
+        raise RuntimeError(f"{dirs.labels} names chunks this database doesn't hold ({stale[:3]}...): it was "
+                           f"re-ingested after the questions were written. Run gen-questions again first.")
     labels = json.loads(dirs.labels.read_text(encoding="utf-8"))
     retrieval = run_retrieval(labels, None, 10, None)
     answers = run_answer(labels, None, "chat", 10)

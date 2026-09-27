@@ -258,6 +258,12 @@ class Settings(BaseSettings):
     # Qwen2.5-7B: on the dev-DB eval (scripts/eval/rag_eval.py) the 3B judge kept the
     # chunk that answers the question for 75% of questions, the 7B for 89%
     RETRIEVAL_SCRUBBER_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+    # A chunk the cross-encoder scores at or above this is kept without asking the scrubber. The 7B judge rejected
+    # chunks the reranker ranked first for reasons like "the sign says 'STOP' and not 'GIMAr MOntaz MAutino'" or
+    # "does not provide the specific year". Measured 2026-09-28 over 62 answerable and 21 unanswerable questions
+    # (en/sl/sr benchmark lectures, a book, images): the best candidate for an unanswerable question never scored
+    # above 0.01, the relevant one for an answerable question never below 0.29. None judges every chunk again.
+    RETRIEVAL_SCRUBBER_TRUST_RERANK_SCORE: Optional[float] = 0.5
     RETRIEVAL_SCRUBBER_VRAM_REQUIREMENT_MB: float = 5000.0
 
     # Qwen3.5-9B: hybrid Gated DeltaNet / Gated Attention, so only 8 of 32 layers keep a KV cache (~32 KiB/token
