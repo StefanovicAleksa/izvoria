@@ -15,6 +15,16 @@ The 2026-09-24 language benchmark found testimony missing from the index with no
 
 `fleurs_01`: 13.2 % untranscribed → 0.0 %, with 6 of 31 clips re-decoded. Batched decoding stays the fast path.
 
+**Benchmark, re-ingested from scratch (2026-09-27 vs 2026-09-24).** The language benchmark now reports untranscribed speech itself (`speech_coverage` in `asr.json`):
+
+| | Untranscribed speech | FLEURS accuracy | Other |
+|---|---|---|---|
+| en | 4.2 % → 0.04 % | 82.2 % → **92.4 %** | lecture 94.4 % → 94.5 % |
+| sl | 0.56 % → 0 % | 79.7 % → 78.7 % | |
+| sr | 0.03 % → 0 % | 88.7 % → 88.6 % | ParlaSpeech 92.6 % → 92.6 % |
+
+Slovenian's drop is recovered speech the reference leaves out. At 252 s of `sl/fleurs_01` the reader starts a sentence, says "Once again." and re-reads it. That false start used to vanish; now it is transcribed verbatim (+16 insertions, same substitutions and deletions). None of the three languages reaches the 95 % target yet.
+
 ## Database migrations (Alembic)
 
 An appliance holds months of ingested material, so "reset the database" can't be how a schema change ships. Until now `OnyxEngine.start()` ran `create_all()` and then per-feature tuples of idempotent `ALTER TABLE … ADD COLUMN IF NOT EXISTS` statements. That could add a column, but it couldn't rename, retype or drop one, and nothing recorded which build a database had reached.

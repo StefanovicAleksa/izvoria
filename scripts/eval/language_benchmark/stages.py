@@ -136,6 +136,28 @@ def _stage_texts(source_id) -> Dict[str, str]:
     return texts
 
 
+def _speech_coverage(source_id) -> Optional[dict]:
+    """
+    How much VAD-detected speech has no stored transcript word on it: speech missing from the index, which WER
+    against a reference also counts, but can't tell apart from misrecognition. Same rule the adapter warns with.
+    """
+    from app.core.database.service.manager import db_manager
+    from app.features.transcription.data.faster_whisper_adapter import _uncovered_speech
+    from app.features.transcription.data.repositories import TranscriptRepository
+    from app.features.vad.data.repositories import VadRepository
+
+    vad = VadRepository(db_manager).get_map_by_source_id(source_id)
+    transcript = TranscriptRepository(db_manager).get_by_source_id(source_id)
+    if not vad or not vad.segments or transcript is None:
+        return None
+    speech = sum(s.end_sec - s.start_sec for s in vad.segments)
+    missing = _uncovered_speech(vad.segments, transcript.segments)
+    missing_sec = sum(s.end_sec - s.start_sec for s in missing)
+    return {"speech_sec": round(speech, 1), "untranscribed_sec": round(missing_sec, 1),
+            "untranscribed_pct": round(missing_sec / speech, 4) if speech else 0.0,
+            "untranscribed_spans": [[round(s.start_sec, 1), round(s.end_sec, 1)] for s in missing]}
+
+
 def _vtt_text(path: Path, max_seconds: float) -> str:
     """Subtitle cues starting before `max_seconds`, tags stripped and rolling duplicates removed."""
     cues, keep, previous = [], False, None
@@ -173,6 +195,11 @@ def _score(reference: str, hypothesis: str, utterances: Optional[List[dict]] = N
 def measure_asr(dirs: LanguageDirs, code: str, sources: LanguageSources) -> dict:
     ingested = _sources_by_file()
     files: Dict[str, dict] = {}
+    coverage: Dict[str, dict] = {}
+    for name, source in ingested.items():
+        measured = _speech_coverage(source["source_id"])
+        if measured:
+            coverage[name] = measured
 
     for record_path in sorted(dirs.refs.glob("*.json")):
         record = json.loads(record_path.read_text(encoding="utf-8"))
@@ -203,7 +230,12 @@ def measure_asr(dirs: LanguageDirs, code: str, sources: LanguageSources) -> dict
                 summary[f"{group}/{stage}"] = {"wer": round(errors / words, 4) if words else None,
                                                "accuracy": round(1 - errors / words, 4) if words else None,
                                                "reference_words": words, "files": len(scored)}
-    return _write(dirs, "asr", {"summary": summary, "files": files})
+    speech = sum(c["speech_sec"] for c in coverage.values())
+    missing = sum(c["untranscribed_sec"] for c in coverage.values())
+    summary_coverage = {"speech_sec": round(speech, 1), "untranscribed_sec": round(missing, 1),
+                        "untranscribed_pct": round(missing / speech, 4) if speech else None, "files": len(coverage)}
+    return _write(dirs, "asr", {"summary": summary, "speech_coverage": {"summary": summary_coverage,
+                                                                     "files": coverage}, "files": files})
 
 
 # ---------------------------------------------------------------- language guard

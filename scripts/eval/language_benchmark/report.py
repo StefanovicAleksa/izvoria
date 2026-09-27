@@ -55,6 +55,13 @@ def language_section(code: str) -> List[str]:
             lines.append(f"| {group} | {stage} | {row['reference_words']} | {_pct(row['wer'])} | {_pct(accuracy)} "
                          f"| {verdict} |")
         lines.append("")
+        coverage = asr.get("speech_coverage")
+        if coverage and coverage["summary"]["files"]:
+            total = coverage["summary"]
+            worst_files = sorted(coverage["files"].items(), key=lambda item: -item[1]["untranscribed_pct"])[:3]
+            lines += [f"- **Untranscribed speech:** {total['untranscribed_sec']} s of {total['speech_sec']} s detected "
+                      f"({_pct(total['untranscribed_pct'])}) has no transcribed word; worst: " +
+                      ", ".join(f"`{n}` {_pct(c['untranscribed_pct'])}" for n, c in worst_files), ""]
         worst = [(name, u) for name, stages in asr["files"].items() for u in
                  stages.get("final", stages.get("whisper", {})).get("worst_utterances", [])[:2]]
         if worst:
