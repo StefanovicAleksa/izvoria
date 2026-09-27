@@ -44,7 +44,8 @@ def print_report(report):
               f"{report.pages_ocr_incomplete} missing lines, {report.pages_unreadable} unreadable)")
     if report.images_described:
         print(f"Images:      {report.images_described} described ({report.images_text_unverified} with text "
-              f"unverified, {report.image_text_items_dropped} text items not confirmed by OCR and left out)")
+              f"unverified, {report.image_text_items_dropped} text items not confirmed by OCR and left out, "
+              f"{report.image_ocr_lines_withheld} unreadable OCR lines left out)")
     print("-" * 58)
 
     if report.errors:

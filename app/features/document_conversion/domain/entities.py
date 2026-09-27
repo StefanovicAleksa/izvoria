@@ -18,6 +18,9 @@ class OcrPage(BaseModel):
     # beside the count of lines actually read, so a page that lost text is known to have lost it.
     lines_detected: int = 0
     lines_read: int = 0
+    # Lines read but left out of `text` because the caller's line selection rejected them (low-confidence OCR of
+    # handwriting nothing else confirmed). Kept for the record, never indexed.
+    withheld_lines: List[str] = Field(default_factory=list)
 
     model_config = ConfigDict(frozen=True)
 

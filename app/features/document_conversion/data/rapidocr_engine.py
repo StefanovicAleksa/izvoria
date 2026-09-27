@@ -2,13 +2,13 @@
 
 import logging
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 import numpy as np
 from PIL import Image
 
 from app.features.document_conversion.domain.entities import OcrPage
-from app.features.document_conversion.domain.interfaces import IOcrEngine
+from app.features.document_conversion.domain.interfaces import IOcrEngine, LineSelector
 from app.features.document_conversion.exceptions import OcrModelsMissingError
 from app.features.document_conversion.utils.layout import Box, render_page
 
@@ -74,7 +74,7 @@ class RapidOcrEngine(IOcrEngine):
             logger.info(f"Loaded RapidOCR ({self._rec_model}) from {self._model_dir}")
         return self._engine
 
-    def recognize(self, image: Image.Image) -> OcrPage:
+    def recognize(self, image: Image.Image, select_lines: Optional[LineSelector] = None) -> OcrPage:
         engine = self._load()
         pixels = np.asarray(image.convert("RGB"))
 
@@ -92,12 +92,18 @@ class RapidOcrEngine(IOcrEngine):
         scores = list(result.scores or [])
         words = list(result.word_results or [None] * len(texts))
 
+        read = [(box, text, line_words, float(score))
+                for box, text, line_words, score in zip(boxes, texts, words, scores or [1.0] * len(texts))
+                if text.strip()]
+        keep = select_lines([(text, score) for _, text, _, score in read]) if select_lines else [True] * len(read)
+
         page_boxes: List[Box] = []
-        lines_read = 0
-        for box, text, line_words in zip(boxes, texts, words):
-            if not text.strip():
+        withheld: List[str] = []
+        lines_read = len(read)
+        for (box, text, line_words, _), kept in zip(read, keep):
+            if not kept:
+                withheld.append(text.strip())
                 continue
-            lines_read += 1
             if line_words:
                 page_boxes.extend(_box(np.asarray(points), word) for word, _, points in line_words if word.strip())
             else:
@@ -109,6 +115,7 @@ class RapidOcrEngine(IOcrEngine):
             mean_confidence=round(float(np.mean(scores)), 4) if scores else None,
             lines_detected=lines_detected,
             lines_read=lines_read,
+            withheld_lines=withheld,
         )
 
     def close(self) -> None:

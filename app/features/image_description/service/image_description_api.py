@@ -18,7 +18,9 @@ from app.features.image_description.exceptions import EmptyImageError, SourceIma
 from app.features.image_description.utils.error_mapper import map_image_description_error
 from app.features.image_description.utils.excerpt_renderer import render_context, render_excerpt
 from app.features.image_description.utils.exif import date_taken
-from app.features.image_description.utils.text_verification import OcrReading, strip_unconfirmed, verify_items
+from app.features.image_description.utils.text_verification import (
+    OcrReading, select_ocr_lines, strip_unconfirmed, verify_items,
+)
 from app.features.storage.service.storage_api import StorageAPI
 from app.features.visual_analysis.domain.entities import FrameObservation
 from app.features.visual_analysis.service.analysis_api import VisualAnalysisAPI
@@ -57,11 +59,14 @@ class ImageDescriptionAPI:
             path = self._source_path(source_id)
             width, height, taken_at = self._metadata(path)
             observation = self._visual.describe_image(path, vlm_model)
-            ocr = self._conversion.read_image(path)
+            ocr = self._conversion.read_image(path, self._line_selector(observation))
             description = self._describe(source_id, path.name, observation, ocr, width, height, taken_at)
 
             if not (description.shows or description.ocr_text.strip() or description.unverified_items):
                 raise EmptyImageError(f"Nothing was recognised in {path.name}: no description and no text.")
+            if description.ocr_withheld_lines:
+                logger.warning(f"{path.name}: {len(description.ocr_withheld_lines)} low-confidence OCR line(s) the "
+                               f"vision model did not read are not indexed: {description.ocr_withheld_lines}")
             if description.dropped_items:
                 logger.warning(f"{path.name}: {len(description.dropped_items)} text item(s) the vision model read "
                                f"were not found by OCR and are not indexed: {description.dropped_items}")
@@ -99,6 +104,20 @@ class ImageDescriptionAPI:
             return image.width, image.height, date_taken(image)
 
     @staticmethod
+    def _line_selector(observation: Optional[FrameObservation]):
+        """Keeps an OCR line when OCR was confident, or when the vision model read the same words."""
+        vision_reading = OcrReading(" \n ".join(observation.legible_text) if observation else "",
+                                    get_language_pack().transcription.script)
+        return lambda lines: select_ocr_lines(
+            lines, vision_reading,
+            min_coverage=settings.IMAGE_TEXT_MIN_OCR_COVERAGE,
+            min_confidence=settings.IMAGE_OCR_MIN_LINE_CONFIDENCE,
+            unreliable_share=settings.IMAGE_OCR_UNRELIABLE_SHARE,
+            unreliable_min_lines=settings.IMAGE_OCR_UNRELIABLE_MIN_LINES,
+            unreliable_confidence=settings.IMAGE_OCR_UNRELIABLE_LINE_CONFIDENCE,
+        )
+
+    @staticmethod
     def _describe(source_id: uuid.UUID, file_name: str, observation: Optional[FrameObservation],
                   ocr: Optional[OcrPage], width: int, height: int, taken_at: Optional[str]) -> ImageDescription:
         items = list(observation.legible_text) if observation else []
@@ -119,6 +138,7 @@ class ImageDescriptionAPI:
             ocr_text=ocr.text,
             ocr_lines_detected=ocr.lines_detected,
             ocr_lines_read=ocr.lines_read,
+            ocr_withheld_lines=list(ocr.withheld_lines),
             ocr_checked=True,
             verified_items=verified,
             dropped_items=dropped,

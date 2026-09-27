@@ -31,6 +31,8 @@ class IngestionReport(BaseModel):
     # text items the vision model read that OCR did not find -- left out of the index, and listed in `errors`
     images_described: int = 0
     images_text_unverified: int = 0
+    # Low-confidence OCR lines (handwriting) the vision model did not confirm: not indexed
+    image_ocr_lines_withheld: int = 0
     image_text_items_dropped: int = 0
 
     model_config = ConfigDict(frozen=True)

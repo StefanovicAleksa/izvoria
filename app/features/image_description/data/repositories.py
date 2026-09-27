@@ -12,8 +12,8 @@ from app.features.image_description.domain.interfaces import IImageDescriptionRe
 from app.features.image_description.utils.error_mapper import map_image_description_error
 
 _FIELDS = ("id", "source_id", "file_name", "shows", "marks", "ocr_text", "ocr_lines_detected", "ocr_lines_read",
-           "ocr_checked", "verified_items", "unverified_items", "dropped_items", "taken_at", "width", "height",
-           "created_at")
+           "ocr_withheld_lines", "ocr_checked", "verified_items", "unverified_items", "dropped_items", "taken_at",
+           "width", "height", "created_at")
 
 
 class ImageDescriptionRepository(IImageDescriptionRepository):

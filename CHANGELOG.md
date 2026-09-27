@@ -4,6 +4,16 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Handwriting OCR can't read is no longer indexed as text
+
+OCR never invents a line, but on handwriting it writes gibberish. An 1839 letter was indexed as "Analbeig aftea long apok by thelvelist hak mith…", labelled as text read by OCR. The image check now also runs in reverse: an OCR line under 0.7 confidence is kept only if the vision model read the same words. On an image where most lines are that uncertain (handwriting), every line under 0.9 needs that confirmation. `IOcrEngine.recognize` takes a `select_lines` hook so this happens before layout (tables keep their shape), and PDFs are unchanged.
+
+- Withheld lines are stored (`image_descriptions.ocr_withheld_lines`, migration `0002`, the first revision after the baseline), never indexed, and counted in the ingestion report (`image_ocr_lines_withheld`). The excerpt says "Some text on this image could not be read reliably and is not included" when one of them held letters or digits.
+- On the seven test images: the letter's 26 lines are withheld. The ski-lift sign's "GIMAr MOntaz MAutino" (0.65–0.76) is kept because the vision model read it too. The timetable's misreads ("585", "888") are withheld and its headers ("Hartf d", 0.79) kept.
+- `read_image` now applies the EXIF orientation. OCR of a sideways-stored phone photo had read "1 / 2 60" off a forest path.
+- The ingestion report lists only what happened to an image's text. It no longer says "0 text item(s) … were not found by OCR" for an image that lost nothing.
+- Autogenerating a migration against `db_test` wrote ten foreign keys back into the revision, because integration tests drop them there. `docs/core/database.md` now generates against a fresh scratch database.
+
 ## Old databases catch up through the baseline, not through today's models
 
 Introduced in `9ed948e` (the migration commit), found by the first revision after it (`0002`). A database from before migrations was caught up with `create_all()`, which builds a missing table from *today's* models. That included columns from later revisions, whose own migrations then failed adding them. An appliance ingested before image support (no `image_descriptions` table) would have stopped booting with `DuplicateColumn: ocr_withheld_lines`.

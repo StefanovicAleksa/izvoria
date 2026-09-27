@@ -58,7 +58,10 @@ class TestExecute:
         description = api.execute(source_id, model)
 
         mocks["visual"].describe_image.assert_called_once_with(image_file, model)
-        mocks["conversion"].read_image.assert_called_once_with(image_file)
+        [(path, select_lines)] = [c.args for c in mocks["conversion"].read_image.call_args_list]
+        assert path == image_file
+        # A low-confidence OCR line stands only if the vision model read it too
+        assert select_lines([("Q3 launch", 0.5), ("xqzt vrrm", 0.5), ("Room 204", 0.99)]) == [True, False, True]
         assert description.source_id == source_id and description.file_name == "board.png"
         assert (description.width, description.height) == (64, 48)
         assert description.ocr_checked and description.ocr_text == "Q3 LAUNCH\nRoom 204"
@@ -130,6 +133,16 @@ class TestExecute:
 
         with pytest.raises(OutOfVramError):
             api.execute(uuid.uuid4(), MagicMock(spec=LoadedModel))
+
+
+    def test_ocr_lines_withheld_by_the_selection_are_recorded_not_indexed(self, api, mocks):
+        mocks["conversion"].read_image.return_value = OcrPage(
+            text="Q3 LAUNCH", lines_detected=2, lines_read=2, withheld_lines=["Analbeig aftea long apok"])
+
+        description = api.execute(uuid.uuid4(), MagicMock(spec=LoadedModel))
+
+        assert description.ocr_text == "Q3 LAUNCH"
+        assert description.ocr_withheld_lines == ["Analbeig aftea long apok"]
 
 
 class TestRenderAndRelease:

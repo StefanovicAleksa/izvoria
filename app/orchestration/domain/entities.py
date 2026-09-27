@@ -121,6 +121,8 @@ class ImageDescriptionJobResult(ContextualRetrievalJobResult):
     text_items_dropped: int = 0
     # OCR lost lines it had detected
     ocr_incomplete: bool = False
+    # Low-confidence OCR lines the vision model did not confirm: not indexed
+    ocr_lines_withheld: int = 0
 
 
 class VisualCueDetectionJobResult(BaseModel):

@@ -693,13 +693,21 @@ class OnyxEngine(IOnyxEngine):
                     metrics_dict["images_unverified"] = metrics_dict.get("images_unverified", 0) + 1
                 dropped = item.text_items_dropped
                 metrics_dict["image_items_dropped"] = metrics_dict.get("image_items_dropped", 0) + dropped
-                # Not a failure -- the image is indexed -- but the vision model read text OCR could not find, and
-                # a person relying on the index should know it was left out rather than trusted
-                if dropped or item.ocr_incomplete:
+                withheld = item.ocr_lines_withheld
+                metrics_dict["image_ocr_withheld"] = metrics_dict.get("image_ocr_withheld", 0) + withheld
+                # Not a failure -- the image is indexed -- but some of its text is not, and a person relying on the
+                # index should know it was left out rather than trusted. Only what actually happened is listed.
+                gaps = []
+                if dropped:
+                    gaps.append(f"{dropped} text item(s) the vision model read were not found by OCR")
+                if withheld:
+                    gaps.append(f"{withheld} line(s) OCR read with low confidence were not confirmed by the vision "
+                                f"model (handwriting?)")
+                if item.ocr_incomplete:
+                    gaps.append("OCR detected lines it could not read")
+                if gaps:
                     error_dict[f"image_text_{item.source_id}"] = (
-                        f"Source {item.source_id}: {dropped} text item(s) the vision model read were not found by "
-                        f"OCR and are not indexed" + ("; OCR lost lines it had detected." if item.ocr_incomplete
-                                                      else ".")
+                        f"Source {item.source_id}: " + "; ".join(gaps) + ". That text is not indexed."
                     )
 
         for phase, result in pipeline_results.items():
@@ -719,5 +727,6 @@ class OnyxEngine(IOnyxEngine):
             pages_unreadable=metrics.get("pages_unreadable", 0),
             images_described=metrics.get("images", 0),
             images_text_unverified=metrics.get("images_unverified", 0),
-            image_text_items_dropped=metrics.get("image_items_dropped", 0)
+            image_text_items_dropped=metrics.get("image_items_dropped", 0),
+            image_ocr_lines_withheld=metrics.get("image_ocr_withheld", 0)
         )

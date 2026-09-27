@@ -11,7 +11,7 @@ contain.
 
 import re
 import unicodedata
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional, Sequence, Set, Tuple
 
 from app.core.language.utils.script import normalize_script
 
@@ -81,3 +81,24 @@ def strip_unconfirmed(phrase: Optional[str], reading: OcrReading, min_coverage: 
         lambda m: m.group(0) if all(word in reading.words for word in tokens(m.group(0), reading.script))
         else UNCONFIRMED_NUMBER,
         without_quotes)
+
+
+def select_ocr_lines(
+        lines: Sequence[Tuple[str, float]],
+        vision_reading: OcrReading,
+        min_coverage: float,
+        min_confidence: float,
+        unreliable_share: float,
+        unreliable_min_lines: int,
+        unreliable_confidence: float
+) -> List[bool]:
+    """
+    Which OCR lines to keep: the reverse of `verify_items`. A line OCR read with confidence stands on its own; a
+    low-confidence one is kept only when the vision model read the same words (`vision_reading` is its text).
+    On an image where most lines are low-confidence -- handwriting -- OCR is guessing throughout, so the bar
+    for standing alone rises to `unreliable_confidence`.
+    """
+    low = sum(1 for _, score in lines if score < min_confidence)
+    unreliable = len(lines) >= unreliable_min_lines and low >= unreliable_share * len(lines)
+    floor = unreliable_confidence if unreliable else min_confidence
+    return [score >= floor or vision_reading.confirms(text, min_coverage) for text, score in lines]

@@ -104,6 +104,7 @@ class ImageDescriptionPhase:
                         ocr_checked=outcome["ocr_checked"],
                         text_items_dropped=outcome["text_items_dropped"],
                         ocr_incomplete=outcome["ocr_incomplete"],
+                        ocr_lines_withheld=outcome["ocr_lines_withheld"],
                     ))
                     success_count += 1
                 except Exception as e:
@@ -149,4 +150,5 @@ class ImageDescriptionPhase:
             "ocr_checked": description.ocr_checked,
             "text_items_dropped": len(description.dropped_items),
             "ocr_incomplete": description.ocr_incomplete,
+            "ocr_lines_withheld": len(description.ocr_withheld_lines),
         }

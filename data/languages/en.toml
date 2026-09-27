@@ -160,6 +160,7 @@ ocr_rec_model = "latin"
 description_label = "Image (machine description)"
 ocr_text_label = "Text on the image (read by OCR)"
 unverified_text_label = "Text the vision model read (not verified)"
+withheld_text_note = "Some text on this image could not be read reliably and is not included."
 
 # English runs on the default models in app/core/config.py; nothing to override.
 [models]

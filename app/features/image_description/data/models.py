@@ -23,6 +23,7 @@ class ImageDescriptionModel(Base):
     ocr_text = Column(Text, nullable=False, default="")
     ocr_lines_detected = Column(Integer, nullable=False, default=0)
     ocr_lines_read = Column(Integer, nullable=False, default=0)
+    ocr_withheld_lines = Column(JSONB, nullable=False, default=list, server_default="[]")
     ocr_checked = Column(Boolean, nullable=False, default=False)
     # JSONB lists of strings
     verified_items = Column(JSONB, nullable=False, default=list)

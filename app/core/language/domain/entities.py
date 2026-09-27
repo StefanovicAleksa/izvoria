@@ -182,6 +182,8 @@ class ImageRules(_Frozen):
     ocr_text_label: str
     # Before text only the vision model read, on an appliance without OCR to check it against
     unverified_text_label: str
+    # Said when OCR's low-confidence reading (handwriting) was left out: the image has text the index doesn't hold
+    withheld_text_note: str
 
 
 class LanguagePack(_Frozen):

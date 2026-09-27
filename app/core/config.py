@@ -209,6 +209,17 @@ class Settings(BaseSettings):
     IMAGE_OCR_MAX_SIDE: int = 4000
     # A text item the VLM reports is kept only when OCR read at least this share of its words (and every number)
     IMAGE_TEXT_MIN_OCR_COVERAGE: float = 0.8
+    # The reverse check. OCR never invents a line, but on handwriting it writes gibberish ("Analbeig aftea long
+    # apok"), which would be indexed as the image's text. An OCR line below this confidence is kept only if the
+    # vision model read the same words. Measured on real images: misreads sit below 0.7, printed column headers
+    # ("Hartf d", "A. M.") at 0.7-0.8, stylised sign lettering at 0.65-0.76 (kept, the vision model reads it too).
+    IMAGE_OCR_MIN_LINE_CONFIDENCE: float = 0.7
+    # When at least this share of an image's lines (and IMAGE_OCR_UNRELIABLE_MIN_LINES of them) fall below the floor
+    # above, the image is handwriting OCR can't read (22 of 26 lines of an 1839 letter), and every line below
+    # IMAGE_OCR_UNRELIABLE_LINE_CONFIDENCE needs the vision model's confirmation.
+    IMAGE_OCR_UNRELIABLE_SHARE: float = 0.5
+    IMAGE_OCR_UNRELIABLE_MIN_LINES: int = 5
+    IMAGE_OCR_UNRELIABLE_LINE_CONFIDENCE: float = 0.9
 
     # Frame extraction: Laplacian-variance sharpness floor and the per-chunk cap on visually distinct frames
     FRAME_BLUR_THRESHOLD: float = 100.0

@@ -326,8 +326,34 @@ class TestReadImage:
         ocr.recognize.return_value = OcrPage(text="EXIT", lines_detected=1, lines_read=1)
 
         assert self._api(ocr).read_image(path) == OcrPage(text="EXIT", lines_detected=1, lines_read=1)
-        [image] = ocr.recognize.call_args.args
+        image, select_lines = ocr.recognize.call_args.args
         assert image.mode == "RGB" and image.size == (300, 200)
+        assert select_lines is None
+
+    def test_passes_the_callers_line_selection_to_ocr(self, tmp_path):
+        path = tmp_path / "sign.png"
+        Image.new("RGB", (30, 20), "white").save(path)
+        ocr = MagicMock()
+        ocr.recognize.return_value = OcrPage()
+        select = MagicMock()
+
+        self._api(ocr).read_image(path, select)
+
+        assert ocr.recognize.call_args.args[1] is select
+
+    def test_a_sideways_phone_photo_is_read_upright(self, tmp_path):
+        """EXIF orientation 6: stored landscape, shown portrait. OCR of the stored pixels read "1 / 2 60"."""
+        path = tmp_path / "phone.jpg"
+        image = Image.new("RGB", (40, 20), "white")
+        exif = image.getexif()
+        exif[0x0112] = 6
+        image.save(path, exif=exif)
+        ocr = MagicMock()
+        ocr.recognize.return_value = OcrPage()
+
+        self._api(ocr).read_image(path)
+
+        assert ocr.recognize.call_args.args[0].size == (20, 40)
 
     def test_a_huge_photo_is_downscaled_on_its_long_side(self, tmp_path, monkeypatch):
         from app.core.config import settings

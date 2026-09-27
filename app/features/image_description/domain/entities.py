@@ -24,6 +24,9 @@ class ImageDescription(BaseModel):
     ocr_text: str = ""
     ocr_lines_detected: int = 0
     ocr_lines_read: int = 0
+    # Lines OCR read with low confidence that the vision model did not read too -- on handwriting, OCR's guesses.
+    # Kept for the record, never indexed; the excerpt says text was left out.
+    ocr_withheld_lines: List[str] = Field(default_factory=list)
     # OCR ran on this image; False on an appliance without OCR (Serbian), whose text is then unverified
     ocr_checked: bool = False
     # Text items the vision model read that OCR confirmed

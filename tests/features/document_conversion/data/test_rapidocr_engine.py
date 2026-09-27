@@ -93,6 +93,27 @@ class TestRecognize:
         assert (page.lines_detected, page.lines_read) == (3, 3)
 
     @patch("rapidocr.RapidOCR")
+    def test_lines_the_caller_rejects_are_withheld_before_layout(self, rapidocr_cls, model_dir):
+        ocr = rapidocr_cls.return_value
+        boxes = [_box(0, 0), _box(0, 40), _box(0, 80)]
+        ocr.side_effect = [SimpleNamespace(boxes=boxes),
+                           SimpleNamespace(boxes=boxes, txts=("ATTENDANCE", "-", "Room 204"),
+                                           scores=(0.99, 0.19, 0.97), word_results=None)]
+        seen = []
+
+        def select(lines):
+            seen.extend(lines)
+            return [score >= 0.7 for _, score in lines]
+
+        page = RapidOcrEngine(str(model_dir), "latin").recognize(Image.new("RGB", (10, 10)), select)
+
+        assert seen == [("ATTENDANCE", 0.99), ("-", 0.19), ("Room 204", 0.97)]
+        assert page.withheld_lines == ["-"]
+        assert "-" not in page.text.split() and "ATTENDANCE" in page.text and "Room 204" in page.text
+        # Withheld lines were read; they aren't "lost" lines
+        assert (page.lines_detected, page.lines_read) == (3, 3)
+
+    @patch("rapidocr.RapidOCR")
     def test_page_with_no_detected_text_skips_recognition(self, rapidocr_cls, model_dir):
         rapidocr_cls.return_value.return_value = SimpleNamespace(boxes=None)
 

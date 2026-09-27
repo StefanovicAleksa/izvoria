@@ -35,6 +35,11 @@ def render_excerpt(description: ImageDescription, rules: ImageRules) -> str:
         quoted = "; ".join(f'"{item}"' for item in description.unverified_items)
         blocks.append(f"{rules.unverified_text_label}: {quoted}")
 
+    # Absence is a finding: the image holds text a question might be about, and the index doesn't. A withheld
+    # legend glyph or stray dash ("■", "-") held no words, so it is no reason to say text is missing.
+    if any(any(ch.isalnum() for ch in line) for line in description.ocr_withheld_lines):
+        blocks.append(rules.withheld_text_note)
+
     return "\n".join(blocks)
 
 

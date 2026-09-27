@@ -787,7 +787,7 @@ class TestIngestImages:
     def test_reports_image_counts_and_lists_images_with_unconfirmed_text(self, _, engine, image_pipeline):
         from app.orchestration.domain.entities import ImageDescriptionJobResult
         engine.start()
-        clean, invented, serbian = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        clean, invented, serbian, letter = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
         image_pipeline.process_directory.return_value = {
             PipelinePhase.SCAN: PhaseBatchResult(phase=PipelinePhase.SCAN, status=PhaseStatus.COMPLETED,
                                                  successful_count=4, items=[]),
@@ -798,6 +798,7 @@ class TestIngestImages:
                     ImageDescriptionJobResult(source_id=invented, success=True, ocr_checked=True,
                                               text_items_dropped=2),
                     ImageDescriptionJobResult(source_id=serbian, success=True, ocr_checked=False),
+                    ImageDescriptionJobResult(source_id=letter, success=True, ocr_checked=True, ocr_lines_withheld=26),
                     ImageDescriptionJobResult(source_id=uuid.uuid4(), success=False, text_items_dropped=5),
                 ]),
             PipelinePhase.RAG_INDEXING: PhaseBatchResult(
@@ -808,9 +809,15 @@ class TestIngestImages:
         report = engine.ingest_images("/photos")
 
         image_pipeline.process_directory.assert_called_once_with("/photos")
-        assert (report.images_described, report.images_text_unverified, report.image_text_items_dropped) == (3, 1, 2)
+        assert (report.images_described, report.images_text_unverified, report.image_text_items_dropped,
+                report.image_ocr_lines_withheld) == (4, 1, 2, 26)
         assert report.vectors_created == 3 and report.clips_extracted == 0
         assert f"image_text_{invented}" in report.errors and f"image_text_{clean}" not in report.errors
-        assert "2 text item(s) the vision model read were not found by OCR" in report.errors[f"image_text_{invented}"]
+        # Only what happened is listed: no "0 text item(s)" when nothing was dropped
+        assert report.errors[f"image_text_{invented}"] == (
+            f"Source {invented}: 2 text item(s) the vision model read were not found by OCR. That text is not indexed.")
+        assert report.errors[f"image_text_{letter}"] == (
+            f"Source {letter}: 26 line(s) OCR read with low confidence were not confirmed by the vision model "
+            f"(handwriting?). That text is not indexed.")
         assert "image_description_error_0" in report.errors
         assert engine.get_state() == EngineState.ONLINE

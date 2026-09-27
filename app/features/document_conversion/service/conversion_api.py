@@ -5,14 +5,14 @@ import uuid
 from pathlib import Path
 from typing import List, Optional
 
-from PIL import Image
+from PIL import Image, ImageOps
 
 from app.core.config import settings
 from app.features.document_conversion.domain.entities import ConvertedDocument, OcrPage, PageContent
 from app.features.document_conversion.domain.enums import DocumentKind, ExtractionMethod
 from app.features.document_conversion.domain.interfaces import (
     IConvertedDocumentRepository, IMarkdownConverter, IOcrEngine, IPageLayoutExtractor, IPdfDocument, IPdfReader,
-    IRtfReader, ITextDecoder,
+    IRtfReader, ITextDecoder, LineSelector,
 )
 from app.features.document_conversion.exceptions import (
     OcrModelsMissingError, SourceDocumentMissingError, UnsupportedDocumentError,
@@ -104,24 +104,26 @@ class DocumentConversionAPI:
         except Exception as e:
             raise map_conversion_error(e, context=f"DocumentConversionAPI.execute for Source {source_id}") from e
 
-    def read_image(self, image_path: Path) -> Optional[OcrPage]:
+    def read_image(self, image_path: Path, select_lines: Optional[LineSelector] = None) -> Optional[OcrPage]:
         """
         OCR of a standalone image file, for features that index images. None when this appliance has no OCR
         model for its language, or its models are not installed: the caller then has no reading to check against,
-        which is its to report. The image is downscaled to `IMAGE_OCR_MAX_SIDE` on its long side first.
+        which is its to report. The image is turned upright by its EXIF orientation (a phone photo is stored
+        sideways) and downscaled to `IMAGE_OCR_MAX_SIDE` on its long side. `select_lines` lets the caller withhold
+        lines, see `LineSelector`.
         """
         if self._ocr is None:
             return None
         try:
             with Image.open(image_path) as image:
                 image.seek(0)  # a multi-page TIFF: its first page
-                rgb = image.convert("RGB")
+                rgb = ImageOps.exif_transpose(image).convert("RGB")
             longest = max(rgb.size)
             if longest > settings.IMAGE_OCR_MAX_SIDE:
                 scale = settings.IMAGE_OCR_MAX_SIDE / float(longest)
                 rgb = rgb.resize((max(1, int(rgb.width * scale)), max(1, int(rgb.height * scale))),
                                  Image.Resampling.LANCZOS)
-            return self._ocr.recognize(rgb)
+            return self._ocr.recognize(rgb, select_lines)
         except OcrModelsMissingError as e:
             logger.error(str(e))
             return None

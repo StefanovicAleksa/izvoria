@@ -17,6 +17,7 @@ def _phase():
     description.ocr_checked = True
     description.dropped_items = ["Go live 2026"]
     description.ocr_incomplete = False
+    description.ocr_withheld_lines = ["Analbeig aftea"]
     description.id = uuid.uuid4()
     deps["contextualizer"].execute_image.return_value.id = uuid.uuid4()
     phase = ImageDescriptionPhase(
@@ -52,7 +53,8 @@ class TestImageDescriptionPhase:
         item = result.items[0]
         assert isinstance(item, ImageDescriptionJobResult) and isinstance(item, ContextualRetrievalJobResult)
         assert item.contextual_transcript_id == deps["contextualizer"].execute_image.return_value.id
-        assert (item.ocr_checked, item.text_items_dropped, item.ocr_incomplete) == (True, 1, False)
+        assert (item.ocr_checked, item.text_items_dropped, item.ocr_incomplete, item.ocr_lines_withheld) == (
+            True, 1, False, 1)
 
     def test_the_job_row_records_scalars_only(self):
         phase, deps = _phase()
@@ -63,7 +65,7 @@ class TestImageDescriptionPhase:
         func = deps["job_manager"].run_job.call_args.args[1]
         outcome = func(source_id=uuid.uuid4(), vlm_model=Mock())
         assert set(outcome) == {"_contextual_transcript_id", "image_description_id", "ocr_checked",
-                                "text_items_dropped", "ocr_incomplete"}
+                                "text_items_dropped", "ocr_incomplete", "ocr_lines_withheld"}
 
     def test_one_failed_image_does_not_stop_the_batch(self):
         phase, deps = _phase()

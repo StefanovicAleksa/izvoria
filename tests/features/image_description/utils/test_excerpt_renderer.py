@@ -42,6 +42,28 @@ class TestRenderExcerpt:
         assert excerpt.startswith(language_pack(code).images.description_label + ": A dog.")
 
 
+class TestWithheldText:
+    def test_an_image_whose_handwriting_was_withheld_says_so(self, language_pack):
+        excerpt = render_excerpt(_description(shows="a handwritten letter", ocr_checked=True,
+                                              ocr_withheld_lines=["Analbeig aftea long apok"]),
+                                 language_pack("en").images)
+
+        assert excerpt == ("Image (machine description): A handwritten letter.\n"
+                           "Some text on this image could not be read reliably and is not included.")
+        assert "Analbeig" not in excerpt
+
+    def test_withheld_symbols_alone_are_not_missing_text(self, language_pack):
+        excerpt = render_excerpt(_description(shows="a bar chart", ocr_text="Total Male Female", ocr_checked=True,
+                                              ocr_withheld_lines=["■", "-"]),
+                                 language_pack("en").images)
+
+        assert "could not be read" not in excerpt
+
+    @pytest.mark.parametrize("code", ["en", "sr", "sl"])
+    def test_every_pack_has_the_note(self, language_pack, code):
+        assert language_pack(code).images.withheld_text_note
+
+
 class TestRenderContext:
     def test_name_date_and_size(self):
         assert render_context(_description(taken_at="2025-03-14 10:02", width=4032, height=3024)) == \

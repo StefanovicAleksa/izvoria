@@ -2,11 +2,16 @@
 
 import uuid
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Callable, List, Optional, Tuple
 
 from PIL import Image
 
 from app.features.document_conversion.domain.entities import ConvertedDocument, OcrPage
+
+# Given every line OCR read on a page as (text, confidence), which to keep. Lets a caller that has a second reading
+# of the same image -- a vision model's -- withhold low-confidence lines nothing confirms, before the page is laid
+# out, so a table keeps its shape without them.
+LineSelector = Callable[[List[Tuple[str, float]]], List[bool]]
 
 
 class IPdfDocument(ABC):
@@ -84,7 +89,7 @@ class IOcrEngine(ABC):
     """Reads text from a page image. Runs on the CPU; models load on first use and stay until `close()`."""
 
     @abstractmethod
-    def recognize(self, image: Image.Image) -> OcrPage:
+    def recognize(self, image: Image.Image, select_lines: Optional[LineSelector] = None) -> OcrPage:
         pass
 
     @abstractmethod

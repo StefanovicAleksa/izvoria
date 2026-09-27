@@ -3,7 +3,7 @@
 import pytest
 
 from app.features.image_description.utils.text_verification import (
-    UNCONFIRMED_NUMBER, UNCONFIRMED_TEXT, OcrReading, strip_unconfirmed, verify_items,
+    UNCONFIRMED_NUMBER, UNCONFIRMED_TEXT, OcrReading, select_ocr_lines, strip_unconfirmed, verify_items,
 )
 
 OCR = "Q3 LAUNCH\nBudget review - 14 March 2025\nOwner: Ana Kovač\nRoom 204"
@@ -68,3 +68,32 @@ class TestStripUnconfirmed:
 
     def test_none_stays_none(self):
         assert strip_unconfirmed(None, OcrReading(OCR), 0.8) is None
+
+
+def _select(lines, vision_text=""):
+    return select_ocr_lines(lines, OcrReading(vision_text), min_coverage=0.8, min_confidence=0.7,
+                            unreliable_share=0.5, unreliable_min_lines=5, unreliable_confidence=0.9)
+
+
+class TestSelectOcrLines:
+    """Scores are real RapidOCR scores from the images that exposed the problem."""
+
+    def test_confident_lines_stand_alone(self):
+        assert _select([("How to reach Resorts on this Line", 1.0), ("Hartf d", 0.79)]) == [True, True]
+
+    def test_low_confidence_misreads_nothing_confirms_are_withheld(self):
+        assert _select([("ATTENDANCE", 0.99), ("-", 0.19), ("585", 0.37)]) == [True, False, False]
+
+    def test_low_confidence_text_the_vision_model_also_read_is_kept(self):
+        lines = [("STOP", 1.0), ("GIMAr", 0.71), ("MOntaz", 0.65), ("MAutino", 0.76)]
+        assert _select(lines, "STOP\nGIMAR MONTAZ MAUTINO") == [True, True, True, True]
+
+    def test_on_handwriting_even_middling_lines_need_confirmation(self):
+        # Most lines under 0.7: OCR is guessing throughout, so 0.8 no longer stands alone
+        lines = [("Analbeig aftea long apok", 0.64), ("bank of amorth teopt", 0.61), ("ansholy eerTunking", 0.58),
+                 ("to he wotheyp", 0.66), ("ne wondep the eg", 0.63), ("tih. I had Me pelieily", 0.81)]
+        assert _select(lines) == [False] * 6
+
+    def test_a_few_low_lines_do_not_make_a_printed_page_unreliable(self):
+        lines = [("Line one", 0.99), ("Line two", 0.98), ("E", 0.12), ("Line four", 0.99), ("Line five", 0.8)]
+        assert _select(lines) == [True, True, False, True, True]
