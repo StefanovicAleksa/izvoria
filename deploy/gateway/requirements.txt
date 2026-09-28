@@ -1,0 +1,6 @@
+# Gateway VPS only. Never add these to the appliance's requirements.txt: the appliance ships air-gapped.
+starlette>=0.41,<1
+uvicorn[standard]>=0.32
+httpx>=0.28
+itsdangerous>=2.2
+websockets>=13

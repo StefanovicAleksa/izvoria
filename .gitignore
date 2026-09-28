@@ -11,6 +11,7 @@ __pycache__/
 /.venv
 /env.bak/
 /venv.bak/
+/deploy/.venv/
 
 # --- Environment Variables & Secrets ---
 .env
@@ -71,10 +72,16 @@ Thumbs.db
 
 # --- Scripts & Temp Files ---
 *.sh
+# Setup and deployment scripts the README tells people to run
+!/setup_env.sh
+!/models_download.sh
+!/update_nvidia_driver.sh
+!/deploy/**/*.sh
 
 *.txt
 !requirements.txt
 !requirements-dev.txt
+!requirements-nodeps.txt
 
 *.db
 

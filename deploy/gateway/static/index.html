@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Onyx Demo</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --text: #1b1b1a; --muted: #6b6b66; --line: #e2e2dd;
+    --accent: #1f3d5c; --accent-text: #ffffff; --ok: #2e7d4f; --warn: #a86a00; --err: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #131312; --panel: #1d1d1b; --text: #ecece8; --muted: #9a9a93; --line: #2f2f2c;
+            --accent: #8fb3d9; --accent-text: #0e1a26; --ok: #6cc592; --warn: #e0a64a; --err: #f08a82; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; padding: 48px 16px; }
+  h1 { font-size: 20px; letter-spacing: 4px; margin: 0; }
+  .sub { color: var(--muted); margin: 4px 0 32px; }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+            padding: 20px; margin-bottom: 16px; }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin: 0 0 14px; }
+  label { display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px; }
+  input, select { width: 100%; padding: 10px 12px; font: inherit; color: var(--text); background: var(--bg);
+                  border: 1px solid var(--line); border-radius: 6px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  button { padding: 10px 16px; font: inherit; font-weight: 600; border-radius: 6px; cursor: pointer;
+           border: 1px solid var(--line); background: var(--panel); color: var(--text); }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .status { display: flex; align-items: flex-start; gap: 10px; margin-top: 16px; min-height: 24px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; margin-top: 6px; flex: none; background: var(--muted); }
+  .dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--err); }
+  .dot.spin { background: var(--warn); animation: pulse 1s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .25; } }
+  .error { color: var(--err); font-size: 14px; margin-top: 8px; min-height: 1em; }
+  .drop { border: 1px dashed var(--line); border-radius: 8px; padding: 22px; text-align: center; color: var(--muted); }
+  .drop.over { border-color: var(--accent); color: var(--text); }
+  ul.files { list-style: none; padding: 0; margin: 12px 0 0; font-size: 14px; }
+  ul.files li { display: flex; justify-content: space-between; gap: 12px; padding: 4px 0;
+                border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+  code { font-size: 13px; background: var(--bg); padding: 2px 6px; border-radius: 4px; overflow-wrap: anywhere; }
+  .hint { color: var(--muted); font-size: 14px; margin: 12px 0 0; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<main>
+  <h1>ONYX</h1>
+  <p class="sub">On-premise AI appliance · hosted demo</p>
+
+  <section id="login" hidden>
+    <h2>Sign in</h2>
+    <form id="login-form">
+      <label for="password">Demo password</label>
+      <input id="password" type="password" autocomplete="current-password" required>
+      <div class="row"><button class="primary" type="submit">Sign in</button></div>
+      <div class="error" id="login-error"></div>
+    </form>
+  </section>
+
+  <div id="app" hidden>
+    <section>
+      <h2>Appliance</h2>
+      <label for="language">Language of your material</label>
+      <select id="language"></select>
+      <div class="row">
+        <button class="primary" id="start">Start appliance</button>
+        <button id="open" disabled>Open appliance</button>
+        <button id="stop" disabled>Stop</button>
+      </div>
+      <div class="status"><span class="dot" id="dot"></span><span id="message">Checking…</span></div>
+      <div class="error" id="error"></div>
+      <p class="hint" id="idle-hint"></p>
+    </section>
+
+    <section>
+      <h2>Upload your files</h2>
+      <div class="drop" id="drop">Drop video, audio, documents or images here, or
+        <button id="pick" type="button">choose files</button>
+        <input id="files" type="file" multiple hidden>
+      </div>
+      <ul class="files" id="file-list"></ul>
+      <p class="hint" id="folder-hint" hidden>
+        In the appliance, open <b>Ingest</b>, choose the folder <code id="folder"></code> and start ingestion.
+      </p>
+      <div class="error" id="upload-error"></div>
+    </section>
+
+    <div class="row"><button id="logout" type="button">Sign out</button></div>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const DESKTOP_URL = "/desktop/vnc.html?autoconnect=1&resize=remote&reconnect=1&path=desktop/websockify";
+const SPINNING = new Set(["starting", "booting", "stopping", "gpu_unavailable"]);
+let state = null, runningLanguage = null, pollTimer = null;
+
+async function api(path, options = {}) {
+  const response = await fetch(path, {
+    credentials: "same-origin",
+    headers: options.body ? { "Content-Type": "application/json" } : {},
+    ...options,
+  });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw Object.assign(new Error(body.error || response.statusText), { status: response.status });
+  return body;
+}
+
+async function boot() {
+  const me = await api("/api/me");
+  $("language").innerHTML = Object.entries(me.languages)
+    .map(([code, name]) => `<option value="${code}">${name}</option>`).join("");
+  $("idle-hint").textContent =
+    `The appliance shuts itself down after ${me.idle_minutes} minutes with nobody connected and nothing running.`;
+  showSignedIn(me.authenticated);
+}
+
+function showSignedIn(yes) {
+  $("login").hidden = yes;
+  $("app").hidden = !yes;
+  clearTimeout(pollTimer);
+  if (yes) poll();
+}
+
+async function poll() {
+  try {
+    render(await api("/api/status"));
+  } catch (err) {
+    if (err.status === 401) return showSignedIn(false);
+    $("message").textContent = "Can't reach the gateway; retrying…";
+  }
+  pollTimer = setTimeout(poll, SPINNING.has(state) ? 2000 : 5000);
+}
+
+function render(view) {
+  state = view.state;
+  runningLanguage = view.language;
+  const on = state === "ready" || state === "busy";
+  const dot = $("dot");
+  dot.className = "dot " + (SPINNING.has(state) ? "spin" : on ? "ok" : state === "error" ? "err" : "");
+  const lang = on && runningLanguage ? ` (${$("language").querySelector(`[value=${runningLanguage}]`)?.textContent})` : "";
+  $("message").textContent = view.message + lang;
+  $("error").textContent = view.error || "";
+  const needsLaunch = on && runningLanguage !== $("language").value;
+  $("start").disabled = SPINNING.has(state) || (on && !needsLaunch);
+  $("start").textContent = on && runningLanguage && needsLaunch ? "Switch language" : "Start appliance";
+  $("open").disabled = !(on && runningLanguage);
+  $("stop").disabled = !(on || state === "gpu_unavailable" || state === "booting");
+}
+
+$("login-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  $("login-error").textContent = "";
+  try {
+    await api("/api/login", { method: "POST", body: JSON.stringify({ password: $("password").value }) });
+    $("password").value = "";
+    showSignedIn(true);
+  } catch (err) {
+    $("login-error").textContent = err.message;
+  }
+});
+
+$("logout").addEventListener("click", async () => { await api("/api/logout", { method: "POST" }); showSignedIn(false); });
+$("language").addEventListener("change", () => { clearTimeout(pollTimer); poll(); });
+
+$("start").addEventListener("click", async () => {
+  $("error").textContent = "";
+  try {
+    render(await api("/api/start", { method: "POST", body: JSON.stringify({ language: $("language").value }) }));
+  } catch (err) { $("error").textContent = err.message; }
+});
+
+$("stop").addEventListener("click", async () => {
+  if (state === "busy" && !confirm("The appliance is still working. Stopping now loses the running job. Stop anyway?")) return;
+  try { render(await api("/api/stop", { method: "POST" })); } catch (err) { $("error").textContent = err.message; }
+});
+
+$("open").addEventListener("click", () => window.open(DESKTOP_URL, "_blank", "noopener"));
+
+// ---------- uploads ----------
+$("pick").addEventListener("click", () => $("files").click());
+$("files").addEventListener("change", () => uploadAll([...$("files").files]));
+const drop = $("drop");
+drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (e) => { e.preventDefault(); drop.classList.remove("over"); uploadAll([...e.dataTransfer.files]); });
+
+async function uploadAll(files) {
+  $("upload-error").textContent = "";
+  if (!files.length) return;
+  if (!(state === "ready" || state === "busy")) {
+    $("upload-error").textContent = "Start the appliance before uploading.";
+    return;
+  }
+  const language = runningLanguage || $("language").value;
+  let batch;
+  try { ({ batch } = await api("/api/uploads", { method: "POST" })); }
+  catch (err) { $("upload-error").textContent = err.message; return; }
+  for (const file of files) await uploadOne(file, language, batch);
+}
+
+function uploadOne(file, language, batch) {
+  const item = document.createElement("li");
+  const name = document.createElement("span");
+  const progress = document.createElement("span");
+  name.textContent = file.name;
+  progress.textContent = "0%";
+  item.append(name, progress);
+  $("file-list").append(item);
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    const query = new URLSearchParams({ language, batch });
+    xhr.open("PUT", `/api/upload/${encodeURIComponent(file.name)}?${query}`);
+    xhr.upload.onprogress = (e) => { if (e.lengthComputable) progress.textContent = Math.floor(100 * e.loaded / e.total) + "%"; };
+    xhr.onload = () => {
+      const body = JSON.parse(xhr.responseText || "{}");
+      if (xhr.status === 201) {
+        progress.textContent = "uploaded";
+        $("folder").textContent = body.folder;
+        $("folder-hint").hidden = false;
+      } else {
+        progress.textContent = "failed";
+        $("upload-error").textContent = `${file.name}: ${body.error || xhr.statusText}`;
+      }
+      resolve();
+    };
+    xhr.onerror = () => { progress.textContent = "failed"; resolve(); };
+    xhr.send(file);
+  });
+}
+
+boot();
+</script>
+</body>
+</html>

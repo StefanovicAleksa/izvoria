@@ -19,7 +19,8 @@ venv/bin/python frontend/main.py
 
 The real engine does **not** boot on launch. The window opens immediately and you click
 **Start appliance** in the sidebar, so a failed boot is a visible status rather than a crash
-before anything is drawn.
+before anything is drawn. `--autostart` does that click for you once the window is up (the hosted
+demo launches the app this way; see `docs/deploy.md`) — a failed boot still shows as a status.
 
 `--stub` is the loop to develop in. A real chat turn costs tens of seconds and a boot costs
 seconds more; the stub answers straight away and deliberately cycles through every branch the UI

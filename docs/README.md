@@ -50,6 +50,7 @@ See [orchestration.md](orchestration.md) for the full Phase/Pipeline inventory a
 - [engine.md](engine.md) — `OnyxBootstrapper` (DI root) and `OnyxEngine` (top-level facade)
 - [orchestration.md](orchestration.md) — Phase and Pipeline inventory
 - [frontend.md](frontend.md) — the PySide6 desktop app (`frontend/`), which drives `OnyxEngine` in-process
+- [deploy.md](deploy.md) — hosted demo: gateway VPS + on-demand Vast.ai GPU box streaming the desktop app over noVNC
 
 ## Features (`app/features/`)
 
