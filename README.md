@@ -76,79 +76,131 @@ See `CLAUDE.md` for the full architecture (feature folder conventions, how to ad
 
 ## **🛠️ Setup Instructions**
 
-Follow these instructions to set up the Onyx development environment. These steps assume you are running **Ubuntu 22.04 LTS**.
+There are two ways to run Onyx:
 
-### **1\. System Prerequisites & Dependencies**
+- **A. Local appliance / development machine.** Onyx runs on a Linux box with an NVIDIA GPU (≥12 GB VRAM), which is how the product ships.
+- **B. Hosted demo.** A tester uses the real desktop app from a browser. An always-on gateway VPS starts a rented Vast.ai GPU on demand. Your own PC doesn't need to be running.
 
-First, install the necessary OS-level packages, including FFmpeg for media processing and Docker for the databases.  
-sudo apt update  
-sudo apt install \-y python3.10 python3.10-venv python3-pip  
-sudo apt install \-y ffmpeg  
-sudo apt install \-y docker.io docker-compose-plugin
+### **A. Local setup (Debian / Ubuntu, NVIDIA GPU)**
 
-*Note: You must also have the **CUDA 12 Toolkit** and proprietary NVIDIA drivers installed. Refer to the official NVIDIA documentation.*
+#### 1. Prerequisites
 
-### **2\. Database Setup**
+- An NVIDIA GPU with ≥12 GB VRAM and the proprietary driver installed (`nvidia-smi` works). `update_nvidia_driver.sh` updates it on Debian.
+- `git`, `ffmpeg`, `curl`, and the build tools for Python (`build-essential libssl-dev zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev libffi-dev liblzma-dev`).
 
-Onyx runs PostgreSQL + `pgvector` via Docker (`docker-compose.yaml` at the repo root) rather than a manually installed PostgreSQL — this is a single database used for both relational data (jobs, transcripts) and vector/RAG data (no separate vector store).  
-\# Start the dev database (port 5432, db `onyx\_dev\_db`)  
-docker compose up \-d db\_dev
+#### 2. Environment (Python, venv, CUDA, databases)
 
-\# Also start the test database (port 5433, db `onyx\_test\_db`) if you'll be running the test suite  
-docker compose up \-d db\_test
+```bash
+git clone git@github.com:StefanovicAleksa/onyx_v3.git
+cd onyx_v3
+./setup_env.sh
+```
 
-Both containers are bootstrapped from `scripts/init.sql` (enables the `vector` extension). Credentials must match your `.env` file — see Step 4.
+`setup_env.sh` is idempotent, so it's safe to re-run. It:
 
-### **3\. Application Setup**
+1. builds Python 3.11.9 in user space;
+2. creates `venv/` and installs `requirements.txt`;
+3. installs the CUDA compiler and rebuilds `llama-cpp-python` with GPU support;
+4. installs Docker;
+5. starts both Postgres + pgvector containers from `docker-compose.yaml`: `db_dev` on port 5432 and `db_test` on port 5433.
 
-Clone the repository and install the strict Python dependencies within an isolated virtual environment:  
-git clone \[https://github.com/your-org/onyx.git\](https://github.com/your-org/onyx.git)  
-cd onyx  
-python3.10 \-m venv venv  
-source venv/bin/activate  
-pip install \--upgrade pip  
-pip install \-r requirements.txt
+Then install the packages that must skip dependency resolution. `rapidocr` declares `opencv-python`, which would overwrite the headless OpenCV that the desktop app needs:
 
-### **4\. Environment Configuration**
+```bash
+venv/bin/pip install --no-deps -r requirements-nodeps.txt
+```
 
-Create a .env file in the root directory. This must align both with `docker-compose.yaml`'s `db_dev` service and the parameters in app/core/config.py:  
-\# Database Configuration  
-POSTGRES\_SERVER=localhost  
-POSTGRES\_PORT=5432  
-POSTGRES\_DB=onyx\_dev\_db  
-POSTGRES\_USER=aleksa  
-POSTGRES\_PASSWORD=Onyx16
+#### 3. Configuration
 
-\# Appliance Configuration  
-ENV=development  
-APP\_NAME="Onyx AI Appliance"
+```bash
+cp .env.example .env
+```
 
-\# Domain Configuration  
-APPLIANCE\_INDUSTRY=GENERAL  \# Options: GENERAL, LEGAL, MEDICAL  
-APPLIANCE\_LANGUAGE=en
+Fill in `.env`:
 
-### **5\. Required Model Installation**
+| Key | Value |
+|:--|:--|
+| `ENV` | `development` (`.env`), `test` (`.env.test`) or `production` (`.env.prod`); `ENV` selects which file is read |
+| `POSTGRES_SERVER` / `POSTGRES_PORT` | `localhost` / `5432` |
+| `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | must match `db_dev` in `docker-compose.yaml` |
+| `APPLIANCE_LANGUAGE` | `en`, `sr` or `sl`. One language per database: switching it on a database that already holds data fails startup, so reset the database and re-ingest |
+| `APPLIANCE_INDUSTRY` | optional glossary name under `data/glossaries/<language>/` |
 
-You must manually download and place the required AI models into the local models/ directory. The Orchestrator strictly expects these files to be present before booting. If a model is missing, the appliance will fail to start.
+`.env.test` holds the same keys for `db_test` (port 5433), and is needed only for integration tests.
 
-| Pipeline Step      | Model Name                  | Required Local Path                      | Est. VRAM |
-|:-------------------|:----------------------------|:-----------------------------------------|:----------|
-| **VAD**            | NeMo MarbleNet              | models/vad\_multilingual\_marblenet.nemo | \~1.2 GB  |
-| **Scout**          | Whisper Tiny (English)      | models/whisper-tiny-en                   | \~0.2 GB  |
-| **Classifier**     | NLI DeBERTa v3 X-Small      | models/nli-deberta-v3-xsmall             | \~0.2 GB  |
-| **Transcription**  | Faster-Whisper Large v3     | models/faster-whisper-large-v3           | \~3.5 GB  |
-| **Diarization**    | NeMo TitaNet Large          | models/titanet\_large.nemo               | \~0.5 GB  |
-| **Sentence Split** | Segment Any Text (SaT)      | models/sat-3l-sm                         | \~0.75 GB |
-| **Correction**     | Qwen 2.5 7B (GGUF Q4\_K\_M) | models/Qwen2.5-7B-Instruct-Q4\_K\_M.gguf | \~5.0 GB  |
-| **Chat / Reasoning** | Qwen3.5 9B (GGUF Q4\_K\_M) | models/Qwen3.5-9B-Q4\_K\_M.gguf         | \~9–11 GB at 128K context |
+#### 4. Models
 
-The chat model is downloaded with `./models_download.sh` (`unsloth/Qwen3.5-9B-GGUF`, only `Qwen3.5-9B-Q4_K_M.gguf`; the vision `mmproj` file is not needed).
+Every model loads from `models/`. Nothing is downloaded at runtime, and a missing model fails the phase that needs it. Two download scripts exist:
 
-### **6\. Running the Appliance**
+```bash
+./models_download.sh                           # Qwen3.5-9B Q4_K_M (chat, reasoning, reports)
+venv/bin/python -m scripts.download_ocr_models  # RapidOCR PP-OCRv5 (scanned PDFs)
+```
 
-Once the database is running and all dependencies/models are in place, initialize the appliance. This will trigger the Orchestrator to start listening for files.  
-\# Ensure your virtual environment is activated  
-source venv/bin/activate
+The rest come from an existing Onyx model set, for example `rsync` from the dev machine. For English, Serbian and Slovenian, that is:
 
-\# Run the main application entry point  
-python \-m app.main  
+| Path under `models/` | Used for |
+|:--|:--|
+| `vad_multilingual_marblenet.nemo` | voice activity detection |
+| `whisper-tiny-en` | English domain scout |
+| `faster-whisper-large-v3` | transcription (and the sr/sl scout) |
+| `titanet_large.nemo` | speaker diarization |
+| `fullstop-punctuation-multilingual-base` | punctuation |
+| `llama-3.2-3b-instruct-q8_0.gguf` | English classification, context, ASR correction |
+| `google_gemma-4-E4B-it-Q4_K_M.gguf` | Serbian/Slovenian replacement for the 3B models |
+| `qwen2.5-3b-instruct-q4_k_m.gguf`, `Qwen2.5-7B-Instruct-Q4_K_M.gguf` | phonetic/visual correction, visual cues, retrieval scrubbing |
+| `Phi-3.5-mini-instruct`, `flanec-base-cd`, `deberta-v3-base-zeroshot` | NLP, ASR correction, hallucination scrubbing |
+| `qwen2-vl-7b-hf-bnb4bit` | frame and image description (Hugging Face Transformers, not GGUF) |
+| `bge-m3`, `bge-reranker-v2-m3` | embeddings and reranking |
+| `Qwen3.5-9B-Q4_K_M.gguf` | QA generation, reasoner, reports |
+| `rapidocr/` | OCR |
+
+That's about 51 GB. To regenerate the list after adding a model, run `grep -rhoE "[\"']models/[^\"']+[\"']" app data | sort -u`.
+
+#### 5. Run it
+
+```bash
+docker compose up -d db_dev                            # if it isn't already up
+
+venv/bin/python frontend/main.py                       # desktop app; click "Start appliance"
+venv/bin/python frontend/main.py --autostart           # ...or boot it without the click
+venv/bin/python frontend/main.py --stub                # UI only: no GPU, no database, canned answers
+venv/bin/python -m app.main                            # CLI menu over the same engine
+```
+
+The engine applies database migrations itself on start (`OnyxEngine.start()` → Alembic).
+
+#### 6. Tests
+
+```bash
+venv/bin/pytest tests                                                   # unit, fully mocked
+QT_QPA_PLATFORM=offscreen venv/bin/pytest frontend/tests                # desktop app, headless
+docker compose up -d db_test && venv/bin/pytest integration_tests -m integration   # real DB / GPU
+
+python3.11 -m venv deploy/.venv && deploy/.venv/bin/pip install -r deploy/requirements-dev.txt
+deploy/.venv/bin/pytest deploy/tests                                    # hosted-demo gateway + agent
+```
+
+### **B. Hosted demo (gateway VPS + on-demand Vast.ai GPU)**
+
+This costs about $35–60/month instead of $200+ for a dedicated GPU server. The GPU box is billed only while it's started, plus its disk.
+
+1. **Rent the GPU box.** On Vast.ai, rent one RTX 3090 with ≥120 GB of disk. Use image `nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04`, ports `-p 8090:8090 -p 6080:6080`, and on-start script `bash /workspace/onyx_v3/deploy/instance/onstart.sh`.
+2. **Copy Onyx and the models to it.** From a machine that has the models:
+   ```bash
+   deploy/instance/sync_to_box.sh root@<ssh-host> <ssh-port>
+   ssh -p <ssh-port> root@<ssh-host> bash /workspace/onyx_v3/deploy/instance/provision.sh
+   ssh -p <ssh-port> root@<ssh-host> bash /workspace/onyx_v3/deploy/instance/onstart.sh
+   ```
+   `provision.sh` prints `AGENT_SECRET` and `WEBSOCKIFY_TOKEN`; keep them for step 4.
+3. **Load the demo material.** Ingest it once per language (`onyx_sr` and `onyx_sl` are separate databases), then stop the instance.
+4. **Set up the gateway.** On a ~$5/mo VPS with your domain's A record pointing at it:
+   ```bash
+   git clone git@github.com:StefanovicAleksa/onyx_v3.git /opt/onyx_v3
+   sudo bash /opt/onyx_v3/deploy/gateway/install.sh demo.example.com
+   sudoedit /etc/onyx-gateway.env      # password, AGENT_SECRET, WEBSOCKIFY_TOKEN, VAST_API_KEY, VAST_INSTANCE_ID
+   sudo systemctl restart onyx-gateway
+   ```
+5. **Send the tester the URL and the password.** They sign in, pick Serbian or Slovenian, click **Start appliance** (about 1–2 minutes), upload files and open the desktop. The box stops itself after 30 idle minutes, but never mid-ingestion or mid-report.
+
+Once it's set up, your own PC doesn't need to be on. It's only needed to push code updates, or to re-upload the models if the Vast instance is destroyed, so keep a backup of `models/` somewhere else. The full runbook, the costs and the known risks are in [`docs/deploy.md`](docs/deploy.md). A stopped Vast instance can lose its GPU to another renter, and demo data sits on rented hardware, not the client's premises.

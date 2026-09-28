@@ -10,14 +10,14 @@ An **offline dev tool** (not part of the runtime engine/bootstrap — never wire
 
 `GlossaryMinerAPI` (`service/miner_api.py`) has two entry points: `mine_and_package_subdomain()` (legacy, single sub-domain) and `build_industry_manifest()` (aggregates multiple sub-domains into one manifest). Pipeline per sub-domain:
 
-1. **Extract** — `IWikidataAdapter.fetch_domain_terms(q_id, limit)`; the concrete `WikidataSparqlClient` (`data/sparql_client.py`) uses `SPARQLWrapper` against `https://query.wikidata.org/sparql` with a required custom User-Agent, running a query that unions subclass (`wdt:P279+`) and instance (`wdt:P31/wdt:P279*`) branches under a given Q-ID, plus optional `skos:altLabel` aliases filtered to `en`/`la`. Results fold into nested `WikidataItem(item_id, label, aliases_by_lang)` entities.
-2. **Transform** — `clean_and_extract_terms()` (`utils/term_cleaner.py`) applies heuristics: drop terms over 3 words, strip parenthetical/bracket content, strip commas/colons (Whisper's `initial_prompt` is comma-separated so raw commas would corrupt it), normalize whitespace, enforce ASCII-only, dedupe, sort.
+1. **Extract** — `IWikidataAdapter.fetch_domain_terms(q_id, limit)`; the concrete `WikidataSparqlClient` (`data/sparql_client.py`) uses `SPARQLWrapper` against `https://query.wikidata.org/sparql` with a required custom User-Agent, running a query that unions subclass (`wdt:P279+`) and instance (`wdt:P31/wdt:P279*`) branches under a given Q-ID, plus optional `skos:altLabel` aliases. Labels and aliases are filtered to the language pack's `glossary.wikidata_languages` (English: `en` labels, `en`/`la` aliases; Serbian: `sr`/`sr-el` labels plus Latin aliases). Latin only ever supplies aliases. Results fold into nested `WikidataItem(item_id, label, aliases_by_lang)` entities.
+2. **Transform** — `clean_and_extract_terms()` (`utils/term_cleaner.py`) applies heuristics: drop terms over 3 words, strip parenthetical/bracket content, strip commas/colons (Whisper's `initial_prompt` is comma-separated so raw commas would corrupt it), normalize whitespace, keep only word characters/spaces/hyphens, transliterate to the pack's script (Serbian Cyrillic → Latin, matching the transcripts), dedupe, sort.
 3. **Package** — builds a `SubDomainGlossary(anchor_words, terms)` → `OnyxGlossaryManifest(base_terms, sub_domains)`.
-4. **Load** — `IGlossaryStorageAdapter.save_manifest()`; the concrete `LocalFileStorageAdapter` writes to `data/glossaries/<file>.json` via `model_dump_json(indent=4)`.
+4. **Load** — `IGlossaryStorageAdapter.save_manifest()`; the concrete `LocalFileStorageAdapter` writes to the appliance language's glossary directory, `data/glossaries/<code>/<file>.json` (`settings.GLOSSARY_DIR`), via `model_dump_json(indent=4)`.
 
 ## Inputs / Outputs
 
-Input: Wikidata Q-IDs + an anchor-words config dict. Output: the absolute path to a saved JSON glossary file under `data/glossaries/`.
+Input: Wikidata Q-IDs + an anchor-words config dict. Output: the absolute path to a saved JSON glossary file under `data/glossaries/<code>/`.
 
 ## Where it fits
 

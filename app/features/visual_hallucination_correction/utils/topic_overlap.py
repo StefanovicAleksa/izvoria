@@ -1,10 +1,13 @@
 # Path: app/features/visual_hallucination_correction/utils/topic_overlap.py
 
 import re
-from typing import List, Set
+from functools import lru_cache
+from typing import FrozenSet, List, Set
+
+from app.core.language.service.language_api import get_language_pack
+from app.core.language.utils.script import normalize_script
 
 _QUOTED = re.compile(r'"([^"]+)"|“([^”]+)”')
-_WORD = re.compile(r"[a-z][a-z0-9&'-]{2,}")
 # Numbers with inner punctuation ("7-2", "160.63", "22/3/18") are specific enough to tie a slide to the speech
 _SPECIFIC_NUMBER = re.compile(r"\d+(?:[.:/-]\d+)+")
 _FUNCTION_WORDS = {
@@ -14,8 +17,24 @@ _FUNCTION_WORDS = {
 }
 
 
+@lru_cache(maxsize=8)
+def _word_pattern(alphabet: str) -> re.Pattern:
+    """A word of the appliance's alphabet ("a-z" in English): a letter, then 2+ letters, digits, &, ' or -."""
+    return re.compile(f"[{alphabet}][{alphabet}0-9&'-]{{2,}}")
+
+
+@lru_cache(maxsize=8)
+def _function_words(language: str) -> FrozenSet[str]:
+    """English keeps the list above; another language's speech and slides add its pack's function words."""
+    return frozenset(_FUNCTION_WORDS if language == "en" else _FUNCTION_WORDS | set(get_language_pack().text.stopwords))
+
+
 def _words(text: str) -> Set[str]:
-    return {w for w in _WORD.findall(text.lower()) if w not in _FUNCTION_WORDS}
+    pack = get_language_pack()
+    function_words = _function_words(pack.code)
+    # A Cyrillic slide compared with a Latin transcript: one script for both
+    text = normalize_script(text, pack.transcription.script).lower()
+    return {w for w in _word_pattern(pack.phonetic.alphabet).findall(text) if w not in function_words}
 
 
 def shared_on_screen_topic(transcript: str, visual_descriptions: List[str]) -> Set[str]:

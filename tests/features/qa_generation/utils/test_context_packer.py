@@ -4,8 +4,10 @@ import uuid
 
 import pytest
 
+from app.core.anchors.domain.enums import AnchorKind
 from app.features.qa_generation.utils.context_packer import (
-    DOC_HEADER_TOKENS, select_within_budget, order_for_reading, strip_repeated_overlap
+    DOC_HEADER_TOKENS, DOCUMENT_HEADER_TOKENS, header_tokens, select_within_budget, order_for_reading,
+    strip_repeated_overlap
 )
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 
@@ -13,6 +15,12 @@ from app.features.rag_retrieval.domain.entities import RetrievedChunk
 def _chunk(raw_text: str, start: float, end: float, source_id: uuid.UUID = None) -> RetrievedChunk:
     return RetrievedChunk(chunk_id=uuid.uuid4(), source_id=source_id or uuid.uuid4(), text_payload="payload",
                           raw_text=raw_text, start_sec=start, end_sec=end, relevance_score=1.0)
+
+
+def _page_chunk(raw_text: str, position: int, page: int, source_id: uuid.UUID = None) -> RetrievedChunk:
+    return RetrievedChunk(chunk_id=uuid.uuid4(), source_id=source_id or uuid.uuid4(), text_payload="payload",
+                          raw_text=raw_text, start_sec=0.0, end_sec=0.0, anchor_kind=AnchorKind.PAGE,
+                          page_start=page, page_end=page, position=position, relevance_score=1.0)
 
 
 def _words(text: str) -> int:
@@ -93,3 +101,25 @@ class TestStripRepeatedOverlap:
         chunk = _chunk("[s0 @ 00:00:01]: Hello there.", 0, 5)
 
         assert strip_repeated_overlap(None, chunk) == "[s0 @ 00:00:01]: Hello there."
+
+
+class TestDocumentChunks:
+    def test_document_header_costs_more_than_a_transcript_header(self):
+        assert header_tokens(_chunk("a", 0, 1)) == DOC_HEADER_TOKENS
+        assert header_tokens(_page_chunk("a", 0, 1)) == DOCUMENT_HEADER_TOKENS > DOC_HEADER_TOKENS
+
+    def test_reads_a_document_in_position_order_although_every_start_sec_is_zero(self):
+        source = uuid.uuid4()
+        page_3 = _page_chunk("third", 2, 3, source)
+        page_1 = _page_chunk("first", 0, 1, source)
+        page_2 = _page_chunk("second", 1, 2, source)
+
+        assert order_for_reading([page_3, page_1, page_2]) == [page_1, page_2, page_3]
+
+    def test_never_strips_text_from_a_document_chunk(self):
+        source = uuid.uuid4()
+        previous = _page_chunk("The Tenant shall pay rent monthly in advance.", 0, 1, source)
+        chunk = _page_chunk("The Tenant shall pay rent monthly in advance. Late payment accrues interest.",
+                            1, 1, source)
+
+        assert strip_repeated_overlap(previous, chunk) == chunk.raw_text

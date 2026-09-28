@@ -6,6 +6,7 @@ import logging
 import re
 from typing import Collection, Dict, List, Tuple
 
+from app.core.language.service.language_api import get_language_pack
 from app.core.config import settings
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
@@ -18,7 +19,7 @@ from app.features.qa_generation.domain.entities import (
 )
 from app.features.qa_generation.domain.enums import CritiqueVerdict
 from app.features.qa_generation.data.prompts import (
-    QA_SYSTEM_PROMPT, QA_USER_TEMPLATE, QA_CONVERSATION_RULES, QA_CONVERSATION_USER_TEMPLATE, NO_EVIDENCE_ANSWER,
+    QA_USER_TEMPLATE, QA_CONVERSATION_RULES, QA_CONVERSATION_USER_TEMPLATE, qa_system_prompt,
     NO_NEW_CONTEXT_BLOCK, CITATION_RETRY_PROMPT
 )
 from app.features.qa_generation.exceptions.pipeline import JSONCritiqueParseError
@@ -26,10 +27,15 @@ from app.features.qa_generation.utils.citation_parser import (
     build_context_block, build_numbered_context_block, doc_numbers, parse_citations, normalize_citation_tags
 )
 from app.features.qa_generation.utils.conversation_packer import pack_conversation, PackedConversation
-from app.features.qa_generation.utils.context_packer import select_within_budget
+from app.features.qa_generation.utils.context_packer import has_document_chunks, select_within_budget
 from app.features.qa_generation.utils.error_mapper import map_qa_error
 
 logger = logging.getLogger(__name__)
+
+
+def _localized(prompt: str) -> str:
+    """The prompt for this appliance's language: its refusal sentence, and an instruction to answer in the language."""
+    return get_language_pack().localize_prompt(prompt)
 
 _CITATION_TAG = re.compile(r"\[Doc \d+]")
 
@@ -61,9 +67,11 @@ class QAGenerationAPI:
             loaded_model: LoadedModel,
             user_query: str,
             retrieved_chunks: List[RetrievedChunk],
-            include_critique: bool
+            include_critique: bool,
+            system_prompt: str
     ) -> Tuple[List[RetrievedChunk], RAGContextBlock]:
-        budget = self._adapter.get_context_token_budget(loaded_model, user_query, include_critique)
+        budget = self._adapter.get_context_token_budget(loaded_model, user_query, include_critique,
+                                                        system_prompt=system_prompt)
         packed = select_within_budget(
             retrieved_chunks, budget, lambda text: self._adapter.count_tokens(loaded_model, text)
         )
@@ -75,7 +83,7 @@ class QAGenerationAPI:
     def _refusal(user_query: str, start_time: float) -> QAResponse:
         return QAResponse(
             query=user_query,
-            generated_answer=NO_EVIDENCE_ANSWER,
+            generated_answer=get_language_pack().answers.refusal,
             citations=[],
             inference_time_ms=int((time.time() - start_time) * 1000)
         )
@@ -99,7 +107,7 @@ class QAGenerationAPI:
         logger.warning("Answer came back without citations; asking the model to cite its claims.")
         retry_messages = messages + [
             {"role": "assistant", "content": generated_text},
-            {"role": "user", "content": CITATION_RETRY_PROMPT},
+            {"role": "user", "content": _localized(CITATION_RETRY_PROMPT)},
         ]
         retried = normalize_citation_tags(
             self._adapter.generate_conversation_answer(loaded_model, retry_messages), 0, valid_numbers
@@ -108,17 +116,17 @@ class QAGenerationAPI:
             return retried
 
         logger.warning("Answer still has no citations after the retry; returning the refusal instead.")
-        return NO_EVIDENCE_ANSWER
+        return get_language_pack().answers.refusal
 
     @staticmethod
     def _is_refusal(text: str) -> bool:
-        return text.strip().startswith(NO_EVIDENCE_ANSWER.rstrip("."))
+        return get_language_pack().is_refusal(text)
 
     @staticmethod
-    def _answer_messages(context_block: str, user_query: str) -> List[Dict[str, str]]:
+    def _answer_messages(system_prompt: str, context_block: str, user_query: str) -> List[Dict[str, str]]:
         """The messages generate_answer sends, for a follow-up request in the same exchange."""
         return [
-            {"role": "system", "content": QA_SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": QA_USER_TEMPLATE.format(context_block=context_block, user_query=user_query)},
         ]
 
@@ -136,24 +144,26 @@ class QAGenerationAPI:
             logger.info("No evidence survived retrieval; answering with the refusal without loading the model.")
             return self._refusal(user_query, start_time)
 
+        system_prompt = _localized(qa_system_prompt(has_document_chunks(retrieved_chunks)))
         try:
             loaded_model = self._orchestrator.acquire_model(self._manifest, self._adapter, wait_for_clear=True)
 
             try:
-                packed, context_block = self._pack_context(loaded_model, user_query, retrieved_chunks, False)
+                packed, context_block = self._pack_context(loaded_model, user_query, retrieved_chunks, False,
+                                                           system_prompt)
                 if not packed:
                     logger.warning("No retrieved chunk fits the context budget; answering with the refusal.")
                     return self._refusal(user_query, start_time)
 
                 generated_text = self._adapter.generate_answer(
                     model=loaded_model,
-                    system_prompt=QA_SYSTEM_PROMPT,
+                    system_prompt=system_prompt,
                     context_block=context_block.formatted_text,
                     user_query=user_query
                 )
                 # Grouped tags ([Doc 1, 3]) become [Doc 1][Doc 3] in the returned text too, so it matches the citations
                 generated_text = self._cited_or_refused(
-                    loaded_model, self._answer_messages(context_block.formatted_text, user_query),
+                    loaded_model, self._answer_messages(system_prompt, context_block.formatted_text, user_query),
                     generated_text, doc_numbers(context_block.doc_mapping)
                 )
             finally:
@@ -228,7 +238,10 @@ class QAGenerationAPI:
             logger.info("No evidence in this turn or the conversation; answering with the refusal without a model.")
             return ConversationAnswer(response=self._refusal(user_query, start_time))
 
-        system_prompt = QA_SYSTEM_PROMPT + QA_CONVERSATION_RULES
+        # Earlier turns' evidence is in the prompt too, so it counts towards "does the context hold documents"
+        earlier = [n.chunk for turn in history.turns for n in turn.evidence]
+        system_prompt = _localized(
+            qa_system_prompt(has_document_chunks([*retrieved_chunks, *earlier])) + QA_CONVERSATION_RULES)
 
         try:
             loaded_model = self._orchestrator.acquire_model(self._manifest, self._adapter, wait_for_clear=True)
@@ -305,11 +318,13 @@ class QAGenerationAPI:
             logger.info("No evidence to answer from; returning the refusal without loading the model.")
             return self._refusal(user_query, start_time), AnswerCritique(verdict=CritiqueVerdict.SUFFICIENT)
 
+        system_prompt = _localized(qa_system_prompt(has_document_chunks(retrieved_chunks)))
         try:
             loaded_model = self._orchestrator.acquire_model(self._manifest, self._adapter, wait_for_clear=True)
 
             try:
-                packed, context_block = self._pack_context(loaded_model, user_query, retrieved_chunks, True)
+                packed, context_block = self._pack_context(loaded_model, user_query, retrieved_chunks, True,
+                                                           system_prompt)
                 if not packed:
                     logger.warning("No retrieved chunk fits the context budget; answering with the refusal.")
                     return (self._refusal(user_query, start_time),
@@ -317,12 +332,12 @@ class QAGenerationAPI:
 
                 generated_text = self._adapter.generate_answer(
                     model=loaded_model,
-                    system_prompt=QA_SYSTEM_PROMPT,
+                    system_prompt=system_prompt,
                     context_block=context_block.formatted_text,
                     user_query=user_query
                 )
                 generated_text = self._cited_or_refused(
-                    loaded_model, self._answer_messages(context_block.formatted_text, user_query),
+                    loaded_model, self._answer_messages(system_prompt, context_block.formatted_text, user_query),
                     generated_text, doc_numbers(context_block.doc_mapping)
                 )
 

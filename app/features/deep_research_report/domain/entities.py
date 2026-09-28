@@ -6,6 +6,7 @@ from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.anchors.domain.enums import AnchorKind
 from app.features.deep_research_report.domain.enums import (
     EvidenceOrigin, ReportMode, ReportStatus, SectionStatus,
 )
@@ -22,6 +23,9 @@ class IndexedSource(BaseModel):
     chunk_count: int
     first_start_sec: float = 0.0
     last_end_sec: float = 0.0
+    # A document is described by its page count, a recording by its length
+    anchor_kind: AnchorKind = AnchorKind.TIME
+    page_count: Optional[int] = None
 
     model_config = ConfigDict(frozen=True)
 
@@ -176,6 +180,11 @@ class EvidenceEntry(BaseModel):
     source_name: str
     start_sec: float
     end_sec: float
+    # Document excerpts are located by page / section; their start_sec/end_sec are 0.0
+    anchor_kind: AnchorKind = AnchorKind.TIME
+    page_start: Optional[int] = None
+    page_end: Optional[int] = None
+    section_path: Optional[str] = None
     speaker_labels: List[str] = Field(default_factory=list)
     digest: str = ""
     origin: EvidenceOrigin = EvidenceOrigin.FAN_OUT

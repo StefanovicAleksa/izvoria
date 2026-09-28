@@ -140,3 +140,50 @@ class TestQwenVLMAdapter:
 
         with pytest.raises(VisualAnalysisError):
             QwenVLMAdapter().analyze_frames(loaded_model, [Path("/fake/path.jpg")], "text", "context")
+
+
+class TestDescribeImage:
+    @pytest.fixture
+    def manifest(self):
+        return ModelManifest(model_type=ModelType.VISION, model_path="/mock/qwen2-vl", required_vram_mb=9000.0)
+
+    @patch(f"{MODULE}.Path.exists", return_value=True)
+    @patch(f"{MODULE}.Image")
+    @patch(f"{MODULE}.torch")
+    def test_describes_one_image_with_the_still_image_prompt(self, mock_torch, mock_image_module, mock_exists,
+                                                            manifest):
+        from app.features.visual_analysis.data.prompts import STILL_IMAGE_SYSTEM_PROMPT, STILL_IMAGE_USER_PROMPT
+        loaded_model, mock_hf_model, mock_processor = TestQwenVLMAdapter._loaded_model(
+            manifest, 'SHOWS: A whiteboard with a timeline\nTEXT: "Q3 launch" ; "14 March"\nMARKS: arrow at "Q3"'
+        )
+        image = mock_image_module.open.return_value.__enter__.return_value.convert.return_value
+
+        result = QwenVLMAdapter().describe_image(loaded_model, Path("/vault/whiteboard.jpg"))
+
+        assert result == FrameObservation(shows="A whiteboard with a timeline", legible_text=["Q3 launch", "14 March"],
+                                          marks='arrow at "Q3"')
+        # A lone image keeps the processor's full pixel budget
+        image.resize.assert_not_called()
+        mock_processor.assert_called_once_with(text=["<prompt>"], images=[image], return_tensors="pt")
+        mock_hf_model.generate.assert_called_once_with(
+            max_new_tokens=settings.IMAGE_DESCRIPTION_MAX_NEW_TOKENS, do_sample=False
+        )
+        messages = mock_processor.apply_chat_template.call_args[0][0]
+        assert messages[0] == {"role": "system", "content": STILL_IMAGE_SYSTEM_PROMPT}
+        assert messages[1]["content"] == [{"type": "image"}, {"type": "text", "text": STILL_IMAGE_USER_PROMPT}]
+        assert "speaker" not in STILL_IMAGE_USER_PROMPT.lower() and "LINK" not in STILL_IMAGE_USER_PROMPT
+
+    @patch(f"{MODULE}.Path.exists", return_value=True)
+    @patch(f"{MODULE}.Image")
+    @patch(f"{MODULE}.torch")
+    def test_unstructured_answer_is_none(self, mock_torch, mock_image_module, mock_exists, manifest):
+        loaded_model, _, _ = TestQwenVLMAdapter._loaded_model(manifest, "This is a nice photo of a dog.")
+
+        assert QwenVLMAdapter().describe_image(loaded_model, Path("/vault/dog.jpg")) is None
+
+    @patch(f"{MODULE}.Path.exists", return_value=False)
+    def test_missing_image_raises(self, mock_exists, manifest):
+        loaded_model, _, _ = TestQwenVLMAdapter._loaded_model(manifest, "")
+
+        with pytest.raises(VisualAnalysisError):
+            QwenVLMAdapter().describe_image(loaded_model, Path("/vault/gone.jpg"))

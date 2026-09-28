@@ -8,14 +8,13 @@ from app.core.jobs.service.manager import JobManager
 from app.core.jobs.domain.entities import JobRequest
 from app.core.jobs.domain.enums import JobType
 
+from app.features.scanner.utils.filters import VIDEO_EXTENSIONS
 from app.features.storage.service.storage_api import StorageAPI
 from app.features.storage.domain.entities import SourceType
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import PhaseBatchResult, IngestJobResult
 
-# Define the strict video-only filter
-VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.mov', '.avi', '.webm'}
 
 class IngestPhase:
     def __init__(self, job_manager: JobManager, storage_api: StorageAPI):

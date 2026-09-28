@@ -1,7 +1,11 @@
 # Path: app/features/visual_analysis/utils/grounding_check.py
 
 import re
-from typing import List, Optional, Set
+from functools import lru_cache
+from typing import FrozenSet, List, Optional, Set
+
+from app.core.language.service.language_api import get_language_pack
+from app.core.language.utils.script import normalize_script
 
 from app.features.visual_analysis.domain.entities import FrameObservation
 
@@ -48,9 +52,23 @@ def _numbers(text: str) -> Set[str]:
     return {n.strip(".,:/-") for n in _NUMBER.findall(text)}
 
 
+@lru_cache(maxsize=8)
+def _function_words(language: str) -> FrozenSet[str]:
+    """
+    The frame's own fields are English (the VLM describes in English), but on-screen text and the speech are in
+    the appliance's language: another language adds its pack's function words. English keeps the list above.
+    """
+    pack = get_language_pack()
+    return frozenset(_FUNCTION_WORDS if language == "en" else _FUNCTION_WORDS | set(pack.text.stopwords))
+
+
 def _content_tokens(text: str) -> List[str]:
+    pack = get_language_pack()
+    function_words = _function_words(pack.code)
+    # A Cyrillic slide compared with a Latin transcript: one script for both
+    text = normalize_script(text, pack.transcription.script)
     tokens = (t.strip(".,:;!?'\"()").lower() for t in text.split())
-    return [t for t in tokens if t and t not in _FUNCTION_WORDS]
+    return [t for t in tokens if t and t not in function_words]
 
 
 def _is_generic_mark(marks: str) -> bool:
@@ -131,6 +149,34 @@ def ground_observation(observation: Optional[FrameObservation], transcript: str)
         link = None
 
     return observation.model_copy(update={"legible_text": legible_text, "marks": marks, "speech_link": link})
+
+
+# A photo of a sign, a form or a whiteboard legitimately carries more text than a slide frame's eight items
+MAX_STILL_IMAGE_ITEMS = 20
+
+
+def ground_still_image(observation: Optional[FrameObservation]) -> Optional[FrameObservation]:
+    """
+    `ground_observation` for a standalone image, which has no speech to check against and no speaker to show.
+    A photo with no text and no marks is still evidence -- its description is all it has -- so it is kept; only an
+    empty answer is dropped. Legible text loses the same chrome as a frame's (websites, interface text, repeats),
+    and marks that don't say what they point at go. Nothing here can tell a misread item from a real one: that
+    check is OCR's, in image_description.
+    """
+    if observation is None or not observation.shows.strip():
+        return None
+
+    legible_text: List[str] = []
+    for item in observation.legible_text:
+        if (_WEBSITE.search(item) or _INTERFACE_TEXT.match(item.strip())
+                or item.casefold() in (kept.casefold() for kept in legible_text)):
+            continue
+        legible_text.append(item)
+
+    marks = observation.marks if observation.marks and not _is_generic_mark(observation.marks) else None
+    return observation.model_copy(update={
+        "legible_text": legible_text[:MAX_STILL_IMAGE_ITEMS], "marks": marks, "speech_link": None,
+    })
 
 
 def drop_items_already_reported(observation: FrameObservation, reported: Set[str]) -> Optional[FrameObservation]:

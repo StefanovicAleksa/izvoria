@@ -33,6 +33,9 @@ class SQLAlchemyEngine:
     def get_session_maker(self):
         return self._session_maker
 
+    def get_engine(self):
+        return self._engine
+
     def dispose_engine(self):
         if self._engine:
             self._engine.dispose()

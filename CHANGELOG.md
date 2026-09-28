@@ -4,6 +4,172 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## The scrubber no longer throws away the answer
+
+On the 2026-09-27 image test, chat refused "What does the green sign in the snow say?" although the sign was the reranker's first result. The relevance scrubber (Qwen2.5-7B) had rejected it: "The sign says 'STOP' and not 'GIMAr MOntaz MAutino'". Its wrong rejections share a pattern: it judges whether a chunk *answers* the question ("does not provide the specific year"), which its prompt says not to do.
+
+- **The reranker's confident picks skip the scrubber.** A chunk the cross-encoder scores ≥ `RETRIEVAL_SCRUBBER_TRUST_RERANK_SCORE` (0.5) is kept without asking the SLM (`ScrubAudit.kept_by_rerank_score`). Across 62 answerable and 21 unanswerable questions, the best candidate of an unanswerable question never scored above 0.01; the relevant chunk of an answerable one never below 0.29.
+- **The prompt asks what a chunk is about, not whether it answers.** It names transcripts, document text and image excerpts (description + OCR) as evidence, and says an answer's correctness is not its concern. A `chunk_subject` field precedes the verdict. A variant that quoted the closest passage broke the JSON (45 unparseable verdicts on Serbian); one with no preliminary field lost the image evidence again.
+
+Relevant chunk survives the scrubber (and chunks kept for unanswerable questions): en 10/10 → 10/10 (1 → 1), sl 9/10 → 9/10 (0 → 0), sr 32/32 → 32/32 (0 → 0), book + images 7/10 → **9/10** (0 → 0). The stop sign is now answered.
+
+The measurement needed fresh labels. `scripts/eval/rag_labels.json` names chunks the dev database lost when it was re-ingested on 2026-09-24, and so did the benchmark's `labels.json`. The benchmark's `--regenerate` never reached the child process that runs the stage, so `gen-questions` always kept the stale file. It is now forwarded; `gen-questions` also regenerates on its own when the database no longer holds the labelled chunks, and `measure-rag` refuses to score stale labels instead of reporting 0 %.
+
+## Wide tables, and tables found in pieces
+
+A 1900 railway timetable (15 columns) stayed flat text: `MAX_TABLE_COLUMNS` was 8. With the cap at 16, its body became a table but its header didn't. Wider header cells, a lone "P. M." line and a row crossed by a rotated caption each ended detection. Pieces at most 3 lines apart are now re-cut along the later piece's columns, unless a line between them runs across the columns like a title. A word whose centre falls in a gutter goes to the nearest column instead of the last. The timetable is now one table, with "Sunday / only." over "4.22".
+
+The layout is right, but the answer isn't yet. Qwen3.5-9B still reads the Sunday train to Norfolk as "10:06" (the Hartford column), and in thinking mode it looped for 16 000 tokens before settling on "7:48". Rendering rows as labelled cells ("Sunday only.: 4.22 · …") got it to the right column on the wrong half of the page ("TRAINS FROM / TO NEW YORK" spans half the columns), and made another question worse, so it wasn't adopted. RapidTable's SLANet-plus structure model was also tried on the page; it lost more cells than the layout rules. Treat values read out of wide scanned tables as needing the citation checked.
+
+## Handwriting OCR can't read is no longer indexed as text
+
+OCR never invents a line, but on handwriting it writes gibberish. An 1839 letter was indexed as "Analbeig aftea long apok by thelvelist hak mith…", labelled as text read by OCR. The image check now also runs in reverse: an OCR line under 0.7 confidence is kept only if the vision model read the same words. On an image where most lines are that uncertain (handwriting), every line under 0.9 needs that confirmation. `IOcrEngine.recognize` takes a `select_lines` hook so this happens before layout (tables keep their shape), and PDFs are unchanged.
+
+- Withheld lines are stored (`image_descriptions.ocr_withheld_lines`, migration `0002`, the first revision after the baseline), never indexed, and counted in the ingestion report (`image_ocr_lines_withheld`). The excerpt says "Some text on this image could not be read reliably and is not included" when one of them held letters or digits.
+- On the seven test images: the letter's 26 lines are withheld. The ski-lift sign's "GIMAr MOntaz MAutino" (0.65–0.76) is kept because the vision model read it too. The timetable's misreads ("585", "888") are withheld and its headers ("Hartf d", 0.79) kept.
+- `read_image` now applies the EXIF orientation. OCR of a sideways-stored phone photo had read "1 / 2 60" off a forest path.
+- The ingestion report lists only what happened to an image's text. It no longer says "0 text item(s) … were not found by OCR" for an image that lost nothing.
+- Autogenerating a migration against `db_test` wrote ten foreign keys back into the revision, because integration tests drop them there. `docs/core/database.md` now generates against a fresh scratch database.
+
+## Old databases catch up through the baseline, not through today's models
+
+Introduced in `9ed948e` (the migration commit), found by the first revision after it (`0002`). A database from before migrations was caught up with `create_all()`, which builds a missing table from *today's* models. That included columns from later revisions, whose own migrations then failed adding them. An appliance ingested before image support (no `image_descriptions` table) would have stopped booting with `DuplicateColumn: ocr_withheld_lines`.
+
+The catch-up now runs the frozen statements for the tables the database has, then revision `0001` itself, which creates only the tables and indexes that are missing (`if_not_exists`), in the baseline's shape. Then it upgrades to head like any other database. The integration test's fake old database lacks `image_descriptions`, so it covers this. A copy of the dev database migrates to `0002` with its data kept and no drift. The tests that asserted "revision is 0001" now assert the head.
+
+## Capitals are a heading only when they stand alone
+
+Found by ingesting Project Gutenberg's *Adventures of Sherlock Holmes* (EPUB and TXT). A line in capitals counted as a title, so dialogue ("“BALLARAT.”", "“HUNTER.”") displaced the book's own title. From the fifth story on, every EPUB chunk was filed under "“BALLARAT.” › V. …", and 36 chunks of *The Copper Beeches* were cited as section "“HUNTER.”". The same rule broke contracts. A hard-wrapped, all-caps liability disclaimer was cut into one "heading" per line, and later citations named "OR IN CONNECTION WITH THIS AGREEMENT, EVEN IF ADVISED OF THE" as their section.
+
+A line in capitals is now not a title if it opens a quotation, or ends a sentence (`.` `!` `?` — "CHAPTER IV." aside) or a clause (`,` `;`). It is also not a title if it directly continues an unfinished line: `blocks.py` keeps it in that paragraph. Colons still end titles ("RECITALS:"), and Markdown and clause headings are unchanged. The EPUB now files all twelve stories under the book, and the disclaimer stays one paragraph under "12. LIMITATION OF LIABILITY".
+
+The same run confirmed the line anchors. All 310 chunks of the TXT copy are found verbatim in the lines they cite (CRLF file).
+
+## Whisper no longer drops speech silently
+
+The 2026-09-24 language benchmark found testimony missing from the index with no warning: faster-whisper's batched decoder, given a clip joining several utterances, can return only the last sentence. On FLEURS en `fleurs_01`, 13.2 % of the detected speech had no transcribed word. Two of three sentences at 13.2–38.0 s were gone.
+
+`FasterWhisperAdapter.transcribe` now checks its own output against the VAD map. Any speech segment of at least 1 s with no word on it means something was dropped:
+- A batched clip holding such speech is **decoded again sequentially**, and its batched output is replaced (not merged, so nothing is duplicated).
+- Speech still wordless after that (a sequential decode can lose a clip's last sentence too, as at 584 s in the same file) is **decoded on its own**.
+- Whatever remains is logged as a warning with its seconds.
+
+`fleurs_01`: 13.2 % untranscribed → 0.0 %, with 6 of 31 clips re-decoded. Batched decoding stays the fast path.
+
+**Benchmark, re-ingested from scratch (2026-09-27 vs 2026-09-24).** The language benchmark now reports untranscribed speech itself (`speech_coverage` in `asr.json`):
+
+| | Untranscribed speech | FLEURS accuracy | Other |
+|---|---|---|---|
+| en | 4.2 % → 0.04 % | 82.2 % → **92.4 %** | lecture 94.4 % → 94.5 % |
+| sl | 0.56 % → 0 % | 79.7 % → 78.7 % | |
+| sr | 0.03 % → 0 % | 88.7 % → 88.6 % | ParlaSpeech 92.6 % → 92.6 % |
+
+Slovenian's drop is recovered speech the reference leaves out. At 252 s of `sl/fleurs_01` the reader starts a sentence, says "Once again." and re-reads it. That false start used to vanish; now it is transcribed verbatim (+16 insertions, same substitutions and deletions). None of the three languages reaches the 95 % target yet.
+
+## Database migrations (Alembic)
+
+An appliance holds months of ingested material, so "reset the database" can't be how a schema change ships. Until now `OnyxEngine.start()` ran `create_all()` and then per-feature tuples of idempotent `ALTER TABLE … ADD COLUMN IF NOT EXISTS` statements. That could add a column, but it couldn't rename, retype or drop one, and nothing recorded which build a database had reached.
+
+- **`start()` now runs `upgrade_to_head()`** (`app/core/database/service/migrations.py`) in one transaction. Postgres DDL is transactional, so a failed revision leaves the database as it was, and `DBMigrationError` stops the boot. An unreachable database is still reported as unreachable.
+- **Revision `0001` is the baseline**: the schema as it stood, with the full-text column stemmed in `FTS_LANGUAGE_CONFIG` (read at migration time) and `CREATE EXTENSION vector` first. Migrations are forward-only; the way back is a restore.
+- **Databases from before migrations are kept, not reset.** Without `alembic_version` but with Onyx tables, a database is caught up (`create_all()` plus the old statements, frozen in `data/migrations/pre_alembic.py`) and stamped `0001`. Verified on a copy of the dev database: its 576 chunks and chat turns were kept, and the result was identical to a fresh baseline.
+- **What the check turned up:** the old statements added `research_reports.mode`, `research_report_evidence.anchor_kind`, `vector_chunks.anchor_kind` and `vector_chunks.section_path` as `TEXT`, where the models declare `VARCHAR`. The catch-up aligns them (binary-coercible, no rewrite). Otherwise every older appliance's next autogenerated revision would carry spurious type changes.
+- **The integration suite builds its schema through the migrations**, and `test_migrations_integration.py` fails when a model changes without a revision (autogenerate diff must be empty).
+
+## Images: described by the vision model, checked by OCR
+
+Clients hold standalone images: photographed whiteboards, scans saved as JPG, charts, X-rays, site photos. They have no speech and no document text, so they are understood only through vision. `OnyxEngine.ingest_images()` (CLI option 10, the desktop's "Images" mode) runs the new `BatchImagePipeline`: scan → ingest → `ImageDescriptionPhase` → unification → indexing. It uses one Qwen2-VL load for the whole batch, then the embedder. No transcript stage, contextual SLM or clip extraction runs.
+
+**The excerpt is machine-written, and says so.** An image has no words of its own, so what a citation quotes is written by the vision model and OCR. The product rule is that nothing is stated without grounding, so:
+- **Text the vision model reads is kept only if RapidOCR also reads it** (word for word, or 80% of its words including every number). A VLM writes plausible text that isn't there; OCR misreads characters but never invents a line. Items OCR didn't read are left out of the index and listed in the ingestion report. Unconfirmed quoted text and numbers inside the description become `[text not confirmed]` / `[number not confirmed]`.
+- The excerpt's blocks are labelled "Image (machine description)" and "Text on the image (read by OCR)", in the pack's language. The answer, reasoner and report prompts describe an `(image)` excerpt as a machine-written description to be reported as what the image shows, never as the client's words. Recordings-only prompts are unchanged.
+- **Serbian images are unverified.** There is no Serbian OCR, so the vision model's text is shown under a "not verified" label and counted in the report.
+- Descriptions are in English on every appliance (Qwen2-VL is weak in Serbian and Slovenian); text read off the image stays in its own language.
+
+**Reusing what exists.** The still-image mode is a second prompt on the existing `QwenVLMAdapter` (same instance, same `ModelType.VISION`), not a second loader. OCR is exposed as `DocumentConversionAPI.read_image`. `ContextualizerAPI.execute_image` stores a one-chunk transcript without a model, so unification and indexing are untouched. The new `AnchorKind.IMAGE` renders as "image" / "slika".
+
+**What the checks turned up.**
+- The video grounding (`ground_observation`) drops any frame with no legible text and no marks. That is right for a talking head and wrong for a photo, whose description is its only evidence, so still images get `ground_still_image`.
+- Run on a generated notice, a chart and the X-ray fixture, the real model matched OCR on every text item, reported the chart's red arrow as a mark, and described the X-ray without a diagnosis.
+
+**Desktop.** Cited images show a thumbnail on evidence cards and in the review panel, with "Open image ↗". Only the scaled size is decoded, and EXIF rotation is applied. This also fixes a bug from the books change: the gateway recognised only `page`/`section` anchors as documents, so TXT/Markdown citations showed no location and "Open recording".
+
+**Pipelines don't pick up each other's files, or Onyx's own.** The scan is shared and each mode keeps its own suffixes; the four lists are disjoint. Two gaps turned up while checking this, both older than images but made worse by them:
+- **The scanner walked into the vault.** Frames, clips and extracted audio live in `onyx_data/YYYY/…`, and reports in `onyx_data/<env>/reports/`. Pointing any mode at a folder containing them re-ingested Onyx's own files. After the books change, that included the model-written reports as source documents. The scanner now prunes both (`is_onyx_output`).
+- **Audio formats were dropped silently.** The audio pipeline accepted `.ogg`, `.opus`, `.wma`, `.aiff`, `.amr`, `.alac` and `.mka`, but the scanner only passed five formats. There is now one list, which the pipeline and the video ingest filter import.
+
+Documents scanned to JPG/TIFF stay images, by decision; scanned PDFs go only through the document pipeline.
+
+**Known gaps.** HEIC isn't accepted (pillow-heif is a native dependency). Multi-page TIFFs use their first page. Whether the 80% word rule is too strict for real handwriting hasn't been measured.
+
+## Books and texts: TXT, Markdown, EPUB, HTML and RTF, cited by line or chapter
+
+Clients also hold books, manuscripts, notes and exported web pages. None of the audio stages apply: their sentence and chunk types need speakers and timestamps. The document path already did everything plain text needs (structure along headings, situate each chunk with the contextual SLM, index), so books and texts are new **document kinds**, not a new pipeline. The "Documents" mode (CLI option 9, the desktop's "Documents & books") takes a folder mixing PDFs, DOCX and all of these.
+
+**Cited by line.** A plain-text or Markdown chunk cites the file's own lines, with its chapter: `[Doc 3] (lines 120–164 · CHAPTER IV.)`, a range anyone can check in an editor. This is a new `AnchorKind.LINE`, stored in the existing `page_start`/`page_end` columns (no DDL). Every consumer already rendered non-time anchors through `format_location`, so only the formatter changed. Labels come from the pack (`line_label`/`lines_label`: line/lines, vrstica/vrstice, red/redovi). EPUB, HTML, DOCX and RTF are converted before their lines exist, so they cite the chapter or section.
+
+**Decisions and what the checks turned up.**
+- **TXT and Markdown bypass MarkItDown.** Its plain-text path collapses runs of blank lines on every result, which would shift every cited line. They are decoded by charset-normalizer directly (cp1250/cp1251 files are common in Serbia and Slovenia) and cleaned line by line without dropping a line. The integration test reads the cited lines back out of the cp1250 file and finds the chunk's text there.
+- **EPUB and HTML use MarkItDown's own converters.** They are core and local (zipfile, defusedxml, BeautifulSoup), so there is no new dependency. **RTF** uses striprtf, pure Python, which honours the file's code page.
+- **Chapter headings are in the language packs.** "CHAPTER IV.", "Glava 3" / "Поглавље 4", "4. poglavje", "Prologue" and so on need the number to end the line or be followed by a separator, so a hard-wrapped "Chapter 3 of the Act provides that" stays prose. "CHAPTER IV." had been rejected as a sentence because of its final period; a period after a number or a Roman numeral no longer counts as a sentence end.
+
+**Known gaps.** A headingless EPUB/HTML/RTF cites only the file. A 100k-word novel is about 400 chunks, one SLM call each.
+
+## Recordings-only appliances see no change
+
+Document support had changed wording that transcript answers pass through: the QA answer prompt, the reasoner's prompts, report scoping/outline/section prompts, the planner's corpus overview, the references header ("Timespan" → "Location") and the CLI's timestamp line. Each is now back to its original text, and the document wording is a separate variant chosen only when a document excerpt is actually in play — per context for answers and sections (the token budget is computed for the variant that is sent), per evidence bank for the outline, per corpus for scoping. The query-rewrite prompt, which runs before anything is retrieved, is simply the original. `git diff` of every prompt file and language pack shows only added lines.
+
+Also: the startup backfill of `vector_chunks.position` sorted the whole table on every boot; it now checks an index that is empty once the backfill is done.
+
+## Tables keep their rows
+
+Document ingestion shipped with tables flattened, and on a real invoice it was worse than lost layout: MarkItDown read a borderless line-item table **column by column** ("Parking place", "Cleaning service", "2", "4", "EUR 40.00", ...), so no amount stayed with its item. The contextual SLM, the index and the answer model all saw disconnected values; "how much was parking?" had no row to match.
+
+Pages with tables are now re-read by `PdfplumberLayoutExtractor` (pdfplumber, which MarkItDown's own PDF converter uses) and emitted as Markdown tables; pages without tables keep MarkItDown's text. Ruled tables come from pdfplumber's line finder; borderless ones from **shared column gutters** — vertical strips several consecutive lines all leave empty, clearly wider than their word gaps. Scans use the same code on RapidOCR word boxes. On the dev appliance, "how many parking places were billed, at what unit price, and what is the total due?" is now answered correctly from the invoice's rows, cited to its page.
+
+Along the way: the integration fixtures generated PDFs at ~3 pt (Qt at 300 dpi writes 72-dpi units), which hid two bugs — pdfplumber's fixed 3-point word tolerance merging neighbouring cells (now size-relative) — and made scans unreadable. Fixtures are now real size. A gap-width rule for cells was tried first and dropped: OCR word spacing jitters across any single threshold.
+
+## Document ingestion: PDF and DOCX, cited by page
+
+Onyx indexed only recordings. Law-firm clients mostly hold documents — contracts, filings, invoices, letters — as a mix of born-digital and scanned PDFs. `OnyxEngine.ingest_documents()` (CLI option 9, the desktop's "Documents (PDF / DOCX)" mode) runs the new `BatchDocumentPipeline`: scan → ingest → `document_conversion` → `document_structuring` + contextual SLM → unification → indexing.
+
+**Cited by page, not by time.** Chunks now carry an anchor (`app/core/anchors`): a time range, a page range or a section path. `vector_chunks` gained `anchor_kind`, `page_start/end`, `section_path` and `position`; neighbours and reading order use `position`, since a document chunk's `start_sec` is 0.0. An existing database is upgraded at start-up (`VECTOR_CHUNKS_UPGRADE_DDL`, positions backfilled in time order), with no re-ingest. Transcript behaviour is unchanged: the whole unit suite passed before any new test was added, and transcript headers still cost the same context budget.
+
+**Choices, and what the checks turned up.**
+- **Converter.** Microsoft MarkItDown (MIT), after comparing Docling and Marker (Marker's weights licence restricts commercial use and competing products). MarkItDown drops empty pages and joins the rest, so PDFs are split with pypdfium2 and converted page by page. It reaches the network only via URL strings and its audio converter; the adapter uses bytes only and installs `[pdf,docx]` only.
+- **OCR.** RapidOCR PP-OCRv5 on the CPU, for English and Slovenian (`latin` model). A spike on synthetic scans found no model reading Serbian: the Cyrillic one lacks č ć đ š ž, the Latin one lacks Cyrillic, confidence could not choose between them (the Cyrillic model dropped "ž" from "može" at 0.95), and RapidOCR **silently dropped** two of six lines of a mixed-script letter. The adapter counts detected lines against read ones and reports incomplete pages; Serbian scanned pages are reported as unreadable.
+- **Three conversion bugs caught on real files before any test existed:** ligatures (`Deﬁnitions`) that no search matches, now expanded; a sparse born-digital table page sent to OCR and returned worse ("Monthty rent", "026"), now OCR'd only when an image covers the page; and page-number removal that deleted the years "2025"/"2026" from a rent table, now limited to edge lines near the real page number.
+
+**Known gaps.** Only PDF and DOCX. (Tables lost their rows — fixed in "Tables keep their rows" above.) No document classification, summary cards or typed fact extraction yet. OCR accuracy on real client scans is unmeasured.
+
+## Language packs: English, Serbian and Slovenian appliances
+
+Onyx assumed English end to end. That covered the Whisper language, the domain scout (`whisper-tiny-en`), the Postgres stemmer, phonetic correction's letter names and spelling rules, the hallucination blacklist, stopwords, the visual grounding regexes, the refusal sentence, citation parsing and the report's boilerplate. Every one of those is now read from a validated **language pack**, `data/languages/<code>.toml` (new core module `app/core/language`, see `docs/core/language.md`). An appliance serves the one language named by `APPLIANCE_LANGUAGE`.
+
+**Why not a translation layer.** Translating transcripts to English would put model-written text under every citation, multiply ASR errors by MT errors, and hide mis-hearings from phonetic correction (a translated mis-hearing no longer sounds like the term). So nothing is translated: the index and the answers stay in the spoken language.
+
+**English doesn't move.** `en.toml` holds exactly the values that used to be hard-coded, and English prompts are byte-for-byte unchanged (`localize_prompt` is a no-op for English). The existing unit suite passed unchanged apart from two fixtures that now build the English config explicitly: the hallucination blacklist and the transcription adapter mock's `detect_language`.
+
+**What Serbian and Slovenian get.**
+- **Small models.** Gemma 4 E4B replaces Llama 3.2 3B and Qwen2.5-3B, neither of which covers these languages, in five stages: domain classifier, contextual retrieval, visual synthesis, phonetic verification, visual hallucination correction. Verified on the dev box: it loads through each adapter, including the GBNF-constrained ones and contextual retrieval at 32K context (~6 GB), and handles Serbian input correctly.
+- **Domain scout.** Uses large-v3.
+- **Punctuation.** Whisper's own. The fullstop classifier was trained only on en/de/fr/it.
+- **Serbian script.** Serbian transcripts and queries are normalised Cyrillic → Latin, the exact direction, word by word so timestamps align. Postgres' `serbian` stemmer maps both scripts and both variants to one stem; Slovenian uses `simple`, because Postgres ships no Slovenian stemmer.
+- **Output language.** Answers, refusals, reports, and the generated context stored beside the transcript are written in the appliance's language. The VLM stays English.
+
+**Two new safety checks.**
+- **`LanguageMismatchError` (transcription).** Whisper's language ID runs over the first 30 s of speech. A file it confidently hears in another language is rejected, not forced: forced, Whisper translates or invents fluent text, which would be indexed as if someone had said it. Serbian audio detected as Croatian or Bosnian is accepted.
+- **`IndexLanguageMismatchError` (engine start).** An index whose keyword column was generated for another language refuses to start, instead of silently searching with the wrong stemmer.
+
+**Glossaries are per language.** They live in `data/glossaries/<code>/`; the English ones moved to `en/`. The Wikidata miner collects the pack's label languages (Serbian: `sr`, `sr-el`, transliterated to Latin).
+
+**Known gaps.**
+- Serbian and Slovenian have no glossaries yet, so phonetic correction skips itself.
+- Their phonetic matching has no inflection handling: a term replaces a span in its dictionary form. This needs work before those glossaries are trusted.
+- Their hallucination patterns are unverified seeds.
+- The desktop UI is English.
+- Whisper's word error rate on real Serbian/Slovenian client audio has not been measured. Measure it before selling either language.
+
 ## A gathering round is only entered when it has something new to ask
 
 Exhaustive mode kept no record of what it had already searched for, so it re-searched it.

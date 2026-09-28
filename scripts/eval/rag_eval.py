@@ -45,6 +45,12 @@ def _first_hit(chunks: List[RetrievedChunk], prefixes: List[str]) -> Optional[in
     return None
 
 
+def _is_refusal(text: str) -> bool:
+    """The English phrasings, or the appliance language's grounded refusal (a Serbian appliance refuses in Serbian)."""
+    from app.core.language.service.language_api import get_language_pack
+    return bool(REFUSAL_PATTERN.search(text)) or get_language_pack().is_refusal(text)
+
+
 def _pct(numerator: float, denominator: int) -> str:
     return f"{numerator}/{denominator} ({100.0 * numerator / denominator:.0f}%)" if denominator else "n/a"
 
@@ -53,7 +59,7 @@ def _selected(items: List[dict], only: Optional[set]) -> List[dict]:
     return [i for i in items if not only or i["id"] in only]
 
 
-def run_retrieval(labels: dict, only: Optional[set], top_n: int, cache: Optional[Path]) -> None:
+def run_retrieval(labels: dict, only: Optional[set], top_n: int, cache: Optional[Path]) -> dict:
     from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
     from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
     from app.features.rag_retrieval.data.embedding_adapter import HuggingFacePromptAdapter
@@ -125,6 +131,7 @@ def run_retrieval(labels: dict, only: Optional[set], top_n: int, cache: Optional
     stats = {"rrf@10": 0, "rrf@all": 0, "rr@1": 0, "rr@3": 0, "rr@n": 0, "mrr": 0.0, "scrub_hit": 0,
              "scrub_kept": 0, "scrub_dropped_relevant": 0}
     scored = [(item, rel) for item, rel in cases if rel]
+    per_item: Dict[str, dict] = {}
     print(f"\n{'id':5} {'rrf':>4} {'rr':>4} {'kept':>5}  question")
     for item, relevant in cases:
         qid = item["id"]
@@ -143,6 +150,8 @@ def run_retrieval(labels: dict, only: Optional[set], top_n: int, cache: Optional
                 1 for c in reranked[qid] if _is_relevant(c.chunk_id, relevant) and c not in kept
             )
         stats["scrub_kept"] += len(kept)
+        per_item[qid] = {"rrf_rank": rrf_rank, "rerank_rank": rr_rank, "kept": len(kept),
+                         "scrub_hit": any(_is_relevant(c.chunk_id, relevant) for c in kept) if relevant else None}
         print(f"{qid:5} {rrf_rank or '-':>4} {rr_rank or '-':>4} {len(kept):>2}/{len(reranked[qid]):<2}  {item['question']}")
 
     n = len(scored)
@@ -153,9 +162,15 @@ def run_retrieval(labels: dict, only: Optional[set], top_n: int, cache: Optional
           f"  MRR@{top_n} {stats['mrr'] / n if n else 0:.3f}")
     print(f"  Scrub  relevant survives {_pct(stats['scrub_hit'], n)}  relevant chunks dropped {stats['scrub_dropped_relevant']}"
           f"  avg kept {stats['scrub_kept'] / len(cases):.1f}  kept for unanswerable {unans_kept}")
+    return {"answerable": n, "unanswerable": len(unanswerable), "seconds": round(elapsed),
+            "rrf_hit@10": stats["rrf@10"], "rrf_hit@all": stats["rrf@all"], "rerank_hit@1": stats["rr@1"],
+            "rerank_hit@3": stats["rr@3"], f"rerank_hit@{top_n}": stats["rr@n"],
+            "mrr": round(stats["mrr"] / n, 3) if n else 0.0, "scrub_relevant_survives": stats["scrub_hit"],
+            "scrub_dropped_relevant": stats["scrub_dropped_relevant"], "kept_for_unanswerable": unans_kept,
+            "items": per_item}
 
 
-def run_answer(labels: dict, only: Optional[set], mode: str, top_n: int) -> None:
+def run_answer(labels: dict, only: Optional[set], mode: str, top_n: int) -> dict:
     from app.engine.service.bootstrap import OnyxBootstrapper
 
     engine = OnyxBootstrapper.build()
@@ -193,7 +208,7 @@ def run_answer(labels: dict, only: Optional[set], mode: str, top_n: int) -> None
                 counts["errors"] += 1
                 text = f"<error: {type(e).__name__}: {str(e)[:200]}>"
 
-            refused = bool(REFUSAL_PATTERN.search(text)) or text.startswith("<error")
+            refused = _is_refusal(text) or text.startswith("<error")
             if clarification is not None:
                 counts["clarified"] += 1
             if relevant:
@@ -218,6 +233,8 @@ def run_answer(labels: dict, only: Optional[set], mode: str, top_n: int) -> None
           f"  answered without citations {counts['uncited']}")
     print(f"  unanswerable refused/clarified {_pct(counts['refused_correctly'], len(unanswerable))}"
           f"  clarifications {counts['clarified']}  errors {counts['errors']}")
+    return {"answerable": n, "unanswerable": len(unanswerable), "seconds": round(elapsed), **counts,
+            "answers": report}
 
 
 def main() -> None:
@@ -226,11 +243,12 @@ def main() -> None:
     parser.add_argument("--mode", default="chat", choices=["chat", "reasoned"])
     parser.add_argument("--only", default="", help="Comma-separated label ids")
     parser.add_argument("--top-n", type=int, default=10)
+    parser.add_argument("--labels", default=str(LABELS_PATH), help="Questions JSON (default: rag_labels.json)")
     parser.add_argument("--cache", default="", help="Retrieval stage: JSON file storing candidates/rerank order; "
                                                     "when it covers every question, only the scrubber reruns")
     args = parser.parse_args()
 
-    labels = json.loads(LABELS_PATH.read_text(encoding="utf-8"))
+    labels = json.loads(Path(args.labels).read_text(encoding="utf-8"))
     only = {x.strip() for x in args.only.split(",") if x.strip()} or None
 
     if args.stage == "retrieval":

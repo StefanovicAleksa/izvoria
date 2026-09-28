@@ -62,6 +62,7 @@ def _import_engine() -> Dict[str, Any]:
     from app.features.qa_generation.utils.citation_parser import normalize_citation_tags
     from app.features.deep_research_report.domain.entities import OutlineSection, SubQuestion
     from app.features.deep_research_report.utils import markdown_renderer
+    from app.core.anchors.utils.formatting import format_location
 
     _engine_modules.update(
         bootstrapper=OnyxBootstrapper,
@@ -73,6 +74,7 @@ def _import_engine() -> Dict[str, Any]:
         OutlineSection=OutlineSection,
         SubQuestion=SubQuestion,
         markdown_renderer=markdown_renderer,
+        format_location=format_location,
     )
     return _engine_modules
 
@@ -288,7 +290,10 @@ class OnyxEngineGateway(IEngineGateway):
                     media_kind=self._media_kind(
                         getattr(chunk, "physical_path", None) if chunk is not None else None,
                         getattr(chunk, "extracted_file_id", None) if chunk is not None else None,
+                        self._is_document(entry),
+                        self._is_image(entry),
                     ),
+                    location=self._location(entry),
                 ))
         except Exception as exc:
             # A report whose citations cannot be hydrated is still worth reading.
@@ -330,11 +335,13 @@ class OnyxEngineGateway(IEngineGateway):
     def ingest(self, path: str, mode: IngestMode) -> IngestionSummary:
         engine = self._require_engine()
         try:
-            report = (
-                engine.ingest_audios(path)
-                if mode is IngestMode.AUDIO
-                else engine.ingest_videos(path)
-            )
+            ingest = {
+                IngestMode.VIDEO: engine.ingest_videos,
+                IngestMode.AUDIO: engine.ingest_audios,
+                IngestMode.DOCUMENT: engine.ingest_documents,
+                IngestMode.IMAGE: engine.ingest_images,
+            }[mode]
+            report = ingest(path)
             return IngestionSummary(
                 target_path=report.target_path,
                 scanned=report.total_files_scanned,
@@ -342,6 +349,8 @@ class OnyxEngineGateway(IEngineGateway):
                 failed=report.failed_ingestions,
                 vectors_created=report.vectors_created,
                 clips_extracted=report.clips_extracted,
+                pages_converted=report.pages_converted,
+                images_described=report.images_described,
                 duration_seconds=report.total_duration_seconds,
                 errors=tuple(sorted(report.errors.items())),
             )
@@ -447,7 +456,9 @@ class OnyxEngineGateway(IEngineGateway):
                 excerpt=getattr(chunk, "raw_text", "") or "",
                 speakers=tuple(getattr(chunk, "speaker_labels", ()) or ()),
                 clip_path=citation.physical_path,
-                media_kind=self._media_kind(citation.physical_path, citation.extracted_file_id),
+                media_kind=self._media_kind(citation.physical_path, citation.extracted_file_id,
+                                            self._is_document(citation), self._is_image(citation)),
+                location=self._location(citation),
             ))
         return tuple(evidence)
 
@@ -466,7 +477,9 @@ class OnyxEngineGateway(IEngineGateway):
             rerank_score=chunk.rerank_score,
             speakers=tuple(chunk.speaker_labels or ()),
             clip_path=path,
-            media_kind=self._media_kind(path, chunk.extracted_file_id),
+            media_kind=self._media_kind(path, chunk.extracted_file_id, self._is_document(chunk),
+                                        self._is_image(chunk)),
+            location=self._location(chunk),
         )
 
     def _map_chunk(self, number: int, chunk: Any) -> Evidence:
@@ -480,21 +493,54 @@ class OnyxEngineGateway(IEngineGateway):
             excerpt=chunk.raw_text or chunk.text_payload,
             speakers=tuple(chunk.speaker_labels or ()),
             clip_path=path,
-            media_kind=self._media_kind(path, chunk.extracted_file_id),
+            media_kind=self._media_kind(path, chunk.extracted_file_id, self._is_document(chunk),
+                                        self._is_image(chunk)),
+            location=self._location(chunk),
             # A hydration read is unranked: relevance is hard-coded 0.0 and rerank is None
             # upstream, so leaving both unset keeps meaningless numbers off the card.
         )
 
     @staticmethod
-    def _media_kind(path: Optional[str], extracted_file_id: Optional[uuid.UUID]) -> MediaKind:
+    def _media_kind(path: Optional[str], extracted_file_id: Optional[uuid.UUID],
+                    is_document: bool = False, is_image: bool = False) -> MediaKind:
         """
         A chunk with an extracted clip gets a file that *is* the excerpt. Without one, the engine
         falls back to the entire original source (the audio-only pipeline cuts no clips), which
-        the player has to seek into.
+        the player has to seek into. A document opens whole; its citation names the page. An
+        image opens whole too, and its card previews it.
         """
         if not path:
             return MediaKind.UNRESOLVED
+        if is_image:
+            return MediaKind.IMAGE
+        if is_document:
+            return MediaKind.DOCUMENT
         return MediaKind.CLIP if extracted_file_id else MediaKind.FULL_SOURCE
+
+    @staticmethod
+    def _anchor_value(item: Any) -> Optional[str]:
+        kind = getattr(item, "anchor_kind", None)
+        return getattr(kind, "value", kind)
+
+    @classmethod
+    def _is_document(cls, item: Any) -> bool:
+        """
+        A chunk, citation or report entry anchored by anything but time: page, lines, section or
+        image. A missing anchor is a recording, as it was before documents existed.
+        """
+        return cls._anchor_value(item) not in (None, "time")
+
+    @classmethod
+    def _is_image(cls, item: Any) -> bool:
+        return cls._anchor_value(item) == "image"
+
+    def _location(self, item: Any) -> str:
+        """A document excerpt's "p. 7 · Article 7" label; empty for a recording, shown by its time range."""
+        if not self._is_document(item):
+            return ""
+        kind = getattr(item.anchor_kind, "value", item.anchor_kind)
+        return _import_engine()["format_location"](
+            kind, page_start=item.page_start, page_end=item.page_end, section_path=item.section_path)
 
     @staticmethod
     def _doc_number(doc_id: str) -> Optional[int]:

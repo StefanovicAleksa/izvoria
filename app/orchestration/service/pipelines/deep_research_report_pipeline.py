@@ -142,6 +142,7 @@ class DeepResearchReportPipeline:
                     ReportIndexedSource(
                         source_id=s.source_id, name=s.name, chunk_count=s.chunk_count,
                         first_start_sec=s.first_start_sec, last_end_sec=s.last_end_sec,
+                        anchor_kind=s.anchor_kind, page_count=s.page_count,
                     )
                     for s in indexed_sources
                 ],

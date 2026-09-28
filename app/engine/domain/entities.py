@@ -20,4 +20,19 @@ class IngestionReport(BaseModel):
     vectors_created: int = 0
     clips_extracted: int = 0
 
+    # Document ingestion: pages converted, pages read by OCR, OCR pages that lost lines (indexed with text
+    # missing), and scanned pages with no text at all (not indexed). The last two are listed in `errors` too.
+    pages_converted: int = 0
+    pages_ocr: int = 0
+    pages_ocr_incomplete: int = 0
+    pages_unreadable: int = 0
+
+    # Image ingestion: images described, images whose text no OCR could check (an appliance without OCR), and
+    # text items the vision model read that OCR did not find -- left out of the index, and listed in `errors`
+    images_described: int = 0
+    images_text_unverified: int = 0
+    # Low-confidence OCR lines (handwriting) the vision model did not confirm: not indexed
+    image_ocr_lines_withheld: int = 0
+    image_text_items_dropped: int = 0
+
     model_config = ConfigDict(frozen=True)

@@ -8,7 +8,8 @@ The primary button opens the source in the desktop's own player in **one** click
 what a reader wants when they doubt a claim. Clicking the card itself instead loads it into the
 review panel to read the full excerpt without launching anything.
 
-The excerpt text is always the verbatim speaker-labelled transcript. When a card has no file its
+The excerpt text is the verbatim speaker-labelled transcript or document text; for an image it is the
+labelled machine description, shown beside a thumbnail of the image itself. When a card has no file its
 button is disabled *with a reason*, never quietly hidden: an operator needs to be able to tell
 "this claim has no reviewable source" apart from "I forgot to look".
 """
@@ -28,7 +29,8 @@ from PySide6.QtWidgets import (
 from onyx_desktop.domain.entities import Evidence
 from onyx_desktop.domain.enums import MediaKind
 from onyx_desktop.ui import theme
-from onyx_desktop.utils.formatting import score, speaker_summary, timespan
+from onyx_desktop.ui.widgets.image_thumbnail import set_thumbnail
+from onyx_desktop.utils.formatting import location, score, speaker_summary, timespan
 
 
 class EvidenceCard(QFrame):
@@ -66,7 +68,7 @@ class EvidenceCard(QFrame):
         chip.setProperty("role", "chip")
         header.addWidget(chip)
 
-        span = QLabel(timespan(self._evidence.start_sec, self._evidence.end_sec))
+        span = QLabel(location(self._evidence))
         span.setProperty("role", "subtle")
         header.addWidget(span)
 
@@ -95,7 +97,18 @@ class EvidenceCard(QFrame):
         excerpt.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         if not self._evidence.excerpt:
             excerpt.setProperty("role", "subtle")
-        layout.addWidget(excerpt)
+
+        if self._evidence.media_kind is MediaKind.IMAGE:
+            body = QHBoxLayout()
+            body.setSpacing(12)
+            self._thumbnail = QLabel()
+            self._thumbnail.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+            set_thumbnail(self._thumbnail, self._evidence.clip_path)
+            body.addWidget(self._thumbnail, alignment=Qt.AlignmentFlag.AlignTop)
+            body.addWidget(excerpt, stretch=1)
+            layout.addLayout(body)
+        else:
+            layout.addWidget(excerpt)
 
         footer = QHBoxLayout()
         footer.setSpacing(8)
@@ -131,7 +144,13 @@ class EvidenceCard(QFrame):
             return button
 
         button.clicked.connect(lambda: self.openRequested.emit(self._evidence))
-        if self._evidence.media_kind is MediaKind.FULL_SOURCE:
+        if self._evidence.media_kind is MediaKind.IMAGE:
+            button.setText("Open image ↗")
+            button.setToolTip("Opens the image in your image viewer — the excerpt is a machine description of it")
+        elif self._evidence.media_kind is MediaKind.DOCUMENT:
+            button.setText("Open document ↗")
+            button.setToolTip(f"Opens the whole document — the excerpt is at {location(self._evidence)}")
+        elif self._evidence.media_kind is MediaKind.FULL_SOURCE:
             button.setText("Open recording ↗")
             button.setToolTip(
                 "No clip was cut for this chunk, so the whole recording opens — skip to "

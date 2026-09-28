@@ -27,6 +27,13 @@ class PipelinePhase(str, Enum):
     CLIP_EXTRACTION = "clip_extraction"  # Phase 15.5
     RAG_INDEXING = "rag_indexing"  # Phase 16
 
+    # Document ingestion (PDF / DOCX)
+    DOCUMENT_CONVERSION = "document_conversion"
+    DOCUMENT_CONTEXTUALIZATION = "document_contextualization"
+
+    # Image ingestion (standalone stills)
+    IMAGE_DESCRIPTION = "image_description"
+
     # NEW: Live Inference Retrieval Phases
     RAG_RETRIEVAL = "rag_retrieval"
     RAG_RERANKING = "rag_reranking"

@@ -12,10 +12,12 @@ desktop's click-to-verify panel and in a resumed run three days later.
 import uuid
 from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
+from app.core.anchors.domain.enums import AnchorKind
+from app.core.anchors.utils.formatting import format_location
 from app.features.deep_research_report.domain.entities import EvidenceEntry
 from app.features.deep_research_report.domain.enums import EvidenceOrigin
 from app.features.qa_generation.utils.context_packer import (
-    DOC_HEADER_TOKENS, chunk_source_text, order_for_reading,
+    chunk_source_text, header_tokens, order_for_reading,
 )
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 
@@ -107,6 +109,10 @@ def number_bank(
             source_name=source_names.get(chunk.source_id, _UNKNOWN_SOURCE),
             start_sec=chunk.start_sec,
             end_sec=chunk.end_sec,
+            anchor_kind=chunk.anchor_kind,
+            page_start=chunk.page_start,
+            page_end=chunk.page_end,
+            section_path=chunk.section_path,
             speaker_labels=list(chunk.speaker_labels),
             digest=build_digest(chunk),
             origin=origin,
@@ -132,12 +138,18 @@ def build_bank_index(entries: List[EvidenceEntry]) -> str:
     """
     lines = []
     for entry in entries:
-        speakers = ", ".join(entry.speaker_labels) if entry.speaker_labels else "unlabelled"
-        lines.append(
-            f"[Doc {entry.doc_number}] {entry.source_name} "
-            f"({format_timestamp(entry.start_sec)}–{format_timestamp(entry.end_sec)}, {speakers}): {entry.digest}"
-        )
+        location = entry_location(entry)
+        if entry.anchor_kind is AnchorKind.TIME:
+            speakers = ", ".join(entry.speaker_labels) if entry.speaker_labels else "unlabelled"
+            location = f"{location}, {speakers}"
+        lines.append(f"[Doc {entry.doc_number}] {entry.source_name} ({location}): {entry.digest}")
     return "\n".join(lines)
+
+
+def entry_location(entry: EvidenceEntry) -> str:
+    """Where a bank entry sits in its source: "00:12:31–00:14:02", or "p. 7 · Article 7 Termination"."""
+    return format_location(entry.anchor_kind, entry.start_sec, entry.end_sec,
+                           entry.page_start, entry.page_end, entry.section_path)
 
 
 def build_section_digest(sections: Iterable[Tuple[str, str]], max_chars: int = 600) -> str:
@@ -197,7 +209,7 @@ def pack_section_evidence(
     selected: List[Tuple[int, RetrievedChunk]] = []
     used = 0
     for number, chunk in pairs:
-        cost = count_tokens(chunk_source_text(chunk)) + DOC_HEADER_TOKENS
+        cost = count_tokens(chunk_source_text(chunk)) + header_tokens(chunk)
         if used + cost > token_budget:
             continue
         selected.append((number, chunk))

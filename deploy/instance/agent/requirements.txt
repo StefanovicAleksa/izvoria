@@ -1,0 +1,4 @@
+# Instance agent only, installed into its own venv (/opt/onyx-agent), never the appliance's venv.
+starlette>=0.41,<1
+uvicorn[standard]>=0.32
+psutil>=6

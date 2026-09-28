@@ -53,8 +53,10 @@ class TestQAGenerationAPI:
         # Verify VRAM Lifecycle
         mocks["orchestrator"].acquire_model.assert_called_once()
         mocks["orchestrator"].release_model.assert_called_once()
+        # Transcript evidence only: the budget is computed for the original, transcript-only prompt
         mocks["adapter"].get_context_token_budget.assert_called_once_with(
-            mocks["orchestrator"].acquire_model.return_value, "What happened?", False
+            mocks["orchestrator"].acquire_model.return_value, "What happened?", False,
+            system_prompt=QA_SYSTEM_PROMPT
         )
 
     def test_generate_error_mapping(self, api, mocks):
@@ -121,8 +123,10 @@ class TestQAGenerationAPI:
         mocks["adapter"].generate_answer.assert_called_once()
         mocks["adapter"].critique_answer.assert_called_once()
         # The budget must leave room for the critique prompt as well
+        # Transcript evidence only: the budget is computed for the original, transcript-only prompt
         mocks["adapter"].get_context_token_budget.assert_called_once_with(
-            mocks["orchestrator"].acquire_model.return_value, "What happened?", True
+            mocks["orchestrator"].acquire_model.return_value, "What happened?", True,
+            system_prompt=QA_SYSTEM_PROMPT
         )
 
     def test_generate_with_critique_shows_the_model_only_the_question_and_evidence(self, api, mocks):
@@ -373,3 +377,95 @@ class TestCitationGuard:
         first, second = [call[0][1] for call in mocks["adapter"].generate_conversation_answer.call_args_list]
         assert second == first + [{"role": "assistant", "content": "Uncited."},
                                   {"role": "user", "content": CITATION_RETRY_PROMPT}]
+
+
+class TestAnswersInTheApplianceLanguage:
+    """A Serbian appliance answers, refuses and is asked to cite in Serbian; the grounding rules are unchanged."""
+
+    SERBIAN_REFUSAL = "Ne mogu da odgovorim na ovo na osnovu dostupnog konteksta."
+
+    @pytest.fixture
+    def mocks(self):
+        adapter = MagicMock()
+        adapter.get_context_token_budget.return_value = 4000
+        adapter.get_conversation_token_budget.return_value = 100_000
+        adapter.count_tokens.side_effect = lambda model, text: len(text.split())
+        return {"adapter": adapter, "orchestrator": MagicMock()}
+
+    @pytest.fixture
+    def api(self, mocks, appliance_language):
+        appliance_language("sr")
+        return QAGenerationAPI(adapter=mocks["adapter"], orchestrator=mocks["orchestrator"])
+
+    def test_no_evidence_refuses_in_serbian(self, api):
+        assert api.generate("Šta je rekao lekar?", []).generated_answer == self.SERBIAN_REFUSAL
+
+    def test_system_prompt_uses_the_serbian_refusal_and_asks_for_serbian(self, api, mocks):
+        mocks["adapter"].generate_answer.return_value = "Lekar je rekao da je stabilan [Doc 1]."
+
+        api.generate("Šta je rekao lekar?", [_chunk()])
+
+        system_prompt = mocks["adapter"].generate_answer.call_args.kwargs["system_prompt"]
+        assert self.SERBIAN_REFUSAL in system_prompt
+        assert NO_EVIDENCE_ANSWER not in system_prompt
+        assert "<OUTPUT_LANGUAGE>" in system_prompt and "in Serbian" in system_prompt
+
+    @pytest.mark.parametrize("refusal", [SERBIAN_REFUSAL, NO_EVIDENCE_ANSWER])
+    def test_a_refusal_in_either_language_is_not_sent_back_for_citations(self, api, mocks, refusal):
+        mocks["adapter"].generate_answer.return_value = refusal
+
+        assert api.generate("Q", [_chunk()]).generated_answer == refusal
+        mocks["adapter"].generate_conversation_answer.assert_not_called()
+
+    def test_citation_retry_is_localized_and_uncited_answer_becomes_the_serbian_refusal(self, api, mocks):
+        mocks["adapter"].generate_answer.return_value = "Nešto."
+        mocks["adapter"].generate_conversation_answer.return_value = "Nešto drugo."
+
+        response = api.generate("Q", [_chunk()])
+
+        retry = mocks["adapter"].generate_conversation_answer.call_args[0][1][-1]["content"]
+        assert self.SERBIAN_REFUSAL in retry and NO_EVIDENCE_ANSWER not in retry
+        assert response.generated_answer == self.SERBIAN_REFUSAL
+
+    def test_conversation_system_prompt_is_localized(self, api, mocks):
+        mocks["adapter"].generate_conversation_answer.return_value = "Da [Doc 1]."
+
+        api.generate_conversation("Q", [_chunk()], ConversationHistory())
+
+        system_prompt = mocks["adapter"].generate_conversation_answer.call_args[0][1][0]["content"]
+        assert system_prompt.startswith(QA_SYSTEM_PROMPT.replace(NO_EVIDENCE_ANSWER, self.SERBIAN_REFUSAL))
+        assert "<CONVERSATION_RULES>" in system_prompt and system_prompt.rstrip().endswith("</OUTPUT_LANGUAGE>")
+
+
+class TestPromptForDocuments:
+    """An appliance with only recordings keeps its prompt byte for byte; documents switch to the mixed prompt."""
+
+    @pytest.fixture
+    def mocks(self):
+        adapter = MagicMock()
+        adapter.get_context_token_budget.return_value = 4000
+        adapter.count_tokens.side_effect = lambda model, text: len(text.split())
+        adapter.generate_answer.return_value = "It says so [Doc 1]."
+        return {"adapter": adapter, "orchestrator": MagicMock()}
+
+    @staticmethod
+    def _chunk(**anchor):
+        return RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload="p", raw_text="Text.",
+                              start_sec=0.0, end_sec=1.0, relevance_score=0.9, **anchor)
+
+    def test_transcripts_only_get_the_original_prompt(self, mocks):
+        QAGenerationAPI(mocks["adapter"], mocks["orchestrator"]).generate("Q?", [self._chunk()])
+
+        assert mocks["adapter"].generate_answer.call_args.kwargs["system_prompt"] == QA_SYSTEM_PROMPT
+
+    def test_a_document_excerpt_switches_budget_and_prompt_together(self, mocks):
+        from app.core.anchors.domain.enums import AnchorKind
+        from app.features.qa_generation.data.prompts import QA_DOCUMENTS_SYSTEM_PROMPT
+
+        chunks = [self._chunk(), self._chunk(anchor_kind=AnchorKind.PAGE, page_start=3, page_end=3)]
+        QAGenerationAPI(mocks["adapter"], mocks["orchestrator"]).generate("Q?", chunks)
+
+        assert mocks["adapter"].generate_answer.call_args.kwargs["system_prompt"] == QA_DOCUMENTS_SYSTEM_PROMPT
+        assert mocks["adapter"].get_context_token_budget.call_args.kwargs["system_prompt"] == QA_DOCUMENTS_SYSTEM_PROMPT
+        assert "attribute it to the document" in QA_DOCUMENTS_SYSTEM_PROMPT
+        assert "attribute it to the document" not in QA_SYSTEM_PROMPT

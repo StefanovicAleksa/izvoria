@@ -6,6 +6,8 @@ import uuid
 from pathlib import Path
 from typing import Dict, List
 
+# The scanner's list: a format the scan drops never reaches this pipeline's filter, so there is one list
+from app.features.scanner.utils.filters import AUDIO_EXTENSIONS
 from app.features.storage.domain.entities import SourceType
 
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
@@ -39,11 +41,6 @@ from app.orchestration.service.phases.context_unification_phase import ContextUn
 from app.orchestration.service.phases.rag_indexing_phase import RagIndexingPhase
 
 logger = logging.getLogger(__name__)
-
-# Comprehensive list to catch orthodox and unorthodox audio formats
-AUDIO_EXTENSIONS = {
-    '.mp3', '.wav', '.flac', '.m4a', '.aac', '.ogg', '.wma', '.alac', '.aiff', '.amr', '.opus', '.mka'
-}
 
 
 class BatchAudioPipeline:

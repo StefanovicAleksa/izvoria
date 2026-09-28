@@ -6,7 +6,7 @@ import pytest
 
 from app.features.transcription.domain.entities import TranscriptSegment
 from app.features.vad.domain.entities import VadMap, VadSegment
-from app.features.hallucination_correction.domain.entities import CorrectionConfig
+from app.features.hallucination_correction.domain.entities import CorrectionConfig, LANGUAGE_NEUTRAL_BLACKLIST
 from app.features.hallucination_correction.utils.heuristics import CorrectionHeuristicsEngine
 from app.features.hallucination_correction.exceptions.validation import CorruptSegmentDataError
 
@@ -14,7 +14,12 @@ from app.features.hallucination_correction.exceptions.validation import CorruptS
 class TestCorrectionHeuristicsEngine:
     @pytest.fixture
     def config(self):
-        return CorrectionConfig()
+        # The blacklist CorrectionAPI builds for an English appliance: the en pack's phrases plus the neutral ones
+        return CorrectionConfig(blacklist_patterns=[
+            r"(?i)(subscribe|like and subscribe|thank you for watching)",
+            r"(?i)(amara\.org|subtitles by)",
+            *LANGUAGE_NEUTRAL_BLACKLIST,
+        ])
 
     @pytest.fixture
     def vad_map(self):

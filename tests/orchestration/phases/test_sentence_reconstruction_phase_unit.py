@@ -63,6 +63,15 @@ class TestSentenceReconstructionPhaseUnit:
         assert phase._preload_future == mock_future
         mock_async_service.trigger_preload.assert_called_once_with(sample_manifest, mock_adapter)
 
+    def test_preload_model_loads_nothing_for_a_model_free_adapter(self, phase, mock_async_service, mock_adapter):
+        """A language that keeps Whisper's punctuation has no model to preload, so none may be queued."""
+        mock_adapter.requires_model = False
+
+        phase.preload_model()
+
+        assert phase._preload_future is None
+        mock_async_service.trigger_preload.assert_not_called()
+
     def test_execute_success(self, phase, mock_job_manager, mock_transcription_api, mock_async_service, mock_adapter):
         """Scenario: Batch processes perfectly, Punctuation model unloads at the end."""
         source_id = uuid.uuid4()

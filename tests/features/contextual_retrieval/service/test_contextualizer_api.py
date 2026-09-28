@@ -5,7 +5,10 @@ import uuid
 import pytest
 from unittest.mock import MagicMock, patch, call
 
+from app.core.anchors.domain.enums import AnchorKind
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
+from app.features.contextual_retrieval.data.prompts import DOCUMENT_CONTEXTUAL_SYSTEM_PROMPT
+from app.features.document_structuring.domain.entities import StructuredChunk, StructuredDocument
 from app.features.domain_phonetic_correction.domain.entities import DomainPhoneticCorrectedTranscript
 from app.features.sentence_reconstruction.domain.entities import ReconstructedSentence
 from app.features.contextual_retrieval.service.contextualizer_api import ContextualizerAPI
@@ -155,3 +158,133 @@ class TestContextualizerAPI:
         mocks["orchestrator"].release_model.assert_called_once_with(
             mock_loaded_model, mocks["slm_adapter"], flush=True
         )
+
+
+class TestExecuteDocument:
+    @pytest.fixture
+    def mocks(self):
+        mocks = {"repo": MagicMock(), "orchestrator": MagicMock(spec=ModelManagerOrchestrator), "slm_adapter": MagicMock()}
+        mocks["repo"].get_by_source_id.return_value = None
+        mocks["repo"].save.side_effect = lambda transcript: transcript
+        mocks["slm_adapter"].count_tokens.return_value = 10
+        mocks["slm_adapter"].generate_context.side_effect = ["A lease between Acme and Beta.", "Its termination clause."]
+        return mocks
+
+    @pytest.fixture
+    def api(self, mocks):
+        return ContextualizerAPI(repository=mocks["repo"], orchestrator=mocks["orchestrator"],
+                                 slm_adapter=mocks["slm_adapter"])
+
+    @pytest.fixture
+    def document(self):
+        return StructuredDocument(source_id=uuid.uuid4(), anchor_kind=AnchorKind.PAGE, chunks=[
+            StructuredChunk(ordinal=0, text="LEASE\n\nMade between Acme and Beta.", page_start=1, page_end=1,
+                            section_path="LEASE"),
+            StructuredChunk(ordinal=1, text="Article 7 Termination\n\nThirty days' notice.", page_start=2,
+                            page_end=3, section_path="LEASE › Article 7 Termination"),
+        ])
+
+    def test_chunks_keep_their_verbatim_text_and_page_anchor(self, api, mocks, document):
+        result = api.execute_document(document)
+
+        assert [c.original_text for c in result.chunks] == [c.text for c in document.chunks]
+        assert [c.context_string for c in result.chunks] == ["A lease between Acme and Beta.", "Its termination clause."]
+        second = result.chunks[1]
+        assert (second.anchor_kind, second.page_start, second.page_end) == (AnchorKind.PAGE, 2, 3)
+        assert second.section_path == "LEASE › Article 7 Termination"
+        assert second.start_sec == 0.0 and second.sentences == []
+
+    def test_line_anchored_chunks_carry_their_lines_in_the_page_fields(self, api, mocks):
+        book = StructuredDocument(source_id=uuid.uuid4(), anchor_kind=AnchorKind.LINE, chunks=[
+            StructuredChunk(ordinal=0, text="CHAPTER I\n\nIt was night.", line_start=3, line_end=10,
+                            section_path="CHAPTER I"),
+            StructuredChunk(ordinal=1, text="CHAPTER II\n\nMorning.", line_start=12, line_end=40,
+                            section_path="CHAPTER II"),
+        ])
+
+        result = api.execute_document(book)
+
+        assert [(c.anchor_kind, c.page_start, c.page_end) for c in result.chunks] == [
+            (AnchorKind.LINE, 3, 10), (AnchorKind.LINE, 12, 40),
+        ]
+
+    def test_slm_reads_the_whole_document_and_the_chunk_under_its_headings(self, api, mocks, document):
+        api.execute_document(document)
+
+        second_call = mocks["slm_adapter"].generate_context.call_args_list[1].kwargs
+        assert second_call["full_document_text"] == "\n\n".join(c.text for c in document.chunks)
+        assert second_call["chunk_text"] == "[LEASE › Article 7 Termination]\nArticle 7 Termination\n\nThirty days' notice."
+        assert second_call["system_prompt"] == DOCUMENT_CONTEXTUAL_SYSTEM_PROMPT
+
+    def test_model_is_released_after_the_document(self, api, mocks, document):
+        api.execute_document(document)
+
+        loaded = mocks["orchestrator"].acquire_model.return_value
+        mocks["orchestrator"].release_model.assert_called_once_with(loaded, mocks["slm_adapter"], flush=True)
+
+    def test_release_after_false_keeps_the_model_for_the_next_document(self, api, mocks, document):
+        api.execute_document(document, release_after=False)
+
+        mocks["orchestrator"].release_model.assert_not_called()
+
+    def test_existing_record_skips_the_model(self, api, mocks, document):
+        existing = ContextualizedTranscript(source_id=document.source_id, chunks=[])
+        mocks["repo"].get_by_source_id.return_value = existing
+
+        assert api.execute_document(document) is existing
+        mocks["orchestrator"].acquire_model.assert_not_called()
+
+    def test_long_document_is_situated_within_sections(self, api, mocks, document):
+        # The whole document overflows the context window; each chunk on its own fits
+        mocks["slm_adapter"].count_tokens.side_effect = [10 ** 6, 10, 10]
+
+        with patch("app.features.contextual_retrieval.service.contextualizer_api.build_document_sections",
+                   return_value=[(0, 1), (1, 2)]) as planner:
+            api.execute_document(document)
+
+        planner.assert_called_once()
+        calls = mocks["slm_adapter"].generate_context.call_args_list
+        assert calls[0].kwargs["full_document_text"] == document.chunks[0].text
+        assert calls[1].kwargs["full_document_text"] == document.chunks[1].text
+
+    def test_failure_releases_the_model_and_is_mapped(self, api, mocks, document):
+        mocks["slm_adapter"].generate_context.side_effect = RuntimeError("llama_cpp generation crashed")
+
+        with pytest.raises(SLMInferenceError):
+            api.execute_document(document)
+        mocks["orchestrator"].release_model.assert_called_once()
+
+
+class TestExecuteImage:
+    @pytest.fixture
+    def mocks(self):
+        mocks = {"repo": MagicMock(), "orchestrator": MagicMock(spec=ModelManagerOrchestrator), "slm_adapter": MagicMock()}
+        mocks["repo"].get_by_source_id.return_value = None
+        mocks["repo"].save.side_effect = lambda transcript: transcript
+        return mocks
+
+    @pytest.fixture
+    def api(self, mocks):
+        return ContextualizerAPI(repository=mocks["repo"], orchestrator=mocks["orchestrator"],
+                                 slm_adapter=mocks["slm_adapter"])
+
+    def test_one_image_chunk_and_no_model(self, api, mocks):
+        source_id = uuid.uuid4()
+
+        result = api.execute_image(source_id, excerpt="Image (machine description): A dog.",
+                                   context_string="dog.jpg · 640×480")
+
+        [chunk] = result.chunks
+        assert result.source_id == source_id
+        assert (chunk.anchor_kind, chunk.original_text, chunk.context_string) == (
+            AnchorKind.IMAGE, "Image (machine description): A dog.", "dog.jpg · 640×480")
+        assert (chunk.start_sec, chunk.page_start, chunk.sentences) == (0.0, None, [])
+        mocks["orchestrator"].acquire_model.assert_not_called()
+        mocks["repo"].save.assert_called_once_with(result)
+
+    def test_existing_record_is_returned(self, api, mocks):
+        existing = ContextualizedTranscript(source_id=uuid.uuid4(), chunks=[])
+        mocks["repo"].get_by_source_id.return_value = existing
+
+        assert api.execute_image(existing.source_id, "x", "y") is existing
+        mocks["repo"].save.assert_not_called()

@@ -6,6 +6,7 @@ import typing
 from typing import Callable, Optional
 
 from app.core.config import settings
+from app.core.language.service.language_api import get_language_pack
 from app.core.database.service.manager import db_manager
 from app.core.jobs.data.repositories import JobRepository
 from app.core.jobs.service.manager import JobManager
@@ -47,6 +48,7 @@ from app.features.diarization.data.nemo_adapter import NeMoDiarizationAdapter
 from app.features.sentence_reconstruction.data.repositories import PostgresSentenceRepository
 from app.features.sentence_reconstruction.service.reconstruction_api import SentenceReconstructionAPI
 from app.features.sentence_reconstruction.data.punctuation_adapter import PunctuationAdapter
+from app.features.sentence_reconstruction.data.whisper_punctuation_adapter import WhisperPunctuationAdapter
 
 from app.features.domain_phonetic_correction.data.repositories import DomainPhoneticRepository
 from app.features.domain_phonetic_correction.data.qwen_adapter import QwenDomainAdapter
@@ -55,6 +57,16 @@ from app.features.domain_phonetic_correction.service.correction_api import Domai
 from app.features.contextual_retrieval.data.repositories import ContextualRepository
 from app.features.contextual_retrieval.data.slm_adapter import SLMContextAdapter
 from app.features.contextual_retrieval.service.contextualizer_api import ContextualizerAPI
+
+from app.features.document_conversion.data.markitdown_converter import MarkItDownConverter
+from app.features.document_conversion.data.pdfium_reader import PdfiumReader
+from app.features.document_conversion.data.pdfplumber_layout import PdfplumberLayoutExtractor
+from app.features.document_conversion.data.plain_text_decoder import CharsetTextDecoder
+from app.features.document_conversion.data.rapidocr_engine import RapidOcrEngine
+from app.features.document_conversion.data.repositories import ConvertedDocumentRepository
+from app.features.document_conversion.data.rtf_reader import StripRtfReader
+from app.features.document_conversion.service.conversion_api import DocumentConversionAPI
+from app.features.document_structuring.service.structuring_api import DocumentStructuringAPI
 
 from app.features.visual_cue_detection.data.qwen_detector_adapter import QwenDetectorAdapter
 from app.features.visual_cue_detection.service.detection_api import VisualCueDetectionAPI
@@ -66,6 +78,8 @@ from app.features.frame_extraction.utils.quality_filter import QualityFilter
 from app.features.frame_extraction.utils.frame_deduplicator import FrameDeduplicator
 
 from app.features.visual_analysis.data.vlm_adapter import QwenVLMAdapter
+from app.features.image_description.data.repositories import ImageDescriptionRepository
+from app.features.image_description.service.image_description_api import ImageDescriptionAPI
 from app.features.visual_analysis.data.repositories import VisualAnalysisRepository
 from app.features.visual_analysis.service.analysis_api import VisualAnalysisAPI
 
@@ -122,6 +136,8 @@ from app.orchestration.service.phases.diarize_phase import DiarizePhase
 from app.orchestration.service.phases.sentence_reconstruction_phase import SentenceReconstructionPhase
 from app.orchestration.service.phases.domain_phonetic_correction_phase import DomainPhoneticCorrectionPhase
 from app.orchestration.service.phases.contextual_retrieval_phase import ContextualRetrievalPhase
+from app.orchestration.service.phases.document_conversion_phase import DocumentConversionPhase
+from app.orchestration.service.phases.document_contextualization_phase import DocumentContextualizationPhase
 from app.orchestration.service.phases.visual_cue_detection_phase import VisualCueDetectionPhase
 from app.orchestration.service.phases.frame_extraction_phase import FrameExtractionPhase
 from app.orchestration.service.phases.visual_analysis_phase import VisualAnalysisPhase
@@ -140,6 +156,9 @@ from app.orchestration.service.phases.report_authoring_phase import ReportAuthor
 
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.service.pipelines.batch_audio_pipeline import BatchAudioPipeline
+from app.orchestration.service.pipelines.batch_document_pipeline import BatchDocumentPipeline
+from app.orchestration.service.pipelines.batch_image_pipeline import BatchImagePipeline
+from app.orchestration.service.phases.image_description_phase import ImageDescriptionPhase
 from app.orchestration.service.pipelines.live_retrieval_pipeline import LiveRetrievalPipeline
 from app.orchestration.service.pipelines.live_verified_retrieval_pipeline import LiveVerifiedRetrievalPipeline
 from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
@@ -218,7 +237,10 @@ class OnyxBootstrapper:
                                          required_vram_mb=settings.DIARIZATION_VRAM_REQUIREMENT_MB)
 
         sentence_repo = PostgresSentenceRepository(db_manager)
-        real_punctuation_adapter = PunctuationAdapter()
+        # The fullstop classifier only knows en/de/fr/it; other languages keep the punctuation Whisper wrote
+        real_punctuation_adapter = (
+            PunctuationAdapter() if get_language_pack().punctuation.source == "model" else WhisperPunctuationAdapter()
+        )
         reconstruction_api = SentenceReconstructionAPI(sentence_repo, orchestrator, real_punctuation_adapter)
         punctuation_path = getattr(settings, "PUNCTUATION_MODEL_PATH", "models/fullstop-punctuation-multilingual-base")
         punctuation_manifest = ModelManifest(model_type=ModelType.SENTENCE_RECONSTRUCTION, model_path=punctuation_path,
@@ -237,6 +259,21 @@ class OnyxBootstrapper:
         real_slm_adapter = SLMContextAdapter()
         contextualizer_api = ContextualizerAPI(repository=contextual_repo, orchestrator=orchestrator,
                                                slm_adapter=real_slm_adapter)
+
+        # --- Features: Documents (PDF / DOCX) and books & texts (EPUB / TXT / MD / HTML / RTF) ---
+        # OCR runs on the CPU and only for languages with a trustworthy recognition model; elsewhere scanned pages
+        # are reported as unreadable (see data/languages/*.toml, documents.ocr_rec_model)
+        ocr_rec_model = get_language_pack().documents.ocr_rec_model
+        ocr_engine = (RapidOcrEngine(str(settings.BASE_DIR / settings.DOC_OCR_MODEL_DIR), ocr_rec_model)
+                      if ocr_rec_model else None)
+        converted_document_repo = ConvertedDocumentRepository(db_manager)
+        conversion_api = DocumentConversionAPI(
+            repository=converted_document_repo, storage_api=storage_api, pdf_reader=PdfiumReader(),
+            markdown_converter=MarkItDownConverter(), ocr_engine=ocr_engine,
+            layout_extractor=PdfplumberLayoutExtractor(), text_decoder=CharsetTextDecoder(),
+            rtf_reader=StripRtfReader()
+        )
+        structuring_api = DocumentStructuringAPI()
 
         # --- Features: Visual Intelligence ---
         cue_detector_adapter = QwenDetectorAdapter()
@@ -393,6 +430,32 @@ class OnyxBootstrapper:
             rag_indexing_phase=rag_indexing_phase
         )
 
+        document_conversion_phase = DocumentConversionPhase(job_manager=job_manager, conversion_api=conversion_api)
+        document_contextualization_phase = DocumentContextualizationPhase(
+            job_manager=job_manager, structuring_api=structuring_api, contextualizer_api=contextualizer_api,
+            conversion_repo=converted_document_repo, async_model_service=async_service, loader=real_slm_adapter
+        )
+        document_pipeline = BatchDocumentPipeline(
+            scan_phase=scan_phase, ingest_phase=ingest_phase, document_conversion_phase=document_conversion_phase,
+            document_contextualization_phase=document_contextualization_phase,
+            context_unification_phase=context_unification_phase, rag_indexing_phase=rag_indexing_phase
+        )
+
+        # --- Images: the same VLM adapter instance as visual analysis (one loader per model), and the document
+        # feature's OCR to check the text the VLM reads ---
+        image_description_api = ImageDescriptionAPI(
+            repository=ImageDescriptionRepository(db_manager), storage_api=storage_api,
+            visual_api=visual_analysis_api, conversion_api=conversion_api
+        )
+        image_description_phase = ImageDescriptionPhase(
+            job_manager=job_manager, image_api=image_description_api, visual_api=visual_analysis_api,
+            contextualizer_api=contextualizer_api, async_model_service=async_service, loader=vlm_adapter
+        )
+        image_pipeline = BatchImagePipeline(
+            scan_phase=scan_phase, ingest_phase=ingest_phase, image_description_phase=image_description_phase,
+            context_unification_phase=context_unification_phase, rag_indexing_phase=rag_indexing_phase
+        )
+
         audio_pipeline = BatchAudioPipeline(
             scan_phase=scan_phase, ingest_phase=ingest_phase, extract_audio_phase=extract_audio_phase,
             vad_phase=vad_phase,
@@ -445,7 +508,9 @@ class OnyxBootstrapper:
             session_memory_api=session_memory_api,
             retrieval_api=retrieval_api,
             research_report_pipeline=research_report_pipeline,
-            report_api=report_api
+            report_api=report_api,
+            document_pipeline=document_pipeline,
+            image_pipeline=image_pipeline
         )
 
         logger.info("Onyx Bootstrapper successfully constructed the Engine container.")

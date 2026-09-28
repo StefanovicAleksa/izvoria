@@ -1,6 +1,8 @@
 # Canvas: desktop_test_formatting_v1
 # Path: frontend/tests/utils/test_formatting_unit.py
 
+import uuid
+
 import pytest
 
 from onyx_desktop.utils.formatting import (
@@ -108,3 +110,22 @@ class TestElide:
 
     def test_short_text_is_untouched(self):
         assert elide("short", limit=10) == "short"
+
+
+class TestLocation:
+    def test_a_document_excerpt_shows_its_page(self):
+        from onyx_desktop.domain.entities import Evidence
+        from onyx_desktop.utils.formatting import location
+
+        evidence = Evidence(doc_number=1, chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), start_sec=0.0,
+                            end_sec=0.0, location="p. 7 · Article 7")
+
+        assert location(evidence) == "p. 7 · Article 7"
+
+    def test_a_recording_excerpt_shows_its_time_range(self):
+        from onyx_desktop.domain.entities import Evidence
+        from onyx_desktop.utils.formatting import location
+
+        evidence = Evidence(doc_number=1, chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), start_sec=72, end_sec=108)
+
+        assert location(evidence) == "01:12–01:48"

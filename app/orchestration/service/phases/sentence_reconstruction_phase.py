@@ -42,6 +42,8 @@ class SentenceReconstructionPhase:
 
     def preload_model(self) -> None:
         """Triggers the background loading of the Token Classification (Punctuation) model."""
+        if not getattr(self._adapter, "requires_model", True):
+            return  # this language keeps Whisper's own punctuation: there is nothing to load
         self._preload_future = self._async_service.trigger_preload(self._manifest, self._adapter)
 
     def discard_preload(self) -> None:

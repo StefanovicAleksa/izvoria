@@ -8,11 +8,10 @@ import uuid
 import gc
 from typing import Dict, List, Optional
 
-from sqlalchemy import text
 
 from app.core.config import settings
 from app.core.database.service.manager import db_manager
-from app.core.database.data.engine import Base
+from app.core.database.service.migrations import upgrade_to_head
 from app.core.model_manager.service.async_model_service import AsyncModelService
 
 from app.engine.domain.interfaces import IOnyxEngine
@@ -30,9 +29,6 @@ from app.features.qa_generation.domain.entities import QAResponse, ConversationH
 from app.features.session_memory.service.session_memory_api import SessionMemoryAPI
 from app.features.session_memory.domain.enums import SessionTurnMode
 from app.core.jobs.domain.entities import CancellationToken
-from app.core.jobs.data.models import JOBS_UPGRADE_DDL
-from app.features.session_memory.data.models import SESSION_TURNS_UPGRADE_DDL
-from app.features.deep_research_report.data.models import RESEARCH_REPORT_UPGRADE_DDL
 from app.features.deep_research_report.domain.entities import (
     CorpusDigest, Report, ReportSummary, ResearchPlan, ResearchPlanProposal,
 )
@@ -41,6 +37,8 @@ from app.features.deep_research_report.service.report_api import ReportAuthoring
 
 from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaPipeline
 from app.orchestration.service.pipelines.batch_audio_pipeline import BatchAudioPipeline
+from app.orchestration.service.pipelines.batch_document_pipeline import BatchDocumentPipeline
+from app.orchestration.service.pipelines.batch_image_pipeline import BatchImagePipeline
 from app.orchestration.service.pipelines.live_retrieval_pipeline import LiveRetrievalPipeline
 from app.orchestration.service.pipelines.live_verified_retrieval_pipeline import LiveVerifiedRetrievalPipeline
 from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
@@ -71,7 +69,9 @@ class OnyxEngine(IOnyxEngine):
             session_memory_api: Optional[SessionMemoryAPI] = None,
             retrieval_api: Optional[RetrievalAPI] = None,
             research_report_pipeline: Optional[DeepResearchReportPipeline] = None,
-            report_api: Optional[ReportAuthoringAPI] = None
+            report_api: Optional[ReportAuthoringAPI] = None,
+            document_pipeline: Optional[BatchDocumentPipeline] = None,
+            image_pipeline: Optional[BatchImagePipeline] = None
     ):
         self._async_service = async_model_service
         self._media_pipeline = media_pipeline
@@ -85,6 +85,8 @@ class OnyxEngine(IOnyxEngine):
         self._retrieval_api = retrieval_api
         self._research_report_pipeline = research_report_pipeline
         self._report_api = report_api
+        self._document_pipeline = document_pipeline
+        self._image_pipeline = image_pipeline
 
         self._state = EngineState.OFFLINE
         self._state_lock = threading.RLock()
@@ -105,11 +107,12 @@ class OnyxEngine(IOnyxEngine):
             logger.info("Booting Onyx Enterprise AI Engine...")
 
             try:
-                with db_manager.session() as session:
-                    engine = session.get_bind()
-                    Base.metadata.create_all(bind=engine)
-                    for statement in (*SESSION_TURNS_UPGRADE_DDL, *JOBS_UPGRADE_DDL, *RESEARCH_REPORT_UPGRADE_DDL):
-                        session.execute(text(statement))
+                # Creates a fresh database, or brings an existing one to this build's schema without touching its data
+                upgrade_to_head(db_manager.get_engine())
+
+                # An index built for another language can't be searched with this one's stemmer
+                if self._retrieval_api is not None:
+                    self._retrieval_api.verify_index_language()
 
                 self._force_aggressive_garbage_collection()
 
@@ -222,6 +225,42 @@ class OnyxEngine(IOnyxEngine):
             self._aggregate_metrics(results, errors, metrics)
         except Exception as e:
             raise map_engine_error(e, context=f"Audio Ingestion [{target_path}]")
+        finally:
+            self._cleanup_after_ingestion()
+
+        return self._build_report(target_path, metrics, errors, time.time() - start_time)
+
+    def ingest_documents(self, target_path: str) -> IngestionReport:
+        if self._document_pipeline is None:
+            raise EngineOfflineError("Document ingestion is not wired into this engine instance.")
+        self._prepare_for_ingestion()
+        start_time = time.time()
+        errors: Dict[str, str] = {}
+        metrics: Dict[str, int] = {"scanned": 0, "success": 0, "failed": 0, "vectors": 0, "clips": 0}
+
+        try:
+            results = self._document_pipeline.process_directory(target_path)
+            self._aggregate_metrics(results, errors, metrics)
+        except Exception as e:
+            raise map_engine_error(e, context=f"Document Ingestion [{target_path}]")
+        finally:
+            self._cleanup_after_ingestion()
+
+        return self._build_report(target_path, metrics, errors, time.time() - start_time)
+
+    def ingest_images(self, target_path: str) -> IngestionReport:
+        if self._image_pipeline is None:
+            raise EngineOfflineError("Image ingestion is not wired into this engine instance.")
+        self._prepare_for_ingestion()
+        start_time = time.time()
+        errors: Dict[str, str] = {}
+        metrics: Dict[str, int] = {"scanned": 0, "success": 0, "failed": 0, "vectors": 0, "clips": 0}
+
+        try:
+            results = self._image_pipeline.process_directory(target_path)
+            self._aggregate_metrics(results, errors, metrics)
+        except Exception as e:
+            raise map_engine_error(e, context=f"Image Ingestion [{target_path}]")
         finally:
             self._cleanup_after_ingestion()
 
@@ -629,6 +668,48 @@ class OnyxEngine(IOnyxEngine):
                 if getattr(item, "success", False):
                     metrics_dict["clips"] += getattr(item, "extracted_clips_count", 0)
 
+        if PipelinePhase.DOCUMENT_CONVERSION in pipeline_results:
+            for item in pipeline_results[PipelinePhase.DOCUMENT_CONVERSION].items:
+                if not getattr(item, "success", False):
+                    continue
+                for key, field in (("pages", "pages_total"), ("pages_ocr", "pages_ocr"),
+                                   ("pages_ocr_incomplete", "pages_ocr_incomplete"),
+                                   ("pages_unreadable", "pages_unreadable")):
+                    metrics_dict[key] = metrics_dict.get(key, 0) + getattr(item, field, 0)
+                # Not a failure -- the document is indexed -- but text is missing from it, and a person relying
+                # on the index has to know which file to check by hand
+                if item.pages_ocr_incomplete or item.pages_unreadable:
+                    error_dict[f"document_pages_{item.source_id}"] = (
+                        f"Source {item.source_id}: {item.pages_unreadable} scanned page(s) could not be read and "
+                        f"are not indexed; {item.pages_ocr_incomplete} page(s) lost lines to OCR."
+                    )
+
+        if PipelinePhase.IMAGE_DESCRIPTION in pipeline_results:
+            for item in pipeline_results[PipelinePhase.IMAGE_DESCRIPTION].items:
+                if not getattr(item, "success", False):
+                    continue
+                metrics_dict["images"] = metrics_dict.get("images", 0) + 1
+                if not item.ocr_checked:
+                    metrics_dict["images_unverified"] = metrics_dict.get("images_unverified", 0) + 1
+                dropped = item.text_items_dropped
+                metrics_dict["image_items_dropped"] = metrics_dict.get("image_items_dropped", 0) + dropped
+                withheld = item.ocr_lines_withheld
+                metrics_dict["image_ocr_withheld"] = metrics_dict.get("image_ocr_withheld", 0) + withheld
+                # Not a failure -- the image is indexed -- but some of its text is not, and a person relying on the
+                # index should know it was left out rather than trusted. Only what actually happened is listed.
+                gaps = []
+                if dropped:
+                    gaps.append(f"{dropped} text item(s) the vision model read were not found by OCR")
+                if withheld:
+                    gaps.append(f"{withheld} line(s) OCR read with low confidence were not confirmed by the vision "
+                                f"model (handwriting?)")
+                if item.ocr_incomplete:
+                    gaps.append("OCR detected lines it could not read")
+                if gaps:
+                    error_dict[f"image_text_{item.source_id}"] = (
+                        f"Source {item.source_id}: " + "; ".join(gaps) + ". That text is not indexed."
+                    )
+
         for phase, result in pipeline_results.items():
             if result.status in [PhaseStatus.FAILED, PhaseStatus.PARTIAL_SUCCESS]:
                 for idx, err_str in enumerate(result.errors):
@@ -640,5 +721,12 @@ class OnyxEngine(IOnyxEngine):
             target_path=target_path, total_files_scanned=metrics["scanned"],
             successful_ingestions=metrics["success"], failed_ingestions=metrics["failed"],
             errors=errors, total_duration_seconds=round(duration, 2),
-            vectors_created=metrics["vectors"], clips_extracted=metrics["clips"]
+            vectors_created=metrics["vectors"], clips_extracted=metrics["clips"],
+            pages_converted=metrics.get("pages", 0), pages_ocr=metrics.get("pages_ocr", 0),
+            pages_ocr_incomplete=metrics.get("pages_ocr_incomplete", 0),
+            pages_unreadable=metrics.get("pages_unreadable", 0),
+            images_described=metrics.get("images", 0),
+            images_text_unverified=metrics.get("images_unverified", 0),
+            image_text_items_dropped=metrics.get("image_items_dropped", 0),
+            image_ocr_lines_withheld=metrics.get("image_ocr_withheld", 0)
         )

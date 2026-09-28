@@ -63,8 +63,9 @@ class SentenceReconstructionAPI:
             all_reconstructed_sentences: List[ReconstructedSentence] = []
 
             try:
-                # 3. Safely acquire the GPU resource
-                loaded_model = self._orchestrator.acquire_model(manifest, self._adapter)
+                # 3. Safely acquire the GPU resource (an adapter that reuses Whisper's own punctuation needs none)
+                if self._adapter.requires_model:
+                    loaded_model = self._orchestrator.acquire_model(manifest, self._adapter)
 
                 # 4. Enforce the "Speaker Wall"
                 # We group the acoustic segments so we never accidentally stitch

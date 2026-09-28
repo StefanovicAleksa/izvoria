@@ -7,6 +7,7 @@ import torch
 import torchaudio
 from typing import List, Any
 
+from app.core.language.service.language_api import get_language_pack
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.features.domain_adaptation.domain.interfaces import IScoutWhisperAdapter
 from app.features.domain_adaptation.domain.entities import TimeSlice, ScoutResult
@@ -52,6 +53,7 @@ class ScoutWhisperAdapter(IScoutWhisperAdapter):
     ) -> ScoutResult:
         try:
             whisper_model: Any = model.model_instance
+            language = get_language_pack().transcription.whisper_language
             concatenated_text = ""
 
             waveform, sample_rate = torchaudio.load(audio_path)
@@ -75,7 +77,7 @@ class ScoutWhisperAdapter(IScoutWhisperAdapter):
                 segments, _ = whisper_model.transcribe(
                     audio=audio_chunk,
                     beam_size=1,
-                    language="en",
+                    language=language,
                     vad_filter=False,
                     without_timestamps=True
                 )

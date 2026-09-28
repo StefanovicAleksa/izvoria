@@ -89,9 +89,14 @@ class IngestView(QWidget):
         self._mode = QComboBox()
         self._mode.addItem("Video pipeline (full)", IngestMode.VIDEO)
         self._mode.addItem("Audio pipeline (faster)", IngestMode.AUDIO)
+        self._mode.addItem("Documents & books (PDF, DOCX, EPUB, TXT, MD, HTML, RTF)", IngestMode.DOCUMENT)
+        self._mode.addItem("Images (JPG, PNG, TIFF, WebP)", IngestMode.IMAGE)
         self._mode.setToolTip(
             "The audio pipeline skips visual analysis and extracts no per-chunk clips, so its "
-            "citations point at the whole source file."
+            "citations point at the whole source file. PDFs are cited by page (scanned pages are "
+            "read by OCR), plain text and Markdown by line, and DOCX, EPUB, HTML and RTF by chapter "
+            "or section. Images are described by the vision model; only text OCR also reads on "
+            "the image is kept, and their citations are marked as machine descriptions."
         )
         picker.addWidget(self._mode)
 
@@ -247,7 +252,7 @@ class _ReportCard(QFrame):
 
         self._values = {}
         for column, key in enumerate(
-            ("scanned", "succeeded", "failed", "vectors", "clips", "elapsed")
+            ("scanned", "succeeded", "failed", "vectors", "clips", "pages", "images", "elapsed")
         ):
             value = QLabel("0")
             value.setProperty("role", "metric")
@@ -260,7 +265,7 @@ class _ReportCard(QFrame):
         self._errors = QLabel("")
         self._errors.setWordWrap(True)
         self._errors.setVisible(False)
-        self._grid.addWidget(self._errors, 2, 0, 1, 6)
+        self._grid.addWidget(self._errors, 2, 0, 1, 8)
 
     def apply(self, summary: IngestionSummary) -> None:
         self._values["scanned"].setText(str(summary.scanned))
@@ -268,6 +273,8 @@ class _ReportCard(QFrame):
         self._values["failed"].setText(str(summary.failed))
         self._values["vectors"].setText(str(summary.vectors_created))
         self._values["clips"].setText(str(summary.clips_extracted))
+        self._values["pages"].setText(str(summary.pages_converted))
+        self._values["images"].setText(str(summary.images_described))
         self._values["elapsed"].setText(duration(summary.duration_seconds))
 
         if summary.errors:

@@ -26,6 +26,11 @@ def timespan(start_sec: float, end_sec: float) -> str:
     return f"{timestamp(start_sec)}–{timestamp(end_sec)}"
 
 
+def location(evidence) -> str:
+    """Where an excerpt sits: a document's page and section, or a recording's time range."""
+    return evidence.location or timespan(evidence.start_sec, evidence.end_sec)
+
+
 def duration(seconds: float) -> str:
     """Human wall-clock for an ingestion report: `4m 12s`, `1h 03m`."""
     try:

@@ -7,6 +7,9 @@ from unittest.mock import Mock, patch
 
 from app.engine.service.onyx_engine import OnyxEngine
 from app.engine.domain.enums import EngineState
+from app.engine.exceptions.base import EngineError
+from app.core.database.exceptions import DBMigrationError
+from app.features.rag_retrieval.exceptions import IndexLanguageMismatchError
 from app.engine.domain.entities import IngestionReport
 from app.engine.exceptions.lifecycle import EngineOfflineError
 from app.features.rag_retrieval.domain.entities import SearchQuery
@@ -14,15 +17,21 @@ from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.qa_generation.domain.entities import QAResponse, QACitation, ConversationHistory
 from app.features.session_memory.domain.entities import SessionTurn
 from app.features.session_memory.domain.enums import SessionTurnMode
-from app.core.jobs.data.models import JOBS_UPGRADE_DDL
-from app.features.deep_research_report.data.models import RESEARCH_REPORT_UPGRADE_DDL
 from app.features.deep_research_report.domain.entities import (
     OutlineSection, ResearchPlan, SubQuestion,
 )
-from app.features.session_memory.data.models import SESSION_TURNS_UPGRADE_DDL
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
-from app.orchestration.domain.entities import PhaseBatchResult, ReasonedChatResponse, ConversationChatResult
+from app.orchestration.domain.entities import (
+    DocumentConversionJobResult, PhaseBatchResult, ReasonedChatResponse, ConversationChatResult,
+)
 from app.features.storage.domain.entities import Source, SourceType
+
+
+@pytest.fixture(autouse=True)
+def mock_upgrade_to_head():
+    """start() migrates the database; every test here runs against a mocked one."""
+    with patch('app.engine.service.onyx_engine.upgrade_to_head') as upgrade:
+        yield upgrade
 
 
 class TestOnyxEngineUnit:
@@ -84,7 +93,7 @@ class TestOnyxEngineUnit:
         # Test Start
         engine.start()
         assert engine.get_state() == EngineState.ONLINE
-        mock_db_manager.session.assert_called_once()
+        mock_db_manager.get_engine.assert_called_once_with()
 
         # Test Stop
         engine.stop()
@@ -93,33 +102,40 @@ class TestOnyxEngineUnit:
         mock_db_manager.dispose.assert_called_once()
 
     @patch('app.engine.service.onyx_engine.db_manager')
-    def test_start_adds_multi_turn_columns_to_an_existing_session_turns_table(self, mock_db_manager, engine):
-        session = mock_db_manager.session.return_value.__enter__.return_value
-
+    def test_start_verifies_the_index_was_built_for_this_language(self, mock_db_manager, engine, mock_retrieval_api):
         engine.start()
 
-        executed = [str(call.args[0]) for call in session.execute.call_args_list]
-        assert executed == [*SESSION_TURNS_UPGRADE_DDL, *JOBS_UPGRADE_DDL, *RESEARCH_REPORT_UPGRADE_DDL]
-        assert all(
-            "ADD COLUMN IF NOT EXISTS" in statement
-            for statement in executed
-            if statement.startswith("ALTER TABLE")
-        )
+        mock_retrieval_api.verify_index_language.assert_called_once_with()
 
     @patch('app.engine.service.onyx_engine.db_manager')
-    def test_start_backfills_the_renamed_reasoning_mode(self, mock_db_manager, engine):
-        """
-        SessionTurn parses `mode` into SessionTurnMode, so a row still on the pre-rename 'deep_research'
-        value fails validation and breaks the whole conversation. There is no migration framework, so the
-        backfill lives in the upgrade DDL that start() runs -- if it is ever dropped, this fails.
-        """
-        session = mock_db_manager.session.return_value.__enter__.return_value
+    def test_start_fails_on_an_index_built_for_another_language(self, mock_db_manager, engine, mock_retrieval_api):
+        mock_retrieval_api.verify_index_language.side_effect = IndexLanguageMismatchError("built for 'english'")
+
+        with pytest.raises(EngineError, match="built for 'english'"):
+            engine.start()
+
+        assert engine.get_state() == EngineState.ERROR
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_start_migrates_the_database_before_checking_the_index(self, mock_db_manager, engine, mock_retrieval_api,
+                                                                    mock_upgrade_to_head):
+        order = []
+        mock_upgrade_to_head.side_effect = lambda _: order.append("migrate")
+        mock_retrieval_api.verify_index_language.side_effect = lambda: order.append("verify")
 
         engine.start()
 
-        executed = [str(call.args[0]) for call in session.execute.call_args_list]
-        assert "UPDATE session_turns SET mode = 'reasoning' WHERE mode = 'deep_research'" in executed
-        assert "UPDATE jobs SET job_type = 'reasoning_turn' WHERE job_type = 'deep_research_reasoning'" in executed
+        mock_upgrade_to_head.assert_called_once_with(mock_db_manager.get_engine.return_value)
+        assert order == ["migrate", "verify"]
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_start_fails_when_the_migration_fails(self, mock_db_manager, engine, mock_upgrade_to_head):
+        mock_upgrade_to_head.side_effect = DBMigrationError("column already exists")
+
+        with pytest.raises(EngineError):
+            engine.start()
+
+        assert engine.get_state() == EngineState.ERROR
 
     def test_ingest_videos_raises_if_offline(self, engine):
         with pytest.raises(EngineOfflineError):
@@ -684,3 +700,124 @@ class TestProposeResearchPlanJobCount:
 
         deep_run_jobs = 1 + 12 + 1 + 8 + 1
         assert proposal.expected_job_count >= deep_run_jobs
+
+
+class TestIngestDocuments:
+    @pytest.fixture
+    def document_pipeline(self):
+        return Mock()
+
+    @pytest.fixture
+    def engine(self, document_pipeline):
+        return OnyxEngine(
+            async_model_service=Mock(), media_pipeline=Mock(), audio_pipeline=Mock(), live_pipeline=Mock(),
+            live_verified_pipeline=Mock(), live_qa_pipeline=Mock(), storage_api=Mock(),
+            document_pipeline=document_pipeline,
+        )
+
+    def test_raises_if_offline(self, engine):
+        with pytest.raises(EngineOfflineError):
+            engine.ingest_documents("/dummy/path")
+
+    def test_raises_if_not_wired(self):
+        engine = OnyxEngine(async_model_service=Mock(), media_pipeline=Mock(), audio_pipeline=Mock(),
+                            live_pipeline=Mock(), live_verified_pipeline=Mock(), live_qa_pipeline=Mock(),
+                            storage_api=Mock())
+        engine._state = EngineState.ONLINE
+
+        with pytest.raises(EngineOfflineError, match="Document ingestion"):
+            engine.ingest_documents("/dummy/path")
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_reports_page_counts_and_lists_documents_with_missing_text(self, _, engine, document_pipeline):
+        engine.start()
+        clean, scanned = uuid.uuid4(), uuid.uuid4()
+        document_pipeline.process_directory.return_value = {
+            PipelinePhase.SCAN: PhaseBatchResult(phase=PipelinePhase.SCAN, status=PhaseStatus.COMPLETED,
+                                                 successful_count=2, items=[]),
+            PipelinePhase.DOCUMENT_CONVERSION: PhaseBatchResult(
+                phase=PipelinePhase.DOCUMENT_CONVERSION, status=PhaseStatus.COMPLETED, successful_count=2, items=[
+                    DocumentConversionJobResult(source_id=clean, success=True, pages_total=12),
+                    DocumentConversionJobResult(source_id=scanned, success=True, pages_total=3, pages_ocr=3,
+                                                pages_ocr_incomplete=1, pages_unreadable=1),
+                ]),
+            PipelinePhase.RAG_INDEXING: PhaseBatchResult(
+                phase=PipelinePhase.RAG_INDEXING, status=PhaseStatus.COMPLETED, successful_count=2,
+                items=[Mock(success=True, dense_vectors_saved=9), Mock(success=True, dense_vectors_saved=2)]),
+        }
+
+        report = engine.ingest_documents("/docs")
+
+        document_pipeline.process_directory.assert_called_once_with("/docs")
+        assert (report.pages_converted, report.pages_ocr, report.pages_ocr_incomplete, report.pages_unreadable) == (
+            15, 3, 1, 1)
+        assert report.vectors_created == 11 and report.successful_ingestions == 2
+        assert list(report.errors) == [f"document_pages_{scanned}"]
+        assert "1 scanned page(s) could not be read" in report.errors[f"document_pages_{scanned}"]
+        assert engine.get_state() == EngineState.ONLINE
+
+
+class TestIngestImages:
+    @pytest.fixture
+    def image_pipeline(self):
+        return Mock()
+
+    @pytest.fixture
+    def engine(self, image_pipeline):
+        return OnyxEngine(
+            async_model_service=Mock(), media_pipeline=Mock(), audio_pipeline=Mock(), live_pipeline=Mock(),
+            live_verified_pipeline=Mock(), live_qa_pipeline=Mock(), storage_api=Mock(),
+            image_pipeline=image_pipeline,
+        )
+
+    def test_raises_if_offline(self, engine):
+        with pytest.raises(EngineOfflineError):
+            engine.ingest_images("/dummy/path")
+
+    def test_raises_if_not_wired(self):
+        engine = OnyxEngine(async_model_service=Mock(), media_pipeline=Mock(), audio_pipeline=Mock(),
+                            live_pipeline=Mock(), live_verified_pipeline=Mock(), live_qa_pipeline=Mock(),
+                            storage_api=Mock())
+        engine._state = EngineState.ONLINE
+
+        with pytest.raises(EngineOfflineError, match="Image ingestion"):
+            engine.ingest_images("/dummy/path")
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_reports_image_counts_and_lists_images_with_unconfirmed_text(self, _, engine, image_pipeline):
+        from app.orchestration.domain.entities import ImageDescriptionJobResult
+        engine.start()
+        clean, invented, serbian, letter = uuid.uuid4(), uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        image_pipeline.process_directory.return_value = {
+            PipelinePhase.SCAN: PhaseBatchResult(phase=PipelinePhase.SCAN, status=PhaseStatus.COMPLETED,
+                                                 successful_count=4, items=[]),
+            PipelinePhase.IMAGE_DESCRIPTION: PhaseBatchResult(
+                phase=PipelinePhase.IMAGE_DESCRIPTION, status=PhaseStatus.PARTIAL_SUCCESS, successful_count=3,
+                failed_count=1, errors=["Failed Image Description for Source x: decode failed"], items=[
+                    ImageDescriptionJobResult(source_id=clean, success=True, ocr_checked=True),
+                    ImageDescriptionJobResult(source_id=invented, success=True, ocr_checked=True,
+                                              text_items_dropped=2),
+                    ImageDescriptionJobResult(source_id=serbian, success=True, ocr_checked=False),
+                    ImageDescriptionJobResult(source_id=letter, success=True, ocr_checked=True, ocr_lines_withheld=26),
+                    ImageDescriptionJobResult(source_id=uuid.uuid4(), success=False, text_items_dropped=5),
+                ]),
+            PipelinePhase.RAG_INDEXING: PhaseBatchResult(
+                phase=PipelinePhase.RAG_INDEXING, status=PhaseStatus.COMPLETED, successful_count=3,
+                items=[Mock(success=True, dense_vectors_saved=1)] * 3),
+        }
+
+        report = engine.ingest_images("/photos")
+
+        image_pipeline.process_directory.assert_called_once_with("/photos")
+        assert (report.images_described, report.images_text_unverified, report.image_text_items_dropped,
+                report.image_ocr_lines_withheld) == (4, 1, 2, 26)
+        assert report.vectors_created == 3 and report.clips_extracted == 0
+        assert f"image_text_{invented}" in report.errors and f"image_text_{clean}" not in report.errors
+        # Only what happened is listed: no "0 text item(s)" when nothing was dropped
+        assert report.errors[f"image_text_{invented}"] == (
+            f"Source {invented}: 2 text item(s) the vision model read were not found by OCR. That text is not indexed.")
+        assert report.errors[f"image_text_{letter}"] == (
+            f"Source {letter}: 26 line(s) OCR read with low confidence were not confirmed by the vision model "
+            f"(handwriting?). That text is not indexed.")
+        assert "image_description_error_0" in report.errors
+        assert engine.get_state() == EngineState.ONLINE

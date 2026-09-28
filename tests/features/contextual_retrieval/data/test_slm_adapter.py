@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.enums import ModelType
 from app.features.contextual_retrieval.data.slm_adapter import SLMContextAdapter
+from app.features.contextual_retrieval.data.prompts import CONTEXTUAL_SYSTEM_PROMPT
 from app.features.contextual_retrieval.exceptions.model import SLMModelLoadError
 
 
@@ -81,3 +82,24 @@ class TestSLMContextAdapter:
         loaded_model = LoadedModel(manifest=manifest, model_instance=mock_llm)
 
         assert adapter.generate_context(loaded_model, "Speaker_0: doc", "Speaker_0: chunk") == expected
+
+
+class TestContextLanguage:
+    """The generated context is indexed next to the transcript, so it is written in the transcript's language."""
+
+    @staticmethod
+    def _system_prompt(code_setter, code):
+        code_setter(code)
+        llm = MagicMock(**{"create_chat_completion.return_value": {"choices": [{"message": {"content": "Kontekst."}}]}})
+        manifest = ModelManifest(model_type=ModelType.CONTEXTUAL_RETRIEVAL, model_path="/m.gguf", required_vram_mb=1)
+        SLMContextAdapter().generate_context(LoadedModel(manifest=manifest, model_instance=llm), "Doc", "Chunk")
+        return llm.create_chat_completion.call_args.kwargs["messages"][0]["content"]
+
+    def test_english_prompt_is_unchanged(self, appliance_language):
+        assert self._system_prompt(appliance_language, "en") == CONTEXTUAL_SYSTEM_PROMPT
+
+    def test_serbian_context_is_requested_in_serbian(self, appliance_language):
+        prompt = self._system_prompt(appliance_language, "sr")
+
+        assert prompt.startswith(CONTEXTUAL_SYSTEM_PROMPT)
+        assert "in Serbian, using the Latin script" in prompt

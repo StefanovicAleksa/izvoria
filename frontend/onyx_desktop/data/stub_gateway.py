@@ -184,7 +184,9 @@ class StubEngineGateway(IEngineGateway):
                 succeeded=files - 1,
                 failed=1,
                 vectors_created=184,
-                clips_extracted=57,
+                clips_extracted=0 if mode in (IngestMode.DOCUMENT, IngestMode.IMAGE) else 57,
+                pages_converted=42 if mode is IngestMode.DOCUMENT else 0,
+                images_described=files - 1 if mode is IngestMode.IMAGE else 0,
                 duration_seconds=self._latency * len(_PHASES) * files,
                 errors=(("rag_indexing_error_0", "Stub: one file failed on purpose"),),
             )

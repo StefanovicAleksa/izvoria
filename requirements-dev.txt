@@ -1,0 +1,9 @@
+# Path: requirements-dev.txt
+#
+# Development-machine tools only. NEVER installed on the appliance (air-gapped, no package manager).
+
+-r requirements.txt
+
+# scripts/eval/language_benchmark: downloads benchmark lectures. The distro's yt-dlp goes stale within months
+# (YouTube breaks old clients), so it is pinned only from below and upgraded with `pip install -U yt-dlp`.
+yt-dlp>=2026.8.19

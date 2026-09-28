@@ -5,9 +5,10 @@ import gc
 import json
 import re
 import logging
-from typing import Any, List, Dict
+from typing import Any, List, Dict, Optional
 from pathlib import Path
 
+from app.core.language.service.language_api import get_language_pack
 from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.utils.llama_cpp_chat import build_llama, chat_completion, strip_reasoning
@@ -68,7 +69,8 @@ class LlamaCppGenerationAdapter(IQAGenerationAdapter):
         except Exception as e:
             raise map_qa_error(e, context="Counting tokens") from e
 
-    def get_context_token_budget(self, model: LoadedModel, user_query: str, include_critique: bool) -> int:
+    def get_context_token_budget(self, model: LoadedModel, user_query: str, include_critique: bool,
+                                 system_prompt: Optional[str] = None) -> int:
         """
         Tokens left for the context block. The answer prompt holds the block plus the answer being generated;
         the critique prompt holds the same block plus the full draft plus its own verdict, so with a critique
@@ -78,12 +80,14 @@ class LlamaCppGenerationAdapter(IQAGenerationAdapter):
             llm: Any = model.model_instance
             n_ctx = llm.n_ctx()
             answer_tokens = settings.QA_GENERATION_MAX_ANSWER_TOKENS
-            fixed = self.count_tokens(model, QA_SYSTEM_PROMPT + QA_USER_TEMPLATE.format(
+            pack = get_language_pack()
+            answer_prompt = system_prompt if system_prompt is not None else pack.localize_prompt(QA_SYSTEM_PROMPT)
+            fixed = self.count_tokens(model, answer_prompt + QA_USER_TEMPLATE.format(
                 context_block="", user_query=user_query))
             budget = n_ctx - fixed - answer_tokens - self.TEMPLATE_MARGIN_TOKENS
 
             if include_critique:
-                critique_fixed = self.count_tokens(model, CRITIQUE_SYSTEM_PROMPT + CRITIQUE_USER_TEMPLATE.format(
+                critique_fixed = self.count_tokens(model, pack.localize_prompt(CRITIQUE_SYSTEM_PROMPT) + CRITIQUE_USER_TEMPLATE.format(
                     user_query=user_query, evidence_block="", draft_answer=""))
                 critique_budget = (n_ctx - critique_fixed - answer_tokens - self.CRITIQUE_MAX_TOKENS
                                    - self.TEMPLATE_MARGIN_TOKENS)
@@ -168,7 +172,7 @@ class LlamaCppGenerationAdapter(IQAGenerationAdapter):
             )
 
             messages: List[Dict[str, str]] = [
-                {"role": "system", "content": CRITIQUE_SYSTEM_PROMPT},
+                {"role": "system", "content": get_language_pack().localize_prompt(CRITIQUE_SYSTEM_PROMPT)},
                 {"role": "user", "content": user_content}
             ]
 

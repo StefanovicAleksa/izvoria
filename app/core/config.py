@@ -2,9 +2,10 @@
 # Canvas: config_v3
 
 import os
+import tomllib
 from pathlib import Path
-from typing import Optional
-from pydantic import Field
+from typing import Annotated, Optional
+from pydantic import Field, TypeAdapter, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 APP_ENV = os.environ.get("ENV", "development")
@@ -55,8 +56,12 @@ class Settings(BaseSettings):
 
     @property
     def GLOSSARY_DIR(self) -> Path:
-        """Centralized location for industry-specific knowledge bases."""
-        path = Path(self.GLOSSARY_PATH) if self.GLOSSARY_PATH else self.BASE_DIR / "data" / "glossaries"
+        """
+        Centralized location for industry-specific knowledge bases, one directory per language
+        (data/glossaries/<APPLIANCE_LANGUAGE>/): a glossary's terms are words of one language.
+        """
+        base = Path(self.GLOSSARY_PATH) if self.GLOSSARY_PATH else self.BASE_DIR / "data" / "glossaries"
+        path = base / self.APPLIANCE_LANGUAGE
         path.mkdir(parents=True, exist_ok=True)
         return path
 
@@ -82,7 +87,19 @@ class Settings(BaseSettings):
     APPLIANCE_INDUSTRY: str = "GENERAL"
     # Sub-domains the router scores at least this high (0-10) feed Whisper hotwords and the phonetic dictionary
     DOMAIN_ROUTER_MIN_SCORE: int = 5
+
+    # ==========================================
+    # LANGUAGE
+    # ==========================================
+    # The ONE language this appliance transcribes, indexes and answers in. Every language-specific rule
+    # lives in its pack, data/languages/<code>.toml (see app/core/language).
     APPLIANCE_LANGUAGE: str = "en"
+    # Overrides the language pack directory (tests point it at fixture packs).
+    LANGUAGE_PACKS_PATH: str = ""
+
+    @property
+    def LANGUAGE_PACKS_DIR(self) -> Path:
+        return Path(self.LANGUAGE_PACKS_PATH) if self.LANGUAGE_PACKS_PATH else self.BASE_DIR / "data" / "languages"
 
     # ==========================================
     # MODEL PATHS & VRAM REQUIREMENTS
@@ -148,6 +165,22 @@ class Settings(BaseSettings):
     CONTEXTUAL_RETRIEVAL_N_CTX: int = 32768
     CONTEXTUAL_RETRIEVAL_RESERVED_TOKENS: int = 1500
 
+    # --- Document ingestion (PDF / DOCX) ---
+    # RapidOCR PP-OCRv5 models, fetched once by scripts/download_ocr_models.py. OCR runs on the CPU; when these
+    # files are missing, scanned pages are reported as unreadable rather than downloaded at runtime.
+    DOC_OCR_MODEL_DIR: str = "models/rapidocr"
+    # Scanned pages are rendered at this resolution before OCR
+    DOC_OCR_DPI: int = 300
+    # A PDF page is treated as scanned (and OCR'd) only when BOTH hold: its text layer has fewer letters than
+    # this, and images cover at least DOC_SCANNED_IMAGE_COVERAGE of it. A sparse born-digital page (a heading and
+    # a table) keeps its exact text layer instead of being replaced by OCR's reading of it.
+    DOC_MIN_TEXT_LETTERS_PER_PAGE: int = 40
+    DOC_SCANNED_IMAGE_COVERAGE: float = 0.5
+    # Chunk budget for documents; a chunk never crosses a top-level clause
+    DOC_CHUNK_MAX_WORDS: int = 250
+    # A document shorter than this (a receipt, a one-page letter) is indexed as one chunk
+    DOC_SHORT_DOCUMENT_WORDS: int = 400
+
     VISUAL_CUE_DETECTION_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
     VISUAL_CUE_DETECTION_VRAM_REQUIREMENT_MB: float = 5000.0
 
@@ -167,6 +200,26 @@ class Settings(BaseSettings):
     # Generation budget per frame (structured fields: what is shown, legible text, marks, speech link); a 4-frame
     # call may generate up to 4x this
     VISION_MAX_NEW_TOKENS_PER_FRAME: int = 200
+
+    # --- Image ingestion (standalone stills, described by the VLM above) ---
+    # A still gets a sentence or two of description and up to 20 legible text items, so more room than a frame
+    IMAGE_DESCRIPTION_MAX_NEW_TOKENS: int = 500
+    # OCR reads the image with its long side capped at this: a 48 MP phone photo would otherwise take minutes on the
+    # CPU, and text a person can read survives the downscale
+    IMAGE_OCR_MAX_SIDE: int = 4000
+    # A text item the VLM reports is kept only when OCR read at least this share of its words (and every number)
+    IMAGE_TEXT_MIN_OCR_COVERAGE: float = 0.8
+    # The reverse check. OCR never invents a line, but on handwriting it writes gibberish ("Analbeig aftea long
+    # apok"), which would be indexed as the image's text. An OCR line below this confidence is kept only if the
+    # vision model read the same words. Measured on real images: misreads sit below 0.7, printed column headers
+    # ("Hartf d", "A. M.") at 0.7-0.8, stylised sign lettering at 0.65-0.76 (kept, the vision model reads it too).
+    IMAGE_OCR_MIN_LINE_CONFIDENCE: float = 0.7
+    # When at least this share of an image's lines (and IMAGE_OCR_UNRELIABLE_MIN_LINES of them) fall below the floor
+    # above, the image is handwriting OCR can't read (22 of 26 lines of an 1839 letter), and every line below
+    # IMAGE_OCR_UNRELIABLE_LINE_CONFIDENCE needs the vision model's confirmation.
+    IMAGE_OCR_UNRELIABLE_SHARE: float = 0.5
+    IMAGE_OCR_UNRELIABLE_MIN_LINES: int = 5
+    IMAGE_OCR_UNRELIABLE_LINE_CONFIDENCE: float = 0.9
 
     # Frame extraction: Laplacian-variance sharpness floor and the per-chunk cap on visually distinct frames
     FRAME_BLUR_THRESHOLD: float = 100.0
@@ -190,6 +243,7 @@ class Settings(BaseSettings):
     # Size of the RRF-fused candidate pool handed to the reranker
     RAG_RETRIEVAL_CANDIDATES: int = 40
     # Postgres text search configuration for the sparse (FTS) leg. Used in DDL, so restricted to identifiers.
+    # Taken from the language pack's [search] table unless set explicitly.
     FTS_LANGUAGE_CONFIG: str = Field(default="english", pattern=r"^[a-z_]+$")
 
     RAG_RERANKER_MODEL_PATH: str = "models/bge-reranker-v2-m3"
@@ -204,6 +258,12 @@ class Settings(BaseSettings):
     # Qwen2.5-7B: on the dev-DB eval (scripts/eval/rag_eval.py) the 3B judge kept the
     # chunk that answers the question for 75% of questions, the 7B for 89%
     RETRIEVAL_SCRUBBER_MODEL_PATH: str = "models/Qwen2.5-7B-Instruct-Q4_K_M.gguf"
+    # A chunk the cross-encoder scores at or above this is kept without asking the scrubber. The 7B judge rejected
+    # chunks the reranker ranked first for reasons like "the sign says 'STOP' and not 'GIMAr MOntaz MAutino'" or
+    # "does not provide the specific year". Measured 2026-09-28 over 62 answerable and 21 unanswerable questions
+    # (en/sl/sr benchmark lectures, a book, images): the best candidate for an unanswerable question never scored
+    # above 0.01, the relevant one for an answerable question never below 0.29. None judges every chunk again.
+    RETRIEVAL_SCRUBBER_TRUST_RERANK_SCORE: Optional[float] = 0.5
     RETRIEVAL_SCRUBBER_VRAM_REQUIREMENT_MB: float = 5000.0
 
     # Qwen3.5-9B: hybrid Gated DeltaNet / Gated Attention, so only 8 of 32 layers keep a KV cache (~32 KiB/token
@@ -273,6 +333,37 @@ class Settings(BaseSettings):
 
     # Multi-turn chat: most recent turns of a session shown to the answer model and the reasoner
     CHAT_HISTORY_MAX_TURNS: int = 20
+
+    @model_validator(mode="after")
+    def _apply_language_pack(self) -> "Settings":
+        """
+        Applies the language pack's settings overrides: its [models] table (a language the default small models
+        can't handle gets a model that can) and its FTS configuration. A field set explicitly -- environment,
+        .env file or constructor -- always wins over the pack.
+
+        Only these two tables are read here, straight from the TOML: the full pack is validated by
+        app/core/language, which imports this module and so can't be imported by it.
+        """
+        path = self.LANGUAGE_PACKS_DIR / f"{self.APPLIANCE_LANGUAGE}.toml"
+        if not path.is_file():
+            raise ValueError(f"APPLIANCE_LANGUAGE='{self.APPLIANCE_LANGUAGE}' has no language pack at {path}")
+        with open(path, "rb") as f:
+            pack = tomllib.load(f)
+
+        overrides = dict(pack.get("models", {}))
+        if "search" in pack and "fts_config" in pack["search"]:
+            overrides["FTS_LANGUAGE_CONFIG"] = pack["search"]["fts_config"]
+
+        fields = type(self).model_fields
+        for name, value in overrides.items():
+            if name not in fields:
+                raise ValueError(f"Language pack {path.name} overrides unknown setting '{name}'")
+            if name not in self.model_fields_set:
+                # Validated against the field's own type and constraints (e.g. the FTS identifier pattern)
+                field = fields[name]
+                field_type = Annotated[field.annotation, *field.metadata] if field.metadata else field.annotation
+                setattr(self, name, TypeAdapter(field_type).validate_python(value))
+        return self
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,

@@ -25,3 +25,8 @@ class TestPhoneticTextSanitizer:
         raw_text = "Speaker S0 is discussing B2B sales."
         clean_text = PhoneticTextSanitizer.sanitize(raw_text)
         assert clean_text == "Speaker S0 is discussing B2B sales."
+
+class TestSanitizerInSerbian:
+    def test_strips_rogue_zero_from_words_with_serbian_letters(self, appliance_language):
+        appliance_language("sr")
+        assert PhoneticTextSanitizer.sanitize("Pacijent0 ima 0šećer.") == "Pacijent ima šećer."

@@ -81,7 +81,7 @@ def _sample_clip() -> Optional[str]:
     return None
 
 
-def run(argv: List[str], stub: bool = False) -> int:
+def run(argv: List[str], stub: bool = False, autostart: bool = False) -> int:
     # Imported here, after apply_runtime_environment() has run.
     from PySide6.QtWidgets import QApplication
 
@@ -109,6 +109,8 @@ def run(argv: List[str], stub: bool = False) -> int:
         stub_mode=stub,
     )
     window.show()
+    if autostart:
+        bridge.boot()
 
     exit_code = app.exec()
 

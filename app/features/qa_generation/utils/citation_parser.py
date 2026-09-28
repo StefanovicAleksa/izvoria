@@ -3,16 +3,20 @@
 
 import re
 import uuid
+from functools import lru_cache
 from typing import Collection, Dict, List, Optional, Tuple
 
+from app.core.anchors.utils.formatting import format_location
+from app.core.language.service.language_api import get_language_pack
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.qa_generation.domain.entities import RAGContextBlock, QACitation
 from app.features.qa_generation.utils.context_packer import order_for_reading, strip_repeated_overlap
 
 
-def _format_timestamp(seconds: float) -> str:
-    total = max(0, int(seconds))
-    return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+def format_chunk_location(chunk: RetrievedChunk) -> str:
+    """Where a chunk sits in its source, as a citation header shows it: a time range, or a page and section."""
+    return format_location(chunk.anchor_kind, chunk.start_sec, chunk.end_sec,
+                           chunk.page_start, chunk.page_end, chunk.section_path)
 
 
 def build_numbered_context_block(numbered_chunks: List[Tuple[int, RetrievedChunk]]) -> RAGContextBlock:
@@ -37,7 +41,8 @@ def build_numbered_context_block(numbered_chunks: List[Tuple[int, RetrievedChunk
 
         source_text = strip_repeated_overlap(previous, chunk)
         previous = chunk
-        header = f"{doc_id} ({_format_timestamp(chunk.start_sec)}–{_format_timestamp(chunk.end_sec)})"
+        location = format_chunk_location(chunk)
+        header = f"{doc_id} ({location})" if location else doc_id
 
         # Format the text injected into the LLM context window
         formatted_parts.append(f"{header}\n{source_text}\n")
@@ -71,8 +76,16 @@ def doc_numbers(doc_mapping: Dict[str, uuid.UUID]) -> set:
 # Any bracket that starts with "Doc"/"Docs", e.g. [Doc 1], [doc 2], [Doc 1, Doc 3], [Doc 1, 3], [Docs 2-4], [Doc 1 and 2]
 _CITATION_GROUP = re.compile(r"\[\s*Docs?\b[^\[\]]*\]", re.IGNORECASE)
 _CITATION_NUMBER = re.compile(r"(\d+)\s*[-–—]\s*(\d+)|(\d+)")
-# What a citation group may contain besides numbers; anything else means the bracket is not a citation
-_CITATION_FILLER = re.compile(r"docs?|and|\d+|[\s,;&.\-–—]", re.IGNORECASE)
+
+
+@lru_cache(maxsize=8)
+def _citation_filler(joiners: Tuple[str, ...]) -> re.Pattern:
+    """
+    What a citation group may contain besides numbers; anything else means the bracket is not a citation. The
+    joining words are the language pack's ("and", "i", "in") plus English, the language the prompts are written in.
+    """
+    words = "|".join(re.escape(word) for word in sorted({"and", *joiners}))
+    return re.compile(rf"docs?|\b(?:{words})\b|\d+|[\s,;&.\-–—]", re.IGNORECASE)
 _MAX_RANGE_SPAN = 20
 
 
@@ -87,9 +100,11 @@ def normalize_citation_tags(
     valid_numbers) point at no evidence and are dropped, since a tag that resolves to nothing would look like a
     citation without being one.
     """
+    filler = _citation_filler(tuple(get_language_pack().text.citation_joiners))
+
     def _rewrite(match: re.Match) -> str:
         body = match.group(0)[1:-1]
-        if _CITATION_FILLER.sub("", body):
+        if filler.sub("", body):
             return match.group(0)
 
         numbers: List[int] = []
@@ -142,7 +157,11 @@ def parse_citations(
                 extracted_file_id=chunk.extracted_file_id,
                 physical_path=getattr(chunk, 'physical_path', None),
                 start_sec=chunk.start_sec,
-                end_sec=chunk.end_sec
+                end_sec=chunk.end_sec,
+                anchor_kind=chunk.anchor_kind,
+                page_start=chunk.page_start,
+                page_end=chunk.page_end,
+                section_path=chunk.section_path
             ))
 
     # Ensure deterministic ordering for the UI based on Document Number

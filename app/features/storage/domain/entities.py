@@ -11,6 +11,7 @@ class SourceType(str, Enum):
     AUDIO = "audio"
     TEXT = "text"
     DOCUMENT = "document"
+    IMAGE = "image"
 
 
 class File(BaseModel):

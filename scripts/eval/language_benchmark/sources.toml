@@ -1,0 +1,41 @@
+# Language benchmark sources: what `python -m scripts.eval.language_benchmark fetch` downloads per language.
+#
+# reference  -- read or spoken speech with a human transcript, stitched into ~10 min files: gives a true WER.
+# lectures   -- real technical talks (YouTube), for the language guard, throughput and retrieval/answer quality.
+#               Human subtitles, where a video has them, give only a loose WER: subtitles are not verbatim.
+#
+# Add material by adding entries; everything downloads into onyx_data/benchmarks/<code>/ (outside git).
+
+[sr]
+fleurs_config = "sr_rs"
+fleurs_minutes = 20
+# Real spontaneous speech: one speaker's consecutive segments from one ParlaSpeech-RS shard. Its references are
+# edited parliamentary minutes aligned to the audio, so they are close to, not exactly, verbatim.
+parlaspeech_shard = "data/train-00000-of-00138.parquet"
+parlaspeech_minutes = 10
+
+[[sr.lectures]]
+youtube_id = "6ybqwZc7XJM"
+title = "FMK Beograd - Prilagođavanje veštačke inteligencije ljudskim vrednostima"
+topic = "artificial intelligence"
+max_minutes = 30
+
+[sl]
+fleurs_config = "sl_si"
+fleurs_minutes = 20
+
+[[sl.lectures]]
+youtube_id = "6z1W_Z8dxoI"
+title = "UL MF - Kardiologija in vaskularna medicina"
+topic = "cardiology"
+max_minutes = 30
+
+[en]
+fleurs_config = "en_us"
+fleurs_minutes = 20
+
+[[en.lectures]]
+youtube_id = "UHBmv7qCey4"
+title = "MIT 6.034 - 17. Learning: Boosting"
+topic = "machine learning"
+max_minutes = 30

@@ -2,6 +2,7 @@
 # path: app/features/transcription/exceptions/__init__.py
 from .base import TranscriptionError
 from .database import TranscriptionDatabaseError
+from .language import LanguageMismatchError
 from .model import (
     TranscriptionInferenceError,
     TranscriptionAudioError,
@@ -12,6 +13,7 @@ from .model import (
 __all__ = [
     "TranscriptionError",
     "TranscriptionDatabaseError",
+    "LanguageMismatchError",
     "TranscriptionInferenceError",
     "TranscriptionAudioError",
     "CTranslateEngineError",

@@ -5,6 +5,7 @@
 pydantic>=2.6.0
 pydantic-settings>=2.1.0
 sqlalchemy>=2.0.25
+alembic>=1.13        # Schema migrations, run by OnyxEngine.start(); pure Python (+ Mako)
 psycopg2-binary>=2.9.9
 python-dotenv>=1.0.1
 pgvector>=0.2.5        # Added for PostgreSQL Vector Database Support
@@ -51,6 +52,22 @@ pytest-cov>=4.1.0
 
 # --- Glossary Miner (Dev Tool) ---
 SPARQLWrapper>=2.0.0
+
+# --- Document ingestion (PDF / DOCX) ---
+# Only the pdf and docx extras: [all] adds Azure Document Intelligence, a YouTube client and speechrecognition,
+# whose audio converter sends audio to Google's web API. The adapter only ever calls convert_stream().
+markitdown[pdf,docx]==0.1.8
+pypdfium2>=4.30.0
+# Books & texts. EPUB and HTML go through MarkItDown's core converters (zipfile, defusedxml, BeautifulSoup: no
+# network). Plain text is decoded by charset-normalizer directly -- MarkItDown collapses blank lines, which would
+# shift cited line numbers. striprtf is pure Python with no dependencies.
+charset-normalizer>=3.3.0
+striprtf>=0.0.26
+# RapidOCR itself is in requirements-nodeps.txt (its opencv-python would overwrite opencv-python-headless);
+# these are the rest of its dependencies.
+pyclipper>=1.3.0
+shapely>=2.0.0
+colorlog>=6.8.0
 
 # --- RAG Storage & Indexing (Phase 16) ---
 sentence-transformers>=2.7.0

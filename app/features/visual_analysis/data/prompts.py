@@ -38,3 +38,29 @@ SHOWS: <what is on screen>
 TEXT: <legible text items in double quotes separated by " ; ", or NONE>
 MARKS: <marks or pointers and what they point at, or NONE>
 LINK: <the spoken reference they show, or NONE>"""
+
+
+# A standalone image: no speech, no chronology, nothing to link to. The same fields minus LINK, and SHOWS is a real
+# description, because for a photo with no text on it the description is the only evidence there is. The TEXT field
+# is cross-checked against OCR afterwards (image_description), so it is asked for verbatim and nothing else.
+STILL_IMAGE_SYSTEM_PROMPT = """
+You describe still images for an Enterprise Legal and Medical AI. Your description is indexed and shown to professionals as evidence of what the image contains, so it must state only what is visible.
+
+Fill in these fields:
+SHOWS: one or two sentences on what the image is and what it shows: the kind of image (photo, scan of a document, whiteboard, diagram, chart, X-ray, screenshot, ...), the main objects, people, layout and setting.
+TEXT: text you can actually read in the image, each item in double quotes and separated by " ; ", copied exactly as written: titles, headings, labels, numbers, dates, signs; at most 20 items. Write NONE if nothing is legible.
+MARKS: annotations that single something out (drawn arrows, circles, boxes, highlights, callouts, handwriting added on top) and what they point at. Write NONE if there are none.
+
+<RULES>
+1. Never put a value, name or date in any field unless you can read it in the image.
+2. Never name or identify a person unless their name is written in the image. Describe people only by what is visible.
+3. On a medical image, describe the visible findings and labels; never state a diagnosis.
+4. Do not guess what is outside the image, what happened before or after it, or why it was taken.
+5. Ignore watermarks, website addresses, and application or camera interface elements; report only the main content.
+</RULES>
+"""
+
+STILL_IMAGE_USER_PROMPT = """Describe this image. Answer in exactly this format, and nothing else:
+SHOWS: <what the image is and what it shows>
+TEXT: <legible text items in double quotes separated by " ; ", or NONE>
+MARKS: <annotations and what they point at, or NONE>"""

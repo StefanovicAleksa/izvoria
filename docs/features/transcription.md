@@ -28,3 +28,8 @@ Phase 5 (`TranscribePhase`) — runs after domain adaptation (which conditions i
 
 - `speaker_id` defaults to `"Unknown"` at this stage — `diarization` fills it in later.
 - `condition_on_previous_text=False` is a deliberate choice to prevent hallucination cascades from propagating across independently-sliced VAD chunks.
+
+## Language
+
+The Whisper language comes from the language pack (`transcription.whisper_language`), not a hard-coded `en`. Before transcribing, `TranscriptionAPI` asks `FasterWhisperAdapter.detect_language()` for Whisper's language ID over the first 30 s of VAD speech. A detection outside the pack's `accepted_detections` with probability of at least `min_detection_probability` raises `LanguageMismatchError`, and the file is not transcribed: forcing a language on foreign speech makes Whisper translate or invent text. A pack with `script = "latin"` (Serbian) has every word and segment transliterated Cyrillic → Latin after decoding, word by word so timestamps stay aligned. See `../core/language.md`.
+

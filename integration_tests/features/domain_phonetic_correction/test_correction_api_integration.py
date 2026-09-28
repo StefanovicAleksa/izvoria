@@ -63,7 +63,7 @@ class TestDomainPhoneticCorrectionAPIIntegration:
 
     @pytest.fixture(scope="module")
     def setup_trading_glossary(self) -> Generator[str, None, None]:
-        source_path = settings.BASE_DIR / "data" / "glossaries" / "prop_trading_macro.json"
+        source_path = settings.BASE_DIR / "data" / "glossaries" / "en" / "prop_trading_macro.json"
         if not source_path.exists():
             pytest.skip(f"Trading glossary missing at {source_path}")
         target_path = settings.GLOSSARY_DIR / "prop_trading_macro.json"

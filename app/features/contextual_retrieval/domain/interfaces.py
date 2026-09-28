@@ -21,11 +21,13 @@ class ISLMContextAdapter(IModelLoader, ABC):
         self,
         model: LoadedModel,
         full_document_text: str,
-        chunk_text: str
+        chunk_text: str,
+        system_prompt: Optional[str] = None
     ) -> str:
         """
         Uses prompt caching to efficiently evaluate the chunk against the full document.
-        Returns a concise 50-100 word context string explaining the chunk.
+        Returns a concise 50-100 word context string explaining the chunk. `system_prompt` replaces the
+        transcript prompt, for material that is not a transcript (a document).
         """
         pass
 

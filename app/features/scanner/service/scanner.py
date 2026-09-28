@@ -4,9 +4,13 @@ from typing import Generator
 
 from app.features.scanner.domain.interfaces import IScanner
 from app.features.scanner.domain.entities import ScannedFile
-from app.features.scanner.utils.filters import is_extension_allowed, is_directory_ignored
+import logging
+
+from app.features.scanner.utils.filters import is_extension_allowed, is_directory_ignored, is_onyx_output
 from app.features.scanner.utils.error_mapper import map_scanner_error
 from app.features.scanner import exceptions as exc
+
+logger = logging.getLogger(__name__)
 
 
 class FileScanner(IScanner):
@@ -25,13 +29,18 @@ class FileScanner(IScanner):
         def _raise_error(e: OSError):
             raise e
 
+        if is_onyx_output(target_path):
+            logger.warning(f"{target_path} holds Onyx's own output (vault or reports); nothing is ingested from it.")
+            return
+
         try:
             # FIX: Added 'onerror=_raise_error'
             # Without this, os.walk silently skips locked directories.
             for root, dirs, files in os.walk(target_path, onerror=_raise_error):
 
                 # 1. Filter Directories (In-place modification)
-                dirs[:] = [d for d in dirs if not is_directory_ignored(d)]
+                dirs[:] = [d for d in dirs
+                           if not is_directory_ignored(d) and not is_onyx_output(Path(root) / d)]
 
                 for file in files:
                     file_path = Path(root) / file

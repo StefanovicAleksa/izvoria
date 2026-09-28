@@ -10,6 +10,8 @@ import logging
 # This MUST be declared at the absolute top before any PyTorch-dependent modules are imported.
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
+from app.core.anchors.domain.enums import AnchorKind
+from app.core.anchors.utils.formatting import format_location
 from app.engine.service.bootstrap import OnyxBootstrapper
 from app.engine.exceptions.base import EngineError
 from app.features.rag_retrieval.domain.entities import SearchQuery
@@ -37,6 +39,13 @@ def print_report(report):
     print(f"Failed:      {report.failed_ingestions} files")
     print(f"Vectors:     {report.vectors_created}")
     print(f"Clips:       {report.clips_extracted}")
+    if report.pages_converted:
+        print(f"Pages:       {report.pages_converted} ({report.pages_ocr} by OCR, "
+              f"{report.pages_ocr_incomplete} missing lines, {report.pages_unreadable} unreadable)")
+    if report.images_described:
+        print(f"Images:      {report.images_described} described ({report.images_text_unverified} with text "
+              f"unverified, {report.image_text_items_dropped} text items not confirmed by OCR and left out, "
+              f"{report.image_ocr_lines_withheld} unreadable OCR lines left out)")
     print("-" * 58)
 
     if report.errors:
@@ -54,9 +63,17 @@ def print_search_results(results, mode_name: str):
 
         print(f"RESULT #{i}")
         print(f"  Source:    {physical_path}")
-        print(f"  Timestamp: {chunk.start_sec}s - {chunk.end_sec}s")
+        print(f"  {_location(chunk, 'Timestamp: ', 'Location:  ')}")
         print(f"  Content:   {chunk.text_payload}")
         print("-" * 80)
+
+
+def _location(item, time_label: str, document_label: str) -> str:
+    """A search hit's or citation's place in its source: a recording's seconds, as always, or a page and section."""
+    if item.anchor_kind is AnchorKind.TIME:
+        return f"{time_label}{item.start_sec}s - {item.end_sec}s"
+    return document_label + format_location(item.anchor_kind, item.start_sec, item.end_sec,
+                                            item.page_start, item.page_end, item.section_path)
 
 
 def print_reasoned_result(result):
@@ -65,7 +82,7 @@ def print_reasoned_result(result):
         print(f"\n[CITATIONS USED: {len(result.qa_response.citations)}]")
         for cit in result.qa_response.citations:
             print(f"  {cit.doc_id} {cit.physical_path or 'No physical file resolved'}")
-            print(f"         Timestamp: {cit.start_sec}s - {cit.end_sec}s")
+            print(f"         {_location(cit, 'Timestamp: ', 'Location: ')}")
         if result.critique_unresolved:
             print("\n[NOTE] Self-critique had unresolved concerns about this answer's grounding.")
     else:
@@ -83,7 +100,7 @@ def print_chat_response(response):
     print(f"\n[CITATIONS USED: {len(response.citations)}]")
     for cit in response.citations:
         print(f"  {cit.doc_id} {cit.physical_path or 'No physical file resolved'}")
-        print(f"         Timestamp: {cit.start_sec}s - {cit.end_sec}s")
+        print(f"         {_location(cit, 'Timestamp: ', 'Location: ')}")
 
 
 def run_conversation(engine, session_id):
@@ -299,8 +316,10 @@ def main():
             print("  6. Shutdown Appliance")
             print("  7. Reasoned Answer [Multi-Pass Reasoning]")
             print("  8. Deep Research Report [Multi-Page Cited Report]")
+            print("  9. Ingest Folders [Documents & Books - PDF / DOCX / EPUB / TXT / MD / HTML / RTF]")
+            print(" 10. Ingest Folders [Images - JPG / PNG / TIFF / WebP]")
 
-            choice = input("\n[Select Option 1-8] > ").strip()
+            choice = input("\n[Select Option 1-10] > ").strip()
 
             try:
                 if choice == '1':
@@ -342,6 +361,20 @@ def main():
 
                 elif choice == '8':
                     run_research_report(engine, conversation_session_id)
+
+                elif choice == '9':
+                    raw_path = input("[Enter Absolute Path to Document / Book Folder] > ").strip()
+                    if raw_path:
+                        print("\n[SYSTEM] Evicting UI models... Initializing Document Pipeline.")
+                        report = engine.ingest_documents(raw_path)
+                        print_report(report)
+
+                elif choice == '10':
+                    raw_path = input("[Enter Absolute Path to Image Folder] > ").strip()
+                    if raw_path:
+                        print("\n[SYSTEM] Evicting UI models... Initializing Image Pipeline.")
+                        report = engine.ingest_images(raw_path)
+                        print_report(report)
 
                 elif choice == '6' or choice.lower() in ['exit', 'quit']:
                     print("\n[SYSTEM] Initiating graceful shutdown sequence...")

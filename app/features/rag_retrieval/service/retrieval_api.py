@@ -7,6 +7,8 @@ import logging
 from typing import Dict, List, Optional
 
 from app.core.config import settings
+from app.core.language.service.language_api import get_language_pack
+from app.core.language.utils.script import normalize_script
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.domain.entities import ModelManifest
 from app.core.model_manager.domain.enums import ModelType
@@ -16,6 +18,7 @@ from app.features.rag_retrieval.domain.entities import (
 )
 from app.features.rag_retrieval.domain.interfaces import IRetrievalRepository, IPromptEmbeddingAdapter
 from app.features.rag_retrieval.utils.error_mapper import map_retrieval_error
+from app.features.rag_retrieval.exceptions import IndexLanguageMismatchError
 
 logger = logging.getLogger(__name__)
 
@@ -50,7 +53,7 @@ class RetrievalAPI:
                 self._embedding_manifest(), self._embedding_adapter, wait_for_clear=True
             )
             try:
-                query_vector = self._embedding_adapter.embed_prompt(loaded_model, query.prompt)
+                query_vector = self._embedding_adapter.embed_prompt(loaded_model, _search_text(query.prompt))
             finally:
                 # CRITICAL: Always release immediately to free VRAM for the imminent LLM inference
                 self._orchestrator.release_model(loaded_model, self._embedding_adapter, flush=True)
@@ -58,7 +61,7 @@ class RetrievalAPI:
             # 3. Execute the Hybrid Postgres Search
             retrieved_chunks = self._search_repo.execute_hybrid_search(
                 query_vector=query_vector,
-                query_text=query.prompt,
+                query_text=_search_text(query.prompt),
                 limit=candidate_count,
                 source_id_filter=query.source_id_filter
             )
@@ -75,6 +78,21 @@ class RetrievalAPI:
 
         except Exception as e:
             raise map_retrieval_error(e, context=f"Processing search query: '{query.prompt}'") from e
+
+    def verify_index_language(self) -> None:
+        """
+        Raises IndexLanguageMismatchError when the index was built for another language. The keyword column is
+        generated at table creation with that language's stemmer, so switching APPLIANCE_LANGUAGE on an existing
+        index would otherwise leave keyword search silently stemming with the wrong rules.
+        """
+        indexed = self._search_repo.get_index_fts_config()
+        configured = settings.FTS_LANGUAGE_CONFIG
+        if indexed is not None and indexed != configured:
+            raise IndexLanguageMismatchError(
+                f"The search index was built with the '{indexed}' text search configuration, but this appliance is "
+                f"configured for '{configured}' (APPLIANCE_LANGUAGE={settings.APPLIANCE_LANGUAGE}). Reset the "
+                f"database (scripts/reset_dev_environment.sh) and re-ingest, or switch APPLIANCE_LANGUAGE back."
+            )
 
     def _embedding_manifest(self) -> ModelManifest:
         return ModelManifest(
@@ -125,7 +143,9 @@ class RetrievalAPI:
                 self._embedding_manifest(), self._embedding_adapter, wait_for_clear=True
             )
             try:
-                vectors = self._embedding_adapter.embed_prompts(loaded_model, unique_prompts)
+                vectors = self._embedding_adapter.embed_prompts(
+                    loaded_model, [_search_text(prompt) for prompt in unique_prompts]
+                )
             finally:
                 # Released before any SQL runs: the database work needs no VRAM, and the next stage's
                 # model should not have to wait on an embedder that is only holding the slot.
@@ -142,7 +162,7 @@ class RetrievalAPI:
                     query=query.prompt,
                     results=self._search_repo.execute_hybrid_search(
                         query_vector=vector_by_prompt[query.prompt],
-                        query_text=query.prompt,
+                        query_text=_search_text(query.prompt),
                         limit=max(query.limit, candidate_count),
                         source_id_filter=query.source_id_filter,
                     ),
@@ -196,7 +216,7 @@ class RetrievalAPI:
         for source_id in source_ids:
             chunks.extend(self._search_repo.execute_hybrid_search(
                 query_vector=query_vector,
-                query_text=sweep.prompt,
+                query_text=_search_text(sweep.prompt),
                 limit=sweep.per_source_limit,
                 source_id_filter=source_id,
             ))
@@ -223,7 +243,7 @@ class RetrievalAPI:
             anchors = [chunk.chunk_id for chunk in chunks[:top_k]]
             present = {chunk.chunk_id for chunk in chunks}
             neighbors = [n for n in self._search_repo.fetch_neighbors(anchors) if n.chunk_id not in present]
-            neighbors.sort(key=lambda n: (str(n.source_id), n.start_sec))
+            neighbors.sort(key=lambda n: (str(n.source_id), n.position, n.start_sec))
 
             if neighbors:
                 logger.info(f"Added {len(neighbors)} neighbouring chunks around the top {len(anchors)} results.")
@@ -231,3 +251,11 @@ class RetrievalAPI:
 
         except Exception as e:
             raise map_retrieval_error(e, context="Expanding results with neighbouring chunks") from e
+
+
+def _search_text(prompt: str) -> str:
+    """
+    The text actually embedded and keyword-matched: the prompt in the index's script (a Serbian query typed in
+    Cyrillic searches a Latin index). Results stay keyed by the prompt as the caller wrote it.
+    """
+    return normalize_script(prompt, get_language_pack().transcription.script)

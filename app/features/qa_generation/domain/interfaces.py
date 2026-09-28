@@ -2,7 +2,7 @@
 # Path: app/features/qa_generation/domain/interfaces.py
 
 from abc import ABC, abstractmethod
-from typing import Dict, List
+from typing import Optional, Dict, List
 
 from app.core.model_manager.domain.entities import LoadedModel, ModelManifest
 from app.core.model_manager.domain.interfaces import IModelLoader
@@ -31,10 +31,12 @@ class IQAGenerationAdapter(IModelLoader, ABC):
         pass
 
     @abstractmethod
-    def get_context_token_budget(self, model: LoadedModel, user_query: str, include_critique: bool) -> int:
+    def get_context_token_budget(self, model: LoadedModel, user_query: str, include_critique: bool,
+                                 system_prompt: Optional[str] = None) -> int:
         """
         Tokens available for the context block once the prompts, the question and the generation budget(s) are
-        accounted for. With include_critique, the block must also fit the self-critique prompt.
+        accounted for. With include_critique, the block must also fit the self-critique prompt. `system_prompt`
+        is the localized answer prompt that will be sent; the transcript prompt when omitted.
         """
         pass
 

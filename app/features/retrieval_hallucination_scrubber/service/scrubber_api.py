@@ -55,7 +55,16 @@ class RetrievalScrubberAPI:
             audits: List[ScrubAudit] = []
 
             try:
+                trust = settings.RETRIEVAL_SCRUBBER_TRUST_RERANK_SCORE
                 for chunk in raw_chunks:
+                    if trust is not None and chunk.rerank_score is not None and chunk.rerank_score >= trust:
+                        # The cross-encoder is the better relevance judge; the SLM second-guessing a chunk it
+                        # ranked this high was how answering evidence got thrown away
+                        audits.append(ScrubAudit(chunk_id=chunk.chunk_id, is_relevant=True,
+                                                 kept_by_rerank_score=True))
+                        surviving_chunks.append(chunk)
+                        continue
+
                     safe_text = chunk.text_payload[:3000] if len(chunk.text_payload) > 3000 else chunk.text_payload
 
                     try:

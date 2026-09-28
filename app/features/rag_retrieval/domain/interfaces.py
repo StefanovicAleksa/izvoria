@@ -49,6 +49,14 @@ class IRetrievalRepository(ABC):
         pass
 
     @abstractmethod
+    def get_index_fts_config(self) -> Optional[str]:
+        """
+        The Postgres text search configuration the index's keyword column is generated with (e.g. "english"),
+        or None when the index table doesn't exist yet.
+        """
+        pass
+
+    @abstractmethod
     def list_indexed_sources(self, min_chunks: int = 1) -> List[IndexedSource]:
         """
         Every source with rows in `vector_chunks`, best-populated first, with its human-readable name.

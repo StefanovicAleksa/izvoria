@@ -17,7 +17,7 @@ class IWikidataAdapter(ABC):
     def fetch_domain_terms(self, wikidata_parent_id: str, limit: int = 2000) -> List[WikidataItem]:
         """
         Executes a SPARQL query to retrieve all child entities of a specific domain.
-        Must filter for 'en' and 'la' aliases natively at the database level.
+        Must filter for the appliance language's labels and aliases natively at the database level.
         """
         pass
 

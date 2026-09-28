@@ -5,13 +5,15 @@ import uuid
 from typing import Dict, List, Optional
 from pydantic import BaseModel, Field, ConfigDict
 
+from app.core.anchors.domain.enums import AnchorKind
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.qa_generation.domain.enums import CritiqueVerdict
 
 
 class QACitation(BaseModel):
     """
-    Represents a specific citation linking generated text back to a physical .mp4 clip.
+    Represents a specific citation linking generated text back to its source: a clip or recording at a time,
+    or a document at a page or section.
     """
     doc_id: str = Field(..., description="The strict citation tag used by the LLM (e.g., '[Doc 1]').")
     chunk_id: uuid.UUID = Field(..., description="The database ID of the retrieved chunk.")
@@ -22,8 +24,12 @@ class QACitation(BaseModel):
     physical_path: Optional[str] = Field(
         default=None, description="The local OS path to the clip (or source file); resolved by the engine."
     )
-    start_sec: float = Field(..., description="Start time of the clip in seconds.")
-    end_sec: float = Field(..., description="End time of the clip in seconds.")
+    start_sec: float = Field(..., description="Start time of the clip in seconds; 0.0 for documents.")
+    end_sec: float = Field(..., description="End time of the clip in seconds; 0.0 for documents.")
+    anchor_kind: AnchorKind = Field(default=AnchorKind.TIME, description="Which location fields apply.")
+    page_start: Optional[int] = Field(default=None, description="First page of a document excerpt.")
+    page_end: Optional[int] = Field(default=None, description="Last page of a document excerpt.")
+    section_path: Optional[str] = Field(default=None, description="Heading path of a document excerpt.")
 
     model_config = ConfigDict(frozen=True)
 

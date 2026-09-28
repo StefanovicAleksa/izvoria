@@ -9,6 +9,7 @@ import logging
 from typing import Any, Dict, List
 from pathlib import Path
 
+from app.core.language.service.language_api import get_language_pack
 from app.core.config import settings
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.utils.llama_cpp_chat import build_llama, chat_completion, strip_reasoning
@@ -16,7 +17,7 @@ from app.features.qa_reasoning.domain.interfaces import IReasonerAdapter
 from app.features.qa_reasoning.domain.entities import ReasonerDecision, EvidenceLink
 from app.features.qa_reasoning.domain.enums import ReasonerDecisionType
 from app.features.qa_reasoning.data.prompts import (
-    REASONER_SYSTEM_PROMPT, REASONER_USER_TEMPLATE, QUERY_REWRITE_SYSTEM_PROMPT, QUERY_REWRITE_USER_TEMPLATE
+    REASONER_USER_TEMPLATE, QUERY_REWRITE_SYSTEM_PROMPT, QUERY_REWRITE_USER_TEMPLATE, reasoner_system_prompt
 )
 from app.features.qa_reasoning.exceptions.pipeline import JSONReasonerParseError
 from app.features.qa_reasoning.utils.error_mapper import map_reasoner_error
@@ -87,10 +88,11 @@ class QwenReasonerAdapter(IReasonerAdapter):
         decision_history_block: str,
         prior_session_context: str,
         extra_context: str,
+        has_documents: bool = False,
     ) -> int:
         try:
             llm: Any = model.model_instance
-            fixed = self.count_tokens(model, REASONER_SYSTEM_PROMPT + self._user_content(
+            fixed = self.count_tokens(model, get_language_pack().localize_prompt(reasoner_system_prompt(has_documents)) + self._user_content(
                 original_question, "", decision_history_block, prior_session_context, extra_context))
             return max(llm.n_ctx() - fixed - self.REASON_MAX_TOKENS - self.TEMPLATE_MARGIN_TOKENS, 0)
         except Exception as e:
@@ -100,7 +102,7 @@ class QwenReasonerAdapter(IReasonerAdapter):
         try:
             llm: Any = model.model_instance
             messages = [
-                {"role": "system", "content": QUERY_REWRITE_SYSTEM_PROMPT},
+                {"role": "system", "content": get_language_pack().localize_prompt(QUERY_REWRITE_SYSTEM_PROMPT)},
                 {"role": "user", "content": QUERY_REWRITE_USER_TEMPLATE.format(
                     prior_session_context=prior_session_context, question=question)}
             ]
@@ -132,6 +134,7 @@ class QwenReasonerAdapter(IReasonerAdapter):
         prior_session_context: str,
         extra_context: str,
         evidence_tags: Dict[str, uuid.UUID],
+        has_documents: bool = False,
     ) -> ReasonerDecision:
         try:
             llm: Any = model.model_instance
@@ -141,7 +144,7 @@ class QwenReasonerAdapter(IReasonerAdapter):
             )
 
             messages = [
-                {"role": "system", "content": REASONER_SYSTEM_PROMPT},
+                {"role": "system", "content": get_language_pack().localize_prompt(reasoner_system_prompt(has_documents))},
                 {"role": "user", "content": user_content}
             ]
 

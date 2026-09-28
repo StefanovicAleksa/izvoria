@@ -33,7 +33,8 @@ from PySide6.QtWidgets import (
 from onyx_desktop.domain.entities import Evidence
 from onyx_desktop.domain.enums import MediaKind
 from onyx_desktop.ui.system_open import open_source
-from onyx_desktop.utils.formatting import speaker_summary, timespan
+from onyx_desktop.ui.widgets.image_thumbnail import set_thumbnail
+from onyx_desktop.utils.formatting import location, speaker_summary, timespan
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,12 @@ class SourcePanel(QWidget):
         self._speakers.setProperty("role", "subtle")
         card_layout.addWidget(self._speakers)
 
+        # A cited image's preview: its excerpt is a machine description, so the picture is shown to check it by
+        self._thumbnail = QLabel()
+        self._thumbnail.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._thumbnail.setVisible(False)
+        card_layout.addWidget(self._thumbnail)
+
         excerpt_scroll = QScrollArea()
         excerpt_scroll.setWidgetResizable(True)
         excerpt_scroll.setMinimumHeight(140)
@@ -140,7 +147,7 @@ class SourcePanel(QWidget):
         self._problem.setVisible(False)
 
         self._chip.setText(evidence.doc_label)
-        self._span.setText(timespan(evidence.start_sec, evidence.end_sec))
+        self._span.setText(location(evidence))
         self._excerpt.setText(
             evidence.excerpt or "(no transcript text is stored for this chunk)"
         )
@@ -152,7 +159,27 @@ class SourcePanel(QWidget):
         self._path.setText(evidence.clip_path or "")
         self._path.setVisible(bool(evidence.clip_path))
 
-        if evidence.media_kind is MediaKind.CLIP:
+        if evidence.media_kind is MediaKind.IMAGE:
+            set_thumbnail(self._thumbnail, evidence.clip_path, max_side=320)
+        else:
+            set_thumbnail(self._thumbnail, None)
+
+        if evidence.media_kind is MediaKind.IMAGE:
+            self._kind_note.setText(
+                "This opens the image itself. The excerpt above is a machine description of it, and any "
+                "text read off it; check it against the picture."
+            )
+            self._open.setText("Open image")
+            self._open.setEnabled(True)
+            self._open.setToolTip("")
+        elif evidence.media_kind is MediaKind.DOCUMENT:
+            self._kind_note.setText(
+                f"This opens the whole document. The excerpt above is at {location(evidence)}."
+            )
+            self._open.setText("Open document")
+            self._open.setEnabled(True)
+            self._open.setToolTip("A system viewer cannot be told which page to show, so turn to the page above")
+        elif evidence.media_kind is MediaKind.CLIP:
             self._kind_note.setText(
                 "This file is the cited excerpt itself — it opens at the right moment."
             )
@@ -194,7 +221,7 @@ class SourcePanel(QWidget):
             return
         clipboard = QGuiApplication.clipboard()
         if clipboard is not None:
-            clipboard.setText(timespan(self._evidence.start_sec, self._evidence.end_sec))
+            clipboard.setText(location(self._evidence))
 
     def _on_open(self) -> None:
         if self._evidence is None:

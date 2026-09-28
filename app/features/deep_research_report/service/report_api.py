@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
+from app.core.anchors.domain.enums import AnchorKind
 from app.core.config import settings
 from app.core.model_manager.domain.entities import LoadedModel, ModelManifest
 from app.core.model_manager.domain.enums import ModelType
@@ -29,6 +30,7 @@ from app.features.deep_research_report.utils.query_log import (
 from app.features.qa_generation.utils.citation_parser import (
     build_numbered_context_block, normalize_citation_tags,
 )
+from app.features.qa_generation.utils.context_packer import has_document_chunks
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 
 logger = logging.getLogger(__name__)
@@ -185,7 +187,8 @@ class ReportAuthoringAPI:
             loaded_model = self._acquire()
             try:
                 assignment = self._adapter.optimize_outline(
-                    loaded_model, plan, build_bank_index(evidence), format_attempts(asked or [])
+                    loaded_model, plan, build_bank_index(evidence), format_attempts(asked or []),
+                    has_documents=any(entry.anchor_kind is not AnchorKind.TIME for entry in evidence)
                 )
             finally:
                 self._release(loaded_model, release_after)
@@ -295,7 +298,9 @@ class ReportAuthoringAPI:
         try:
             loaded_model = self._acquire()
             try:
-                budget = self._adapter.get_section_token_budget(loaded_model, section, topic)
+                has_documents = has_document_chunks([chunk for _, chunk in pairs])
+                budget = self._adapter.get_section_token_budget(loaded_model, section, topic,
+                                                                has_documents=has_documents)
                 packed = pack_section_evidence(
                     pairs, budget, lambda text: self._adapter.count_tokens(loaded_model, text)
                 )
@@ -317,6 +322,7 @@ class ReportAuthoringAPI:
                     evidence_block=context.formatted_text,
                     allowed_doc_numbers=allowed,
                     outline_context=outline_context,
+                    has_documents=has_documents,
                 )
             finally:
                 self._release(loaded_model, release_after)

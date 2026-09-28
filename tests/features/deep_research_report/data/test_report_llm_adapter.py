@@ -360,3 +360,29 @@ class TestWriteSummary:
         content = _messages(mock_chat)[1]["content"]
         assert "## Handling" in content
         assert "[Doc 1], [Doc 3]" in content
+
+
+class TestReportLanguage:
+    """A report on a Serbian archive is planned, written and summarised in Serbian; NO_EVIDENCE stays a keyword."""
+
+    @patch("app.features.deep_research_report.data.report_llm_adapter.chat_completion")
+    def test_section_and_retry_prompts_ask_for_serbian(self, mock_chat, adapter, model, appliance_language):
+        appliance_language("sr")
+        mock_chat.side_effect = [_reply("Kesa je zapečaćena."), _reply("Kesa je zapečaćena [Doc 1].")]
+
+        adapter.write_section(model, "tema", OutlineSection(key="s1", title="Rukovanje", order_index=0, brief="b"),
+                              "evidence", [1], "outline")
+
+        first, retry = _messages(mock_chat, 0), _messages(mock_chat, 1)
+        assert "in Serbian, using the Latin script" in first[0]["content"]
+        assert "such as NO_EVIDENCE" in first[0]["content"]
+        assert "in Serbian" in retry[-1]["content"]
+
+    @patch("app.features.deep_research_report.data.report_llm_adapter.chat_completion")
+    def test_english_plan_prompt_is_unchanged(self, mock_chat, adapter, model):
+        mock_chat.return_value = _reply("{}")
+
+        with pytest.raises(JSONPlanParseError):
+            adapter.scope(model, "topic", _corpus())
+
+        assert "<OUTPUT_LANGUAGE>" not in _messages(mock_chat)[0]["content"]

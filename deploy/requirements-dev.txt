@@ -1,0 +1,5 @@
+# Everything deploy/tests needs, in a venv of its own: python -m venv deploy/.venv && deploy/.venv/bin/pip install -r deploy/requirements-dev.txt
+-r gateway/requirements.txt
+-r instance/agent/requirements.txt
+pytest>=8
+pytest-asyncio>=0.24

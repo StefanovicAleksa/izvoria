@@ -10,6 +10,7 @@ the environment those modules read at import time, before anything reads it.
 
     venv/bin/python frontend/main.py --stub     # UI only: no GPU, no database, canned answers
     venv/bin/python frontend/main.py            # the real appliance
+    venv/bin/python frontend/main.py --autostart  # the real appliance, booted without a click
 """
 
 import argparse
@@ -37,6 +38,11 @@ def main(argv: list) -> int:
         default=None,
         help="value for ENV, which selects .env / .env.test / .env.prod (default: development)",
     )
+    parser.add_argument(
+        "--autostart",
+        action="store_true",
+        help="start the appliance as soon as the window opens, as if 'Start appliance' were clicked",
+    )
     args, qt_args = parser.parse_known_args(argv[1:])
 
     if args.env:
@@ -47,7 +53,7 @@ def main(argv: list) -> int:
     from onyx_desktop.service.desktop_app import apply_runtime_environment, run
 
     apply_runtime_environment(PROJECT_ROOT)
-    return run([argv[0]] + qt_args, stub=args.stub)
+    return run([argv[0]] + qt_args, stub=args.stub, autostart=args.autostart)
 
 
 if __name__ == "__main__":

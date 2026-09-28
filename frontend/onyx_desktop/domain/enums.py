@@ -24,6 +24,8 @@ class SearchMode(str, Enum):
 class IngestMode(str, Enum):
     VIDEO = "video"   # OnyxEngine.ingest_videos()
     AUDIO = "audio"   # OnyxEngine.ingest_audios()
+    DOCUMENT = "document"  # OnyxEngine.ingest_documents()
+    IMAGE = "image"  # OnyxEngine.ingest_images()
 
 
 class ReportMode(str, Enum):
@@ -65,6 +67,8 @@ class MediaKind(str, Enum):
     """
     CLIP = "clip"                # the file IS the chunk; play from 0
     FULL_SOURCE = "full_source"  # seek to start_sec, stop at end_sec
+    DOCUMENT = "document"        # a PDF / DOCX / book; opens whole, the citation names the page, lines or section
+    IMAGE = "image"              # a still image; opens in the image viewer, and the card shows a thumbnail
     UNRESOLVED = "unresolved"    # no physical path came back
 
 

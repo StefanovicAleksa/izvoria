@@ -1,7 +1,7 @@
 # Canvas: rag_storage_models_v3
 # Path: app/features/rag_storage/data/models.py
 
-from sqlalchemy import Column, String, Float, ForeignKey, Index, Computed
+from sqlalchemy import Column, String, Float, Integer, ForeignKey, Index, Computed
 from sqlalchemy.dialects.postgresql import UUID, TSVECTOR, JSONB
 from pgvector.sqlalchemy import Vector
 import uuid
@@ -21,8 +21,19 @@ class VectorChunkModel(Base):
     source_id = Column(UUID(as_uuid=True), ForeignKey("sources.id", ondelete="CASCADE"), nullable=False, index=True)
     chunk_id = Column(UUID(as_uuid=True), nullable=False, unique=True, index=True)
 
+    # Where the chunk sits in its source; `anchor_kind` says which of the fields below mean something.
+    # start_sec/end_sec are 0.0 for document chunks, page_* are NULL for transcripts.
+    anchor_kind = Column(String, nullable=False, default="time", server_default="time")
     start_sec = Column(Float, nullable=False)
     end_sec = Column(Float, nullable=False)
+    page_start = Column(Integer, nullable=True)
+    page_end = Column(Integer, nullable=True)
+    # Heading path of a document chunk ("Article 7 Termination › 7.2"); NULL for transcripts
+    section_path = Column(String, nullable=True)
+
+    # Reading order within the source. Neighbours and reading order use this rather than start_sec, which is
+    # meaningless for documents.
+    position = Column(Integer, nullable=True)
 
     # Contextualized text (generated context + transcript): the embedded / keyword-indexed payload
     text_payload = Column(String, nullable=False)
@@ -45,6 +56,7 @@ class VectorChunkModel(Base):
 
     __table_args__ = (
         Index('ix_vector_chunks_fts', 'fts_document', postgresql_using='gin'),
+        Index('ix_vector_chunks_source_position', 'source_id', 'position'),
     )
 
     def __repr__(self):

@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 def _to_turn(model: SessionTurnModel) -> SessionTurn:
     """
     A stored `mode` this build does not know about degrades to CHAT instead of raising. Modes have been
-    renamed once already ('deep_research' -> 'reasoning'), and SESSION_TURNS_UPGRADE_DDL backfills that on
+    renamed once already ('deep_research' -> 'reasoning'), and the pre-Alembic catch-up backfills that on
     boot — but a database reached without going through OnyxEngine.start() would otherwise fail validation
     and take the entire conversation down over a label. Losing which entrypoint answered a turn is survivable;
     losing the turn is not.
@@ -30,7 +30,7 @@ def _to_turn(model: SessionTurnModel) -> SessionTurn:
     except ValueError:
         logger.warning(
             f"Session turn {model.id} has unrecognised mode {model.mode!r}; reading it as "
-            f"{SessionTurnMode.CHAT.value!r}. Has SESSION_TURNS_UPGRADE_DDL run against this database?"
+            f"{SessionTurnMode.CHAT.value!r}. Has this database been migrated (OnyxEngine.start)?"
         )
         return SessionTurn(
             id=model.id,

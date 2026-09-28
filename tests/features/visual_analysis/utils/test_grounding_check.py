@@ -4,6 +4,8 @@ import pytest
 
 from app.features.visual_analysis.domain.entities import FrameObservation
 from app.features.visual_analysis.utils.grounding_check import (
+    MAX_STILL_IMAGE_ITEMS,
+    ground_still_image,
     drop_items_already_reported,
     drop_marks_copied_from_other_frames,
     ground_observation
@@ -182,3 +184,50 @@ class TestDropMarksCopiedFromOtherFrames:
         unrelated = FrameObservation(shows="chart", legible_text=["Wedge break"], marks="horizontal line at the break")
 
         assert drop_marks_copied_from_other_frames([own, unrelated]) == [own, unrelated]
+
+
+class TestGroundingInSerbian:
+    SPEECH = "Ovde vidimo da je pritisak pacijenta porastao na sto šezdeset posle terapije."
+
+    def test_serbian_function_words_do_not_hide_a_speech_copy(self, appliance_language):
+        """Words like "da", "je", "na" would otherwise count as content and dilute the copy test."""
+        appliance_language("sr")
+        observation = FrameObservation(shows="chart", legible_text=[
+            "pritisak pacijenta porastao je na",       # read out of the speech, not off the frame
+            "Krvni pritisak (mmHg)",
+        ])
+
+        grounded = ground_observation(observation, self.SPEECH)
+
+        assert grounded.legible_text == ["Krvni pritisak (mmHg)"]
+
+    def test_cyrillic_slide_text_is_compared_with_the_latin_speech(self, appliance_language):
+        appliance_language("sr")
+        observation = FrameObservation(shows="slide", legible_text=["пацијента порастао после терапије", "Табела 2"])
+
+        grounded = ground_observation(observation, self.SPEECH)
+
+        assert grounded.legible_text == ["Табела 2"]
+
+
+class TestGroundStillImage:
+    def test_a_photo_without_text_is_kept(self):
+        observation = FrameObservation(shows="A dented car door in a parking lot")
+
+        assert ground_still_image(observation) == observation
+
+    def test_empty_answer_is_dropped(self):
+        assert ground_still_image(None) is None
+        assert ground_still_image(FrameObservation(shows="  ")) is None
+
+    def test_chrome_and_repeats_are_removed_and_items_capped(self):
+        items = ["Invoice 42", "www.acme.com", "Next", "invoice 42"] + [f"Line {i}" for i in range(30)]
+        observation = FrameObservation(shows="A scanned invoice", legible_text=items,
+                                       marks="arrows pointing to different parts", speech_link="leftover")
+
+        grounded = ground_still_image(observation)
+
+        assert grounded.legible_text[0] == "Invoice 42"
+        assert "www.acme.com" not in grounded.legible_text and "Next" not in grounded.legible_text
+        assert len(grounded.legible_text) == MAX_STILL_IMAGE_ITEMS
+        assert grounded.marks is None and grounded.speech_link is None

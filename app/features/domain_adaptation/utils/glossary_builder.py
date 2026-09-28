@@ -81,7 +81,10 @@ class GlossaryBuilder:
             if industry.upper() == "GENERAL":
                 logger.warning(f"Master glossary missing at {glossary_path}. Using empty fallback.")
                 return {"base_terms": [], "sub_domains": {}}
-            raise GlossaryManifestError(f"Master domain glossary not found at {glossary_path}.")
+            raise GlossaryManifestError(
+                f"Master domain glossary not found at {glossary_path}. Glossaries are per language: build one for "
+                f"'{settings.APPLIANCE_LANGUAGE}' there (scripts/run_miner.py) or set APPLIANCE_INDUSTRY=GENERAL."
+            )
 
         try:
             with open(glossary_path, 'r', encoding='utf-8') as f:

@@ -8,6 +8,7 @@ from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.enums import ModelType
 
+from app.features.qa_generation.utils.context_packer import has_document_chunks
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.qa_reasoning.domain.interfaces import IReasonerAdapter
 from app.features.qa_reasoning.domain.entities import ReasonerDecision
@@ -83,8 +84,10 @@ class ReasoningAPI:
 
             try:
                 history_block = build_decision_history_block(decision_history)
+                has_documents = has_document_chunks(evidence_pool)
                 budget = self._adapter.get_evidence_token_budget(
-                    loaded_model, original_question, history_block, prior_session_context or "", extra_context or ""
+                    loaded_model, original_question, history_block, prior_session_context or "", extra_context or "",
+                    has_documents=has_documents
                 )
                 evidence = build_evidence_block(
                     evidence_pool, budget, lambda text: self._adapter.count_tokens(loaded_model, text)
@@ -97,6 +100,7 @@ class ReasoningAPI:
                     prior_session_context=prior_session_context or "",
                     extra_context=extra_context or "",
                     evidence_tags=evidence.tag_mapping,
+                    has_documents=has_documents,
                 )
             finally:
                 if release_after:

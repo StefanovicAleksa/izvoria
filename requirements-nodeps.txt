@@ -1,0 +1,6 @@
+# Installed with --no-deps, after requirements.txt:
+#     pip install --no-deps -r requirements-nodeps.txt
+#
+# rapidocr declares opencv-python (the GUI build), which installs its own cv2 over opencv-python-headless's and
+# leaves whichever came last. Its other dependencies are listed in requirements.txt.
+rapidocr==3.9.2

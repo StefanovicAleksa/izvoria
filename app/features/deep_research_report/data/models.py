@@ -121,6 +121,10 @@ class ResearchReportEvidenceModel(Base):
 
     start_sec: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
     end_sec: Mapped[float] = mapped_column(Float, nullable=False, server_default="0")
+    anchor_kind: Mapped[str] = mapped_column(String, nullable=False, server_default="time")
+    page_start: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    page_end: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    section_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     speaker_labels: Mapped[List[str]] = mapped_column(JSONB, nullable=False, default=list)
     digest: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
 
@@ -148,14 +152,3 @@ class ResearchReportSubQuestionModel(Base):
     question_text: Mapped[str] = mapped_column(Text, nullable=False)
     order_index: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     chunks_found: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
-
-
-# There are no migrations: create_all() never alters a table that already exists. OnyxEngine.start() runs
-# these after create_all(), so report tables from an earlier build gain later columns and value backfills.
-# Every statement must be idempotent -- this runs on every boot. Empty until the schema first changes.
-RESEARCH_REPORT_UPGRADE_DDL: tuple = (
-    # Added with Exhaustive mode. Reports created before it are deep, single-round, which is what the
-    # defaults say.
-    "ALTER TABLE research_reports ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'deep'",
-    "ALTER TABLE research_reports ADD COLUMN IF NOT EXISTS rounds_used INTEGER NOT NULL DEFAULT 1",
-)
