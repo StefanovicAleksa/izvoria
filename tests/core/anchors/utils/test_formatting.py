@@ -20,7 +20,6 @@ class TestFormatAnchor:
         ("en", AnchorKind.PAGE, {"page_start": 7, "page_end": 7}, "p. 7"),
         ("en", AnchorKind.PAGE, {"page_start": 7, "page_end": 8}, "pp. 7–8"),
         ("en", AnchorKind.PAGE, {"page_start": 7}, "p. 7"),
-        ("sl", AnchorKind.PAGE, {"page_start": 3, "page_end": 4}, "str. 3–4"),
         ("sr", AnchorKind.PAGE, {"page_start": 3}, "str. 3"),
         ("en", AnchorKind.SECTION, {"section_path": "Terms › Payment"}, "Terms › Payment"),
         # A page anchor whose page is unknown falls back to its section rather than inventing a page
@@ -29,7 +28,6 @@ class TestFormatAnchor:
         # A line anchor carries its lines in the page fields
         ("en", AnchorKind.LINE, {"page_start": 12, "page_end": 12}, "line 12"),
         ("en", AnchorKind.LINE, {"page_start": 120, "page_end": 164}, "lines 120–164"),
-        ("sl", AnchorKind.LINE, {"page_start": 3, "page_end": 9}, "vrstice 3–9"),
         ("sr", AnchorKind.LINE, {"page_start": 3}, "red 3"),
         ("en", AnchorKind.LINE, {"section_path": "Chapter 4"}, "Chapter 4"),
         # An image is cited as a whole, in the pack's word for it
@@ -43,7 +41,7 @@ class TestFormatAnchor:
         assert format_anchor("page", page_start=2, rules=language_pack("en").documents) == "p. 2"
 
     def test_uses_the_active_pack_when_none_is_given(self, appliance_language):
-        appliance_language("sl")
+        appliance_language("sr")
 
         assert format_pages(5, 5) == "str. 5"
 

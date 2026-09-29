@@ -206,7 +206,6 @@ class TestConversationNumbering:
 class TestCitationJoinersByLanguage:
     @pytest.mark.parametrize("code, text", [
         ("sr", "Tako je [Doc 1 i 2]."),
-        ("sl", "Tako je [Doc 1 in 2]."),
         ("sr", "Tako je [Doc 1 and 2]."),      # English stays accepted: the prompts are written in English
     ])
     def test_language_joiner_groups_are_split_into_tags(self, appliance_language, code, text):

@@ -34,7 +34,7 @@ Follows the project's hexagonal convention, plus a Qt-only `ui/` layer:
 ```
 onyx_desktop/
 ├── domain/      frozen dataclasses, enums, and IEngineGateway — no Qt, no app.*
-├── data/        engine_gateway.py (the ONLY module importing app.*), stub_gateway, session_store
+├── data/        engine_gateway.py (the ONLY module importing app.*), stub_gateway, report_writer
 ├── service/     engine_bridge / engine_worker (threading), log_relay, desktop_app
 ├── ui/          theme, main_window, views/, widgets/
 ├── exceptions/  DesktopError and friends
@@ -47,7 +47,12 @@ Only `data/engine_gateway.py` does, and it maps engine entities into the frozen 
 
 ## Views
 
-Chat, Search, Ingest, **Report**. The Report view is the odd one out, deliberately:
+Chat, Search, Ingest, **Report**, plus two language pickers. Both list the language packs by their own names ("Srpski"), and both rebuild the value from `currentData()` at the boundary (the QComboBox gotcha):
+
+- **Answer in** (sidebar) switches the active language: the language answers, reports and verified searches are written in. It rebuilds the engine on the worker (seconds, no model load), is enabled only once the appliance runs and while it's idle, and puts itself back if the bridge refuses. Chat, Search and Report show "Answers in …" in their headers.
+- **Language of these files** (Ingest view) is the batch's language. The gateway switches to it before ingesting, so after the batch the appliance answers in it too, and the sidebar follows. It defaults to the active language.
+
+The Report view is the odd one out, deliberately:
 
 - It is the only view whose work takes tens of minutes and holds the GPU, so it has a **determinate**
   progress bar (a plan states its step count up front, unlike ingestion) and a **Stop** button.

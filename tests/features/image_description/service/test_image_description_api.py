@@ -147,10 +147,10 @@ class TestExecute:
 
 class TestRenderAndRelease:
     def test_render_uses_the_active_packs_labels(self, api, appliance_language):
-        appliance_language("sl")
+        appliance_language("sr")
         description = ImageDescription(source_id=uuid.uuid4(), file_name="x.jpg", shows="a dog")
 
-        assert api.render(description) == "Slika (strojni opis): A dog."
+        assert api.render(description) == "Slika (mašinski opis): A dog."
 
     def test_release_drops_the_ocr_models(self, api, mocks):
         api.release()

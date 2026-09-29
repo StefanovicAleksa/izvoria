@@ -182,13 +182,31 @@ class TestTranscriptionAPILanguage:
         loaded = mocks["orchestrator"].acquire_model.return_value
         mocks["adapter"].detect_language.return_value = ("en", 0.97)
 
-        with pytest.raises(LanguageMismatchError, match="'en'"):
+        with pytest.raises(LanguageMismatchError, match="Whisper heard 'en'.*Ingest it again with English selected"):
             api.process_audio(source_id, "/a.wav", release_after=True)
 
         mocks["adapter"].detect_language.assert_called_once_with(loaded, "/a.wav", vad_map)
         mocks["adapter"].transcribe.assert_not_called()
         mocks["repo"].save.assert_not_called()
         mocks["orchestrator"].release_model.assert_called_once_with(loaded, mocks["adapter"], flush=True)
+
+    @pytest.mark.parametrize("detected, hint", [
+        # Whisper routinely calls Serbian speech Croatian
+        ("hr", "Ingest it again with Serbian selected."),
+        # Slovenian's pack is legacy (not served)
+        ("sl", "This appliance has no language pack for 'sl'."),
+        ("sr", "Ingest it again with Serbian selected."),
+        ("de", "This appliance has no language pack for 'de'."),
+    ])
+    def test_the_refusal_says_which_language_to_ingest_it_as(self, api, mocks, as_language, detected, hint):
+        as_language("en")
+        self._vad(mocks, uuid.uuid4())
+        mocks["adapter"].detect_language.return_value = (detected, 0.95)
+
+        with pytest.raises(LanguageMismatchError) as raised:
+            api.process_audio(uuid.uuid4(), "/a.wav", release_after=True)
+
+        assert str(raised.value).endswith(hint)
 
     @pytest.mark.parametrize("detection", [("hr", 0.9), ("bs", 0.9), ("sr", 0.99), ("en", 0.3)])
     def test_transcribes_accepted_or_unsure_detections(self, api, mocks, as_language, detection):
@@ -203,14 +221,14 @@ class TestTranscriptionAPILanguage:
         assert mocks["adapter"].transcribe.call_args.kwargs["language"] == "sr"
 
     def test_no_speech_to_judge_skips_the_guard(self, api, mocks, as_language):
-        as_language("sl")
+        as_language("en")
         self._vad(mocks, uuid.uuid4())
         mocks["adapter"].detect_language.return_value = None
         mocks["adapter"].transcribe.return_value = []
 
         api.process_audio(uuid.uuid4(), "/a.wav")
 
-        assert mocks["adapter"].transcribe.call_args.kwargs["language"] == "sl"
+        assert mocks["adapter"].transcribe.call_args.kwargs["language"] == "en"
 
     def test_serbian_cyrillic_is_saved_in_latin_word_by_word(self, api, mocks, as_language):
         as_language("sr")

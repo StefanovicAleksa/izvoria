@@ -5,6 +5,7 @@ from difflib import SequenceMatcher
 from functools import lru_cache
 from typing import List, NamedTuple, Optional, Sequence
 
+from app.core.config import settings
 from app.core.language.service.language_api import get_language_pack
 from app.features.domain_phonetic_correction.domain.entities import PhoneticCandidate
 from app.features.domain_phonetic_correction.utils.phonetic_key import letters_only, phonetic_key, spelled_letters
@@ -125,9 +126,14 @@ def _similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, a, b, autojunk=False).ratio()
 
 
-@lru_cache(maxsize=200_000)
 def _key_similarity(heard_letters: str, term_key: str) -> float:
     """Sound-key similarity; keys shorter than 3 symbols are too coarse to compare ("bm" vs "pnt")."""
+    return _cached_key_similarity(heard_letters, term_key, settings.APPLIANCE_LANGUAGE)
+
+
+@lru_cache(maxsize=200_000)
+def _cached_key_similarity(heard_letters: str, term_key: str, language: str) -> float:
+    # `language` is only a cache key: the sound key comes from the active pack, which a runtime switch changes
     heard_key = phonetic_key(heard_letters)
     return _similarity(heard_key, term_key) if min(len(heard_key), len(term_key)) >= 3 else 0.0
 

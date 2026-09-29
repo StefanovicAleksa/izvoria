@@ -16,9 +16,14 @@ class TestShippedPacks:
     """The packs checked in beside the code must all load and validate."""
 
     def test_every_supported_language_ships_a_pack(self):
-        assert TomlLanguagePackRepository(SHIPPED).available_codes() == ["en", "sl", "sr"]
+        assert TomlLanguagePackRepository(SHIPPED).available_codes() == ["en", "sr"]
 
-    @pytest.mark.parametrize("code", ["en", "sr", "sl"])
+    def test_legacy_packs_are_not_served(self):
+        # Slovenian was retired (data/languages/legacy/README.md): kept on disk, never loaded
+        assert (SHIPPED / "legacy" / "sl.toml").is_file()
+        assert "sl" not in TomlLanguagePackRepository(SHIPPED).available_codes()
+
+    @pytest.mark.parametrize("code", ["en", "sr"])
     def test_pack_loads_and_validates(self, code):
         pack = TomlLanguagePackRepository(SHIPPED).load(code)
 
@@ -32,7 +37,7 @@ class TestShippedPacks:
         assert {"the", "and", "of"} <= set(pack.text.stopwords)
 
     def test_inline_stopwords_are_lowercased_deduplicated_and_sorted(self):
-        stopwords = TomlLanguagePackRepository(SHIPPED).load("sl").text.stopwords
+        stopwords = TomlLanguagePackRepository(SHIPPED).load("sr").text.stopwords
 
         assert list(stopwords) == sorted(set(stopwords))
         assert stopwords.count("bi") == 1
@@ -69,18 +74,18 @@ class TestTomlLanguagePackRepository:
             self._write(tmp_path, "sr", text).load("sr")
 
     def test_unknown_key_is_invalid(self, tmp_path):
-        text = (SHIPPED / "sl.toml").read_text(encoding="utf-8").replace(
+        text = (SHIPPED / "sr.toml").read_text(encoding="utf-8").replace(
             "[search]", "[search]\nstemmer = \"snowball\"", 1
         )
         with pytest.raises(InvalidLanguagePackError):
-            self._write(tmp_path, "sl", text).load("sl")
+            self._write(tmp_path, "sr", text).load("sr")
 
     def test_nltk_corpus_is_merged_with_inline_stopwords(self, tmp_path):
-        text = (SHIPPED / "sl.toml").read_text(encoding="utf-8").replace(
+        text = (SHIPPED / "sr.toml").read_text(encoding="utf-8").replace(
             "[text]", '[text]\nnltk_stopwords = "fake"', 1
         )
         with patch("nltk.corpus.stopwords.words", return_value=["Zzz"]) as words:
-            pack = self._write(tmp_path, "sl", text).load("sl")
+            pack = self._write(tmp_path, "sr", text).load("sr")
 
         words.assert_called_once_with("fake")
-        assert "zzz" in pack.text.stopwords and "in" in pack.text.stopwords
+        assert "zzz" in pack.text.stopwords and "ili" in pack.text.stopwords

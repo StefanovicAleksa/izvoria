@@ -24,12 +24,15 @@ from PySide6.QtWidgets import (
 )
 
 from onyx_desktop.data.report_writer import default_save_path, save_markdown
-from onyx_desktop.domain.entities import Evidence, ProgressTick, ReportDocument, ReportPlanDraft
-from onyx_desktop.domain.enums import ReportMode
+from onyx_desktop.domain.entities import Evidence, ProgressTick, ReportDocument, ReportPlanDraft, ReportRef
+from onyx_desktop.domain.enums import ReportMode, ReportRunStatus
 from onyx_desktop.ui import theme
+from onyx_desktop.ui.widgets.answer_language import AnswerLanguageLabel
+from onyx_desktop.ui.widgets.history_list import HistoryEntry, HistoryList
 from onyx_desktop.ui.widgets.outline_editor import OutlineEditor
 from onyx_desktop.ui.widgets.report_document import ReportDocumentView
 from onyx_desktop.ui.widgets.source_panel import SourcePanel
+from onyx_desktop.utils.formatting import when
 
 logger = logging.getLogger(__name__)
 
@@ -41,16 +44,32 @@ _REPORT_PHASES = {
     "rag_retrieval", "rag_reranking", "retrieval_scrubbing",
 }
 
+_STATUS_LABELS = {
+    ReportRunStatus.COMPLETED: "Finished",
+    ReportRunStatus.AWAITING_APPROVAL: "Outline not approved",
+    ReportRunStatus.CANCELLED: "Stopped",
+    ReportRunStatus.FAILED: "Failed",
+    # Only one report runs at a time and never across app runs, so a listed row in either of these was
+    # interrupted (the app closed or crashed mid-run).
+    ReportRunStatus.GATHERING: "Interrupted",
+    ReportRunStatus.WRITING: "Interrupted",
+}
+
 
 class ReportView(QWidget):
     planRequested = Signal(str, object)      # topic, ReportMode
     reportRequested = Signal(object, object)  # ReportPlanDraft, ReportMode
     cancelRequested = Signal(object)          # report_id
+    savedReportRequested = Signal(object)     # report_id -> load it as it stands
+    savedPlanRequested = Signal(object)       # report_id -> back to the approval step
+    resumeRequested = Signal(object)          # report_id -> write the sections it left pending
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._plan: Optional[ReportPlanDraft] = None
         self._document: Optional[ReportDocument] = None
+        self._running_report_id: Optional[uuid.UUID] = None
+        self._refs: dict = {}
         self._steps_done = 0
         self._build()
 
@@ -62,14 +81,25 @@ class ReportView(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
+        self._history = HistoryList(
+            "Reports", "No reports yet. Finished, stopped and unapproved reports are kept here.",
+        )
+        self._history.itemChosen.connect(self._on_history_chosen)
+        splitter.addWidget(self._history)
+
         left = QWidget()
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(16, 14, 12, 14)
         left_layout.setSpacing(10)
 
+        header = QHBoxLayout()
         heading = QLabel("Research report")
         heading.setProperty("role", "heading")
-        left_layout.addWidget(heading)
+        header.addWidget(heading)
+        self._answer_language = AnswerLanguageLabel()
+        header.addWidget(self._answer_language)
+        header.addStretch(1)
+        left_layout.addLayout(header)
 
         self._stack = QStackedWidget()
         self._stack.addWidget(self._compose_pane())
@@ -98,8 +128,10 @@ class ReportView(QWidget):
 
         splitter.addWidget(left)
         splitter.addWidget(right)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(2, 2)
+        splitter.setSizes([230, 620, 420])
         layout.addWidget(splitter)
 
     def _compose_pane(self) -> QWidget:
@@ -217,6 +249,15 @@ class ReportView(QWidget):
         buttons.addWidget(new_report)
         buttons.addStretch(1)
 
+        self._resume = QPushButton("Resume")
+        self._resume.setToolTip(
+            "Writes the sections this report never reached, from the evidence it already gathered. "
+            "Nothing is searched again, so the citations already written keep their numbers."
+        )
+        self._resume.setVisible(False)
+        self._resume.clicked.connect(self._on_resume)
+        buttons.addWidget(self._resume)
+
         self._save = QPushButton("Save as Markdown…")
         self._save.setProperty("role", "primary")
         self._save.clicked.connect(self._on_save)
@@ -226,11 +267,48 @@ class ReportView(QWidget):
 
     # ---------- public API ----------
 
+    def set_answer_language(self, name: str) -> None:
+        """A new report is written in the active language; a saved one keeps its own."""
+        self._answer_language.set_language(name)
+
     def set_busy(self, busy: bool) -> None:
         self._plan_button.setEnabled(not busy)
         self._topic.setEnabled(not busy)
         self._mode.setEnabled(not busy)
         self._outline.set_busy(busy)
+        self._resume.setEnabled(not busy)
+
+    def set_reports(self, reports: List[ReportRef]) -> None:
+        self._refs = {ref.report_id: ref for ref in reports}
+        self._history.set_entries([
+            HistoryEntry(
+                key=ref.report_id,
+                title=ref.topic,
+                badge=_STATUS_LABELS.get(ref.status, ref.status.value),
+                subtitle=when(ref.completed_at or ref.created_at),
+            )
+            for ref in reports
+        ])
+        if self._document is not None:
+            self._history.select(self._document.report_id)
+            self._sync_resume()
+
+    def set_history_unavailable(self, text: str) -> None:
+        self._history.set_unavailable(text)
+
+    def start_resume(self, report_id: uuid.UUID) -> None:
+        """Switches to the running pane for a resumed run, which writes sections but gathers nothing."""
+        ref = self._refs.get(report_id)
+        remaining = max(1, (ref.section_count if ref else 1) - (self._document.section_count if self._document else 0))
+        self._running_report_id = report_id
+        self._steps_done = 0
+        self._progress.setRange(0, remaining + 1)  # one job per section left, plus the summary
+        self._progress.setValue(0)
+        self._running_topic.setText(f"Resuming: {ref.topic if ref else ''}")
+        self._phase.setText("Writing the sections left pending…")
+        self._stop.setEnabled(True)
+        self._stop.setText("Stop")
+        self._stack.setCurrentIndex(_RUNNING)
 
     def start_planning(self, topic: str) -> None:
         """
@@ -255,6 +333,9 @@ class ReportView(QWidget):
 
     def show_plan(self, plan: ReportPlanDraft) -> None:
         self._plan = plan
+        self._document = None
+        self._topic.setText(plan.topic)
+        self._history.select(plan.report_id)
         self._failure.setVisible(False)
         self._scoping.setVisible(False)
         self._outline.show_plan(plan)
@@ -263,6 +344,7 @@ class ReportView(QWidget):
 
     def start_run(self, plan: ReportPlanDraft) -> None:
         """Switches to the running pane. Called once the bridge has accepted the request."""
+        self._running_report_id = plan.report_id
         self._steps_done = 0
         self._progress.setRange(0, max(1, plan.expected_job_count))
         self._progress.setValue(0)
@@ -290,6 +372,7 @@ class ReportView(QWidget):
 
     def show_report(self, report: ReportDocument) -> None:
         self._document = report
+        self._running_report_id = None
         self._failure.setVisible(False)
         self._body.show_report(report)
 
@@ -311,6 +394,8 @@ class ReportView(QWidget):
         else:
             self._partial.setVisible(False)
 
+        self._sync_resume()
+        self._history.select(report.report_id)
         self._stack.setCurrentIndex(_REPORT)
         if report.evidence:
             # Show the first citation straight away: the point is to verify, not to hunt.
@@ -324,6 +409,7 @@ class ReportView(QWidget):
         self._failure.style().polish(self._failure)
         self._failure.setVisible(True)
         if self._stack.currentIndex() == _RUNNING:
+            self._running_report_id = None
             self._stack.setCurrentIndex(_COMPOSE)
 
     # ---------- events ----------
@@ -349,15 +435,57 @@ class ReportView(QWidget):
         self.reportRequested.emit(plan, self._selected_mode())
 
     def _on_stop(self) -> None:
-        if self._plan is None:
+        if self._running_report_id is None:
             return
         self._stop.setEnabled(False)
         self._stop.setText("Stopping after this section…")
-        self.cancelRequested.emit(self._plan.report_id)
+        self.cancelRequested.emit(self._running_report_id)
+
+    def _on_resume(self) -> None:
+        if self._document is not None:
+            self.resumeRequested.emit(self._document.report_id)
+
+    def _on_history_chosen(self, report_id: uuid.UUID) -> None:
+        ref = self._refs.get(report_id)
+        if ref is None:
+            return
+        if self._stack.currentIndex() == _RUNNING:
+            # The run on screen keeps its pane; its progress and Stop button must stay reachable.
+            if self._running_report_id is not None:
+                self._history.select(self._running_report_id)
+            return
+        if ref.awaiting_approval:
+            self.savedPlanRequested.emit(report_id)
+        elif ref.unfinished and not ref.resumable:
+            self._on_discard()
+            self._topic.setText(ref.topic)
+            self._history.select(report_id)
+            self._show_note(
+                "This report was stopped before any evidence was gathered, so there is nothing to resume. "
+                "Its topic is filled in above: plan it again to start over."
+            )
+        else:
+            self.savedReportRequested.emit(report_id)
+
+    def _sync_resume(self) -> None:
+        document = self._document
+        ref = self._refs.get(document.report_id) if document is not None else None
+        resumable = document is not None and document.is_partial and (
+            ref.resumable if ref is not None else bool(document.evidence))
+        self._resume.setVisible(resumable)
+
+    def _show_note(self, message: str) -> None:
+        self._failure.setText(message)
+        self._failure.setProperty("role", "banner-warning")
+        self._failure.style().unpolish(self._failure)
+        self._failure.style().polish(self._failure)
+        self._failure.setVisible(True)
 
     def _on_discard(self) -> None:
         self._plan = None
         self._document = None
+        self._resume.setVisible(False)
+        self._history.clear_selection()
         self._outline.setVisible(False)
         self._scoping.setVisible(False)
         self._body.clear_report()

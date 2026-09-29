@@ -44,6 +44,9 @@ class ResearchReportModel(Base):
     # "not covered" means something different after one round than after three.
     mode: Mapped[str] = mapped_column(String, nullable=False, server_default="deep")
     rounds_used: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+    # The language the report is written in ("sr"). A report reopened or resumed after the active language
+    # changed is still rendered and finished in this one.
+    language: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

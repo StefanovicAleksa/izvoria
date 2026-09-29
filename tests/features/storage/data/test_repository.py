@@ -92,6 +92,7 @@ class TestStorageRepository:
             name="Test Video",
             source_type=SourceType.VIDEO,
             content_hash="abc-123",
+            language="sr",
             file_id=file_id,
             file=file_entity
         )
@@ -104,6 +105,7 @@ class TestStorageRepository:
         added_source_model = session.add.call_args_list[1][0][0]
         assert added_source_model.content_hash == "abc-123"
         assert added_source_model.file_id == file_id
+        assert added_source_model.language == "sr"
 
         assert result == source_entity
 
@@ -132,6 +134,7 @@ class TestStorageRepository:
         mock_model.name = "Test Video"
         mock_model.source_type = "video"
         mock_model.content_hash = "found-hash"
+        mock_model.language = "sr"
         mock_model.file_id = uuid.uuid4()
         mock_model.created_at = datetime.now(timezone.utc)
         mock_model.updated_at = datetime.now(timezone.utc)
@@ -143,6 +146,7 @@ class TestStorageRepository:
 
         assert result is not None
         assert result.content_hash == "found-hash"
+        assert result.language == "sr"
         assert result.source_type == SourceType.VIDEO
         assert result.file_id == mock_model.file_id
 
@@ -174,6 +178,7 @@ class TestStorageRepository:
         mock_model.name = "Processed Video"
         mock_model.source_type = "video"
         mock_model.content_hash = "hash_123"
+        mock_model.language = None
         mock_model.file_id = mock_file.id
         mock_model.created_at = datetime.now(timezone.utc)
         mock_model.updated_at = datetime.now(timezone.utc)
@@ -193,6 +198,30 @@ class TestStorageRepository:
 
         with pytest.raises(SourceNotFound):
             repository.mark_as_processed(uuid.uuid4())
+
+    @pytest.mark.parametrize("language", ["sl", None])
+    def test_set_language_stamps_or_clears_the_source(self, repository, mock_db_manager, language):
+        session = mock_db_manager.session.return_value.__enter__.return_value
+        source_id = uuid.uuid4()
+        model = MagicMock(id=source_id, source_type="video", content_hash="h", language="sr", file=None,
+                          file_id=uuid.uuid4(), created_at=datetime.now(timezone.utc),
+                          updated_at=datetime.now(timezone.utc))
+        model.name = "clip.mp4"
+        session.get.return_value = model
+
+        result = repository.set_language(source_id, language)
+
+        session.get.assert_called_once()
+        assert session.get.call_args[0][1] == source_id
+        assert model.language == language
+        assert result.language == language
+
+    def test_set_language_on_a_missing_source_raises(self, repository, mock_db_manager):
+        session = mock_db_manager.session.return_value.__enter__.return_value
+        session.get.return_value = None
+
+        with pytest.raises(SourceNotFound):
+            repository.set_language(uuid.uuid4(), "sr")
 
     def test_delete_file_found(self, repository, mock_db_manager):
         session = mock_db_manager.session.return_value.__enter__.return_value

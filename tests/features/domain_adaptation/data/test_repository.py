@@ -73,3 +73,14 @@ class TestDomainAdaptationRepository:
 
         with pytest.raises(DomainDatabaseError):
             repo.save_glossary(sample_glossary)
+    @pytest.mark.parametrize("rowcount, expected", [(1, True), (0, False)])
+    def test_delete_by_source_id_reports_whether_there_was_one(self, mock_db_manager, rowcount, expected):
+        manager, session = mock_db_manager
+        session.execute.return_value.rowcount = rowcount
+        source_id = uuid.uuid4()
+
+        assert DomainAdaptationRepository(manager).delete_glossary_by_source_id(source_id) is expected
+
+        statement = session.execute.call_args[0][0]
+        assert statement.table.name == DomainGlossaryModel.__tablename__
+        assert statement.whereclause.right.value == source_id

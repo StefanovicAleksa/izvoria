@@ -70,13 +70,6 @@ def stub_gateway():
     return StubEngineGateway(latency_seconds=0.0)
 
 
-@pytest.fixture
-def session_store(tmp_path):
-    from onyx_desktop.data.session_store import SessionStore
-
-    return SessionStore(tmp_path / "sessions.json")
-
-
 @pytest.fixture(scope="session")
 def qt_app():
     """

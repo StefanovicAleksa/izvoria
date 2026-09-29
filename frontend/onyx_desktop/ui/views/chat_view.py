@@ -32,10 +32,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from onyx_desktop.domain.entities import ChatMessage, Evidence
+from onyx_desktop.domain.entities import ChatMessage, ConversationRef, Evidence
 from onyx_desktop.domain.enums import ChatMode, MessageRole, TurnOutcome
+from onyx_desktop.ui.widgets.answer_language import AnswerLanguageLabel
+from onyx_desktop.ui.widgets.history_list import HistoryEntry, HistoryList
 from onyx_desktop.ui.widgets.message_bubble import MessageRow
 from onyx_desktop.ui.widgets.source_panel import SourcePanel
+from onyx_desktop.utils.formatting import when
 
 _MAX_CLARIFICATION_ROUNDS = 3
 
@@ -45,10 +48,13 @@ class ChatView(QWidget):
 
     chatRequested = Signal(str, object, object, int)   # prompt, session_id, ChatMode, limit
     newConversationRequested = Signal()
+    conversationChosen = Signal(object)                 # session_id
+    conversationDeleteRequested = Signal(object)        # session_id
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._session_id = uuid.uuid4()
+        self._requested_session: Optional[uuid.UUID] = None
         self._pending_row: Optional[QWidget] = None
 
         # Reasoned Answer clarification state: the question being refined, and what has been added.
@@ -66,6 +72,15 @@ class ChatView(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
+        # --- far left: past conversations ---
+        self._history = HistoryList(
+            "Conversations", "No conversations yet. Ask a question to start one.",
+            deletable=True, noun="conversation",
+        )
+        self._history.itemChosen.connect(self._on_history_chosen)
+        self._history.deleteRequested.connect(self.conversationDeleteRequested)
+        splitter.addWidget(self._history)
+
         # --- left: conversation ---
         left = QWidget()
         left_layout = QVBoxLayout(left)
@@ -76,6 +91,8 @@ class ChatView(QWidget):
         title = QLabel("Chat")
         title.setProperty("role", "heading")
         header.addWidget(title)
+        self._answer_language = AnswerLanguageLabel()
+        header.addWidget(self._answer_language)
         header.addStretch(1)
 
         self._new_button = QPushButton("New conversation")
@@ -118,8 +135,10 @@ class ChatView(QWidget):
 
         splitter.addWidget(left)
         splitter.addWidget(right)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(2, 2)
+        splitter.setSizes([230, 620, 420])
         outer.addWidget(splitter)
 
     def _composer(self) -> QWidget:
@@ -176,21 +195,52 @@ class ChatView(QWidget):
     def session_id(self) -> uuid.UUID:
         return self._session_id
 
+    def set_answer_language(self, name: str) -> None:
+        self._answer_language.set_language(name)
+
     def set_busy(self, busy: bool) -> None:
         self._send.setEnabled(not busy)
         self._input.setEnabled(not busy)
         self._new_button.setEnabled(not busy)
         self._send.setText("Working…" if busy else "Ask")
 
-    def load_session(self, session_id: uuid.UUID) -> None:
-        """Switches to another conversation. Turn history lives in the engine, not here."""
+    def set_conversations(self, conversations: List[ConversationRef]) -> None:
+        self._history.set_entries([
+            HistoryEntry(
+                key=ref.session_id,
+                title=ref.title,
+                subtitle=f"{when(ref.last_at)} · {ref.turn_count} turn{'s' if ref.turn_count != 1 else ''}",
+            )
+            for ref in conversations
+        ])
+        self._history.select(self._session_id)
+
+    def set_history_unavailable(self, text: str) -> None:
+        self._history.set_unavailable(text)
+
+    def show_conversation(self, session_id: uuid.UUID, messages: List[ChatMessage]) -> None:
+        """
+        Re-renders a past conversation and makes it the current one, so the next question continues it:
+        the engine reads the same session's earlier turns and their [Doc N] numbering when answering.
+        """
+        if session_id != self._requested_session:
+            return  # an older request that lost the race to a newer click
         self._session_id = session_id
         self._reset_clarification()
         self._clear_transcript()
-        self._add_system_note(
-            "Resumed an earlier conversation. Previous turns are not re-displayed, but the "
-            "appliance still reads them when answering."
-        )
+        for message in messages:
+            self.add_message(message)
+            if message.missing_evidence:
+                self._add_system_note(
+                    f"{message.missing_evidence} source(s) this answer cited are no longer in the index "
+                    "(the file was re-ingested or removed)."
+                )
+        self._history.select(session_id)
+
+    def forget_conversation(self, session_id: uuid.UUID) -> None:
+        """The conversation was deleted; if it is on screen, start a fresh one rather than keep writing to it."""
+        if session_id == self._session_id:
+            self._on_new_conversation()
 
     def add_message(self, message: ChatMessage) -> None:
         self._drop_pending()
@@ -242,9 +292,22 @@ class ChatView(QWidget):
 
     def _on_new_conversation(self) -> None:
         self._session_id = uuid.uuid4()
+        self._requested_session = None
         self._reset_clarification()
         self._clear_transcript()
+        self._history.clear_selection()
         self.newConversationRequested.emit()
+
+    def _on_history_chosen(self, session_id: uuid.UUID) -> None:
+        if self._pending_row is not None:
+            # An answer for the current conversation is on its way; switching now would drop it into
+            # the wrong transcript.
+            self._history.select(self._session_id)
+            return
+        if session_id == self._session_id and self._transcript_layout.count() > 1:
+            return
+        self._requested_session = session_id
+        self.conversationChosen.emit(session_id)
 
     def _on_review(self, evidence: Evidence) -> None:
         self._source_panel.show_evidence(evidence)

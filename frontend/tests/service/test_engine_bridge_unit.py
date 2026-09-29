@@ -127,7 +127,7 @@ class TestStatus:
 
         seen = []
         bridge.statusChanged.connect(lambda snapshot: seen.append(snapshot.status))
-        bridge.start_ingest("/tmp/media", IngestMode.AUDIO)
+        bridge.start_ingest("/tmp/media", IngestMode.AUDIO, "en")
         assert bridge.is_ingesting is True
 
         wait_for(bridge.ingestFinished, timeout_ms=15000)
@@ -140,7 +140,7 @@ class TestStatus:
 
         ticks = []
         bridge.progressTicked.connect(ticks.append)
-        bridge.start_ingest("/tmp/media", IngestMode.AUDIO)
+        bridge.start_ingest("/tmp/media", IngestMode.AUDIO, "en")
         wait_for(bridge.ingestFinished, timeout_ms=15000)
 
         assert ticks, "the JobManager progress callback produced no ticks"
@@ -218,3 +218,170 @@ class TestReportRequests:
         bridge.run_report(object(), ReportMode.DEEP)
 
         assert bridge.send_chat("hello", uuid.uuid4(), ChatMode.SINGLE_PASS) is None
+
+
+class TestHistoryReads:
+    """
+    History runs on its own thread: an ingestion or report holds the worker for hours, and picking up an
+    old conversation must not wait behind it.
+    """
+
+    @pytest.fixture
+    def blocking_gateway(self):
+        import threading
+
+        from onyx_desktop.data.stub_gateway import StubEngineGateway
+
+        class BlockingIngest(StubEngineGateway):
+            def __init__(self):
+                super().__init__(latency_seconds=0.0)
+                self.release = threading.Event()
+                self.history_threads = []
+
+            def ingest(self, path, mode, language):
+                self.release.wait(10)
+                return super().ingest(path, mode, language)
+
+            def list_conversations(self):
+                from PySide6.QtCore import QThread
+                self.history_threads.append(QThread.currentThread().objectName())
+                return super().list_conversations()
+
+        return BlockingIngest()
+
+    def test_history_answers_while_an_ingestion_holds_the_worker(self, qt_app, blocking_gateway):
+        bridge = EngineBridge(blocking_gateway)
+        try:
+            bridge.boot()
+            wait_for(bridge.booted)
+            assert bridge.start_ingest("/media", IngestMode.VIDEO, "en") is not None
+
+            bridge.list_conversations()
+            (conversations,) = wait_for(bridge.conversationsListed)
+
+            assert bridge.is_ingesting
+            assert len(conversations) == 1
+            assert blocking_gateway.history_threads == ["onyx-history"]
+        finally:
+            blocking_gateway.release.set()
+            bridge.stop(timeout_ms=10000)
+
+    def test_history_does_not_touch_the_busy_interlock(self, bridge):
+        bridge.boot()
+        wait_for(bridge.booted)
+        seen = []
+        bridge.busyChanged.connect(seen.append)
+
+        bridge.list_searches()
+        wait_for(bridge.searchesListed)
+
+        assert seen == [] and not bridge.is_busy
+
+    def test_history_is_refused_before_the_engine_has_started(self, bridge):
+        assert bridge.history_available is False
+        assert bridge.list_reports() is None
+
+    def test_deleting_re_lists(self, bridge):
+        bridge.boot()
+        wait_for(bridge.booted)
+        bridge.list_searches()
+        (before,) = wait_for(bridge.searchesListed)
+
+        bridge.delete_search(before[0].record_id)
+        (after,) = wait_for(bridge.searchesListed)
+
+        assert len(after) == len(before) - 1
+
+    def test_a_loaded_conversation_carries_its_session_id(self, bridge):
+        bridge.boot()
+        wait_for(bridge.booted)
+        bridge.list_conversations()
+        (conversations,) = wait_for(bridge.conversationsListed)
+
+        bridge.load_conversation(conversations[0].session_id)
+        session_id, messages = wait_for(bridge.conversationLoaded)
+
+        assert session_id == conversations[0].session_id and messages
+
+    def test_a_failed_read_names_the_call(self, bridge):
+        bridge.boot()
+        wait_for(bridge.booted)
+        bridge.load_search(uuid.uuid4())
+        method, message = wait_for(bridge.historyFailed)
+        assert method == "load_search" and "no longer" in message
+
+    def test_resume_is_a_gpu_job_on_the_worker(self, bridge):
+        bridge.boot()
+        wait_for(bridge.booted)
+        bridge.list_reports()
+        (reports,) = wait_for(bridge.reportsListed)
+        stopped = next(r for r in reports if r.resumable)
+
+        assert bridge.resume_report(stopped.report_id) is not None
+        assert bridge.is_researching
+        _, document = wait_for(bridge.reportFinished)
+        assert document.status is not None and not bridge.is_busy
+
+
+class TestHistoryReader:
+    def test_it_refuses_anything_that_is_not_a_history_call(self, stub_gateway):
+        from onyx_desktop.service.history_reader import HistoryReader
+        with pytest.raises(ValueError):
+            HistoryReader(stub_gateway).run(1, "ingest", ("/media", IngestMode.VIDEO))
+
+
+class TestLanguage:
+    def test_languages_and_the_active_one_are_known_before_boot(self, bridge):
+        assert [option.code for option in bridge.languages] == ["en", "sr"]
+        assert bridge.active_language == "en"
+        assert bridge.language_name("sr") == "Srpski"
+
+    def test_switching_runs_on_the_worker_and_announces_the_new_language(self, bridge, stub_gateway):
+        bridge.boot()
+        wait_for(bridge.booted)
+        changes = []
+        bridge.languageChanged.connect(changes.append)
+
+        assert bridge.switch_language("sr") is not None
+        (_rid, code) = wait_for(bridge.languageSwitchFinished)
+
+        assert code == "sr" and changes == ["sr"]
+        assert bridge.active_language == stub_gateway.active_language() == "sr"
+        assert bridge.is_busy is False
+
+    def test_switching_to_the_active_language_is_not_a_request(self, bridge):
+        bridge.boot()
+        wait_for(bridge.booted)
+
+        assert bridge.switch_language("en") is None
+        assert bridge.is_busy is False
+
+    def test_switching_is_refused_before_boot_and_while_busy(self, bridge):
+        assert bridge.switch_language("sr") is None
+
+        bridge.boot()
+        wait_for(bridge.booted)
+        bridge.start_ingest("/tmp/media", IngestMode.AUDIO, "en")
+        assert bridge.switch_language("sr") is None
+        wait_for(bridge.ingestFinished, timeout_ms=15000)
+
+    def test_history_is_closed_while_the_engine_is_rebuilt(self, bridge):
+        bridge.boot()
+        wait_for(bridge.booted)
+
+        bridge.switch_language("sr")
+        assert bridge.history_available is False
+        wait_for(bridge.languageSwitchFinished)
+        assert bridge.history_available is True
+
+    def test_a_batch_in_another_language_switches_the_appliance_to_it(self, bridge, stub_gateway):
+        bridge.boot()
+        wait_for(bridge.booted)
+        changes = []
+        bridge.languageChanged.connect(changes.append)
+
+        bridge.start_ingest("/tmp/media", IngestMode.AUDIO, "sr")
+        wait_for(bridge.ingestFinished, timeout_ms=15000)
+
+        assert stub_gateway.ingested_languages == ["sr"]
+        assert changes == ["sr"] and bridge.active_language == "sr"

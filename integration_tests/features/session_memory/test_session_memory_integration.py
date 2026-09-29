@@ -3,6 +3,7 @@
 import uuid
 import pytest
 
+from app.core.config import settings
 from app.features.session_memory.data.repositories import SessionMemoryRepository
 from app.features.session_memory.domain.enums import SessionTurnMode
 from app.features.session_memory.service.session_memory_api import SessionMemoryAPI
@@ -62,3 +63,45 @@ class TestSessionMemoryIntegration:
         api.record_turn(session_a, "Question for A", "Answer for A")
 
         assert api.get_prior_context(session_b) is None
+
+
+@pytest.mark.integration
+class TestSessionMemoryHistoryIntegration:
+    """Listing, re-reading and deleting whole conversations, as the desktop app's history pane does."""
+
+    @pytest.fixture
+    def api(self, db_manager) -> SessionMemoryAPI:
+        return SessionMemoryAPI(SessionMemoryRepository(db_manager))
+
+    def test_list_sessions_titles_by_first_question_and_orders_by_last_activity(self, api):
+        quiet, busy = uuid.uuid4(), uuid.uuid4()
+        api.record_turn(quiet, "Who signed the lease?", "The tenant [Doc 1].")
+        api.record_turn(busy, "When was the hearing?", "In March [Doc 1].")
+        api.record_turn(busy, "Who attended?", "Both parties [Doc 2].")
+
+        listed = [s for s in api.list_sessions() if s.session_id in (quiet, busy)]
+
+        assert [(s.session_id, s.title, s.turn_count) for s in listed] == [
+            (busy, "When was the hearing?", 2), (quiet, "Who signed the lease?", 1)]
+        assert listed[0].started_at <= listed[0].last_at
+
+    def test_get_all_turns_is_the_whole_conversation_beyond_the_prompt_window(self, api):
+        session_id = uuid.uuid4()
+        count = settings.CHAT_HISTORY_MAX_TURNS + 5  # more than the model's prompt window keeps
+        for i in range(count):
+            api.record_turn(session_id, f"Q{i}", f"A{i}")
+
+        turns = api.get_all_turns(session_id)
+
+        assert [t.question for t in turns] == [f"Q{i}" for i in range(count)]
+        assert len(api.get_history(session_id)) == settings.CHAT_HISTORY_MAX_TURNS
+
+    def test_delete_session_removes_only_that_conversation(self, api):
+        keep, drop = uuid.uuid4(), uuid.uuid4()
+        api.record_turn(keep, "Keep?", "Yes")
+        api.record_turn(drop, "Drop?", "Yes")
+        api.record_turn(drop, "Really?", "Yes")
+
+        assert api.delete_session(drop) == 2
+        assert api.get_all_turns(drop) == []
+        assert [t.question for t in api.get_all_turns(keep)] == ["Keep?"]

@@ -13,10 +13,11 @@ behaviour was broken. Importing these entities costs no torch import.
 import uuid
 
 import pytest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 from onyx_desktop.domain.entities import ReportOutlineDraft, ReportPlanDraft
-from onyx_desktop.domain.enums import MediaKind, MessageRole, ReportMode, TurnOutcome
+from onyx_desktop.domain.enums import IngestMode, MediaKind, MessageRole, ReportMode, TurnOutcome
+from onyx_desktop.exceptions.base import DesktopError
 
 pytest.importorskip("app.features.rag_retrieval.domain.entities")
 
@@ -43,6 +44,8 @@ from app.features.deep_research_report.domain.enums import (  # noqa: E402
     SectionStatus,
 )
 
+from app.engine.domain.enums import EngineState  # noqa: E402
+from app.engine.exceptions.lifecycle import EngineBusyError  # noqa: E402
 from onyx_desktop.data.engine_gateway import OnyxEngineGateway  # noqa: E402
 
 CHUNK_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
@@ -605,7 +608,7 @@ class TestDocuments:
             target_path="/docs", total_files_scanned=2, successful_ingestions=2, failed_ingestions=0,
             vectors_created=30, clips_extracted=0, pages_converted=17, total_duration_seconds=12.0, errors={})
 
-        summary = gateway.ingest("/docs", IngestMode.DOCUMENT)
+        summary = gateway.ingest("/docs", IngestMode.DOCUMENT, "en")
 
         engine.ingest_documents.assert_called_once_with("/docs")
         engine.ingest_videos.assert_not_called()
@@ -653,8 +656,204 @@ class TestImagesAndLines:
             vectors_created=3, clips_extracted=0, pages_converted=0, images_described=3,
             total_duration_seconds=40.0, errors={})
 
-        summary = gateway.ingest("/photos", IngestMode.IMAGE)
+        summary = gateway.ingest("/photos", IngestMode.IMAGE, "en")
 
         engine.ingest_images.assert_called_once_with("/photos")
         engine.ingest_documents.assert_not_called()
         assert summary.images_described == 3
+
+
+class TestHistory:
+    """
+    Reopening history must show exactly what was shown then: the same [Doc N] numbers, the same ranks and
+    scores, and an honest count of what a re-ingest has since removed.
+    """
+
+    @staticmethod
+    def _turn(question, answer, first_doc_number, chunk_ids, mode="chat"):
+        from app.features.session_memory.domain.entities import SessionTurn
+        return SessionTurn(id=uuid.uuid4(), session_id=SESSION_ID, question=question, answer_text=answer,
+                           mode=mode, evidence_chunk_ids=chunk_ids, first_doc_number=first_doc_number,
+                           created_at="2026-09-28T10:00:00Z")
+
+    def test_load_conversation_resolves_conversation_wide_doc_numbers(self, gateway_and_engine):
+        gateway, engine = gateway_and_engine
+        a, b, c = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        engine.get_conversation.return_value = [
+            self._turn("When?", "On the fourteenth [Doc 1] in writing [Doc 2].", 1, [a, b]),
+            # A follow-up citing an earlier turn's excerpt plus its own, in a grouped tag.
+            self._turn("Who?", "Both parties [Doc 1, 3].", 3, [c]),
+        ]
+        engine.get_chunks.return_value = [make_chunk(chunk_id=a), make_chunk(chunk_id=b), make_chunk(chunk_id=c)]
+
+        messages = gateway.load_conversation(SESSION_ID)
+
+        engine.get_chunks.assert_called_once_with([a, b, c])
+        assert [m.role for m in messages] == [MessageRole.USER, MessageRole.ASSISTANT] * 2
+        second = messages[3]
+        assert second.text == "Both parties [Doc 1][Doc 3]."
+        assert [(e.doc_number, e.chunk_id) for e in second.evidence] == [(1, a), (3, c)]
+        assert second.missing_evidence == 0
+
+    def test_a_reasoned_turn_without_tags_shows_the_evidence_it_showed_first(self, gateway_and_engine):
+        gateway, engine = gateway_and_engine
+        a, b = uuid.uuid4(), uuid.uuid4()
+        engine.get_conversation.return_value = [self._turn("Why?", "Because of the audit.", 4, [a, b], "reasoning")]
+        engine.get_chunks.return_value = [make_chunk(chunk_id=a), make_chunk(chunk_id=b)]
+
+        (_, answer) = gateway.load_conversation(SESSION_ID)
+
+        assert [e.doc_number for e in answer.evidence] == [4, 5]
+
+    def test_evidence_removed_by_a_reingest_is_counted_not_hidden(self, gateway_and_engine):
+        gateway, engine = gateway_and_engine
+        kept, gone = uuid.uuid4(), uuid.uuid4()
+        engine.get_conversation.return_value = [self._turn("Q", "A [Doc 1][Doc 2].", 1, [kept, gone])]
+        engine.get_chunks.return_value = [make_chunk(chunk_id=kept)]
+
+        (_, answer) = gateway.load_conversation(SESSION_ID)
+
+        assert [e.chunk_id for e in answer.evidence] == [kept]
+        assert answer.missing_evidence == 1
+        assert answer.is_ungrounded is False
+
+    def test_load_search_keeps_rank_and_the_score_it_had(self, gateway_and_engine):
+        from app.features.search_history.domain.entities import SearchRecord
+        gateway, engine = gateway_and_engine
+        first, gone, third = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        engine.get_search.return_value = SearchRecord(
+            id=uuid.uuid4(), query="notice period", mode="verified", result_limit=5,
+            chunk_ids=[first, gone, third], scores=[0.9, 0.5, 0.2], execution_time_ms=640,
+            created_at="2026-09-28T10:00:00Z")
+        engine.get_chunks.return_value = [make_chunk(chunk_id=third, relevance_score=0.0),
+                                          make_chunk(chunk_id=first, relevance_score=0.0)]
+
+        outcome = gateway.load_search(uuid.uuid4())
+
+        assert [(h.rank, h.chunk_id, h.relevance_score) for h in outcome.hits] == [(1, first, 0.9), (3, third, 0.2)]
+        assert outcome.missing_hits == 1
+        assert outcome.is_saved and outcome.mode.value == "verified" and outcome.query == "notice period"
+
+    def test_a_deleted_search_is_a_clear_error(self, gateway_and_engine):
+        from onyx_desktop.exceptions.base import DesktopError
+        gateway, engine = gateway_and_engine
+        engine.get_search.return_value = None
+        with pytest.raises(DesktopError):
+            gateway.load_search(uuid.uuid4())
+
+    def test_load_report_plan_restores_the_outline_and_its_cost(self, gateway_and_engine):
+        gateway, engine = gateway_and_engine
+        plan = ResearchPlan(report_id=REPORT_ID, topic="Retention", scope_note="scope",
+                            sections=[OutlineSection(key="s1", title="Background", brief="b", order_index=0)],
+                            sub_questions=[SubQuestion(text="What?", section_key="s1", order_index=0)])
+        engine.get_report.return_value = Report(id=REPORT_ID, topic="Retention",
+                                                status=ReportStatus.AWAITING_APPROVAL, plan=plan,
+                                                indexed_source_count=7)
+        engine.plan_cost.return_value = (12, 9)
+
+        draft = gateway.load_report_plan(REPORT_ID)
+
+        engine.plan_cost.assert_called_once_with(plan)
+        assert (draft.report_id, draft.topic, draft.expected_job_count, draft.estimated_minutes) == (
+            REPORT_ID, "Retention", 12, 9)
+        assert draft.sections == (ReportOutlineDraft(key="s1", title="Background", brief="b", questions=("What?",)),)
+        assert draft.indexed_source_count == 7
+
+    def test_list_reports_maps_status_and_resumability(self, gateway_and_engine):
+        from app.features.deep_research_report.domain.entities import ReportSummary
+        gateway, engine = gateway_and_engine
+        engine.list_reports.return_value = [
+            ReportSummary(id=REPORT_ID, topic="Stopped one", status=ReportStatus.CANCELLED, evidence_count=4),
+            ReportSummary(id=uuid.uuid4(), topic="Stopped early", status=ReportStatus.CANCELLED, evidence_count=0),
+        ]
+
+        refs = gateway.list_reports()
+
+        assert [(r.topic, r.resumable) for r in refs] == [("Stopped one", True), ("Stopped early", False)]
+
+    def test_resume_report_renders_the_finished_report(self, gateway_and_engine, monkeypatch):
+        gateway, engine = gateway_and_engine
+        monkeypatch.setattr(gateway, "_map_report", lambda report: ("mapped", report))
+        engine.get_report.return_value.language = "en"
+        assert gateway.resume_report(REPORT_ID) == ("mapped", engine.resume_research_report.return_value)
+        engine.resume_research_report.assert_called_once_with(REPORT_ID)
+
+
+class TestLanguage:
+    """Switching rebuilds the engine through the bootstrapper; a batch or a resumed report switches first."""
+
+    @pytest.fixture
+    def bootstrapper(self):
+        bootstrapper = MagicMock()
+        with patch("onyx_desktop.data.engine_gateway._import_engine", return_value={"bootstrapper": bootstrapper}):
+            yield bootstrapper
+
+    def test_languages_are_the_packs_named_in_themselves(self):
+        options = OnyxEngineGateway().languages()
+
+        assert [(o.code, o.name) for o in options] == [("en", "English"), ("sr", "Srpski")]
+
+    def test_switching_rebuilds_the_engine_with_the_progress_listener(self, gateway_and_engine, bootstrapper):
+        gateway, engine = gateway_and_engine
+
+        gateway.switch_language("sr")
+
+        bootstrapper.switch_language.assert_called_once_with(
+            engine, "sr", progress_listener=gateway._on_job_progress)
+        assert gateway._engine is bootstrapper.switch_language.return_value
+
+    def test_switching_to_the_active_language_does_nothing(self, gateway_and_engine, bootstrapper):
+        gateway, engine = gateway_and_engine
+
+        gateway.switch_language("en")
+
+        bootstrapper.switch_language.assert_not_called()
+        assert gateway._engine is engine
+
+    def test_a_refused_switch_keeps_the_running_engine(self, gateway_and_engine, bootstrapper):
+        gateway, engine = gateway_and_engine
+        engine.get_state.return_value = EngineState.INGESTING
+        bootstrapper.switch_language.side_effect = EngineBusyError("The appliance is ingesting.")
+
+        with pytest.raises(DesktopError):
+            gateway.switch_language("sr")
+
+        assert gateway._engine is engine
+        bootstrapper.build.assert_not_called()
+
+    def test_a_failed_rebuild_comes_back_up_in_the_previous_language(self, gateway_and_engine, bootstrapper):
+        gateway, engine = gateway_and_engine
+        engine.get_state.return_value = EngineState.OFFLINE
+        bootstrapper.switch_language.side_effect = RuntimeError("CUDA unavailable")
+
+        with pytest.raises(DesktopError):
+            gateway.switch_language("sr")
+
+        bootstrapper.build.assert_called_once()
+        assert gateway._engine is bootstrapper.build.return_value
+        gateway._engine.start.assert_called_once_with()
+
+    def test_a_batch_in_another_language_switches_before_ingesting(self, gateway_and_engine, monkeypatch):
+        gateway, engine = gateway_and_engine
+        order = []
+        monkeypatch.setattr(gateway, "switch_language", lambda code: order.append(("switch", code)))
+        engine.ingest_audios.side_effect = lambda path: order.append(("ingest", path)) or MagicMock(
+            target_path=path, total_files_scanned=1, successful_ingestions=1, failed_ingestions=0,
+            vectors_created=3, clips_extracted=0, pages_converted=0, images_described=0,
+            total_duration_seconds=1.0, errors={})
+
+        gateway.ingest("/sr", IngestMode.AUDIO, "sr")
+
+        assert order == [("switch", "sr"), ("ingest", "/sr")]
+
+    def test_resuming_a_report_switches_to_the_language_it_was_written_in(self, gateway_and_engine, monkeypatch):
+        gateway, engine = gateway_and_engine
+        switched = []
+        monkeypatch.setattr(gateway, "switch_language", switched.append)
+        monkeypatch.setattr(gateway, "_map_report", lambda report: report)
+        engine.get_report.return_value.language = "sr"
+
+        gateway.resume_report(REPORT_ID)
+
+        assert switched == ["sr"]
+        engine.resume_research_report.assert_called_once_with(REPORT_ID)

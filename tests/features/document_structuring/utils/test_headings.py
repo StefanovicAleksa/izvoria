@@ -15,11 +15,6 @@ def serbian(language_pack):
     return compile_clause_patterns(language_pack("sr").documents.clause_patterns)
 
 
-@pytest.fixture
-def slovenian(language_pack):
-    return compile_clause_patterns(language_pack("sl").documents.clause_patterns)
-
-
 class TestHeadingLevel:
     @pytest.mark.parametrize("line, expected", [
         ("# Memorandum", (1, "Memorandum")),
@@ -48,10 +43,6 @@ class TestHeadingLevel:
     def test_body_lines_are_not_headings(self, english, line):
         assert heading_level(line, english) is None
 
-    @pytest.mark.parametrize("line", ["3. člen", "3. ČLEN", "Člen 12", "Priloga 1"])
-    def test_slovenian_clause_markers(self, slovenian, line):
-        assert heading_level(line, slovenian) == (2, line)
-
 
 class TestBookChapters:
     @pytest.mark.parametrize("line", [
@@ -75,10 +66,6 @@ class TestBookChapters:
 
     def test_serbian_wrapped_prose_is_not_a_heading(self, serbian):
         assert heading_level("Glava 3 zakona propisuje da se", serbian) is None
-
-    @pytest.mark.parametrize("line", ["Poglavje 4", "4. poglavje", "Del II: Zima", "Predgovor"])
-    def test_slovenian_chapters(self, slovenian, line):
-        assert heading_level(line, slovenian) == (2, line)
 
 
 class TestShoutedLinesInBooks:

@@ -12,6 +12,7 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 from app.core.anchors.domain.enums import AnchorKind
 from app.core.anchors.utils.formatting import format_location
+from app.core.language.service.language_api import get_language_pack, get_supported_language_packs
 from app.engine.service.bootstrap import OnyxBootstrapper
 from app.engine.exceptions.base import EngineError
 from app.features.rag_retrieval.domain.entities import SearchQuery
@@ -28,6 +29,54 @@ def print_header():
     print("=" * 60)
     print("   AIR-GAPPED AI APPLIANCE | VRAM-MANAGED PIPELINES    ")
     print("=" * 60 + "\n")
+
+
+def language_label(code: str) -> str:
+    return f"{get_language_pack(code).native_name} ({code})"
+
+
+def choose_language(engine, question: str):
+    """A supported language code, the active one on a blank answer, or None for an unknown code."""
+    options = ", ".join(f"{pack.code} = {pack.native_name}" for pack in get_supported_language_packs())
+    answer = input(f"[{question} ({options}); blank keeps {engine.active_language}] > ").strip().lower()
+    if not answer:
+        return engine.active_language
+    if answer not in {pack.code for pack in get_supported_language_packs()}:
+        print(f"[ERROR] '{answer}' is not a supported language.")
+        return None
+    return answer
+
+
+def switch_language(engine, code: str):
+    """The engine to use from now on: rebuilt in `code`, or the same one when it is already active."""
+    if code == engine.active_language:
+        return engine
+    print(f"\n[SYSTEM] Switching to {language_label(code)}...")
+    try:
+        return OnyxBootstrapper.switch_language(engine, code)
+    except EngineError:
+        raise
+    except Exception as e:
+        # The old engine is already stopped; come back up in the language we were in
+        print(f"\n[ENGINE ERROR] Could not switch to {language_label(code)}: {e}")
+        print(f"[SYSTEM] Restarting in {language_label(engine.active_language)}...")
+        restarted = OnyxBootstrapper.build()
+        restarted.start()
+        return restarted
+
+
+def ingest_batch(engine, folder_prompt: str, pipeline_name: str, run):
+    """Asks for a folder and the language its files are in, switches to that language, and ingests."""
+    raw_path = input(f"[{folder_prompt}] > ").strip()
+    if not raw_path:
+        return engine
+    code = choose_language(engine, "Language of these files")
+    if code is None:
+        return engine
+    engine = switch_language(engine, code)
+    print(f"\n[SYSTEM] Evicting UI models... Initializing {pipeline_name} ({language_label(code)}).")
+    print_report(run(engine, raw_path))
+    return engine
 
 
 def print_report(report):
@@ -307,6 +356,8 @@ def main():
 
     try:
         while True:
+            print(f"\nACTIVE LANGUAGE: {language_label(engine.active_language)} "
+                  f"-- new batches are indexed in it, answers are written in it")
             print("\nAVAILABLE OPERATIONS:")
             print("  1. Ingest Folders [Video Pipeline - FULL]")
             print("  2. Ingest Folders [Audio Pipeline - FAST]")
@@ -318,23 +369,18 @@ def main():
             print("  8. Deep Research Report [Multi-Page Cited Report]")
             print("  9. Ingest Folders [Documents & Books - PDF / DOCX / EPUB / TXT / MD / HTML / RTF]")
             print(" 10. Ingest Folders [Images - JPG / PNG / TIFF / WebP]")
+            print(" 11. Switch Answer Language")
 
-            choice = input("\n[Select Option 1-10] > ").strip()
+            choice = input("\n[Select Option 1-11] > ").strip()
 
             try:
                 if choice == '1':
-                    raw_path = input("[Enter Absolute Path to Video Folder] > ").strip()
-                    if raw_path:
-                        print("\n[SYSTEM] Evicting UI models... Initializing Video Pipeline.")
-                        report = engine.ingest_videos(raw_path)
-                        print_report(report)
+                    engine = ingest_batch(engine, "Enter Absolute Path to Video Folder", "Video Pipeline",
+                                          lambda e, path: e.ingest_videos(path))
 
                 elif choice == '2':
-                    raw_path = input("[Enter Absolute Path to Audio Folder] > ").strip()
-                    if raw_path:
-                        print("\n[SYSTEM] Evicting UI models... Initializing Audio Pipeline.")
-                        report = engine.ingest_audios(raw_path)
-                        print_report(report)
+                    engine = ingest_batch(engine, "Enter Absolute Path to Audio Folder", "Audio Pipeline",
+                                          lambda e, path: e.ingest_audios(path))
 
                 elif choice == '3':
                     prompt = input("[Enter Search Query] > ").strip()
@@ -363,18 +409,17 @@ def main():
                     run_research_report(engine, conversation_session_id)
 
                 elif choice == '9':
-                    raw_path = input("[Enter Absolute Path to Document / Book Folder] > ").strip()
-                    if raw_path:
-                        print("\n[SYSTEM] Evicting UI models... Initializing Document Pipeline.")
-                        report = engine.ingest_documents(raw_path)
-                        print_report(report)
+                    engine = ingest_batch(engine, "Enter Absolute Path to Document / Book Folder",
+                                          "Document Pipeline", lambda e, path: e.ingest_documents(path))
 
                 elif choice == '10':
-                    raw_path = input("[Enter Absolute Path to Image Folder] > ").strip()
-                    if raw_path:
-                        print("\n[SYSTEM] Evicting UI models... Initializing Image Pipeline.")
-                        report = engine.ingest_images(raw_path)
-                        print_report(report)
+                    engine = ingest_batch(engine, "Enter Absolute Path to Image Folder", "Image Pipeline",
+                                          lambda e, path: e.ingest_images(path))
+
+                elif choice == '11':
+                    code = choose_language(engine, "Answer in")
+                    if code is not None:
+                        engine = switch_language(engine, code)
 
                 elif choice == '6' or choice.lower() in ['exit', 'quit']:
                     print("\n[SYSTEM] Initiating graceful shutdown sequence...")

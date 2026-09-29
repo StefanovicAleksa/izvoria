@@ -105,7 +105,7 @@ class ReportAuthoringAPI:
                 self._release(loaded_model, release_after)
 
             report = self._repository.create_report(
-                topic=topic, plan=plan, corpus=corpus, session_id=session_id
+                topic=topic, plan=plan, corpus=corpus, session_id=session_id, language=settings.APPLIANCE_LANGUAGE
             )
             logger.info(
                 f"Proposed {len(plan.sections)} section(s) and {len(plan.sub_questions)} sub-question(s) "

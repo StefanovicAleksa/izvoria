@@ -4,7 +4,7 @@ import uuid
 from abc import ABC, abstractmethod
 from typing import List, Optional
 
-from app.features.session_memory.domain.entities import SessionTurn
+from app.features.session_memory.domain.entities import SessionSummary, SessionTurn
 from app.features.session_memory.domain.enums import SessionTurnMode
 
 
@@ -31,4 +31,19 @@ class ISessionMemoryRepository(ABC):
     @abstractmethod
     def get_history(self, session_id: uuid.UUID, limit: int) -> List[SessionTurn]:
         """Returns the session's most recent `limit` turns, oldest first."""
+        pass
+
+    @abstractmethod
+    def get_all_turns(self, session_id: uuid.UUID) -> List[SessionTurn]:
+        """Returns every turn of the session, oldest first."""
+        pass
+
+    @abstractmethod
+    def list_sessions(self, limit: int) -> List[SessionSummary]:
+        """Returns the `limit` most recently active conversations, most recent first."""
+        pass
+
+    @abstractmethod
+    def delete_session(self, session_id: uuid.UUID) -> int:
+        """Removes every turn of the session; returns how many there were."""
         pass

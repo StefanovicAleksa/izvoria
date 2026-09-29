@@ -30,7 +30,7 @@ Revisions live in `data/migrations/versions/`. `env.py` imports every `app/**/da
    ENV=test POSTGRES_DB=onyx_alembic_scratch venv/bin/alembic upgrade head
    ENV=test POSTGRES_DB=onyx_alembic_scratch venv/bin/alembic revision --autogenerate --rev-id 000N -m "add foo"
    ```
-3. Read the revision. Autogenerate renders `Computed` expressions and server defaults as literals: `fts_document` must keep `settings.FTS_LANGUAGE_CONFIG`. It also can't see renames (it writes a drop plus an add, which loses the data). Write a backfill for any new `NOT NULL` column.
+3. Read the revision. Autogenerate renders `Computed` expressions and server defaults as literals, and it doesn't see a changed `Computed` expression at all (0004 hand-writes the drop and re-add of `fts_document`). It also can't see renames (it writes a drop plus an add, which loses the data). Write a backfill for any new `NOT NULL` column.
 4. `integration_tests/core/database/test_migrations_integration.py` fails while models and revisions disagree.
 
 Migrations are forward-only: `downgrade()` raises. The way back from a bad update is a database backup.
@@ -45,7 +45,7 @@ Not part of the pipeline itself — it's cross-cutting infrastructure that every
 
 ## Gotchas / design notes
 
-- Switching `APPLIANCE_LANGUAGE` still needs a reset: `fts_document` is generated with the old stemmer, and no revision regenerates it.
+- **0004 made the keyword index per chunk.** `vector_chunks.fts_config` (`REGCONFIG`, backfilled from the stemmer the old generated column named) drives `fts_document = to_tsvector(fts_config, text_payload)`. It must be `REGCONFIG`, not text: a generated column needs an immutable expression, and a `text::regconfig` cast isn't one. `sources.language` and `research_reports.language` are backfilled with the database's language code. SQLAlchemy doesn't reflect `regconfig`, so `rag_storage/data/models.py` registers it in `ischema_names` for the drift check.
 
 - The singleton pattern means the engine connects eagerly at import time, not lazily on first use.
 - `dispose()` must be called explicitly on shutdown (`OnyxEngine.stop()` does this) or pooled connections leak past process exit.

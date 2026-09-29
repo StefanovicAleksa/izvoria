@@ -63,6 +63,7 @@ def _report_row(report_id=REPORT_ID, **overrides) -> MagicMock:
     row.scrub_enabled = False
     row.mode = ReportMode.DEEP.value
     row.rounds_used = 1
+    row.language = "en"
     row.error_message = None
     row.created_at = None
     row.updated_at = None
@@ -131,6 +132,12 @@ class TestPostgresReportRepository:
         repository.create_report("t", _plan(), _corpus(), session_id=session_id)
 
         assert self._added(session, "research_reports")[0].session_id == session_id
+
+    def test_create_report_records_the_language_it_is_written_in(self, repository, session):
+        created = repository.create_report("t", _plan(), _corpus(), language="sr")
+
+        assert self._added(session, "research_reports")[0].language == "sr"
+        assert created.language == "sr"
 
     # ==========================================
     # APPROVE

@@ -6,6 +6,7 @@ from typing import List
 from uuid import UUID
 from sqlalchemy import delete
 
+from app.core.config import settings
 from app.core.database.service.manager import db_manager
 from app.features.rag_storage.domain.interfaces import IRagRepository
 from app.features.context_unification.domain.entities import UnifiedChunk
@@ -37,6 +38,8 @@ class PostgresRagRepository(IRagRepository):
                 if deleted.rowcount:
                     logger.info(f"Replacing {deleted.rowcount} existing RAG chunks for source {source_id}.")
 
+                # A batch is ingested in the active language; its chunks are keyword-indexed with that stemmer
+                fts_config = settings.FTS_LANGUAGE_CONFIG
                 vector_models = [
                     VectorChunkModel(
                         source_id=source_id,
@@ -55,7 +58,8 @@ class PostgresRagRepository(IRagRepository):
                         raw_text=chunk.raw_text or chunk.text_payload,
                         context_text=chunk.context_text or None,
                         speaker_labels=list(chunk.speaker_labels),
-                        embedding=embedding
+                        embedding=embedding,
+                        fts_config=fts_config
                     )
                     for position, (chunk, embedding) in enumerate(zip(chunks, embeddings))
                 ]

@@ -64,7 +64,7 @@
   <div id="app" hidden>
     <section>
       <h2>Appliance</h2>
-      <label for="language">Language of your material</label>
+      <label for="language">Language</label>
       <select id="language"></select>
       <div class="row">
         <button class="primary" id="start">Start appliance</button>
@@ -73,6 +73,8 @@
       </div>
       <div class="status"><span class="dot" id="dot"></span><span id="message">Checking…</span></div>
       <div class="error" id="error"></div>
+      <p class="hint">The appliance starts in this language and holds material in every language at once. Switch
+        the language answers are written in from inside the appliance (<b>Answer in</b>).</p>
       <p class="hint" id="idle-hint"></p>
     </section>
 
@@ -84,7 +86,8 @@
       </div>
       <ul class="files" id="file-list"></ul>
       <p class="hint" id="folder-hint" hidden>
-        In the appliance, open <b>Ingest</b>, choose the folder <code id="folder"></code> and start ingestion.
+        In the appliance, open <b>Ingest</b>, choose the folder <code id="folder"></code>, set <b>Language of these
+        files</b> to <b id="folder-language"></b> and start ingestion.
       </p>
       <div class="error" id="upload-error"></div>
     </section>
@@ -142,12 +145,11 @@ function render(view) {
   const on = state === "ready" || state === "busy";
   const dot = $("dot");
   dot.className = "dot " + (SPINNING.has(state) ? "spin" : on ? "ok" : state === "error" ? "err" : "");
-  const lang = on && runningLanguage ? ` (${$("language").querySelector(`[value=${runningLanguage}]`)?.textContent})` : "";
+  const lang = on && runningLanguage ? ` (started in ${languageName(runningLanguage)})` : "";
   $("message").textContent = view.message + lang;
   $("error").textContent = view.error || "";
-  const needsLaunch = on && runningLanguage !== $("language").value;
-  $("start").disabled = SPINNING.has(state) || (on && !needsLaunch);
-  $("start").textContent = on && runningLanguage && needsLaunch ? "Switch language" : "Start appliance";
+  // A running appliance switches languages itself; starting again would only relaunch it
+  $("start").disabled = SPINNING.has(state) || on;
   $("open").disabled = !(on && runningLanguage);
   $("stop").disabled = !(on || state === "gpu_unavailable" || state === "booting");
 }
@@ -165,7 +167,7 @@ $("login-form").addEventListener("submit", async (event) => {
 });
 
 $("logout").addEventListener("click", async () => { await api("/api/logout", { method: "POST" }); showSignedIn(false); });
-$("language").addEventListener("change", () => { clearTimeout(pollTimer); poll(); });
+const languageName = (code) => $("language").querySelector(`[value=${code}]`)?.textContent || code;
 
 $("start").addEventListener("click", async () => {
   $("error").textContent = "";
@@ -196,7 +198,8 @@ async function uploadAll(files) {
     $("upload-error").textContent = "Start the appliance before uploading.";
     return;
   }
-  const language = runningLanguage || $("language").value;
+  // The folder is named for the language chosen here; the Ingest view's own picker is what the batch uses
+  const language = $("language").value;
   let batch;
   try { ({ batch } = await api("/api/uploads", { method: "POST" })); }
   catch (err) { $("upload-error").textContent = err.message; return; }
@@ -221,6 +224,7 @@ function uploadOne(file, language, batch) {
       if (xhr.status === 201) {
         progress.textContent = "uploaded";
         $("folder").textContent = body.folder;
+        $("folder-language").textContent = languageName(language);
         $("folder-hint").hidden = false;
       } else {
         progress.textContent = "failed";

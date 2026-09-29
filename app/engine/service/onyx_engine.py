@@ -6,7 +6,7 @@ import threading
 import time
 import uuid
 import gc
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 
 from app.core.config import settings
@@ -28,6 +28,10 @@ from app.features.rag_retrieval.service.retrieval_api import RetrievalAPI
 from app.features.qa_generation.domain.entities import QAResponse, ConversationHistory
 from app.features.session_memory.service.session_memory_api import SessionMemoryAPI
 from app.features.session_memory.domain.enums import SessionTurnMode
+from app.features.session_memory.domain.entities import SessionSummary, SessionTurn
+from app.features.search_history.service.search_history_api import SearchHistoryAPI
+from app.features.search_history.domain.entities import SearchRecord, SearchRecordSummary
+from app.features.search_history.domain.enums import SearchHistoryMode
 from app.core.jobs.domain.entities import CancellationToken
 from app.features.deep_research_report.domain.entities import (
     CorpusDigest, Report, ReportSummary, ResearchPlan, ResearchPlanProposal,
@@ -71,7 +75,8 @@ class OnyxEngine(IOnyxEngine):
             research_report_pipeline: Optional[DeepResearchReportPipeline] = None,
             report_api: Optional[ReportAuthoringAPI] = None,
             document_pipeline: Optional[BatchDocumentPipeline] = None,
-            image_pipeline: Optional[BatchImagePipeline] = None
+            image_pipeline: Optional[BatchImagePipeline] = None,
+            search_history_api: Optional[SearchHistoryAPI] = None
     ):
         self._async_service = async_model_service
         self._media_pipeline = media_pipeline
@@ -87,6 +92,7 @@ class OnyxEngine(IOnyxEngine):
         self._report_api = report_api
         self._document_pipeline = document_pipeline
         self._image_pipeline = image_pipeline
+        self._search_history_api = search_history_api
 
         self._state = EngineState.OFFLINE
         self._state_lock = threading.RLock()
@@ -110,10 +116,6 @@ class OnyxEngine(IOnyxEngine):
                 # Creates a fresh database, or brings an existing one to this build's schema without touching its data
                 upgrade_to_head(db_manager.get_engine())
 
-                # An index built for another language can't be searched with this one's stemmer
-                if self._retrieval_api is not None:
-                    self._retrieval_api.verify_index_language()
-
                 self._force_aggressive_garbage_collection()
 
                 self._state = EngineState.ONLINE
@@ -132,7 +134,11 @@ class OnyxEngine(IOnyxEngine):
             try:
                 self._force_aggressive_garbage_collection()
 
+                # Waits out any preload still loading, then frees every resident model. A model a live call left
+                # resident (release_after=False) would otherwise stay in VRAM past this engine, and a rebuilt
+                # engine's new orchestrator could neither see nor evict it.
                 self._async_service.shutdown()
+                self._async_service.release_all()
                 db_manager.dispose()
 
                 self._state = EngineState.OFFLINE
@@ -144,6 +150,19 @@ class OnyxEngine(IOnyxEngine):
     def get_state(self) -> EngineState:
         with self._state_lock:
             return self._state
+
+    @property
+    def active_language(self) -> str:
+        """The language the next ingestion batch is indexed in and answers are written in."""
+        return settings.APPLIANCE_LANGUAGE
+
+    def require_idle(self) -> None:
+        """Raises EngineBusyError unless no job holds the engine: the only time its language may change."""
+        with self._state_lock:
+            if self._state in (EngineState.BOOTING, EngineState.INGESTING, EngineState.RESEARCHING):
+                raise EngineBusyError(
+                    f"The appliance is {self._state.value}. Switch languages once it has finished."
+                )
 
     # ==========================================
     # VRAM ORCHESTRATION GUARDS
@@ -276,10 +295,11 @@ class OnyxEngine(IOnyxEngine):
             search_id = uuid.uuid4()
             result = self._live_pipeline.execute_search(search_id, query)
             self._resolve_physical_paths(result)
-            return result
         except Exception as e:
             self._release_models_after_failure()
             raise map_engine_error(e, context=f"Standard Search [{query.prompt}]")
+        self._record_search(query, SearchHistoryMode.STANDARD, result)
+        return result
 
     def search_verified(self, query: SearchQuery) -> SearchResult:
         self._enforce_online_state()
@@ -287,10 +307,30 @@ class OnyxEngine(IOnyxEngine):
             search_id = uuid.uuid4()
             result = self._live_verified_pipeline.execute_verified_search(search_id, query)
             self._resolve_physical_paths(result)
-            return result
         except Exception as e:
             self._release_models_after_failure()
             raise map_engine_error(e, context=f"Verified Search [{query.prompt}]")
+        self._record_search(query, SearchHistoryMode.VERIFIED, result)
+        return result
+
+    def _record_search(self, query: SearchQuery, mode: SearchHistoryMode, result: SearchResult) -> None:
+        """
+        Keeps the hits exactly as shown (for verified search, what survived the scrubber). History is a
+        convenience: a failure to record it is logged and never costs the user the search they just ran.
+        """
+        if self._search_history_api is None:
+            return
+        try:
+            self._search_history_api.record(
+                query=query.prompt,
+                mode=mode,
+                result_limit=query.limit,
+                chunk_ids=[chunk.chunk_id for chunk in result.results],
+                scores=[chunk.relevance_score for chunk in result.results],
+                execution_time_ms=float(result.execution_time_ms),
+            )
+        except Exception as e:
+            logger.warning(f"Could not record the search '{query.prompt}' in history: {e}")
 
     def chat(self, query: SearchQuery, session_id: Optional[uuid.UUID] = None) -> QAResponse:
         """
@@ -427,28 +467,35 @@ class OnyxEngine(IOnyxEngine):
 
         try:
             report = self._research_report_pipeline.propose_plan(topic, session_id, source_id_filter)
-            sub_questions = len(report.plan.sub_questions)
-            sections = len(report.plan.sections)
+            expected_job_count, estimated_minutes = self.plan_cost(report.plan)
             return ResearchPlanProposal(
                 report_id=report.id,
                 plan=report.plan,
                 corpus=report.corpus or CorpusDigest(indexed_source_count=report.indexed_source_count,
                                                     indexed_chunk_count=0),
-                # The caller needs a denominator up front: unlike ingestion, a report knows how much
-                # work it is about to do. Counted against the job types the report view actually ticks
-                # on -- per round, one batched search plus ONE RERANK JOB PER SUB-QUESTION plus one
-                # outline pass, then one job per section and one summary. The rerank fan-out was the
-                # term missing here: with 12 sub-questions the bar reached 100% at the outline pass and
-                # sat there through all eight section writes, which are the slowest part of the run.
-                # Exhaustive mode's round ceiling is used, so the bar can still only finish early.
-                expected_job_count=(
-                    settings.REPORT_MAX_GATHER_ROUNDS * (2 + sub_questions) + sections + 1
-                ),
-                estimated_minutes=self._estimate_minutes(sections, sub_questions),
+                expected_job_count=expected_job_count,
+                estimated_minutes=estimated_minutes,
             )
         except Exception as e:
             self._release_models_after_failure()
             raise map_engine_error(e, context=f"Proposing a research plan for [{topic}]")
+
+    @classmethod
+    def plan_cost(cls, plan: ResearchPlan) -> Tuple[int, int]:
+        """
+        (expected_job_count, estimated_minutes) for a plan, fresh or reopened from history.
+
+        The caller needs a denominator up front: unlike ingestion, a report knows how much work it is about
+        to do. Counted against the job types the report view actually ticks on -- per round, one batched
+        search plus ONE RERANK JOB PER SUB-QUESTION plus one outline pass, then one job per section and one
+        summary. The rerank fan-out was the term missing once: with 12 sub-questions the bar reached 100% at
+        the outline pass and sat there through all eight section writes, the slowest part of the run.
+        Exhaustive mode's round ceiling is used, so the bar can still only finish early.
+        """
+        sub_questions = len(plan.sub_questions)
+        sections = len(plan.sections)
+        expected_job_count = settings.REPORT_MAX_GATHER_ROUNDS * (2 + sub_questions) + sections + 1
+        return expected_job_count, cls._estimate_minutes(sections, sub_questions)
 
     @staticmethod
     def _estimate_minutes(sections: int, sub_questions: int) -> int:
@@ -556,8 +603,11 @@ class OnyxEngine(IOnyxEngine):
 
         Duplicate ids are collapsed and ids that no longer exist are skipped upstream, so the
         result may be shorter than the request and is not positionally aligned with it.
+
+        Allowed while ingestion or a report holds the GPU: it touches only the database, and it is how
+        history and evidence stay readable during a run that lasts hours.
         """
-        self._enforce_online_state()
+        self._require_started()
         # _retrieval_api is optional on __init__; guard it directly rather than reusing
         # _require_conversation_support(), which also demands session memory and would reject
         # this read for the wrong reason.
@@ -587,6 +637,73 @@ class OnyxEngine(IOnyxEngine):
             return self._storage_api.list_sources()
         except Exception as e:
             raise map_engine_error(e, context="Listing ingested sources")
+
+    # ---------- history (database only: no model, no engine lock, allowed mid-ingestion) ----------
+
+    def list_conversations(self, limit: int = 200) -> List[SessionSummary]:
+        """Chat conversations, most recently active first."""
+        self._require_started()
+        self._require_session_memory()
+        try:
+            return self._session_memory_api.list_sessions(limit)
+        except Exception as e:
+            raise map_engine_error(e, context="Listing conversations")
+
+    def get_conversation(self, session_id: uuid.UUID) -> List[SessionTurn]:
+        """Every turn of a conversation, oldest first, with the evidence ids each turn showed first."""
+        self._require_started()
+        self._require_session_memory()
+        try:
+            return self._session_memory_api.get_all_turns(session_id)
+        except Exception as e:
+            raise map_engine_error(e, context=f"Loading conversation [{session_id}]")
+
+    def delete_conversation(self, session_id: uuid.UUID) -> int:
+        """Forgets a conversation's turns. Reports started from it are kept."""
+        self._require_started()
+        self._require_session_memory()
+        try:
+            return self._session_memory_api.delete_session(session_id)
+        except Exception as e:
+            raise map_engine_error(e, context=f"Deleting conversation [{session_id}]")
+
+    def list_searches(self, limit: int = 200) -> List[SearchRecordSummary]:
+        """Past standard and verified searches, newest first."""
+        self._require_started()
+        self._require_search_history()
+        try:
+            return self._search_history_api.list(limit)
+        except Exception as e:
+            raise map_engine_error(e, context="Listing past searches")
+
+    def get_search(self, record_id: uuid.UUID) -> Optional[SearchRecord]:
+        """A past search with its ranked chunk ids; hydrate them with get_chunks."""
+        self._require_started()
+        self._require_search_history()
+        try:
+            return self._search_history_api.get(record_id)
+        except Exception as e:
+            raise map_engine_error(e, context=f"Loading past search [{record_id}]")
+
+    def delete_search(self, record_id: uuid.UUID) -> bool:
+        self._require_started()
+        self._require_search_history()
+        try:
+            return self._search_history_api.delete(record_id)
+        except Exception as e:
+            raise map_engine_error(e, context=f"Deleting past search [{record_id}]")
+
+    def _require_started(self) -> None:
+        if self._state == EngineState.OFFLINE:
+            raise EngineOfflineError("Engine is offline.")
+
+    def _require_session_memory(self) -> None:
+        if self._session_memory_api is None:
+            raise EngineOfflineError("Conversation memory is not wired into this engine instance.")
+
+    def _require_search_history(self) -> None:
+        if self._search_history_api is None:
+            raise EngineOfflineError("Search history is not wired into this engine instance.")
 
     def _require_conversation_support(self) -> None:
         if self._session_memory_api is None or self._retrieval_api is None:

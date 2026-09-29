@@ -15,21 +15,26 @@ and keeps a mis-set ENV from being baked in before main.py can fix it.
 """
 
 import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from onyx_desktop.domain.entities import (
     ChatMessage,
+    ConversationRef,
     Evidence,
     IngestionSummary,
+    LanguageOption,
     ProgressTick,
     ReasoningStep,
     ReportDocument,
     ReportOutlineDraft,
     ReportPlanDraft,
+    ReportRef,
     SearchHit,
     SearchOutcome,
+    SearchRecordRef,
 )
 from onyx_desktop.domain.enums import (
     ChatMode,
@@ -47,6 +52,9 @@ from onyx_desktop.exceptions.gateway import ApplianceOfflineError, InvalidReques
 from onyx_desktop.utils.error_mapper import map_engine_error
 
 logger = logging.getLogger(__name__)
+
+# A canonical tag, after normalize_citation_tags has split groups like "[Doc 1, 3]".
+_DOC_TAG = re.compile(r"\[Doc (\d+)\]")
 
 # Populated by _import_engine(); module-level so the cost is paid once per process.
 _engine_modules: Dict[str, Any] = {}
@@ -110,6 +118,35 @@ class OnyxEngineGateway(IEngineGateway):
         finally:
             self._engine = None
 
+    # ---------- language ----------
+
+    def languages(self) -> List[LanguageOption]:
+        from app.core.language.service.language_api import get_supported_language_packs
+        return [LanguageOption(code=pack.code, name=pack.native_name) for pack in get_supported_language_packs()]
+
+    def active_language(self) -> str:
+        from app.core.config import settings
+        return settings.APPLIANCE_LANGUAGE
+
+    def switch_language(self, code: str) -> None:
+        if self._engine is not None and code == self.active_language():
+            return
+        modules = _import_engine()
+        try:
+            self._engine = modules["bootstrapper"].switch_language(
+                self._engine, code, progress_listener=self._on_job_progress
+            )
+        except Exception as exc:
+            # Refused while busy, the engine is untouched. Otherwise it was already stopped: bring one back up
+            # in the language settings were returned to, so the user is left with a working appliance.
+            if self._engine is None or self._engine.get_state().value in ("offline", "error"):
+                self._engine = None
+                try:
+                    self.boot()
+                except Exception as boot_exc:
+                    logger.error(f"Could not restart after a failed language switch: {boot_exc}")
+            raise map_engine_error(exc, context=f"Switching to '{code}'")
+
     def is_ingesting(self) -> bool:
         if self._engine is None:
             return False
@@ -153,6 +190,7 @@ class OnyxEngineGateway(IEngineGateway):
                 query=result.query,
                 hits=hits,
                 execution_time_ms=result.execution_time_ms,
+                mode=mode,
             )
         except Exception as exc:
             raise map_engine_error(exc, context=f"{mode.value.capitalize()} search")
@@ -165,20 +203,8 @@ class OnyxEngineGateway(IEngineGateway):
         engine = self._require_engine()
         try:
             proposal = engine.propose_research_plan(topic)
-            plan = proposal.plan
-            return ReportPlanDraft(
-                report_id=proposal.report_id,
-                topic=plan.topic,
-                scope_note=plan.scope_note,
-                sections=tuple(
-                    ReportOutlineDraft(
-                        key=section.key,
-                        title=section.title,
-                        brief=section.brief,
-                        questions=tuple(q.text for q in plan.sub_questions_for(section.key)),
-                    )
-                    for section in plan.sections
-                ),
+            return self._plan_draft(
+                proposal.report_id, proposal.plan,
                 indexed_source_count=proposal.corpus.indexed_source_count,
                 indexed_chunk_count=proposal.corpus.indexed_chunk_count,
                 expected_job_count=proposal.expected_job_count,
@@ -218,13 +244,188 @@ class OnyxEngineGateway(IEngineGateway):
             logger.error(f"Could not cancel report {report_id}: {exc}")
             return False
 
-    def load_report(self, report_id: uuid.UUID) -> Optional[ReportDocument]:
+    def resume_report(self, report_id: uuid.UUID) -> ReportDocument:
+        engine = self._require_engine()
+        try:
+            stored = engine.get_report(report_id)
+        except Exception as exc:
+            raise map_engine_error(exc, context="Resuming a research report")
+        if stored is not None and stored.language:
+            # The remaining sections are written in the language the rest of the report is in
+            self.switch_language(stored.language)
+            engine = self._require_engine()
+        try:
+            return self._map_report(engine.resume_research_report(report_id))
+        except Exception as exc:
+            raise map_engine_error(exc, context="Resuming a research report")
+
+    # ==========================================
+    # HISTORY (reader thread: database only)
+    # ==========================================
+
+    def list_conversations(self) -> List[ConversationRef]:
+        engine = self._require_engine()
+        try:
+            return [
+                ConversationRef(session_id=s.session_id, title=s.title, started_at=s.started_at,
+                                last_at=s.last_at, turn_count=s.turn_count)
+                for s in engine.list_conversations()
+            ]
+        except Exception as exc:
+            raise map_engine_error(exc, context="Listing conversations")
+
+    def load_conversation(self, session_id: uuid.UUID) -> List[ChatMessage]:
+        """
+        Rebuilds the conversation as it was shown. [Doc N] numbers are conversation-wide: turn k's new
+        evidence is numbered first_doc_number, first_doc_number + 1, ... so one map from number to chunk
+        covers every tag in every answer, including a follow-up citing an earlier turn's excerpt.
+
+        A chat answer keeps its tags, so its cards are exactly what it cites. A Reasoned Answer is stored
+        without tags (its own numbering would collide), so its cards are the evidence it showed first.
+        """
+        engine = self._require_engine()
+        modules = _import_engine()
+        try:
+            turns = engine.get_conversation(session_id)
+            number_to_chunk: Dict[int, uuid.UUID] = {}
+            for turn in turns:
+                for offset, chunk_id in enumerate(turn.evidence_chunk_ids):
+                    number_to_chunk[turn.first_doc_number + offset] = chunk_id
+            chunks = {c.chunk_id: c for c in engine.get_chunks(list(dict.fromkeys(number_to_chunk.values())))}
+
+            messages: List[ChatMessage] = []
+            for turn in turns:
+                messages.append(ChatMessage(role=MessageRole.USER, text=turn.question, created_at=turn.created_at))
+                text = turn.answer_text
+                try:
+                    text = modules["normalize_citation_tags"](text, 0, set(number_to_chunk))
+                except Exception as exc:
+                    logger.warning(f"Citation normalization failed for a stored turn: {exc}")
+                cited = [int(n) for n in dict.fromkeys(_DOC_TAG.findall(text))]
+                numbers = cited or [turn.first_doc_number + i for i in range(len(turn.evidence_chunk_ids))]
+                evidence = tuple(
+                    self._map_chunk(number, chunks[number_to_chunk[number]])
+                    for number in numbers
+                    if number in number_to_chunk and number_to_chunk[number] in chunks
+                )
+                messages.append(ChatMessage(
+                    role=MessageRole.ASSISTANT,
+                    text=text,
+                    outcome=TurnOutcome.ANSWERED,
+                    evidence=evidence,
+                    created_at=turn.created_at,
+                    missing_evidence=len([n for n in numbers if n in number_to_chunk]) - len(evidence),
+                ))
+            return messages
+        except Exception as exc:
+            raise map_engine_error(exc, context="Loading a conversation")
+
+    def delete_conversation(self, session_id: uuid.UUID) -> None:
+        engine = self._require_engine()
+        try:
+            engine.delete_conversation(session_id)
+        except Exception as exc:
+            raise map_engine_error(exc, context="Deleting a conversation")
+
+    def list_searches(self) -> List[SearchRecordRef]:
+        engine = self._require_engine()
+        try:
+            return [
+                SearchRecordRef(record_id=r.id, query=r.query, mode=SearchMode(r.mode.value),
+                                hit_count=r.hit_count, created_at=r.created_at)
+                for r in engine.list_searches()
+            ]
+        except Exception as exc:
+            raise map_engine_error(exc, context="Listing past searches")
+
+    def load_search(self, record_id: uuid.UUID) -> SearchOutcome:
+        """The hits as shown then, in their original rank, with their original scores."""
+        engine = self._require_engine()
+        try:
+            record = engine.get_search(record_id)
+            if record is None:
+                raise InvalidRequestError("That search is no longer in the history.")
+            chunks = {c.chunk_id: c for c in engine.get_chunks(list(record.chunk_ids))}
+            hits = []
+            for rank, (chunk_id, score) in enumerate(zip(record.chunk_ids, record.scores), start=1):
+                chunk = chunks.get(chunk_id)
+                if chunk is not None:
+                    hits.append(self._map_hit(rank, chunk.model_copy(update={"relevance_score": score})))
+            return SearchOutcome(
+                query=record.query,
+                hits=tuple(hits),
+                execution_time_ms=int(record.execution_time_ms),
+                mode=SearchMode(record.mode.value),
+                saved_at=record.created_at,
+                missing_hits=len(record.chunk_ids) - len(hits),
+            )
+        except Exception as exc:
+            raise map_engine_error(exc, context="Loading a past search")
+
+    def delete_search(self, record_id: uuid.UUID) -> None:
+        engine = self._require_engine()
+        try:
+            engine.delete_search(record_id)
+        except Exception as exc:
+            raise map_engine_error(exc, context="Deleting a past search")
+
+    def list_reports(self) -> List[ReportRef]:
+        engine = self._require_engine()
+        try:
+            return [
+                ReportRef(report_id=r.id, topic=r.topic, status=ReportRunStatus(r.status.value),
+                          created_at=r.created_at, completed_at=r.completed_at,
+                          section_count=r.section_count, evidence_count=r.evidence_count)
+                for r in engine.list_reports(limit=200)
+            ]
+        except Exception as exc:
+            raise map_engine_error(exc, context="Listing research reports")
+
+    def load_report(self, report_id: uuid.UUID) -> ReportDocument:
         engine = self._require_engine()
         try:
             report = engine.get_report(report_id)
-            return self._map_report(report) if report is not None else None
+            if report is None:
+                raise InvalidRequestError("That report no longer exists.")
+            return self._map_report(report)
         except Exception as exc:
             raise map_engine_error(exc, context="Loading a research report")
+
+    def load_report_plan(self, report_id: uuid.UUID) -> ReportPlanDraft:
+        engine = self._require_engine()
+        try:
+            report = engine.get_report(report_id)
+            if report is None:
+                raise InvalidRequestError("That research plan is no longer available; scope it again.")
+            expected_job_count, estimated_minutes = engine.plan_cost(report.plan)
+            corpus = report.corpus
+            return self._plan_draft(
+                report.id, report.plan,
+                indexed_source_count=corpus.indexed_source_count if corpus else report.indexed_source_count,
+                indexed_chunk_count=corpus.indexed_chunk_count if corpus else 0,
+                expected_job_count=expected_job_count,
+                estimated_minutes=estimated_minutes,
+            )
+        except Exception as exc:
+            raise map_engine_error(exc, context="Reopening a research plan")
+
+    @staticmethod
+    def _plan_draft(report_id: uuid.UUID, plan: Any, **counts: int) -> ReportPlanDraft:
+        return ReportPlanDraft(
+            report_id=report_id,
+            topic=plan.topic,
+            scope_note=plan.scope_note,
+            sections=tuple(
+                ReportOutlineDraft(
+                    key=section.key,
+                    title=section.title,
+                    brief=section.brief,
+                    questions=tuple(q.text for q in plan.sub_questions_for(section.key)),
+                )
+                for section in plan.sections
+            ),
+            **counts,
+        )
 
     @staticmethod
     def _apply_edits(stored_plan: Any, draft: ReportPlanDraft) -> Any:
@@ -332,7 +533,10 @@ class OnyxEngineGateway(IEngineGateway):
 
     # ---------- ingestion ----------
 
-    def ingest(self, path: str, mode: IngestMode) -> IngestionSummary:
+    def ingest(self, path: str, mode: IngestMode, language: str) -> IngestionSummary:
+        self._require_engine()
+        # A batch is transcribed and indexed in its own language, so the engine is rebuilt in it first
+        self.switch_language(language)
         engine = self._require_engine()
         try:
             ingest = {

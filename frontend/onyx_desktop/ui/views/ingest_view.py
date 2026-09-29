@@ -17,7 +17,7 @@ Two honest constraints shape this view:
 """
 
 import time
-from typing import Optional
+from typing import List, Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from onyx_desktop.domain.entities import IngestionSummary, LogLine, ProgressTick
+from onyx_desktop.domain.entities import IngestionSummary, LanguageOption, LogLine, ProgressTick
 from onyx_desktop.domain.enums import IngestMode, JobProgressState
 from onyx_desktop.ui.widgets.log_pane import LogPane
 from onyx_desktop.utils.formatting import duration
@@ -43,7 +43,7 @@ _SILENCE_WARN_SECONDS = 90
 
 
 class IngestView(QWidget):
-    ingestRequested = Signal(str, object)   # path, IngestMode
+    ingestRequested = Signal(str, object, str)   # path, IngestMode, language code
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
@@ -100,6 +100,16 @@ class IngestView(QWidget):
         )
         picker.addWidget(self._mode)
 
+        # Filled from the appliance's language packs by set_languages()
+        self._language = QComboBox()
+        self._language.setToolTip(
+            "The language spoken or written in these files. They are transcribed and indexed in it, and "
+            "the appliance switches to it for the batch. A recording Whisper hears in another language is "
+            "refused rather than forced into this one; documents and images are not checked."
+        )
+        picker.addWidget(QLabel("Language of these files:"))
+        picker.addWidget(self._language)
+
         self._start = QPushButton("Start ingestion")
         self._start.setProperty("role", "primary")
         self._start.clicked.connect(self._on_start)
@@ -146,6 +156,19 @@ class IngestView(QWidget):
         self._start.setEnabled(not busy)
         self._path.setEnabled(not busy)
         self._mode.setEnabled(not busy)
+        self._language.setEnabled(not busy)
+
+    def set_languages(self, options: List[LanguageOption], selected: str) -> None:
+        self._language.clear()
+        for option in options:
+            self._language.addItem(option.name, option.code)
+        self.select_language(selected)
+
+    def select_language(self, code: str) -> None:
+        """Defaults the next batch to `code` (the active language); the user can still pick another."""
+        index = self._language.findData(code)
+        if index >= 0:
+            self._language.setCurrentIndex(index)
 
     def append_log(self, line: LogLine) -> None:
         self._log.append_line(line)
@@ -236,7 +259,7 @@ class IngestView(QWidget):
             return
         # Rebuilt from the combo's QVariant: a str-derived Enum comes back as a plain str, and an
         # `is` comparison in the gateway would then silently run the video pipeline on audio.
-        self.ingestRequested.emit(path, IngestMode(self._mode.currentData()))
+        self.ingestRequested.emit(path, IngestMode(self._mode.currentData()), str(self._language.currentData()))
 
 
 class _ReportCard(QFrame):

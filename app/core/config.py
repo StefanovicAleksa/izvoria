@@ -1,14 +1,31 @@
 # File: app/core/config.py
 # Canvas: config_v3
 
+import logging
 import os
 import tomllib
+from functools import lru_cache
 from pathlib import Path
-from typing import Annotated, Optional
-from pydantic import Field, TypeAdapter, model_validator
+from typing import Annotated, FrozenSet, List, Optional
+from pydantic import Field, PrivateAttr, TypeAdapter, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+logger = logging.getLogger(__name__)
+
 APP_ENV = os.environ.get("ENV", "development")
+
+
+@lru_cache(maxsize=8)
+def _pack_fts_configs(packs_dir: Path) -> tuple:
+    """Each pack's text search configuration, deduplicated in code order. Read once: search asks on every query."""
+    configs = []
+    for path in sorted(packs_dir.glob("*.toml")):
+        with open(path, "rb") as f:
+            config = tomllib.load(f).get("search", {}).get("fts_config", "english")
+        if config not in configs:
+            configs.append(config)
+    return tuple(configs)
+
 
 if APP_ENV == "test":
     ENV_FILE = ".env.test"
@@ -91,15 +108,24 @@ class Settings(BaseSettings):
     # ==========================================
     # LANGUAGE
     # ==========================================
-    # The ONE language this appliance transcribes, indexes and answers in. Every language-specific rule
-    # lives in its pack, data/languages/<code>.toml (see app/core/language).
+    # The ACTIVE language: the one the next ingestion batch is transcribed and indexed in, and the one answers
+    # are written in. Switched at runtime with `use_language()`; the index holds every language. Every
+    # language-specific rule lives in its pack, data/languages/<code>.toml (see app/core/language).
     APPLIANCE_LANGUAGE: str = "en"
     # Overrides the language pack directory (tests point it at fixture packs).
     LANGUAGE_PACKS_PATH: str = ""
+    # Start in the language last switched to (ACTIVE_LANGUAGE_FILE) when APPLIANCE_LANGUAGE is not set
+    # explicitly. The root conftest.py turns it off, so a developer's remembered language never reaches a test.
+    REMEMBER_LANGUAGE: bool = True
 
     @property
     def LANGUAGE_PACKS_DIR(self) -> Path:
         return Path(self.LANGUAGE_PACKS_PATH) if self.LANGUAGE_PACKS_PATH else self.BASE_DIR / "data" / "languages"
+
+    @property
+    def ACTIVE_LANGUAGE_FILE(self) -> Path:
+        """Where the last active language is remembered, so the app starts in the language it was left in."""
+        return self.BASE_DIR / self.DATA_DIR / self.ENV / "active_language"
 
     # ==========================================
     # MODEL PATHS & VRAM REQUIREMENTS
@@ -242,6 +268,9 @@ class Settings(BaseSettings):
     RAG_RRF_K_CONSTANT: int = 60
     # Size of the RRF-fused candidate pool handed to the reranker
     RAG_RETRIEVAL_CANDIDATES: int = 40
+    # The dense leg's best this many always join that pool, however they fuse: asked in another language than the
+    # material, the keyword leg matches only the question's language, and RRF then buries the right chunk
+    RAG_DENSE_CANDIDATES_KEPT: int = 10
     # Postgres text search configuration for the sparse (FTS) leg. Used in DDL, so restricted to identifiers.
     # Taken from the language pack's [search] table unless set explicitly.
     FTS_LANGUAGE_CONFIG: str = Field(default="english", pattern=r"^[a-z_]+$")
@@ -334,36 +363,126 @@ class Settings(BaseSettings):
     # Multi-turn chat: most recent turns of a session shown to the answer model and the reasoner
     CHAT_HISTORY_MAX_TURNS: int = 20
 
+    # Fields given explicitly (environment, .env file, constructor): a language pack never overrides them.
+    _explicit_fields: FrozenSet[str] = PrivateAttr(default=frozenset())
+    # Fields the active pack set, reset to their defaults when another language is switched in.
+    _pack_fields: FrozenSet[str] = PrivateAttr(default=frozenset())
+
     @model_validator(mode="after")
     def _apply_language_pack(self) -> "Settings":
         """
-        Applies the language pack's settings overrides: its [models] table (a language the default small models
-        can't handle gets a model that can) and its FTS configuration. A field set explicitly -- environment,
-        .env file or constructor -- always wins over the pack.
+        Applies the active language pack's settings overrides (see `_apply_pack_overrides`). The explicit fields
+        are snapshotted first: pydantic adds every assigned field to `model_fields_set`, so after one pack is
+        applied its fields would otherwise look explicit to the next.
+
+        Without an explicit APPLIANCE_LANGUAGE the app starts in the language it was last switched to, unless
+        REMEMBER_LANGUAGE is off.
+        """
+        self._explicit_fields = frozenset(self.model_fields_set)
+        if "APPLIANCE_LANGUAGE" not in self._explicit_fields and self.REMEMBER_LANGUAGE:
+            remembered = self._remembered_language()
+            if remembered:
+                self.APPLIANCE_LANGUAGE = remembered
+        self._apply_pack_overrides()
+        return self
+
+    def _read_pack(self, code: str) -> dict:
+        path = self.LANGUAGE_PACKS_DIR / f"{code}.toml"
+        if not path.is_file():
+            if (self.LANGUAGE_PACKS_DIR / "legacy" / f"{code}.toml").is_file():
+                raise ValueError(f"APPLIANCE_LANGUAGE='{code}' is a legacy language, no longer supported "
+                                 f"(see {self.LANGUAGE_PACKS_DIR / 'legacy' / 'README.md'})")
+            raise ValueError(f"APPLIANCE_LANGUAGE='{code}' has no language pack at {path}")
+        with open(path, "rb") as f:
+            return tomllib.load(f)
+
+    def _apply_pack_overrides(self) -> None:
+        """
+        Applies the active language pack's settings overrides: its [models] table (a language the default small
+        models can't handle gets a model that can) and its FTS configuration. A field set explicitly --
+        environment, .env file or constructor -- always wins over the pack. Fields the previous pack set go back
+        to their defaults first, so switching from Serbian back to English does not keep Serbian's Gemma.
 
         Only these two tables are read here, straight from the TOML: the full pack is validated by
         app/core/language, which imports this module and so can't be imported by it.
         """
-        path = self.LANGUAGE_PACKS_DIR / f"{self.APPLIANCE_LANGUAGE}.toml"
-        if not path.is_file():
-            raise ValueError(f"APPLIANCE_LANGUAGE='{self.APPLIANCE_LANGUAGE}' has no language pack at {path}")
-        with open(path, "rb") as f:
-            pack = tomllib.load(f)
+        pack = self._read_pack(self.APPLIANCE_LANGUAGE)
 
         overrides = dict(pack.get("models", {}))
         if "search" in pack and "fts_config" in pack["search"]:
             overrides["FTS_LANGUAGE_CONFIG"] = pack["search"]["fts_config"]
 
         fields = type(self).model_fields
-        for name, value in overrides.items():
+        for name in overrides:
             if name not in fields:
-                raise ValueError(f"Language pack {path.name} overrides unknown setting '{name}'")
-            if name not in self.model_fields_set:
+                raise ValueError(f"Language pack {self.APPLIANCE_LANGUAGE}.toml overrides unknown setting '{name}'")
+
+        for name in self._pack_fields - self._explicit_fields:
+            setattr(self, name, fields[name].get_default(call_default_factory=True))
+
+        applied = set()
+        for name, value in overrides.items():
+            if name not in self._explicit_fields:
                 # Validated against the field's own type and constraints (e.g. the FTS identifier pattern)
                 field = fields[name]
                 field_type = Annotated[field.annotation, *field.metadata] if field.metadata else field.annotation
                 setattr(self, name, TypeAdapter(field_type).validate_python(value))
-        return self
+                applied.add(name)
+        self._pack_fields = frozenset(applied)
+
+    def use_language(self, code: str) -> None:
+        """
+        Makes `code` the active language: the next ingestion batch is indexed in it and answers are written in
+        it. Only safe while no engine job runs; the engine is rebuilt afterwards, because model paths are baked
+        into its manifests at build time.
+        """
+        if code not in self.supported_languages():
+            raise ValueError(
+                f"'{code}' is not a supported language. Available: {', '.join(self.supported_languages())}."
+            )
+        previous = self.APPLIANCE_LANGUAGE
+        self.APPLIANCE_LANGUAGE = code
+        try:
+            self._apply_pack_overrides()
+        except Exception:
+            self.APPLIANCE_LANGUAGE = previous
+            self._apply_pack_overrides()
+            raise
+
+    def supported_languages(self) -> List[str]:
+        """
+        The language codes this appliance can ingest and answer in: one per pack in LANGUAGE_PACKS_DIR. Packs in its
+        `legacy/` subdirectory (Slovenian) are kept but not served.
+        """
+        return sorted(path.stem for path in self.LANGUAGE_PACKS_DIR.glob("*.toml"))
+
+    @property
+    def SEARCH_FTS_CONFIGS(self) -> List[str]:
+        """
+        Every Postgres text search configuration a chunk in the index may carry: each pack's, plus the active one
+        (an explicit FTS_LANGUAGE_CONFIG may name none of the packs'). The keyword half of search builds one
+        query per configuration and matches each chunk only against the query built with its own.
+        """
+        configs = list(_pack_fts_configs(self.LANGUAGE_PACKS_DIR))
+        if self.FTS_LANGUAGE_CONFIG not in configs:
+            configs.append(self.FTS_LANGUAGE_CONFIG)
+        return configs
+
+    def _remembered_language(self) -> Optional[str]:
+        """The language last switched to, if it is still a supported one."""
+        try:
+            code = self.ACTIVE_LANGUAGE_FILE.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        return code if code in self.supported_languages() else None
+
+    def remember_language(self, code: str) -> None:
+        """Remembers `code` as the language to start in next time. Failing to write it is not worth failing a switch."""
+        try:
+            self.ACTIVE_LANGUAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+            self.ACTIVE_LANGUAGE_FILE.write_text(code, encoding="utf-8")
+        except OSError as e:
+            logger.warning(f"Could not remember the active language ({e}); the next start uses the default.")
 
     model_config = SettingsConfigDict(
         env_file=ENV_FILE,

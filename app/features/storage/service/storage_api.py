@@ -6,11 +6,13 @@ import mimetypes
 from pathlib import Path
 from typing import List, Optional
 
+from app.core.config import settings
 from app.features.storage.domain.entities import Source, File, SourceType
 from app.features.storage.domain.interfaces import IStorageRepository
 from app.features.storage.data.file_manager import FileManager
 from app.features.storage.utils.hashing import calculate_file_hash
 from app.features.storage.exceptions.base import StorageError
+from app.features.storage.exceptions.conflict import SourceLanguageConflict
 from app.features.storage.exceptions.not_found import FileNotFound
 
 
@@ -46,9 +48,15 @@ class StorageAPI:
         except Exception as e:
             raise StorageError(f"Raw ingestion failed: {str(e)}") from e
 
-    def ingest_local_file(self, file_path: str, source_type: SourceType,
-                          name: Optional[str] = None, delete_original: bool = False) -> Source:
-        """Deduplicated ingestion that creates a business Source linked to a File."""
+    def ingest_local_file(self, file_path: str, source_type: SourceType, name: Optional[str] = None,
+                          delete_original: bool = False, language: Optional[str] = None) -> Source:
+        """
+        Deduplicated ingestion that creates a business Source linked to a File, stamped with the language the
+        batch is ingested in (the active language unless given). A file already ingested in another language is
+        refused (SourceLanguageConflict): every stage cached for it was produced in that language. A source
+        nothing has bound yet is re-stamped.
+        """
+        language = language or settings.APPLIANCE_LANGUAGE
         source_path_obj = Path(file_path).resolve()
         if not source_path_obj.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
@@ -57,6 +65,13 @@ class StorageAPI:
             content_hash = calculate_file_hash(str(source_path_obj))
             existing = self.repository.get_by_hash(content_hash)
             if existing:
+                if existing.language and existing.language != language:
+                    raise SourceLanguageConflict(
+                        f"{source_path_obj.name} was already ingested as '{existing.language}'. Ingest it with "
+                        f"'{existing.language}' selected, or reset the index to change its language."
+                    )
+                if existing.language is None:
+                    existing = self.repository.set_language(existing.id, language)
                 if delete_original: os.remove(source_path_obj)
                 return existing
 
@@ -78,12 +93,22 @@ class StorageAPI:
                 name=name or source_path_obj.name,
                 source_type=source_type,
                 content_hash=content_hash,
+                language=language,
                 file_id=file_id,
                 file=new_file
             )
             return self.repository.create(new_source)
+        except SourceLanguageConflict:
+            raise
         except Exception as e:
             raise StorageError(f"Source ingestion failed: {str(e)}") from e
+
+    def clear_language(self, source_id: uuid.UUID) -> Source:
+        """
+        Un-stamps a source whose speech failed the language check, so ingesting it again with the right language
+        is accepted instead of refused as a conflict.
+        """
+        return self.repository.set_language(source_id, None)
 
     def get_source(self, source_id: uuid.UUID) -> Optional[Source]:
         return self.repository.get_by_id(source_id)

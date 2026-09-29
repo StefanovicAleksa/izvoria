@@ -88,16 +88,16 @@ class TestStart:
         vast = ScriptedVast(RUNNING)
         c = controller(settings, vast, agent)
 
-        c.start("sl")
+        c.start("en")
         await c.wait()
 
         assert vast.calls == []
-        agent.session.assert_awaited_once_with(AGENT, "sl")
+        agent.session.assert_awaited_once_with(AGENT, "en")
 
     @pytest.mark.asyncio
     async def test_rejects_languages_the_appliance_does_not_serve(self, settings):
         with pytest.raises(ValueError):
-            controller(settings, ScriptedVast(STOPPED), AsyncMock()).start("en")
+            controller(settings, ScriptedVast(STOPPED), AsyncMock()).start("de")
 
     @pytest.mark.asyncio
     async def test_stuck_scheduling_is_reported_as_gpu_unavailable(self, settings):
@@ -121,18 +121,18 @@ class TestStart:
         assert "rented by someone else" in view.error
 
     @pytest.mark.asyncio
-    async def test_a_busy_refusal_surfaces_as_the_error_line(self, settings):
+    async def test_an_agent_refusal_surfaces_as_the_error_line(self, settings):
         agent = AsyncMock()
-        agent.health.return_value = health(language="sl", busy=True)
-        agent.session.side_effect = AgentRefused(409, "The appliance is still working in 'sl'.")
+        agent.health.return_value = health(language="en", busy=True)
+        agent.session.side_effect = AgentRefused(400, "'de' is not a language this appliance serves.")
         c = controller(settings, ScriptedVast(RUNNING), agent)
 
         c.start("sr")
         await c.wait()
 
         view = await c.status()
-        assert (view.state, view.language) == (ApplianceState.BUSY, "sl")
-        assert view.error == "The appliance is still working in 'sl'."
+        assert (view.state, view.language) == (ApplianceState.BUSY, "en")
+        assert view.error == "'de' is not a language this appliance serves."
 
 
 class TestStop:
@@ -170,7 +170,7 @@ class TestStatus:
         (RUNNING, AgentUnavailable("x"), (ApplianceState.BOOTING, None)),
         (RUNNING, health(ready=False), (ApplianceState.BOOTING, None)),
         (RUNNING, health(language="sr"), (ApplianceState.READY, "sr")),
-        (RUNNING, health(language="sl", busy=True), (ApplianceState.BUSY, "sl")),
+        (RUNNING, health(language="en", busy=True), (ApplianceState.BUSY, "en")),
         (RUNNING, health(language=None), (ApplianceState.READY, None)),
     ])
     async def test_maps_box_and_agent_state(self, settings, info, agent_health, expected):

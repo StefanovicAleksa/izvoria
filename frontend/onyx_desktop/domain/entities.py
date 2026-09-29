@@ -22,8 +22,16 @@ from onyx_desktop.domain.enums import (
     MessageRole,
     ReportMode,
     ReportRunStatus,
+    SearchMode,
     TurnOutcome,
 )
+
+
+@dataclass(frozen=True)
+class LanguageOption:
+    """A language the appliance can ingest and answer in, named in itself ("Srpski") for the pickers."""
+    code: str
+    name: str
 
 
 @dataclass(frozen=True)
@@ -95,17 +103,21 @@ class ChatMessage:
     total_iterations: int = 0
     latency_ms: int = 0
     created_at: Optional[datetime] = None
+    # Reopened from history: evidence it cited that a re-ingest has since removed from the index.
+    missing_evidence: int = 0
 
     @property
     def is_ungrounded(self) -> bool:
         """
         An answer with no evidence is the failure mode this product exists to prevent, so the UI
-        flags it rather than rendering it as an ordinary reply.
+        flags it rather than rendering it as an ordinary reply. An old answer whose sources were
+        re-ingested away was grounded when given; it says so instead (missing_evidence).
         """
         return (
             self.role is MessageRole.ASSISTANT
             and self.outcome is TurnOutcome.ANSWERED
             and not self.evidence
+            and not self.missing_evidence
         )
 
 
@@ -148,6 +160,14 @@ class SearchOutcome:
     query: str
     hits: Tuple[SearchHit, ...]
     execution_time_ms: int = 0
+    mode: Optional[SearchMode] = None
+    # Set when the outcome was reopened from history rather than just run.
+    saved_at: Optional[datetime] = None
+    missing_hits: int = 0
+
+    @property
+    def is_saved(self) -> bool:
+        return self.saved_at is not None
 
 
 @dataclass(frozen=True)
@@ -185,12 +205,55 @@ class LogLine:
 
 
 @dataclass(frozen=True)
-class SessionRef:
-    """A conversation in the GUI-local registry. The engine only ever receives the id."""
+class ConversationRef:
+    """A past conversation, as listed from the appliance database. Its title is its first question."""
     session_id: uuid.UUID
     title: str
     started_at: datetime
+    last_at: datetime
     turn_count: int = 0
+
+
+@dataclass(frozen=True)
+class SearchRecordRef:
+    """A past search, as listed. Reopening it shows the hits it returned then, not a new search."""
+    record_id: uuid.UUID
+    query: str
+    mode: SearchMode
+    hit_count: int
+    created_at: datetime
+
+
+@dataclass(frozen=True)
+class ReportRef:
+    """A stored report, as listed, with enough to decide what reopening it should do."""
+    report_id: uuid.UUID
+    topic: str
+    status: ReportRunStatus
+    created_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    section_count: int = 0
+    evidence_count: int = 0
+
+    @property
+    def awaiting_approval(self) -> bool:
+        return self.status is ReportRunStatus.AWAITING_APPROVAL
+
+    @property
+    def unfinished(self) -> bool:
+        """
+        Stopped, failed, or interrupted mid-run (gathering/writing when the app went away). Only one
+        report runs at a time and never across app runs, so a listed GATHERING/WRITING row is a crash.
+        """
+        return self.status in (
+            ReportRunStatus.CANCELLED, ReportRunStatus.FAILED,
+            ReportRunStatus.GATHERING, ReportRunStatus.WRITING,
+        )
+
+    @property
+    def resumable(self) -> bool:
+        """The engine resumes from the evidence bank; with no bank there is nothing to resume from."""
+        return self.unfinished and self.evidence_count > 0
 
 
 @dataclass(frozen=True)
@@ -257,8 +320,15 @@ class ReportDocument:
 
     @property
     def is_partial(self) -> bool:
-        """A cancelled or failed report still renders; the UI says so rather than implying it is whole."""
-        return self.status in (ReportRunStatus.CANCELLED, ReportRunStatus.FAILED)
+        """
+        A cancelled, failed or interrupted report still renders; the UI says so rather than implying it
+        is whole. GATHERING/WRITING only reach a document when one is reopened from history after the
+        app went away mid-run.
+        """
+        return self.status in (
+            ReportRunStatus.CANCELLED, ReportRunStatus.FAILED,
+            ReportRunStatus.GATHERING, ReportRunStatus.WRITING,
+        )
 
     def evidence_for(self, doc_number: int) -> Optional[Evidence]:
         """What an `onyx://doc/N` click resolves to, or None if the bank no longer has it."""

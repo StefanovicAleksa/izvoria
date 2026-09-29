@@ -133,3 +133,39 @@ class TestSessionMemoryRepository:
 
         with pytest.raises(SessionMemorySystemError):
             repository.get_history(uuid.uuid4(), limit=5)
+
+    def test_get_all_turns_keeps_database_order_oldest_first(self, repository, session):
+        session_id = uuid.uuid4()
+        first, second = self._model(session_id, "First?"), self._model(session_id, "Second?", first_doc_number=2)
+        session.execute.return_value.scalars.return_value.all.return_value = [first, second]
+
+        result = repository.get_all_turns(session_id)
+
+        assert [t.question for t in result] == ["First?", "Second?"]
+        sql = str(session.execute.call_args[0][0])
+        assert "ORDER BY session_turns.created_at ASC" in sql and "LIMIT" not in sql
+
+    def test_list_sessions_titles_each_conversation_by_its_first_question(self, repository, session):
+        session_id = uuid.uuid4()
+        started, last = datetime(2026, 9, 1, tzinfo=timezone.utc), datetime(2026, 9, 2, tzinfo=timezone.utc)
+        session.execute.return_value.all.return_value = [
+            Mock(session_id=session_id, title="What happened?", started_at=started, last_at=last, turn_count=4),
+            Mock(session_id=uuid.uuid4(), title=None, started_at=started, last_at=started, turn_count=1),
+        ]
+
+        result = repository.list_sessions(limit=20)
+
+        assert (result[0].session_id, result[0].title, result[0].turn_count) == (session_id, "What happened?", 4)
+        assert (result[0].started_at, result[0].last_at) == (started, last)
+        assert result[1].title == "Untitled conversation"
+        sql = str(session.execute.call_args[0][0])
+        assert "GROUP BY session_turns.session_id" in sql and "ORDER BY max(session_turns.created_at) DESC" in sql
+
+    def test_delete_session_returns_how_many_turns_it_removed(self, repository, session):
+        session.execute.return_value.rowcount = 3
+        assert repository.delete_session(uuid.uuid4()) == 3
+
+    def test_delete_session_db_error(self, repository, session):
+        session.execute.side_effect = db_exc.ConnectionError("Unreachable")
+        with pytest.raises(SessionMemorySystemError):
+            repository.delete_session(uuid.uuid4())

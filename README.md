@@ -123,7 +123,7 @@ Fill in `.env`:
 | `ENV` | `development` (`.env`), `test` (`.env.test`) or `production` (`.env.prod`); `ENV` selects which file is read |
 | `POSTGRES_SERVER` / `POSTGRES_PORT` | `localhost` / `5432` |
 | `POSTGRES_DB` / `POSTGRES_USER` / `POSTGRES_PASSWORD` | must match `db_dev` in `docker-compose.yaml` |
-| `APPLIANCE_LANGUAGE` | `en`, `sr` or `sl`. One language per database: switching it on a database that already holds data fails startup, so reset the database and re-ingest |
+| `APPLIANCE_LANGUAGE` | optional: `en` or `sr`, the language the app starts in (Slovenian is a legacy language, not served). One database holds every language; the app switches the answer language at runtime and starts in the one it was last switched to unless this is set |
 | `APPLIANCE_INDUSTRY` | optional glossary name under `data/glossaries/<language>/` |
 
 `.env.test` holds the same keys for `db_test` (port 5433), and is needed only for integration tests.
@@ -137,17 +137,17 @@ Every model loads from `models/`. Nothing is downloaded at runtime, and a missin
 venv/bin/python -m scripts.download_ocr_models  # RapidOCR PP-OCRv5 (scanned PDFs)
 ```
 
-The rest come from an existing Onyx model set, for example `rsync` from the dev machine. For English, Serbian and Slovenian, that is:
+The rest come from an existing Onyx model set, for example `rsync` from the dev machine. For English and Serbian, that is:
 
 | Path under `models/` | Used for |
 |:--|:--|
 | `vad_multilingual_marblenet.nemo` | voice activity detection |
 | `whisper-tiny-en` | English domain scout |
-| `faster-whisper-large-v3` | transcription (and the sr/sl scout) |
+| `faster-whisper-large-v3` | transcription (and the Serbian scout) |
 | `titanet_large.nemo` | speaker diarization |
 | `fullstop-punctuation-multilingual-base` | punctuation |
 | `llama-3.2-3b-instruct-q8_0.gguf` | English classification, context, ASR correction |
-| `google_gemma-4-E4B-it-Q4_K_M.gguf` | Serbian/Slovenian replacement for the 3B models |
+| `google_gemma-4-E4B-it-Q4_K_M.gguf` | Serbian replacement for the 3B models |
 | `qwen2.5-3b-instruct-q4_k_m.gguf`, `Qwen2.5-7B-Instruct-Q4_K_M.gguf` | phonetic/visual correction, visual cues, retrieval scrubbing |
 | `Phi-3.5-mini-instruct`, `flanec-base-cd`, `deberta-v3-base-zeroshot` | NLP, ASR correction, hallucination scrubbing |
 | `qwen2-vl-7b-hf-bnb4bit` | frame and image description (Hugging Face Transformers, not GGUF) |
@@ -193,7 +193,7 @@ This costs about $35–60/month instead of $200+ for a dedicated GPU server. The
    ssh -p <ssh-port> root@<ssh-host> bash /workspace/onyx_v3/deploy/instance/onstart.sh
    ```
    `provision.sh` prints `AGENT_SECRET` and `WEBSOCKIFY_TOKEN`; keep them for step 4.
-3. **Load the demo material.** Ingest it once per language (`onyx_sr` and `onyx_sl` are separate databases), then stop the instance.
+3. **Load the demo material.** Ingest it one batch per language, with the Ingest view's language set for each (all into the one `onyx` database), then stop the instance.
 4. **Set up the gateway.** On a ~$5/mo VPS with your domain's A record pointing at it:
    ```bash
    git clone git@github.com:StefanovicAleksa/onyx_v3.git /opt/onyx_v3
@@ -201,6 +201,6 @@ This costs about $35–60/month instead of $200+ for a dedicated GPU server. The
    sudoedit /etc/onyx-gateway.env      # password, AGENT_SECRET, WEBSOCKIFY_TOKEN, VAST_API_KEY, VAST_INSTANCE_ID
    sudo systemctl restart onyx-gateway
    ```
-5. **Send the tester the URL and the password.** They sign in, pick Serbian or Slovenian, click **Start appliance** (about 1–2 minutes), upload files and open the desktop. The box stops itself after 30 idle minutes, but never mid-ingestion or mid-report.
+5. **Send the tester the URL and the password.** They sign in, pick Serbian or English, click **Start appliance** (about 1–2 minutes), upload files and open the desktop. The box stops itself after 30 idle minutes, but never mid-ingestion or mid-report.
 
 Once it's set up, your own PC doesn't need to be on. It's only needed to push code updates, or to re-upload the models if the Vast instance is destroyed, so keep a backup of `models/` somewhere else. The full runbook, the costs and the known risks are in [`docs/deploy.md`](docs/deploy.md). A stopped Vast instance can lose its GPU to another renter, and demo data sits on rented hardware, not the client's premises.

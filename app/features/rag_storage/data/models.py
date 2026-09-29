@@ -2,12 +2,17 @@
 # Path: app/features/rag_storage/data/models.py
 
 from sqlalchemy import Column, String, Float, Integer, ForeignKey, Index, Computed
-from sqlalchemy.dialects.postgresql import UUID, TSVECTOR, JSONB
+from sqlalchemy.dialects.postgresql import UUID, TSVECTOR, JSONB, REGCONFIG
+from sqlalchemy.dialects.postgresql.base import ischema_names
 from pgvector.sqlalchemy import Vector
 import uuid
 
 from app.core.config import settings
 from app.core.database.data.engine import Base
+
+# SQLAlchemy can declare REGCONFIG but does not reflect it; without this the migration drift check sees an
+# unknown type on vector_chunks.fts_config.
+ischema_names.setdefault("regconfig", REGCONFIG)
 
 
 class VectorChunkModel(Base):
@@ -48,10 +53,16 @@ class VectorChunkModel(Base):
 
     embedding = Column(Vector(1024), nullable=False)
 
-    # Automatically tokenizes the text_payload using the configured Postgres text search dictionary
+    # The Postgres text search configuration of the language this chunk was ingested in ("serbian"). One index
+    # holds every language, so each chunk carries its own stemmer. REGCONFIG, not text: a generated column needs
+    # an immutable expression, and to_tsvector(regconfig, text) is one while a text::regconfig cast is not.
+    # Defaults to the active language's, the language a batch is ingested in.
+    fts_config = Column(REGCONFIG, nullable=False, default=lambda: settings.FTS_LANGUAGE_CONFIG)
+
+    # Tokenizes text_payload with the chunk's own text search configuration
     fts_document = Column(
         TSVECTOR,
-        Computed(f"to_tsvector('{settings.FTS_LANGUAGE_CONFIG}', text_payload)", persisted=True)
+        Computed("to_tsvector(fts_config, text_payload)", persisted=True)
     )
 
     __table_args__ = (

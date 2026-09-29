@@ -16,10 +16,6 @@ logger = logging.getLogger(__name__)
 STOP_TIMEOUT_SECONDS = 30.0
 
 
-class SessionBusy(RuntimeError):
-    pass
-
-
 class UnknownLanguage(ValueError):
     pass
 
@@ -36,16 +32,17 @@ def launch_command(settings: AgentSettings) -> List[str]:
 
 def launch_env(settings: AgentSettings, language: str, base: Dict[str, str]) -> Dict[str, str]:
     """
-    Real environment variables beat .env.prod in pydantic-settings, so this is how one checkout serves two languages:
-    the database and APPLIANCE_LANGUAGE are chosen here, per launch, and .env.prod holds everything else.
+    Real environment variables beat .env.prod in pydantic-settings: the database and the language the app starts in
+    are chosen here, per launch, and .env.prod holds everything else. Every language shares the one database, and
+    the app switches languages itself once it runs.
     """
-    if language not in settings.databases:
+    if language not in settings.languages:
         raise UnknownLanguage(f"'{language}' is not a language this appliance serves.")
     env = dict(base)
     env.update(
         ENV="production",
         APPLIANCE_LANGUAGE=language,
-        POSTGRES_DB=settings.databases[language],
+        POSTGRES_DB=settings.database,
         DISPLAY=settings.display,
         QT_QPA_PLATFORM="xcb",
     )
@@ -78,19 +75,17 @@ class AppSession:
             return None
         return app
 
-    def ensure(self, language: str, busy: bool) -> RunningApp:
+    def ensure(self, language: str) -> RunningApp:
+        """
+        The running app, or a new one started in `language`. A running app is never relaunched for another language:
+        it switches languages itself (the sidebar's "Answer in"), without losing the job it may be running.
+        """
         running = self.current()
-        if running and running.language == language:
+        if running:
             return running
         env = launch_env(self._settings, language, dict(os.environ))
-        if running:
-            if busy:
-                raise SessionBusy(
-                    f"The appliance is still working in '{running.language}'. Switch languages once it finishes."
-                )
-            self.stop()
         self._settings.log_dir.mkdir(parents=True, exist_ok=True)
-        with (self._settings.log_dir / f"app-{language}.log").open("ab") as log:
+        with (self._settings.log_dir / "app.log").open("ab") as log:
             process = self._popen(
                 launch_command(self._settings),
                 cwd=str(self._settings.onyx_root),

@@ -68,8 +68,26 @@ These are properties of the engine, not choices of the UI:
 | `generated_answer` is the raw model text while `citations` was parsed from a normalized copy | the gateway re-runs `normalize_citation_tags` so `[Doc N]` links are reliable |
 | Reasoned Answer returns an answer **or** a clarification question | clarification is a first-class turn type, and re-asking appends `[Clarification N]` to the original question because the reasoner cannot resume mid-loop |
 | Ingestion and live inference are mutually exclusive | live views are disabled for the whole ingestion |
-| The VRAM pool holds one model at a time | every engine call is serialized onto one worker thread |
+| Switching language rebuilds the engine | "Answer in" (sidebar) is a worker job like any other: refused while busy, and history reads are closed for its few seconds, because the database pool is replaced |
+| A batch, or a resumed report, can change the active language | the worker reports the active language after every boot, ingest, resume and switch (`activeLanguage`), and the bridge re-emits changes as `languageChanged`, so every picker and header follows the engine |
+| The VRAM pool holds one model at a time | every engine call is serialized onto one worker thread, except two: cancelling a report (GUI thread) and history (reader thread), neither of which touches a model |
 | Nothing is cancellable | no Cancel button; closing mid-ingestion warns before quitting |
+
+## History
+
+Chat, Search and Report each have a history pane on the left (`ui/widgets/history_list.py`), filled once the engine has started. History lives in the appliance database, not in a GUI file. A reinstalled desktop, the hosted demo's per-language databases and a reset all see the right history without drifting from the data. (`data/session_store.py`, the old JSON index at `~/.config/onyx-desktop/sessions.json`, was written but never read back, and is gone.)
+
+- **Chat**: reopening a conversation re-renders every turn with clickable evidence under its original `[Doc N]` numbers, and the next question continues the same session. Switching is ignored while that view's own answer is pending, so a late reply can't land in another conversation's transcript. Deleting the open conversation starts a new one.
+- **Search**: reopening shows the hits it returned then, at their original ranks and scores, under a "Saved results from …" banner. **Run again** repeats it against today's index.
+- **Report** (no delete: reports are deliverables):
+  - finished → opens;
+  - outline never approved → back to the editable approval step;
+  - stopped, failed, or interrupted mid-run (still listed as gathering/writing when the app went away) with an evidence bank → the written sections plus **Resume** (`OnyxEngine.resume_research_report`), which writes only the missing sections and gathers nothing, so written citations keep their numbers;
+  - stopped before any evidence → says so and prefills the topic.
+
+  The pane won't navigate away from a running report.
+
+**Reads bypass the worker.** `EngineBridge` runs history calls on a second `QThread` (`service/history_reader.py`, thread `onyx-history`). An ingestion or report holds the worker for hours, and picking up an old conversation must not wait behind it. It's safe because `HistoryReader` refuses any gateway method but the database-only history ones (`HISTORY_CALLS`). These reads never touch `busyChanged` or the status bar, and deletes re-list their pane themselves. Resume is the opposite: a GPU job on the worker that takes `RESEARCHING` like any report run.
 
 ## Related documents
 

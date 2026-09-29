@@ -5,6 +5,7 @@
 
 code = "sr"
 name = "Serbian"
+native_name = "Srpski"
 
 [transcription]
 whisper_language = "sr"

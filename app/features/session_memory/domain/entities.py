@@ -30,3 +30,14 @@ class SessionTurn(BaseModel):
     def next_doc_number(self) -> int:
         """The number the next turn's first new document gets."""
         return self.first_doc_number + len(self.evidence_chunk_ids)
+
+
+class SessionSummary(BaseModel):
+    """Listing row for one conversation. Nothing stores a title, so it is the conversation's first question."""
+    session_id: uuid.UUID
+    title: str
+    started_at: datetime
+    last_at: datetime
+    turn_count: int
+
+    model_config = ConfigDict(frozen=True)

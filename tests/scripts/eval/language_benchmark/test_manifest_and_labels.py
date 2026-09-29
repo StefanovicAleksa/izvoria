@@ -49,3 +49,11 @@ def test_vtt_text_keeps_cues_inside_the_window_once(tmp_path):
                    encoding="utf-8")
 
     assert _vtt_text(vtt, max_seconds=30 * 60) == "Hello there"
+
+
+class TestServedLanguages:
+    def test_only_served_packs_are_measured(self):
+        from scripts.eval.language_benchmark.paths import served_languages
+
+        # sources.toml keeps Slovenian's sources, but its pack is legacy (data/languages/legacy/)
+        assert served_languages() == ["en", "sr"]

@@ -50,3 +50,8 @@ class IDomainAdaptationRepository(ABC):
     @abstractmethod
     def get_glossary_by_source_id(self, source_id: uuid.UUID) -> Optional[DomainGlossary]:
         pass
+
+    @abstractmethod
+    def delete_glossary_by_source_id(self, source_id: uuid.UUID) -> bool:
+        """Forgets a source's glossary; True when there was one."""
+        pass

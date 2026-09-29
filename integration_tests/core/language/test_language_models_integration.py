@@ -47,7 +47,7 @@ def _run(model_type, path, adapter, work):
 @pytest.mark.integration
 class TestSerbianSmallModels:
     """
-    Gemma 4 E4B replaces Llama 3.2 3B and Qwen2.5-3B on Serbian and Slovenian appliances. Each adapter it replaces
+    Gemma 4 E4B replaces Llama 3.2 3B and Qwen2.5-3B on Serbian appliances. Each adapter it replaces
     them in must load it (chat template, GBNF grammar, context size) and do its job on Serbian text. One model is
     loaded at a time, as on the appliance.
     """

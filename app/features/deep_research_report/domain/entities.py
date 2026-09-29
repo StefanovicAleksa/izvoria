@@ -250,6 +250,8 @@ class Report(BaseModel):
     # How many gathering rounds actually ran. Stated in the report, because "not covered" means something
     # different after one round than after three.
     rounds_used: int = 1
+    # The language the report is written in; None only for a report from before languages were recorded
+    language: Optional[str] = None
     error_message: Optional[str] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None

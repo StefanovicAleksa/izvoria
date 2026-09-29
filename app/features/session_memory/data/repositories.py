@@ -4,12 +4,13 @@ import logging
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
-from sqlalchemy import select
+from sqlalchemy import Text, delete, func, select
+from sqlalchemy.dialects.postgresql import ARRAY, aggregate_order_by
 
 from app.core.database.domain.interfaces import IDatabaseManager
 from app.core.database import exceptions as db_exc
 from app.features.session_memory.domain.interfaces import ISessionMemoryRepository
-from app.features.session_memory.domain.entities import SessionTurn
+from app.features.session_memory.domain.entities import SessionSummary, SessionTurn
 from app.features.session_memory.domain.enums import SessionTurnMode
 from app.features.session_memory.data.models import SessionTurnModel
 from app.features.session_memory.utils.error_mapper import map_session_memory_error
@@ -95,6 +96,62 @@ class SessionMemoryRepository(ISessionMemoryRepository):
                 )
                 models = session.execute(stmt).scalars().all()
                 return [_to_turn(m) for m in reversed(models)]
+
+        except db_exc.DatabaseError as e:
+            raise map_session_memory_error(e)
+
+    def get_all_turns(self, session_id: uuid.UUID) -> List[SessionTurn]:
+        try:
+            with self._db.session() as session:
+                stmt = (
+                    select(SessionTurnModel)
+                    .where(SessionTurnModel.session_id == session_id)
+                    .order_by(SessionTurnModel.created_at.asc())
+                )
+                return [_to_turn(m) for m in session.execute(stmt).scalars().all()]
+
+        except db_exc.DatabaseError as e:
+            raise map_session_memory_error(e)
+
+    def list_sessions(self, limit: int) -> List[SessionSummary]:
+        try:
+            with self._db.session() as session:
+                first_question = func.array_agg(
+                    aggregate_order_by(SessionTurnModel.question, SessionTurnModel.created_at.asc()),
+                    type_=ARRAY(Text),
+                )[1]
+                last_at = func.max(SessionTurnModel.created_at)
+                stmt = (
+                    select(
+                        SessionTurnModel.session_id,
+                        first_question.label("title"),
+                        func.min(SessionTurnModel.created_at).label("started_at"),
+                        last_at.label("last_at"),
+                        func.count().label("turn_count"),
+                    )
+                    .group_by(SessionTurnModel.session_id)
+                    .order_by(last_at.desc())
+                    .limit(limit)
+                )
+                return [
+                    SessionSummary(
+                        session_id=row.session_id,
+                        title=row.title or "Untitled conversation",
+                        started_at=row.started_at,
+                        last_at=row.last_at,
+                        turn_count=int(row.turn_count),
+                    )
+                    for row in session.execute(stmt).all()
+                ]
+
+        except db_exc.DatabaseError as e:
+            raise map_session_memory_error(e)
+
+    def delete_session(self, session_id: uuid.UUID) -> int:
+        try:
+            with self._db.session() as session:
+                result = session.execute(delete(SessionTurnModel).where(SessionTurnModel.session_id == session_id))
+                return int(result.rowcount or 0)
 
         except db_exc.DatabaseError as e:
             raise map_session_memory_error(e)

@@ -13,6 +13,7 @@ from onyx_desktop.utils.formatting import (
     split_doc_tags,
     timespan,
     timestamp,
+    when,
 )
 
 
@@ -129,3 +130,25 @@ class TestLocation:
         evidence = Evidence(doc_number=1, chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), start_sec=72, end_sec=108)
 
         assert location(evidence) == "01:12–01:48"
+
+
+class TestWhen:
+    """Local time in, so naive datetimes pin the expectations without depending on the machine's zone."""
+    NOW = __import__("datetime").datetime(2026, 9, 28, 18, 0)
+
+    @pytest.mark.parametrize("moment, expected", [
+        ((2026, 9, 28, 14, 32), "14:32"),
+        ((2026, 9, 27, 9, 5), "Yesterday 09:05"),
+        ((2026, 9, 12, 14, 32), "12 Sep 14:32"),
+        ((2025, 9, 12, 14, 32), "12 Sep 2025"),
+    ])
+    def test_as_short_as_stays_unambiguous(self, moment, expected):
+        from datetime import datetime
+        assert when(datetime(*moment), now=self.NOW) == expected
+
+    def test_nothing_for_no_date(self):
+        assert when(None) == ""
+
+    def test_an_aware_datetime_is_shown_in_local_time(self):
+        from datetime import datetime, timezone
+        assert when(datetime.now(timezone.utc)) == datetime.now().astimezone().strftime("%H:%M")

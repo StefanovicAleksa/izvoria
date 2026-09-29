@@ -32,7 +32,7 @@ def render(report: Report, link_citations: bool = False) -> str:
     desktop's click-to-verify panel; the file written to disk uses plain tags.
     """
     entries = report.evidence_by_doc_number
-    strings = get_language_pack().report
+    strings = get_language_pack(report.language).report
     parts: List[str] = [
         f"# {report.topic}",
         "",
@@ -65,7 +65,7 @@ def _provenance(report: Report) -> str:
     as though it covered all 214 is dangerous. Likewise the scrubber setting: it changes what was allowed
     to reach the writer, so the reader is told which way it was set.
     """
-    strings = get_language_pack().report
+    strings = get_language_pack(report.language).report
     generated = (report.completed_at or report.created_at or datetime.now()).strftime("%Y-%m-%d %H:%M")
     cited = len(report.cited_doc_numbers)
     sources_cited = len({e.source_id for e in report.evidence if e.doc_number in set(report.cited_doc_numbers)})
@@ -108,7 +108,8 @@ def _references(report: Report, entries: Dict[int, EvidenceEntry]) -> List[str]:
     One table row per cited document. Only cited evidence is listed: the bank holds everything the sweep
     gathered, but a reference the report never points at is noise in a document meant to be checked.
     """
-    strings = get_language_pack().report
+    pack = get_language_pack(report.language)
+    strings, location_rules = pack.report, pack.documents
     cited = report.cited_doc_numbers
     if not cited:
         return [f"## {strings.references_heading}", "", strings.no_sources_cited, ""]
@@ -130,7 +131,7 @@ def _references(report: Report, entries: Dict[int, EvidenceEntry]) -> List[str]:
         speakers = ", ".join(entry.speaker_labels) if entry.speaker_labels else strings.no_speakers
         rows.append(
             f"| [Doc {number}] | {_escape_cell(entry.source_name)} | "
-            f"{_escape_cell(entry_location(entry))} | {_escape_cell(speakers)} |"
+            f"{_escape_cell(entry_location(entry, location_rules))} | {_escape_cell(speakers)} |"
         )
 
     rows.append("")

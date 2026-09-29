@@ -14,6 +14,8 @@ from app.orchestration.domain.entities import ReasonedChatResponse
 from app.features.deep_research_report.domain.entities import (
     Report, ReportSummary, ResearchPlan, ResearchPlanProposal,
 )
+from app.features.search_history.domain.entities import SearchRecord, SearchRecordSummary
+from app.features.session_memory.domain.entities import SessionSummary, SessionTurn
 
 class IOnyxEngine(ABC):
     """
@@ -32,6 +34,17 @@ class IOnyxEngine(ABC):
     @abstractmethod
     def get_state(self) -> EngineState:
         """Returns the current operational state of the appliance."""
+        pass
+
+    @property
+    @abstractmethod
+    def active_language(self) -> str:
+        """The language the next ingestion batch is indexed in and answers are written in ("sr")."""
+        pass
+
+    @abstractmethod
+    def require_idle(self) -> None:
+        """Raises EngineBusyError while ingestion, a report or booting holds the engine."""
         pass
 
     @abstractmethod
@@ -187,4 +200,36 @@ class IOnyxEngine(ABC):
     @abstractmethod
     def list_sources(self) -> List[Source]:
         """Everything ingested into the vault, newest first, each with its file row attached."""
+        pass
+
+    # History: database reads, no model and no engine lock, so they work while ingestion or a report runs.
+
+    @abstractmethod
+    def list_conversations(self, limit: int = 200) -> List[SessionSummary]:
+        """Chat conversations, most recently active first."""
+        pass
+
+    @abstractmethod
+    def get_conversation(self, session_id: uuid.UUID) -> List[SessionTurn]:
+        """Every turn of a conversation, oldest first."""
+        pass
+
+    @abstractmethod
+    def delete_conversation(self, session_id: uuid.UUID) -> int:
+        """Forgets a conversation's turns; returns how many there were."""
+        pass
+
+    @abstractmethod
+    def list_searches(self, limit: int = 200) -> List[SearchRecordSummary]:
+        """Past standard and verified searches, newest first."""
+        pass
+
+    @abstractmethod
+    def get_search(self, record_id: uuid.UUID) -> Optional[SearchRecord]:
+        """A past search with its ranked chunk ids and scores."""
+        pass
+
+    @abstractmethod
+    def delete_search(self, record_id: uuid.UUID) -> bool:
+        """Forgets a past search; says whether it existed."""
         pass

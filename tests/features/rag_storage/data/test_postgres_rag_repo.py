@@ -6,6 +6,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from sqlalchemy.exc import OperationalError
 
+from app.core.config import Settings
 from app.features.context_unification.domain.entities import UnifiedChunk
 from app.features.rag_storage.data.postgres_rag_repo import PostgresRagRepository
 from app.features.rag_storage.exceptions.database import VectorDatabaseError
@@ -101,3 +102,17 @@ class TestPostgresRagRepository:
         assert saved.raw_text == "Plain text"
         assert saved.context_text is None
         assert saved.speaker_labels == []
+
+    @pytest.mark.parametrize("language, fts_config", [("en", "english"), ("sr", "serbian")])
+    @patch("app.features.rag_storage.data.postgres_rag_repo.db_manager")
+    def test_chunks_are_keyword_indexed_in_the_batch_language(self, mock_db_manager, language, fts_config):
+        session_mock = _session(mock_db_manager)
+        chunks = [UnifiedChunk(chunk_id=uuid.uuid4(), start_sec=0, end_sec=1, text_payload="a"),
+                  UnifiedChunk(chunk_id=uuid.uuid4(), start_sec=1, end_sec=2, text_payload="b")]
+
+        with patch("app.features.rag_storage.data.postgres_rag_repo.settings",
+                   Settings(APPLIANCE_LANGUAGE=language)):
+            PostgresRagRepository().replace_rag_chunks(uuid.uuid4(), chunks, [[0.1], [0.2]])
+
+        saved = session_mock.bulk_save_objects.call_args[0][0]
+        assert [model.fts_config for model in saved] == [fts_config, fts_config]

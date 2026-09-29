@@ -7,7 +7,7 @@ import logging
 from typing import Dict, List, Optional
 
 from app.core.config import settings
-from app.core.language.service.language_api import get_language_pack
+from app.core.language.service.language_api import get_supported_language_packs
 from app.core.language.utils.script import normalize_script
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.domain.entities import ModelManifest
@@ -18,7 +18,6 @@ from app.features.rag_retrieval.domain.entities import (
 )
 from app.features.rag_retrieval.domain.interfaces import IRetrievalRepository, IPromptEmbeddingAdapter
 from app.features.rag_retrieval.utils.error_mapper import map_retrieval_error
-from app.features.rag_retrieval.exceptions import IndexLanguageMismatchError
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +62,9 @@ class RetrievalAPI:
                 query_vector=query_vector,
                 query_text=_search_text(query.prompt),
                 limit=candidate_count,
-                source_id_filter=query.source_id_filter
+                source_id_filter=query.source_id_filter,
+                # The pool goes to the reranker: the dense leg's best must be in it (see postgres_search_repo)
+                dense_keep=settings.RAG_DENSE_CANDIDATES_KEPT
             )
 
             # 4. Format Final Payload
@@ -78,21 +79,6 @@ class RetrievalAPI:
 
         except Exception as e:
             raise map_retrieval_error(e, context=f"Processing search query: '{query.prompt}'") from e
-
-    def verify_index_language(self) -> None:
-        """
-        Raises IndexLanguageMismatchError when the index was built for another language. The keyword column is
-        generated at table creation with that language's stemmer, so switching APPLIANCE_LANGUAGE on an existing
-        index would otherwise leave keyword search silently stemming with the wrong rules.
-        """
-        indexed = self._search_repo.get_index_fts_config()
-        configured = settings.FTS_LANGUAGE_CONFIG
-        if indexed is not None and indexed != configured:
-            raise IndexLanguageMismatchError(
-                f"The search index was built with the '{indexed}' text search configuration, but this appliance is "
-                f"configured for '{configured}' (APPLIANCE_LANGUAGE={settings.APPLIANCE_LANGUAGE}). Reset the "
-                f"database (scripts/reset_dev_environment.sh) and re-ingest, or switch APPLIANCE_LANGUAGE back."
-            )
 
     def _embedding_manifest(self) -> ModelManifest:
         return ModelManifest(
@@ -165,6 +151,7 @@ class RetrievalAPI:
                         query_text=_search_text(query.prompt),
                         limit=max(query.limit, candidate_count),
                         source_id_filter=query.source_id_filter,
+                        dense_keep=settings.RAG_DENSE_CANDIDATES_KEPT,
                     ),
                     execution_time_ms=0,
                 )
@@ -255,7 +242,10 @@ class RetrievalAPI:
 
 def _search_text(prompt: str) -> str:
     """
-    The text actually embedded and keyword-matched: the prompt in the index's script (a Serbian query typed in
-    Cyrillic searches a Latin index). Results stay keyed by the prompt as the caller wrote it.
+    The text actually embedded and keyword-matched: the prompt in the index's scripts. The index holds every
+    language, so every pack's script rule applies whatever language is active: a Serbian query typed in Cyrillic
+    searches the Latin Serbian chunks even while English is active. Results stay keyed by the prompt as written.
     """
-    return normalize_script(prompt, get_language_pack().transcription.script)
+    for pack in get_supported_language_packs():
+        prompt = normalize_script(prompt, pack.transcription.script)
+    return prompt

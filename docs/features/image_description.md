@@ -29,7 +29,7 @@ The chunk is anchored `AnchorKind.IMAGE` and cited as `[Doc 4] (image)`. Its fil
    - Quoted spans and multi-digit numbers in SHOWS/MARKS that OCR didn't read are replaced by `[text not confirmed]` / `[number not confirmed]`, not deleted, so a reader sees that something was there.
    - If OCR ran and read nothing, every VLM text item is dropped.
    - **Without OCR** (Serbian), nothing can be checked. The VLM's items are kept as `unverified_items` under the pack's "not verified" label, and the report counts the image in `images_text_unverified`.
-5. **Excerpt** (`utils/excerpt_renderer.py`). The description block, then OCR's full text (the verbatim reading), or else the unverified items. Labels come from the pack's `[images]` table. The description itself is English on every appliance: Qwen2-VL is weak in Serbian and Slovenian, and text read off the image stays in its own language.
+5. **Excerpt** (`utils/excerpt_renderer.py`). The description block, then OCR's full text (the verbatim reading), or else the unverified items. Labels come from the pack's `[images]` table. The description itself is English on every appliance: Qwen2-VL is weak in Serbian, and text read off the image stays in its own language.
 6. `render_context` gives the retrieval context: `file name · date taken · W×H`. It contains no words, so there is no language to get wrong.
 
 `EmptyImageError` is raised when neither reader found anything; the image is reported and not indexed. A description with no SHOWS but OCR text (a scan the VLM couldn't structure) is indexed.

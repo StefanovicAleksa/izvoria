@@ -157,8 +157,8 @@ class ApplianceController:
         if not address:
             raise VastError(f"The instance runs but doesn't expose port {AGENT_PORT}; check its port mappings.")
         await self._wait_for_agent(address)
-        # A 409 here is the agent refusing to switch language mid-ingestion; its message says so and becomes the
-        # page's error line.
+        # An app already running is kept whatever language it started in (it switches languages itself); a refusal,
+        # e.g. an unknown language, carries its reason, which becomes the page's error line.
         await self._agent.session(address, language)
 
     async def _stop(self) -> None:

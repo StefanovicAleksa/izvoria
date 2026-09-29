@@ -13,23 +13,29 @@ an unresolved clip path, and a failure.
 
 import itertools
 import tempfile
+import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 from onyx_desktop.domain.entities import (
     ChatMessage,
+    ConversationRef,
     Evidence,
     IngestionSummary,
+    LanguageOption,
     ProgressTick,
     ReasoningStep,
     ReportDocument,
     ReportOutlineDraft,
     ReportPlanDraft,
+    ReportRef,
     SearchHit,
     SearchOutcome,
+    SearchRecordRef,
 )
 from onyx_desktop.domain.enums import (
     ChatMode,
@@ -57,6 +63,11 @@ _REPORT_PHASES = [
     "research_outline", "research_section", "research_section", "research_summary",
 ]
 
+_LANGUAGES = (
+    LanguageOption(code="en", name="English"),
+    LanguageOption(code="sr", name="Srpski"),
+)
+
 _PHASES = [
     "scan", "ingest", "audio_extraction", "vad", "transcribe",
     "diarize", "contextual_retrieval", "context_unification", "rag_indexing",
@@ -78,6 +89,17 @@ class StubEngineGateway(IEngineGateway):
         self._cancel_requested = False
         self._last_report: Optional[ReportDocument] = None
         self._report_id: Optional[uuid.UUID] = None
+        self._language = "en"
+        # What each batch was ingested in, so a test can see the language reached the gateway
+        self.ingested_languages: List[str] = []
+
+        # History, as the database would hold it. Read from the bridge's reader thread while the
+        # worker thread writes, hence the lock.
+        self._history_lock = threading.Lock()
+        self._conversations: Dict[uuid.UUID, dict] = {}
+        self._searches: Dict[uuid.UUID, Tuple[SearchRecordRef, SearchOutcome]] = {}
+        self._reports: Dict[uuid.UUID, dict] = {}
+        self._seed_history()
 
     # ---------- lifecycle ----------
 
@@ -91,12 +113,33 @@ class StubEngineGateway(IEngineGateway):
     def is_ingesting(self) -> bool:
         return self._ingesting
 
+    # ---------- language ----------
+
+    def languages(self) -> List[LanguageOption]:
+        return list(_LANGUAGES)
+
+    def active_language(self) -> str:
+        return self._language
+
+    def switch_language(self, code: str) -> None:
+        if code not in {option.code for option in _LANGUAGES}:
+            raise InvalidRequestError(f"'{code}' is not a supported language.")
+        if code != self._language:
+            time.sleep(min(self._latency, 1.0))
+            self._language = code
+
     def set_progress_listener(self, listener: Optional[Callable[..., None]]) -> None:
         self._progress = listener
 
     # ---------- live inference ----------
 
     def chat(self, prompt: str, session_id: uuid.UUID, mode: ChatMode, limit: int) -> ChatMessage:
+        message = self._answer(prompt, mode, limit)
+        if message.outcome is TurnOutcome.ANSWERED:
+            self._remember_turn(session_id, prompt, message)
+        return message
+
+    def _answer(self, prompt: str, mode: ChatMode, limit: int) -> ChatMessage:
         if not prompt.strip():
             raise InvalidRequestError("A question cannot be empty.")
         time.sleep(self._latency)
@@ -158,18 +201,23 @@ class StubEngineGateway(IEngineGateway):
                 clip_path=self._clip_path,
                 media_kind=MediaKind.CLIP if self._clip_path else MediaKind.UNRESOLVED,
             ))
-        return SearchOutcome(
+        outcome = SearchOutcome(
             query=prompt,
             hits=tuple(hits),
             execution_time_ms=int(self._latency * 500),
+            mode=mode,
         )
+        self._remember_search(outcome)
+        return outcome
 
     def hydrate_evidence(self, chunk_ids: List[uuid.UUID]) -> List[Evidence]:
         return [self._chunks[cid] for cid in chunk_ids if cid in self._chunks]
 
     # ---------- ingestion ----------
 
-    def ingest(self, path: str, mode: IngestMode) -> IngestionSummary:
+    def ingest(self, path: str, mode: IngestMode, language: str) -> IngestionSummary:
+        self.switch_language(language)
+        self.ingested_languages.append(language)
         self._ingesting = True
         try:
             files = 3
@@ -205,8 +253,16 @@ class StubEngineGateway(IEngineGateway):
             raise EngineCallFailedError("Stub failure, on request.")
 
         self._report_id = uuid.uuid4()
+        plan = self._plan(self._report_id, topic)
+        self._remember_report(ReportRef(report_id=plan.report_id, topic=topic,
+                                        status=ReportRunStatus.AWAITING_APPROVAL,
+                                        created_at=datetime.now(timezone.utc)), plan=plan)
+        return plan
+
+    @staticmethod
+    def _plan(report_id: uuid.UUID, topic: str) -> ReportPlanDraft:
         return ReportPlanDraft(
-            report_id=self._report_id,
+            report_id=report_id,
             topic=topic,
             scope_note=f"A stub plan for {topic!r}. Nothing was searched.",
             sections=(
@@ -245,8 +301,130 @@ class StubEngineGateway(IEngineGateway):
         self._cancel_requested = True
         return True
 
-    def load_report(self, report_id: uuid.UUID) -> Optional[ReportDocument]:
-        return self._last_report
+    def resume_report(self, report_id: uuid.UUID) -> ReportDocument:
+        with self._history_lock:
+            entry = self._reports.get(report_id)
+        if entry is None or not entry["ref"].resumable:
+            raise InvalidRequestError("Only a stopped report with gathered evidence can be resumed.")
+        for index, phase in enumerate(("research_section", "research_summary")):
+            self._tick(phase, JobProgressState.STARTED, index)
+            time.sleep(self._latency / 3)
+            self._tick(phase, JobProgressState.COMPLETED, index)
+        return self._report(entry["plan"], ReportMode.DEEP, ReportRunStatus.COMPLETED, sections=3, uncovered=0)
+
+    # ---------- history ----------
+
+    def list_conversations(self) -> List[ConversationRef]:
+        with self._history_lock:
+            refs = [c["ref"] for c in self._conversations.values()]
+        return sorted(refs, key=lambda r: r.last_at, reverse=True)
+
+    def load_conversation(self, session_id: uuid.UUID) -> List[ChatMessage]:
+        with self._history_lock:
+            entry = self._conversations.get(session_id)
+            if entry is None:
+                raise InvalidRequestError("That conversation is no longer in the history.")
+            return list(entry["messages"])
+
+    def delete_conversation(self, session_id: uuid.UUID) -> None:
+        with self._history_lock:
+            self._conversations.pop(session_id, None)
+
+    def list_searches(self) -> List[SearchRecordRef]:
+        with self._history_lock:
+            refs = [ref for ref, _ in self._searches.values()]
+        return sorted(refs, key=lambda r: r.created_at, reverse=True)
+
+    def load_search(self, record_id: uuid.UUID) -> SearchOutcome:
+        with self._history_lock:
+            entry = self._searches.get(record_id)
+        if entry is None:
+            raise InvalidRequestError("That search is no longer in the history.")
+        ref, outcome = entry
+        return replace(outcome, saved_at=ref.created_at)
+
+    def delete_search(self, record_id: uuid.UUID) -> None:
+        with self._history_lock:
+            self._searches.pop(record_id, None)
+
+    def list_reports(self) -> List[ReportRef]:
+        with self._history_lock:
+            refs = [r["ref"] for r in self._reports.values()]
+        epoch = datetime.min.replace(tzinfo=timezone.utc)
+        return sorted(refs, key=lambda r: r.created_at or epoch, reverse=True)
+
+    def load_report(self, report_id: uuid.UUID) -> ReportDocument:
+        with self._history_lock:
+            entry = self._reports.get(report_id)
+        if entry is None or entry.get("document") is None:
+            raise InvalidRequestError("That report has nothing written yet.")
+        return entry["document"]
+
+    def load_report_plan(self, report_id: uuid.UUID) -> ReportPlanDraft:
+        with self._history_lock:
+            entry = self._reports.get(report_id)
+        if entry is None:
+            raise InvalidRequestError("That research plan is no longer available; scope it again.")
+        return entry["plan"]
+
+    def _remember_turn(self, session_id: uuid.UUID, question: str, answer: ChatMessage) -> None:
+        now = datetime.now(timezone.utc)
+        with self._history_lock:
+            entry = self._conversations.setdefault(session_id, {"messages": [], "started": now, "title": question})
+            entry["messages"] += [ChatMessage(role=MessageRole.USER, text=question, created_at=now), answer]
+            entry["ref"] = ConversationRef(session_id=session_id, title=entry["title"], started_at=entry["started"],
+                                           last_at=now, turn_count=len(entry["messages"]) // 2)
+
+    def _remember_search(self, outcome: SearchOutcome) -> None:
+        ref = SearchRecordRef(record_id=uuid.uuid4(), query=outcome.query, mode=outcome.mode or SearchMode.STANDARD,
+                              hit_count=len(outcome.hits), created_at=datetime.now(timezone.utc))
+        with self._history_lock:
+            self._searches[ref.record_id] = (ref, outcome)
+
+    def _remember_report(self, ref: ReportRef, plan: Optional[ReportPlanDraft] = None,
+                         document: Optional[ReportDocument] = None) -> None:
+        with self._history_lock:
+            entry = self._reports.setdefault(ref.report_id, {})
+            entry["ref"] = ref
+            if plan is not None:
+                entry["plan"] = plan
+            if document is not None:
+                entry["document"] = document
+
+    def _seed_history(self) -> None:
+        """One of everything the history panes have to render, so --stub shows them on first launch."""
+        earlier = datetime.now(timezone.utc) - timedelta(days=2)
+        session_id = uuid.uuid4()
+        self._remember_turn(session_id, "When was the retention schedule circulated?", ChatMessage(
+            role=MessageRole.ASSISTANT,
+            text="It was circulated on the fourteenth [Doc 1], and both parties acknowledged it [Doc 2].",
+            evidence=self._evidence(2), created_at=earlier))
+        self._remember_turn(session_id, "Who acknowledged it first?", ChatMessage(
+            role=MessageRole.ASSISTANT, text="The record does not say who acknowledged it first.",
+            missing_evidence=1, created_at=earlier))
+        self._conversations[session_id]["ref"] = replace(
+            self._conversations[session_id]["ref"], started_at=earlier, last_at=earlier)
+
+        self._remember_search(SearchOutcome(
+            query="retention schedule cover letter", mode=SearchMode.VERIFIED, execution_time_ms=640,
+            hits=tuple(SearchHit(rank=r, chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text=_LOREM,
+                                 start_sec=60.0 * r, end_sec=60.0 * r + 36.0, relevance_score=0.9 - r * 0.1,
+                                 speakers=("SPEAKER_01",)) for r in (1, 2)),
+            missing_hits=1))
+
+        for topic, status, evidence in (
+                ("Retention obligations across the archive", ReportRunStatus.COMPLETED, 3),
+                ("Who approved the 2024 revision", ReportRunStatus.AWAITING_APPROVAL, 0),
+                ("Correspondence about the audit", ReportRunStatus.CANCELLED, 4),
+        ):
+            plan = self._plan(uuid.uuid4(), topic)
+            document = None
+            if status is not ReportRunStatus.AWAITING_APPROVAL:
+                sections = 3 if status is ReportRunStatus.COMPLETED else 1
+                document = self._report(plan, ReportMode.DEEP, status, sections=sections, uncovered=0)
+            self._remember_report(ReportRef(report_id=plan.report_id, topic=topic, status=status,
+                                            created_at=earlier, section_count=3, evidence_count=evidence),
+                                  plan=plan, document=document)
 
     def _report(self, plan: ReportPlanDraft, mode: ReportMode, status: ReportRunStatus,
                 sections: int, uncovered: int) -> ReportDocument:
@@ -286,6 +464,9 @@ class StubEngineGateway(IEngineGateway):
             swept_source_count=3,
         )
         self._last_report = document
+        self._remember_report(ReportRef(
+            report_id=plan.report_id, topic=plan.topic, status=status, created_at=datetime.now(timezone.utc),
+            section_count=len(plan.sections), evidence_count=len(evidence)), plan=plan, document=document)
         return document
 
     def _tick(self, phase: str, state: JobProgressState, index: int) -> None:

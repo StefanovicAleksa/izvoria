@@ -7,7 +7,7 @@ from typing import Optional
 
 from app.core.config import settings
 from app.core.language.domain.entities import LanguagePack
-from app.core.language.service.language_api import get_language_pack
+from app.core.language.service.language_api import get_language_pack, get_supported_language_packs
 from app.core.language.utils.script import normalize_script
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.domain.entities import ModelManifest
@@ -132,9 +132,9 @@ class TranscriptionAPI:
             return
 
         raise LanguageMismatchError(
-            f"Source {source_id} is spoken in '{detected}' (probability {probability:.2f}), but this appliance "
-            f"transcribes {pack.name} ('{rules.whisper_language}'). The file was not transcribed: forcing "
-            f"{pack.name} on it would produce text nobody said."
+            f"Whisper heard '{detected}' (probability {probability:.2f}) in source {source_id}, not {pack.name}, "
+            f"so it was not transcribed: forcing {pack.name} on it would produce text nobody said. "
+            f"{_retry_hint(detected)}"
         )
 
     def get_transcript(self, source_id: uuid.UUID) -> Optional[Transcript]:
@@ -149,3 +149,17 @@ def _normalize_segment_script(segment: TranscriptSegment, script: str) -> Transc
         "text": normalize_script(segment.text, script),
         "words": [word.model_copy(update={"word": normalize_script(word.word, script)}) for word in segment.words],
     })
+
+
+def _retry_hint(detected: str) -> str:
+    """
+    Which language to ingest the file as instead. A detection may be accepted by several packs (Whisper labels South
+    Slavic speech "hr" for more than one language), so the pack whose own Whisper code it is wins, else every one
+    that accepts it is named.
+    """
+    packs = get_supported_language_packs()
+    exact = [pack for pack in packs if pack.transcription.whisper_language == detected]
+    accepting = exact or [pack for pack in packs if detected in pack.transcription.accepted_detections]
+    if not accepting:
+        return f"This appliance has no language pack for '{detected}'."
+    return f"Ingest it again with {' or '.join(pack.name for pack in accepting)} selected."

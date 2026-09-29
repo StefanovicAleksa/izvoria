@@ -10,6 +10,7 @@ from typing import cast
 from app.features.storage.service.storage_api import StorageAPI
 from app.features.storage.domain.entities import Source, SourceType, File
 from app.features.storage.exceptions.base import StorageError
+from app.features.storage.exceptions.conflict import SourceLanguageConflict
 from app.features.storage.exceptions.not_found import FileNotFound
 
 
@@ -135,6 +136,7 @@ class TestStorageAPI:
         result = api.ingest_local_file("/tmp/video.mp4", SourceType.VIDEO)
 
         assert result.content_hash == "new_unique_hash"
+        assert result.language == "en"
         assert result.name == "video.mp4"
         assert result.file_id is not None
 
@@ -162,17 +164,19 @@ class TestStorageAPI:
             name="old_video.mp4",
             source_type=SourceType.VIDEO,
             content_hash="existing_hash",
+            language="en",
             file_id=uuid.uuid4()
         )
         repo_mock.get_by_hash.return_value = existing_source
 
-        result = api.ingest_local_file("/tmp/new_upload.mp4", SourceType.VIDEO)
+        result = api.ingest_local_file("/tmp/new_upload.mp4", SourceType.VIDEO, language="en")
 
         assert result.id == existing_source.id
         assert result.name == "old_video.mp4"
 
         fm_mock.store_file.assert_not_called()
         repo_mock.create.assert_not_called()
+        repo_mock.set_language.assert_not_called()
 
     @patch("app.features.storage.service.storage_api.Path")
     def test_ingest_file_not_found(self, mock_path_cls, api):
@@ -223,3 +227,69 @@ class TestStorageAPI:
 
         assert api.delete_raw_file(uuid.uuid4()) is False
         fm_mock.delete.assert_not_called()
+
+
+class TestSourceLanguage:
+    @pytest.fixture
+    def api(self):
+        with patch("app.features.storage.service.storage_api.FileManager"):
+            api = StorageAPI(repository=Mock())
+        api.file_manager.generate_path.return_value = Path("/vault/clip.mp4")
+        api.file_manager.store_file.return_value = 1024
+        return api
+
+    @pytest.fixture(autouse=True)
+    def hashed_file(self):
+        with patch("app.features.storage.service.storage_api.calculate_file_hash", return_value="h"), \
+                patch("app.features.storage.service.storage_api.Path") as path_cls:
+            path = MagicMock(suffix=".mp4")
+            path.name = "clip.mp4"
+            path.exists.return_value = True
+            path.resolve.return_value = path
+            path_cls.return_value = path
+            yield
+
+    @staticmethod
+    def _existing(language):
+        return Source(name="clip.mp4", source_type=SourceType.VIDEO, content_hash="h", language=language,
+                      file_id=uuid.uuid4())
+
+    def test_new_source_is_stamped_with_the_batch_language(self, api):
+        api.repository.get_by_hash.return_value = None
+        api.repository.create.side_effect = lambda source: source
+
+        assert api.ingest_local_file("/in/clip.mp4", SourceType.VIDEO, language="sr").language == "sr"
+
+    def test_new_source_defaults_to_the_active_language(self, api, appliance_language):
+        appliance_language("sl")
+        api.repository.get_by_hash.return_value = None
+        api.repository.create.side_effect = lambda source: source
+
+        assert api.ingest_local_file("/in/clip.mp4", SourceType.VIDEO).language == "sl"
+
+    def test_a_file_ingested_in_another_language_is_refused(self, api):
+        api.repository.get_by_hash.return_value = self._existing("sr")
+
+        with pytest.raises(SourceLanguageConflict, match="clip.mp4 was already ingested as 'sr'"):
+            api.ingest_local_file("/in/clip.mp4", SourceType.VIDEO, language="en")
+
+        api.repository.set_language.assert_not_called()
+        api.repository.create.assert_not_called()
+
+    def test_an_unstamped_source_is_stamped_with_the_new_language(self, api):
+        existing = self._existing(None)
+        api.repository.get_by_hash.return_value = existing
+        restamped = existing.model_copy(update={"language": "en"})
+        api.repository.set_language.return_value = restamped
+
+        result = api.ingest_local_file("/in/clip.mp4", SourceType.VIDEO, language="en")
+
+        api.repository.set_language.assert_called_once_with(existing.id, "en")
+        assert result is restamped
+
+    def test_clear_language_unstamps_the_source(self, api):
+        source_id = uuid.uuid4()
+
+        api.clear_language(source_id)
+
+        api.repository.set_language.assert_called_once_with(source_id, None)

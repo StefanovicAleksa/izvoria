@@ -2,7 +2,9 @@ import os
 from dataclasses import dataclass
 from typing import Dict
 
-LANGUAGES: Dict[str, str] = {"sr": "Serbian", "sl": "Slovenian"}
+# The languages the demo offers: one per pack in data/languages/. They share one database, and the desktop app
+# switches between them itself; the choice here is only the language it starts in and names the upload folder.
+LANGUAGES: Dict[str, str] = {"sr": "Serbian", "en": "English"}
 
 # Container ports the instance exposes (Vast maps each to a random host port, read back from the API).
 AGENT_PORT = 8090
