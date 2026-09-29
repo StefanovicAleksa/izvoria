@@ -40,19 +40,15 @@ class IRetrievalRepository(ABC):
         query_vector: List[float],
         query_text: str,
         limit: int,
-        source_id_filter: Optional[uuid.UUID] = None
+        source_id_filter: Optional[uuid.UUID] = None,
+        dense_keep: int = 0
     ) -> List[RetrievedChunk]:
         """
+        `dense_keep`: the dense leg's best this many are returned too, beyond `limit` if they fused lower -- for a
+        pool the reranker will sort; 0 returns exactly the fused top `limit`.
+
         Executes both Semantic (Dense) and Keyword (Sparse) searches,
         merges them using Reciprocal Rank Fusion (RRF), and returns the top results.
-        """
-        pass
-
-    @abstractmethod
-    def get_index_fts_config(self) -> Optional[str]:
-        """
-        The Postgres text search configuration the index's keyword column is generated with (e.g. "english"),
-        or None when the index table doesn't exist yet.
         """
         pass
 

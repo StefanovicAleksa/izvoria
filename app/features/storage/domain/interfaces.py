@@ -46,3 +46,8 @@ class IStorageRepository(ABC):
     def mark_as_processed(self, source_id: uuid.UUID) -> Optional[Source]:
         """Marks the underlying file of a source as processed."""
         pass
+
+    @abstractmethod
+    def set_language(self, source_id: uuid.UUID, language: Optional[str]) -> Source:
+        """Records the language a source is ingested in; None un-stamps it."""
+        pass

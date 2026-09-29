@@ -32,6 +32,8 @@ class Source(BaseModel):
     name: str
     source_type: SourceType
     content_hash: str
+    # The language the file was ingested in ("sr"); None while nothing binds it (see SourceModel.language)
+    language: Optional[str] = None
 
     # The Foreign Key linking to the independent physical file
     file_id: uuid.UUID

@@ -1,7 +1,9 @@
 from typing import List, Optional
+from unittest.mock import patch
 
 import pytest
 
+from app.features.domain_phonetic_correction.utils import term_candidate_finder as finder
 from app.features.domain_phonetic_correction.utils.term_candidate_finder import find_term_candidates
 from app.features.transcription.domain.entities import TranscriptWord
 
@@ -125,3 +127,17 @@ class TestSerbianCandidates:
         candidates = find_term_candidates("Uzeli smo tri stenta.", [], ["stents"], 0.7, 0.6, 1.67, 0.95)
 
         assert all(c.replacement == "stents" for c in candidates)
+
+
+class TestSoundKeyCache:
+    def test_a_language_switch_does_not_serve_the_previous_languages_keys(self, appliance_language):
+        finder._cached_key_similarity.cache_clear()
+        with patch.object(finder, "phonetic_key", side_effect=["abcd", "wxyz"]) as key:
+            appliance_language("en")
+            english = finder._key_similarity("heard", "abcd")
+            appliance_language("sr")
+            serbian = finder._key_similarity("heard", "abcd")
+        finder._cached_key_similarity.cache_clear()
+
+        assert (english, serbian) == (1.0, 0.0)
+        assert key.call_count == 2

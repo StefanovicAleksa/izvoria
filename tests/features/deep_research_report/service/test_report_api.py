@@ -130,7 +130,7 @@ class TestScopePlan:
         api.scope_plan("t", corpus, session_id=session_id)
 
         repository.create_report.assert_called_once_with(
-            topic="t", plan=plan, corpus=corpus, session_id=session_id
+            topic="t", plan=plan, corpus=corpus, session_id=session_id, language=settings.APPLIANCE_LANGUAGE
         )
 
 

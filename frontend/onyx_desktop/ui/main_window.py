@@ -18,6 +18,7 @@ from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
+    QComboBox,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -29,7 +30,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from onyx_desktop.data.session_store import SessionStore
 from onyx_desktop.domain.entities import (
     ChatMessage,
     IngestionSummary,
@@ -55,13 +55,11 @@ class MainWindow(QMainWindow):
         self,
         bridge: EngineBridge,
         log_relay: LogRelay,
-        session_store: Optional[SessionStore] = None,
         stub_mode: bool = False,
     ):
         super().__init__()
         self._bridge = bridge
         self._relay = log_relay
-        self._sessions = session_store or SessionStore()
         self._stub_mode = stub_mode
         self._shutdown_done = False
         self._closing = False
@@ -71,6 +69,8 @@ class MainWindow(QMainWindow):
 
         self._build()
         self._connect()
+        self._ingest.set_languages(self._bridge.languages, self._bridge.active_language)
+        self._show_active_language(self._bridge.active_language)
 
     # ---------- construction ----------
 
@@ -132,6 +132,23 @@ class MainWindow(QMainWindow):
 
         layout.addStretch(1)
 
+        answer_label = QLabel("Answer in")
+        answer_label.setProperty("role", "subtle")
+        layout.addWidget(answer_label)
+        self._language = QComboBox()
+        for option in self._bridge.languages:
+            self._language.addItem(option.name, option.code)
+        self._language.setToolTip(
+            "The language answers, reports and verified searches are written in. Search finds evidence in "
+            "every language, and excerpts are always quoted in their own. Switching restarts the appliance "
+            "in seconds; it loads no model."
+        )
+        # Switching rebuilds the engine, so it waits until one is running
+        self._language.setEnabled(False)
+        self._language.currentIndexChanged.connect(self._on_language_chosen)
+        layout.addWidget(self._language)
+        layout.addSpacing(8)
+
         self._start_button = QPushButton("Start appliance")
         self._start_button.setProperty("role", "primary")
         self._start_button.clicked.connect(self._bridge.boot)
@@ -154,7 +171,25 @@ class MainWindow(QMainWindow):
         self._report.planRequested.connect(self._on_report_plan_requested)
         self._report.reportRequested.connect(self._on_report_requested)
         self._report.cancelRequested.connect(self._on_report_cancel_requested)
+        self._report.resumeRequested.connect(self._on_report_resume_requested)
 
+        # History: views ask, the bridge answers from its reader thread.
+        self._chat.conversationChosen.connect(self._bridge.load_conversation)
+        self._chat.conversationDeleteRequested.connect(self._on_conversation_delete_requested)
+        self._search.savedSearchChosen.connect(self._bridge.load_search)
+        self._search.savedSearchDeleteRequested.connect(self._bridge.delete_search)
+        self._report.savedReportRequested.connect(self._bridge.load_report)
+        self._report.savedPlanRequested.connect(self._bridge.load_report_plan)
+        self._bridge.conversationsListed.connect(self._chat.set_conversations)
+        self._bridge.conversationLoaded.connect(self._chat.show_conversation)
+        self._bridge.searchesListed.connect(self._search.set_saved_searches)
+        self._bridge.searchLoaded.connect(self._search.show_results)
+        self._bridge.reportsListed.connect(self._report.set_reports)
+        self._bridge.reportLoaded.connect(self._report.show_report)
+        self._bridge.reportPlanLoaded.connect(self._report.show_plan)
+        self._bridge.historyFailed.connect(self._on_history_failed)
+
+        self._bridge.languageChanged.connect(self._show_active_language)
         self._bridge.booted.connect(self._on_booted)
         self._bridge.chatFinished.connect(self._on_chat_finished)
         self._bridge.searchFinished.connect(self._on_search_finished)
@@ -174,6 +209,50 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_booted(self) -> None:
         self._start_button.setVisible(False)
+        self._language.setEnabled(not self._bridge.is_busy)
+        self._refresh_history()
+
+    @Slot(str)
+    def _show_active_language(self, code: str) -> None:
+        """Every picker and header follows the engine's language, including a switch an ingest or resume made."""
+        index = self._language.findData(code)
+        if index >= 0 and index != self._language.currentIndex():
+            self._language.blockSignals(True)
+            self._language.setCurrentIndex(index)
+            self._language.blockSignals(False)
+        name = self._bridge.language_name(code)
+        for view in (self._chat, self._search, self._report):
+            view.set_answer_language(name)
+        self._ingest.select_language(code)
+
+    @Slot(int)
+    def _on_language_chosen(self, _index: int) -> None:
+        # Rebuilt from the combo's QVariant at the boundary, like every other combo in the app
+        code = str(self._language.currentData())
+        if self._bridge.switch_language(code) is None:
+            # Refused (busy) or already active: the picker goes back to what the engine actually runs
+            self._show_active_language(self._bridge.active_language)
+
+    def _refresh_history(self) -> None:
+        """Each list is one indexed read; refreshing all three after any change keeps them simple and right."""
+        if not self._bridge.history_available:
+            return
+        self._bridge.list_conversations()
+        self._bridge.list_searches()
+        self._bridge.list_reports()
+
+    @Slot(str, str)
+    def _on_history_failed(self, method: str, message: str) -> None:
+        listing = {
+            "list_conversations": self._chat,
+            "list_searches": self._search,
+            "list_reports": self._report,
+        }.get(method)
+        if listing is not None:
+            listing.set_history_unavailable(f"History could not be loaded: {message}")
+            return
+        owner = self._chat if "conversation" in method else self._search if "search" in method else self._report
+        owner.show_failure(message)
 
     @Slot(object)
     def _on_status(self, snapshot: StatusSnapshot) -> None:
@@ -191,6 +270,8 @@ class MainWindow(QMainWindow):
         self._search.set_busy(busy)
         self._ingest.set_busy(busy)
         self._report.set_busy(busy)
+        self._language.setEnabled(not busy and self._bridge.status is not ApplianceStatus.OFFLINE
+                                  and self._bridge.status is not ApplianceStatus.ERROR)
         if ingesting:
             self._views.setCurrentWidget(self._ingest)
         elif self._bridge.is_researching:
@@ -201,10 +282,12 @@ class MainWindow(QMainWindow):
     @Slot(int, object)
     def _on_chat_finished(self, _request_id: int, message: ChatMessage) -> None:
         self._chat.add_message(message)
+        self._bridge.list_conversations()
 
     @Slot(int, object)
     def _on_search_finished(self, _request_id: int, outcome: SearchOutcome) -> None:
         self._search.show_results(outcome)
+        self._bridge.list_searches()
 
     @Slot(int, object)
     def _on_ingest_finished(self, _request_id: int, summary: IngestionSummary) -> None:
@@ -235,14 +318,18 @@ class MainWindow(QMainWindow):
         elif current is self._report:
             self._report.show_failure(message)
         self._status.apply(StatusSnapshot(status=self._bridge.status, detail=message))
+        # A failed run still changed something worth listing (a report now FAILED, for one).
+        self._refresh_history()
 
     @Slot(int, object)
     def _on_report_plan_finished(self, _request_id: int, plan) -> None:
         self._report.show_plan(plan)
+        self._bridge.list_reports()
 
     @Slot(int, object)
     def _on_report_finished(self, _request_id: int, report) -> None:
         self._report.show_report(report)
+        self._bridge.list_reports()
 
     # ---------- view requests ----------
 
@@ -250,8 +337,12 @@ class MainWindow(QMainWindow):
     def _on_chat_requested(
         self, prompt: str, session_id: uuid.UUID, mode: ChatMode, limit: int
     ) -> None:
-        self._sessions.remember_turn(session_id, prompt)
         self._bridge.send_chat(prompt, session_id, mode, limit)
+
+    @Slot(object)
+    def _on_conversation_delete_requested(self, session_id: uuid.UUID) -> None:
+        if self._bridge.delete_conversation(session_id) is not None:
+            self._chat.forget_conversation(session_id)
 
     @Slot(str, object, int)
     def _on_search_requested(self, prompt: str, mode: SearchMode, limit: int) -> None:
@@ -279,9 +370,14 @@ class MainWindow(QMainWindow):
         """
         self._bridge.request_report_cancel(report_id)
 
-    @Slot(str, object)
-    def _on_ingest_requested(self, path: str, mode: IngestMode) -> None:
-        if self._bridge.start_ingest(path, mode) is not None:
+    @Slot(object)
+    def _on_report_resume_requested(self, report_id) -> None:
+        if self._bridge.resume_report(report_id) is not None:
+            self._report.start_resume(report_id)
+
+    @Slot(str, object, str)
+    def _on_ingest_requested(self, path: str, mode: IngestMode, language: str) -> None:
+        if self._bridge.start_ingest(path, mode, language) is not None:
             self._ingest.start_run()
 
     # ---------- shutdown ----------

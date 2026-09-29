@@ -6,7 +6,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 
 from app.features.rag_retrieval.data.postgres_search_repo import (
-    PostgresSearchRepository, _CHUNKS_BY_ID_SQL, _FTS_EXPRESSION_SQL, _HYBRID_SEARCH_SQL, _NEIGHBORS_SQL
+    PostgresSearchRepository, _CHUNKS_BY_ID_SQL, _HYBRID_SEARCH_SQL, _NEIGHBORS_SQL
 )
 from app.core.anchors.domain.enums import AnchorKind
 from app.features.rag_retrieval.exceptions.base import RetrievalError
@@ -58,12 +58,14 @@ class TestPostgresSearchRepository:
         assert sql is _HYBRID_SEARCH_SQL
         assert params == {
             "query_vector": "[0.1,0.2,0.3]",
-            "query_text": "Find text",
-            "fts_config": "english",
+            # One keyword query per text search configuration in the index, whatever language is active
+            "fts_configs": ["english", "serbian"],
+            "query_texts": ["Find text", "Find text"],
             "source_id": source_id,
             "limit": 40,
             "fetch_depth": 200,
-            "rrf_k": 60
+            "rrf_k": 60,
+            "dense_keep": 0
         }
 
     @patch("app.features.rag_retrieval.data.postgres_search_repo.db_manager")
@@ -84,10 +86,21 @@ class TestPostgresSearchRepository:
     def test_sparse_leg_uses_or_semantics_and_length_normalized_rank(self):
         """plainto_tsquery ANDs every lexeme; the query must be rewritten to OR before matching."""
         sql = str(_HYBRID_SEARCH_SQL)
-        assert "replace(plainto_tsquery(CAST(:fts_config AS regconfig), :query_text)::text, ' & ', ' | ')" in sql
+        assert "replace(plainto_tsquery(t.cfg, t.qt)::text, ' & ', ' | ')" in sql
         assert "ts_rank(v.fts_document, sq.tsq, 1)" in sql
         assert "sq.tsq IS NOT NULL" in sql
         assert "v.raw_text" in sql
+
+    def test_the_dense_legs_best_always_reach_the_reranker(self):
+        """A question in another language gets keyword matches only in its own language; RRF must not bury the rest."""
+        sql = str(_HYBRID_SEARCH_SQL)
+        assert "WHERE fused_rank <= :limit OR dense_rank <= :dense_keep" in sql
+        assert "ORDER BY f.rrf_score DESC, f.chunk_id" in sql
+
+    def test_each_chunk_is_matched_only_against_the_query_built_with_its_own_configuration(self):
+        sql = str(_HYBRID_SEARCH_SQL)
+        assert "unnest(CAST(:fts_configs AS regconfig[]), CAST(:query_texts AS text[])) AS t(cfg, qt)" in sql
+        assert "JOIN sparse_query sq ON v.fts_config = sq.cfg" in sql
 
     @patch("app.features.rag_retrieval.data.postgres_search_repo.db_manager")
     def test_execute_hybrid_search_maps_errors(self, mock_db_manager):
@@ -207,26 +220,3 @@ class TestPostgresSearchRepository:
 
         assert chunk.anchor_kind is AnchorKind.PAGE
         assert (chunk.page_start, chunk.page_end, chunk.section_path, chunk.position) == (7, 8, "Article 7", 12)
-
-
-class TestGetIndexFtsConfig:
-    @pytest.mark.parametrize("expression, config", [
-        ("to_tsvector('english'::regconfig, (text_payload)::text)", "english"),
-        ("to_tsvector('serbian'::regconfig, (text_payload)::text)", "serbian"),
-        (None, None),                    # vector_chunks not created yet
-        ("text_payload", None),          # not a tsvector expression at all
-    ])
-    @patch("app.features.rag_retrieval.data.postgres_search_repo.db_manager")
-    def test_reads_the_regconfig_from_the_generated_column(self, mock_db_manager, expression, config):
-        session = mock_db_manager.session.return_value.__enter__.return_value
-        session.execute.return_value.scalar.return_value = expression
-
-        assert PostgresSearchRepository().get_index_fts_config() == config
-        assert session.execute.call_args.args[0] is _FTS_EXPRESSION_SQL
-
-    @patch("app.features.rag_retrieval.data.postgres_search_repo.db_manager")
-    def test_database_failure_is_a_retrieval_error(self, mock_db_manager):
-        mock_db_manager.session.side_effect = RuntimeError("connection refused")
-
-        with pytest.raises(RetrievalError):
-            PostgresSearchRepository().get_index_fts_config()

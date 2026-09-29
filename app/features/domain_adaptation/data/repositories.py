@@ -3,7 +3,7 @@
 
 import uuid
 from typing import Optional
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from app.core.database.service.manager import DatabaseManager
 from app.features.domain_adaptation.domain.interfaces import IDomainAdaptationRepository
@@ -60,3 +60,11 @@ class DomainAdaptationRepository(IDomainAdaptationRepository):
 
         except Exception as e:
             raise map_domain_adaptation_error(e, context="Fetch Glossary by Source ID") from e
+
+    def delete_glossary_by_source_id(self, source_id: uuid.UUID) -> bool:
+        try:
+            with self._db.session() as session:
+                result = session.execute(delete(DomainGlossaryModel).where(DomainGlossaryModel.source_id == source_id))
+                return bool(result.rowcount)
+        except Exception as e:
+            raise map_domain_adaptation_error(e, context="Delete Glossary by Source ID") from e

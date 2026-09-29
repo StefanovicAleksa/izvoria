@@ -6,7 +6,6 @@ import uuid
 from unittest.mock import MagicMock
 
 from app.core.config import settings
-from app.features.rag_retrieval.exceptions import IndexLanguageMismatchError
 from app.features.rag_retrieval.service.retrieval_api import RetrievalAPI
 from app.features.rag_retrieval.domain.entities import CorpusSweep, SearchQuery, RetrievedChunk
 from app.core.model_manager.domain.entities import LoadedModel
@@ -91,7 +90,8 @@ class TestRetrievalAPI:
             query_vector=[0.1, 0.2],
             query_text="what did the witness say",
             limit=settings.RAG_RETRIEVAL_CANDIDATES,
-            source_id_filter=source_id
+            source_id_filter=source_id,
+            dense_keep=settings.RAG_DENSE_CANDIDATES_KEPT
         )
 
     @staticmethod
@@ -235,6 +235,9 @@ class TestSearchBatch:
         assert mocks["search_repo"].execute_hybrid_search.call_count == 4
         assert result.swept_source_count == 4
         assert len(result.sweep_results) == 4
+        # Exactly per_source_limit chunks per source: no extra dense candidates, which would grow a report's bank
+        assert all(call.kwargs.get("dense_keep", 0) == 0 and call.kwargs["limit"] == 3
+                   for call in mocks["search_repo"].execute_hybrid_search.call_args_list)
 
     def test_each_swept_source_gets_a_filtered_hybrid_search_not_a_raw_ann_slice(self, api, mocks):
         """
@@ -357,30 +360,15 @@ class TestRetrievalAPIScript:
         assert texts == ["terapija", "dijagnoza"]
         assert [r.query for r in result.results] == ["терапија"]
 
-    def test_english_prompt_is_searched_as_written(self, api, mocks):
+    def test_cyrillic_is_searched_in_latin_while_english_is_active(self, api, mocks, appliance_language):
+        # One index holds every language: the Serbian chunks are Latin whichever language answers
+        appliance_language("en")
+
         api.search(SearchQuery(prompt="What did Лекар say?", limit=5))
 
-        assert mocks["embedding_adapter"].embed_prompt.call_args.args[1] == "What did Лекар say?"
+        assert mocks["embedding_adapter"].embed_prompt.call_args.args[1] == "What did Lekar say?"
 
+    def test_latin_prompt_is_searched_as_written(self, api, mocks):
+        api.search(SearchQuery(prompt="What did the doctor say?", limit=5))
 
-class TestVerifyIndexLanguage:
-    @pytest.fixture
-    def repo(self):
-        return MagicMock()
-
-    @pytest.fixture
-    def api(self, repo):
-        return RetrievalAPI(MagicMock(), MagicMock(), repo)
-
-    @pytest.mark.parametrize("indexed", ["english", None])
-    def test_matching_or_absent_index_passes(self, api, repo, indexed):
-        repo.get_index_fts_config.return_value = indexed
-
-        api.verify_index_language()
-
-    def test_index_built_for_another_language_is_refused(self, api, repo, monkeypatch):
-        monkeypatch.setattr(settings, "FTS_LANGUAGE_CONFIG", "serbian")
-        repo.get_index_fts_config.return_value = "english"
-
-        with pytest.raises(IndexLanguageMismatchError, match="'english'.*'serbian'"):
-            api.verify_index_language()
+        assert mocks["embedding_adapter"].embed_prompt.call_args.args[1] == "What did the doctor say?"

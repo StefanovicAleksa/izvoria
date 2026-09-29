@@ -39,9 +39,9 @@ def pump(ms: int = 250) -> None:
 
 
 @pytest.fixture
-def window(qt_app, stub_gateway, session_store):
+def window(qt_app, stub_gateway):
     bridge = EngineBridge(stub_gateway)
-    instance = MainWindow(bridge, LogRelay(), session_store, stub_mode=True)
+    instance = MainWindow(bridge, LogRelay(), stub_mode=True)
     yield instance
     if not instance._shutdown_done:
         bridge.stop(timeout_ms=5000)
@@ -78,17 +78,18 @@ class TestMainWindowSmoke:
 
         assert window._chat._transcript_layout.count() > before
 
-    def test_a_chat_turn_is_recorded_in_the_session_index(self, window, session_store):
+    def test_a_chat_turn_appears_in_the_conversation_history(self, window):
         window.show()
         window._bridge.boot()
         pump(400)
+        before = len(window._chat._history.keys())
 
         window._on_chat_requested("first question", window._chat.session_id,
                                   ChatMode.SINGLE_PASS, 5)
-        pump(400)
+        pump(600)
 
-        sessions = session_store.list_sessions()
-        assert [s.title for s in sessions] == ["first question"]
+        assert window._chat.session_id in window._chat._history.keys()
+        assert len(window._chat._history.keys()) == before + 1
 
     def test_a_search_populates_the_results_list(self, window):
         window.show()
@@ -123,10 +124,9 @@ class TestMainWindowSmoke:
 
 
 class TestMainWindowShutdown:
-    def test_closing_stops_the_engine_and_lets_the_window_close(self, qt_app, stub_gateway,
-                                                                session_store):
+    def test_closing_stops_the_engine_and_lets_the_window_close(self, qt_app, stub_gateway):
         bridge = EngineBridge(stub_gateway)
-        window = MainWindow(bridge, LogRelay(), session_store, stub_mode=True)
+        window = MainWindow(bridge, LogRelay(), stub_mode=True)
         window.show()
         bridge.boot()
         pump(500)
@@ -138,4 +138,119 @@ class TestMainWindowShutdown:
         assert window._shutdown_done is True
         assert bridge.status is ApplianceStatus.OFFLINE
         assert bridge._thread.isRunning() is False
+        assert bridge._reader_thread.isRunning() is False
         assert window.isVisible() is False
+
+
+class TestMainWindowHistory:
+    """The stub seeds one of everything, so each reopen path runs through the real bridge and views."""
+
+    @pytest.fixture
+    def booted(self, window):
+        window.show()
+        window._bridge.boot()
+        pump(600)
+        return window
+
+    def test_history_is_listed_after_boot_and_not_before(self, qt_app, stub_gateway):
+        bridge = EngineBridge(stub_gateway)
+        window = MainWindow(bridge, LogRelay(), stub_mode=True)
+        assert window._chat._history.keys() == []
+        assert bridge.list_conversations() is None  # no database until the engine runs
+        bridge.boot()
+        pump(600)
+        assert len(window._chat._history.keys()) == 1
+        assert len(window._search._history.keys()) == 1
+        assert len(window._report._history.keys()) == 3
+        bridge.stop(timeout_ms=5000)
+
+    def test_reopening_a_conversation_renders_it_and_continues_it(self, booted):
+        (session_id,) = booted._chat._history.keys()
+        booted._chat._on_history_chosen(session_id)
+        pump(400)
+
+        assert booted._chat.session_id == session_id
+        # Two turns (four bubbles), a note for the answer whose source is gone, and the trailing stretch.
+        assert booted._chat._transcript_layout.count() == 6
+
+    def test_reopening_a_search_shows_its_saved_hits(self, booted):
+        (record_id,) = booted._search._history.keys()
+        booted._search.savedSearchChosen.emit(record_id)
+        pump(400)
+
+        assert booted._search._saved_row.isVisibleTo(booted._search)
+        assert "no longer in the index" in booted._search._saved_banner.text()
+        assert booted._search._input.text() == "retention schedule cover letter"
+
+    def test_an_unapproved_report_reopens_in_the_approval_step(self, booted):
+        ref = next(r for r in booted._report._refs.values() if r.awaiting_approval)
+        booted._report._on_history_chosen(ref.report_id)
+        pump(400)
+
+        assert booted._report._outline.isVisibleTo(booted._report)
+        assert booted._report._topic.text() == ref.topic
+
+    def test_a_stopped_report_can_be_resumed_to_completion(self, booted):
+        ref = next(r for r in booted._report._refs.values() if r.resumable)
+        booted._report._on_history_chosen(ref.report_id)
+        pump(400)
+        assert booted._report._resume.isVisibleTo(booted._report)
+
+        booted._report._on_resume()
+        pump(800)
+
+        assert booted._report._document.status.value == "completed"
+        assert not booted._report._resume.isVisibleTo(booted._report)
+        assert booted._report._refs[ref.report_id].status.value == "completed"
+
+    def test_deleting_the_open_conversation_starts_a_new_one(self, booted, monkeypatch):
+        (session_id,) = booted._chat._history.keys()
+        booted._chat._on_history_chosen(session_id)
+        pump(400)
+
+        booted._on_conversation_delete_requested(session_id)
+        pump(400)
+
+        assert booted._chat.session_id != session_id
+        assert booted._chat._history.keys() == []
+
+
+class TestMainWindowLanguage:
+    @pytest.fixture
+    def booted(self, window):
+        window.show()
+        window._bridge.boot()
+        pump(600)
+        return window
+
+    def test_the_answer_language_picker_waits_for_the_appliance(self, window):
+        assert not window._language.isEnabled()
+        assert window._language.currentData() == "en"
+        assert window._chat._answer_language.text() == "Answers in English"
+
+    def test_choosing_a_language_switches_the_appliance_and_every_header(self, booted, stub_gateway):
+        assert booted._language.isEnabled()
+
+        booted._language.setCurrentIndex(booted._language.findData("sr"))
+        pump(600)
+
+        assert stub_gateway.active_language() == "sr"
+        for view in (booted._chat, booted._search, booted._report):
+            assert view._answer_language.text() == "Answers in Srpski"
+        assert booted._ingest._language.currentData() == "sr"
+
+    def test_a_refused_switch_puts_the_picker_back(self, booted, monkeypatch):
+        monkeypatch.setattr(booted._bridge, "switch_language", lambda code: None)
+
+        booted._language.setCurrentIndex(booted._language.findData("sr"))
+
+        assert booted._language.currentData() == "en"
+
+    def test_ingesting_in_another_language_moves_the_answer_picker_too(self, booted, stub_gateway):
+        booted._ingest._path.setText("/media/sr")
+        booted._ingest.select_language("sr")
+        booted._ingest._on_start()
+        pump(3000)
+
+        assert stub_gateway.ingested_languages == ["sr"]
+        assert booted._language.currentData() == "sr"

@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from app.core.config import settings
 from app.features.session_memory.domain.interfaces import ISessionMemoryRepository
-from app.features.session_memory.domain.entities import SessionTurn
+from app.features.session_memory.domain.entities import SessionSummary, SessionTurn
 from app.features.session_memory.domain.enums import SessionTurnMode
 from app.features.session_memory.utils.error_mapper import map_session_memory_error
 
@@ -49,6 +49,26 @@ class SessionMemoryAPI:
             for i, turn in enumerate(turns, start=1)
         ]
         return "\n\n".join(parts)
+
+    def get_all_turns(self, session_id: uuid.UUID) -> List[SessionTurn]:
+        """Every turn of the session, oldest first: for showing a conversation again, not for a prompt."""
+        try:
+            return self._repo.get_all_turns(session_id)
+        except Exception as e:
+            raise map_session_memory_error(e)
+
+    def list_sessions(self, limit: int = 200) -> List[SessionSummary]:
+        """Conversations, most recently active first."""
+        try:
+            return self._repo.list_sessions(limit)
+        except Exception as e:
+            raise map_session_memory_error(e)
+
+    def delete_session(self, session_id: uuid.UUID) -> int:
+        try:
+            return self._repo.delete_session(session_id)
+        except Exception as e:
+            raise map_session_memory_error(e)
 
     def get_prior_context(self, session_id: uuid.UUID) -> Optional[str]:
         return self.format_prior_context(self.get_history(session_id))

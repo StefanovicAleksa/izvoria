@@ -10,11 +10,3 @@ class SearchExecutionError(RetrievalError):
 class InvalidSearchSyntaxError(RetrievalError):
     """Raised when the user provides symbols that break Postgres to_tsquery syntax."""
     pass
-
-class IndexLanguageMismatchError(RetrievalError):
-    """
-    Raised when the index's keyword column was built for a different language than the appliance now serves.
-    Its tsvectors were stemmed with the old language's rules, so searching them with the new one's would quietly
-    return the wrong chunks, or none.
-    """
-    pass

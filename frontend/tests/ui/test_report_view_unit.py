@@ -316,3 +316,65 @@ class TestReportDocumentView:
         """onyx:// means nothing outside this app; handing it to a browser would be a dead end."""
         assert document.openLinks() is False
         assert document.openExternalLinks() is False
+
+
+class TestHistory:
+    @staticmethod
+    def _ref(status, evidence_count=3, report_id=REPORT_ID):
+        from onyx_desktop.domain.entities import ReportRef
+        return ReportRef(report_id=report_id, topic="chain of custody", status=status,
+                         section_count=4, evidence_count=evidence_count)
+
+    @pytest.mark.parametrize("status, signal_name", [
+        (ReportRunStatus.COMPLETED, "savedReportRequested"),
+        (ReportRunStatus.CANCELLED, "savedReportRequested"),
+        (ReportRunStatus.WRITING, "savedReportRequested"),
+        (ReportRunStatus.AWAITING_APPROVAL, "savedPlanRequested"),
+    ])
+    def test_choosing_a_report_asks_for_what_its_state_needs(self, view, status, signal_name):
+        view.set_reports([self._ref(status)])
+        emitted = []
+        getattr(view, signal_name).connect(emitted.append)
+        view._on_history_chosen(REPORT_ID)
+        assert emitted == [REPORT_ID]
+
+    def test_a_report_stopped_before_any_evidence_prefills_its_topic_instead(self, view):
+        view.set_reports([self._ref(ReportRunStatus.CANCELLED, evidence_count=0)])
+        emitted = []
+        view.savedReportRequested.connect(emitted.append)
+        view._on_history_chosen(REPORT_ID)
+        assert emitted == []
+        assert view._topic.text() == "chain of custody"
+        assert "nothing to resume" in view._failure.text()
+
+    @pytest.mark.parametrize("status, evidence_count, visible", [
+        (ReportRunStatus.CANCELLED, 3, True),
+        (ReportRunStatus.WRITING, 3, True),     # the app went away mid-run
+        (ReportRunStatus.CANCELLED, 0, False),
+        (ReportRunStatus.COMPLETED, 3, False),
+    ])
+    def test_resume_is_offered_only_where_there_is_a_bank_to_resume_from(self, view, status, evidence_count,
+                                                                         visible):
+        view.set_reports([self._ref(status, evidence_count)])
+        view.show_report(_document(status=status))
+        assert view._resume.isVisible() is visible
+
+    def test_stop_during_a_resumed_run_cancels_that_report(self, view):
+        view.set_reports([self._ref(ReportRunStatus.CANCELLED)])
+        view.show_report(_document(status=ReportRunStatus.CANCELLED))
+        cancelled = []
+        view.cancelRequested.connect(cancelled.append)
+
+        view.start_resume(REPORT_ID)
+        view._on_stop()
+
+        assert cancelled == [REPORT_ID]
+
+    def test_history_cannot_navigate_away_from_a_running_report(self, view):
+        other = uuid.uuid4()
+        view.set_reports([self._ref(ReportRunStatus.COMPLETED, report_id=other)])
+        view.start_run(_plan())
+        emitted = []
+        view.savedReportRequested.connect(emitted.append)
+        view._on_history_chosen(other)
+        assert emitted == []

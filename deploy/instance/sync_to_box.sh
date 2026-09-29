@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run on the DEV box. Copies the code and the models Serbian/Slovenian need to the Vast instance.
+# Run on the DEV box. Copies the code and the models the appliance's languages need to the Vast instance.
 #
 #   deploy/instance/sync_to_box.sh root@203.0.113.9 41022          # code + models
 #   deploy/instance/sync_to_box.sh root@203.0.113.9 41022 --code    # code only (after a git pull)
@@ -25,7 +25,7 @@ rsync -az --delete -e "${SSH}" \
 
 [ "${MODE}" = "--code" ] && { echo "Code synced."; exit 0; }
 
-# Every model path app/core/config.py and data/languages/{sr,sl}.toml reference (51 GB). Regenerate after adding a
+# Every model path app/core/config.py and data/languages/*.toml reference (51 GB). Regenerate after adding a
 # model:  grep -rhoE "[\"']models/[^\"']+[\"']" app data | sort -u
 MODELS=(
     google_gemma-4-E4B-it-Q4_K_M.gguf

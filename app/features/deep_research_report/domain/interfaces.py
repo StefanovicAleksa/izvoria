@@ -140,8 +140,9 @@ class IReportRepository(ABC):
         plan: ResearchPlan,
         corpus: CorpusDigest,
         session_id: Optional[uuid.UUID] = None,
+        language: Optional[str] = None,
     ) -> Report:
-        """Persists a freshly scoped report as AWAITING_APPROVAL."""
+        """Persists a freshly scoped report as AWAITING_APPROVAL, written in `language`."""
         pass
 
     @abstractmethod

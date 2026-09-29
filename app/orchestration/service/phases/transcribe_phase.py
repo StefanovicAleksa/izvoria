@@ -15,6 +15,8 @@ from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.interfaces import IModelLoader
 from app.core.model_manager.exceptions.base import ModelManagerError
 
+from app.features.storage.service.storage_api import StorageAPI
+from app.features.transcription.exceptions import LanguageMismatchError
 from app.features.transcription.service.transcription_api import TranscriptionAPI
 from app.features.audio_extractor.service.extractor_api import AudioExtractorAPI
 from app.features.domain_adaptation.domain.interfaces import IDomainAdaptationRepository
@@ -34,7 +36,8 @@ class TranscribePhase:
             domain_repo: IDomainAdaptationRepository,
             async_model_service: AsyncModelService,
             transcribe_manifest: ModelManifest,
-            transcribe_adapter: IModelLoader
+            transcribe_adapter: IModelLoader,
+            storage_api: Optional[StorageAPI] = None
     ):
         self._job_manager = job_manager
         self._transcription_api = transcription_api
@@ -43,6 +46,7 @@ class TranscribePhase:
         self._async_service = async_model_service
         self._manifest = transcribe_manifest
         self._adapter = transcribe_adapter
+        self._storage = storage_api
 
         self._preload_future: Optional[concurrent.futures.Future] = None
 
@@ -54,6 +58,20 @@ class TranscribePhase:
         if self._preload_future:
             future, self._preload_future = self._preload_future, None
             self._async_service.discard_preload(future, self._adapter)
+
+    def _forget_language(self, source_id) -> None:
+        """
+        A file whose speech is in another language than the batch's was stamped with the wrong one, and its
+        glossary was built from a scout pass in that language. Both are forgotten, so ingesting the file again
+        with the right language is accepted and starts from a clean glossary. VAD and diarization don't depend
+        on the language and are kept.
+        """
+        try:
+            self._domain_repo.delete_glossary_by_source_id(source_id)
+            if self._storage:
+                self._storage.clear_language(source_id)
+        except Exception as ex:
+            logger.warning(f"Could not un-stamp Source {source_id} after its language check failed: {ex}")
 
     def execute(self, vad_results: List[VadJobResult]) -> PhaseBatchResult:
         results: List[TranscribeJobResult] = []
@@ -131,6 +149,8 @@ class TranscribePhase:
                     results.append(TranscribeJobResult(source_id=source_id, success=False, error_message=err_msg))
                     errors.append(f"Failed Transcription for Source {source_id}: {err_msg}")
                     failed_count += 1
+                    if isinstance(e, LanguageMismatchError):
+                        self._forget_language(source_id)
 
         finally:
             if loaded_model:

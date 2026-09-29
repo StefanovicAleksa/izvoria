@@ -22,7 +22,7 @@ class TestLocalizePrompt:
         assert "Serbian" in localized and "Latin script" in localized
 
     def test_transcript_prompt_gets_the_never_translate_rule(self, language_pack):
-        pack = language_pack("sl")
+        pack = language_pack("sr")
 
         assert pack.localize_transcript_prompt("Pick A or B.").endswith(
             f"<TRANSCRIPT_LANGUAGE>\n{pack.answers.transcript_instruction}\n</TRANSCRIPT_LANGUAGE>"
@@ -31,7 +31,7 @@ class TestLocalizePrompt:
 
 
 class TestIsRefusal:
-    @pytest.mark.parametrize("code", ["en", "sr", "sl"])
+    @pytest.mark.parametrize("code", ["en", "sr"])
     def test_own_refusal_and_english_fallback_both_count(self, language_pack, code):
         pack = language_pack(code)
 

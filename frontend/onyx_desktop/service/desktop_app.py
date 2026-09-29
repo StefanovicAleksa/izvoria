@@ -85,7 +85,6 @@ def run(argv: List[str], stub: bool = False, autostart: bool = False) -> int:
     # Imported here, after apply_runtime_environment() has run.
     from PySide6.QtWidgets import QApplication
 
-    from onyx_desktop.data.session_store import SessionStore
     from onyx_desktop.service.engine_bridge import EngineBridge
     from onyx_desktop.service.log_relay import LogRelay
     from onyx_desktop.ui import theme
@@ -105,7 +104,6 @@ def run(argv: List[str], stub: bool = False, autostart: bool = False) -> int:
     window = MainWindow(
         bridge=bridge,
         log_relay=relay,
-        session_store=SessionStore(),
         stub_mode=stub,
     )
     window.show()

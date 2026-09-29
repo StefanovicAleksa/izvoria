@@ -12,7 +12,7 @@ Turns a finished `UnifiedTranscript` into a searchable knowledge base — embeds
 
 `HuggingFaceEmbeddingAdapter` (`data/hf_embedder.py`) wraps `sentence_transformers.SentenceTransformer`, running fp16 on CUDA. It wraps the model import in the shared `block_torchcodec_import()` context manager (`app/core/model_manager/utils/torchcodec_guard.py`), a scoped `sys.modules["torchcodec"] = None` restored on exit, to stop torchvision/torchcodec's broken C++ codec bindings from crashing the model load — see Gotchas.
 
-`PostgresRagRepository` persists both a pgvector `embedding` column and an auto-generated `fts_document` (`tsvector`, built with `settings.FTS_LANGUAGE_CONFIG`) computed column on the same table (`VectorChunkModel`/`vector_chunks`) — a single atomic table backs both dense (vector) and sparse (keyword) retrieval; there is no separate vector database.
+`PostgresRagRepository` persists both a pgvector `embedding` column and an auto-generated `fts_document` (`tsvector`, built with the chunk's own `fts_config`, the batch language's `settings.FTS_LANGUAGE_CONFIG`) computed column on the same table (`VectorChunkModel`/`vector_chunks`) — a single atomic table backs both dense (vector) and sparse (keyword) retrieval; there is no separate vector database.
 
 ## Inputs / Outputs
 

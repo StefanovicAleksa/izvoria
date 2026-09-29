@@ -101,3 +101,36 @@ class TestSessionMemoryAPI:
     ])
     def test_strip_citation_tags(self, text, expected):
         assert strip_citation_tags(text) == expected
+
+
+class TestSessionMemoryAPIHistoryAccess:
+    @pytest.fixture
+    def mock_repo(self): return MagicMock()
+
+    @pytest.fixture
+    def api(self, mock_repo):
+        return SessionMemoryAPI(repository=mock_repo)
+
+    def test_get_all_turns_is_not_windowed(self, api, mock_repo):
+        session_id = uuid.uuid4()
+        turns = [_turn("Q", "A [Doc 1]")]
+        mock_repo.get_all_turns.return_value = turns
+
+        assert api.get_all_turns(session_id) == turns
+        mock_repo.get_all_turns.assert_called_once_with(session_id)
+        mock_repo.get_history.assert_not_called()
+
+    def test_list_and_delete_delegate(self, api, mock_repo):
+        session_id = uuid.uuid4()
+        api.list_sessions(limit=30)
+        api.delete_session(session_id)
+        mock_repo.list_sessions.assert_called_once_with(30)
+        mock_repo.delete_session.assert_called_once_with(session_id)
+
+    @pytest.mark.parametrize("method, args", [
+        ("get_all_turns", (uuid.uuid4(),)), ("list_sessions", ()), ("delete_session", (uuid.uuid4(),)),
+    ])
+    def test_errors_become_feature_errors(self, api, mock_repo, method, args):
+        getattr(mock_repo, method).side_effect = RuntimeError("DB down")
+        with pytest.raises(SessionMemorySystemError):
+            getattr(api, method)(*args)

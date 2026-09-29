@@ -72,17 +72,17 @@ class TestAuth:
 class TestStartAndStatus:
     def test_start_launches_the_chosen_language(self, client, vast, agent):
         sign_in(client)
-        assert client.post("/api/start", json={"language": "sl"}).status_code == 202
+        assert client.post("/api/start", json={"language": "en"}).status_code == 202
         # The start runs as a task on the TestClient's event loop; each request gives it a turn.
         for _ in range(50):
             if agent.session.await_count:
                 break
             client.get("/api/status")
-        agent.session.assert_awaited_once_with("127.0.0.1:8090", "sl")
+        agent.session.assert_awaited_once_with("127.0.0.1:8090", "en")
 
     def test_unknown_language_is_a_400(self, client):
         sign_in(client)
-        assert client.post("/api/start", json={"language": "en"}).status_code == 400
+        assert client.post("/api/start", json={"language": "de"}).status_code == 400
 
     def test_status_reports_ready_with_the_running_language(self, client, vast):
         sign_in(client)

@@ -6,7 +6,7 @@ from starlette.testclient import TestClient
 
 from deploy.instance.agent.app import SECRET_HEADER, create_app
 from deploy.instance.agent.config import AgentSettings
-from deploy.instance.agent.session import RunningApp, SessionBusy, UnknownLanguage
+from deploy.instance.agent.session import RunningApp, UnknownLanguage
 
 SECRET = "k" * 40
 AUTH = {SECRET_HEADER: SECRET}
@@ -50,10 +50,10 @@ class TestAuth:
 
 class TestHealth:
     def test_reports_every_readiness_signal(self, client, session, sampler):
-        session.current.return_value = RunningApp(pid=7, language="sl")
+        session.current.return_value = RunningApp(pid=7, language="en")
         sampler.busy = True
         assert client.get("/health", headers=AUTH).json() == {
-            "postgres": True, "display": True, "app": {"pid": 7, "language": "sl"}, "busy": True,
+            "postgres": True, "display": True, "app": {"pid": 7, "language": "en"}, "busy": True,
         }
 
     def test_no_app_yet(self, client, session):
@@ -62,17 +62,15 @@ class TestHealth:
 
 
 class TestSession:
-    def test_passes_language_and_busy_state(self, client, session, sampler):
-        sampler.busy = True
+    def test_passes_the_starting_language(self, client, session, sampler):
         session.ensure.return_value = RunningApp(pid=7, language="sr")
         response = client.post("/session", json={"language": "sr"}, headers=AUTH)
         assert response.json() == {"pid": 7, "language": "sr"}
-        session.ensure.assert_called_once_with("sr", True)
+        session.ensure.assert_called_once_with("sr")
 
-    @pytest.mark.parametrize("error, status", [(SessionBusy("busy"), 409), (UnknownLanguage("en"), 400)])
-    def test_maps_refusals_to_status_codes(self, client, session, error, status):
-        session.ensure.side_effect = error
-        assert client.post("/session", json={"language": "sr"}, headers=AUTH).status_code == status
+    def test_an_unknown_language_is_a_bad_request(self, client, session):
+        session.ensure.side_effect = UnknownLanguage("de")
+        assert client.post("/session", json={"language": "de"}, headers=AUTH).status_code == 400
 
 
 class TestShutdown:
@@ -91,7 +89,7 @@ class TestUpload:
         assert not list(folder.glob("*.part"))
 
     @pytest.mark.parametrize("path", [
-        f"/upload/en/{BATCH}/a.mp4",
+        f"/upload/de/{BATCH}/a.mp4",
         f"/upload/sr/notabatch/a.mp4",
         f"/upload/sr/{BATCH}/a.exe",
         f"/upload/sr/{BATCH}/..%2F..%2Fa.mp4",

@@ -30,7 +30,7 @@ from app.features.storage.service.storage_api import StorageAPI
 
 pytestmark = pytest.mark.integration
 
-# Hard-wrapped like a Project Gutenberg file, with its blank-line runs, and in cp1250 like many Slovenian texts
+# Hard-wrapped like a Project Gutenberg file, with its blank-line runs, and in cp1250 like many Central European texts
 NOVEL = (
     "\n"
     "THE LIGHTHOUSE KEEPER\n"

@@ -22,8 +22,22 @@ HEAD = ScriptDirectory(str(MIGRATIONS_DIR)).get_current_head()
 
 SCRATCH_DB = "onyx_test_migrations"
 
+
+def _single_stemmer_index(stemmer: str) -> tuple:
+    """The keyword column as it was before 0004: every chunk stemmed by the one configuration in the schema."""
+    return (
+        "ALTER TABLE vector_chunks DROP COLUMN fts_document, DROP COLUMN fts_config",
+        f"ALTER TABLE vector_chunks ADD COLUMN fts_document tsvector "
+        f"GENERATED ALWAYS AS (to_tsvector('{stemmer}', text_payload)) STORED",
+        "CREATE INDEX ix_vector_chunks_fts ON vector_chunks USING gin (fts_document)",
+        "ALTER TABLE sources DROP COLUMN language",
+        "ALTER TABLE research_reports DROP COLUMN language",
+    )
+
+
 # Columns and tables that earlier builds did not have, removed again to fake a database from before migrations
 _PRE_ALEMBIC_DROPS = (
+    *_single_stemmer_index(settings.FTS_LANGUAGE_CONFIG),
     "ALTER TABLE vector_chunks DROP COLUMN anchor_kind, DROP COLUMN page_start, DROP COLUMN page_end, "
     "DROP COLUMN section_path, DROP COLUMN position",
     "ALTER TABLE session_turns DROP COLUMN mode, DROP COLUMN standalone_query, DROP COLUMN evidence_chunk_ids, "
@@ -32,6 +46,7 @@ _PRE_ALEMBIC_DROPS = (
     "ALTER TABLE research_report_evidence DROP COLUMN anchor_kind, DROP COLUMN page_start, DROP COLUMN page_end, "
     "DROP COLUMN section_path",
     "DROP TABLE image_descriptions",
+    "DROP TABLE search_history",
     "DROP TABLE alembic_version",
 )
 
@@ -90,7 +105,7 @@ class TestMigrationsIntegration:
 
         assert _revision(scratch_engine) == HEAD
 
-    def test_baseline_stems_keyword_search_in_the_appliance_language(self, scratch_engine):
+    def test_each_chunk_is_keyword_indexed_with_its_own_configuration(self, scratch_engine):
         upgrade_to_head(scratch_engine)
 
         with scratch_engine.connect() as connection:
@@ -99,7 +114,39 @@ class TestMigrationsIntegration:
                 "ON a.attrelid = d.adrelid AND a.attnum = d.adnum "
                 "WHERE d.adrelid = 'vector_chunks'::regclass AND a.attname = 'fts_document'")).scalar()
 
-        assert f"'{settings.FTS_LANGUAGE_CONFIG}'::regconfig" in expression
+        assert expression == "to_tsvector(fts_config, (text_payload)::text)"
+
+    def test_a_database_built_in_serbian_keeps_its_chunks_serbian(self, scratch_engine):
+        with scratch_engine.begin() as connection:
+            command.upgrade(_config(connection), "0003")
+        with scratch_engine.begin() as connection:
+            # 0003's baseline stemmed in this appliance's language; rebuild it the way a Serbian appliance had it
+            connection.execute(text("ALTER TABLE vector_chunks DROP COLUMN fts_document"))
+            connection.execute(text(_single_stemmer_index("serbian")[1]))
+            connection.execute(text(_single_stemmer_index("serbian")[2]))
+            file_id, source_id = uuid.uuid4(), uuid.uuid4()
+            connection.execute(text(
+                "INSERT INTO files (id, file_path, file_name, file_size_bytes, is_processed, created_at) "
+                "VALUES (:id, '/v/a.wav', 'a.wav', 1, true, now())"), {"id": file_id})
+            connection.execute(text(
+                "INSERT INTO sources (id, name, source_type, content_hash, file_id, created_at, updated_at) "
+                "VALUES (:id, 'a.wav', 'audio', 'h', :fid, now(), now())"), {"id": source_id, "fid": file_id})
+            connection.execute(text(
+                "INSERT INTO vector_chunks (id, source_id, chunk_id, start_sec, end_sec, text_payload, raw_text, "
+                "speaker_labels, embedding) VALUES (gen_random_uuid(), :sid, gen_random_uuid(), 0, 30, "
+                "'Ugovori su raskinuti', 't', '[]', :emb)"), {"sid": source_id, "emb": str([0.01] * 1024)})
+
+        upgrade_to_head(scratch_engine)
+
+        assert _drift(scratch_engine) == []
+        with scratch_engine.connect() as connection:
+            assert connection.execute(text("SELECT fts_config::text FROM vector_chunks")).scalar() == "serbian"
+            assert connection.execute(text("SELECT language FROM sources")).scalar() == "sr"
+            # An inflected form still finds the chunk through the Serbian stemmer ("ugovora" -> "ugovor")
+            found = connection.execute(text(
+                "SELECT count(*) FROM vector_chunks WHERE fts_document @@ plainto_tsquery('serbian', 'ugovora')"
+            )).scalar()
+        assert found == 1
 
     def test_pre_alembic_database_is_caught_up_and_stamped_with_its_data_kept(self, scratch_engine):
         upgrade_to_head(scratch_engine)

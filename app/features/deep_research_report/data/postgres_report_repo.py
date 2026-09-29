@@ -45,6 +45,7 @@ class PostgresReportRepository(IReportRepository):
             plan: ResearchPlan,
             corpus: CorpusDigest,
             session_id: Optional[uuid.UUID] = None,
+            language: Optional[str] = None,
     ) -> Report:
         try:
             with self._db.session() as session:
@@ -58,6 +59,7 @@ class PostgresReportRepository(IReportRepository):
                     corpus_digest=corpus.model_dump(mode="json"),
                     indexed_source_count=corpus.indexed_source_count,
                     swept_source_count=0,
+                    language=language,
                 )
                 session.add(report)
                 self._write_plan_rows(session, plan)
@@ -412,6 +414,7 @@ class PostgresReportRepository(IReportRepository):
             scrub_enabled=bool(report.scrub_enabled),
             mode=ReportMode(report.mode or ReportMode.DEEP.value),
             rounds_used=report.rounds_used or 1,
+            language=report.language,
             error_message=report.error_message,
             created_at=report.created_at,
             updated_at=report.updated_at,

@@ -4,6 +4,7 @@
 from typing import List
 from pathlib import Path
 
+from app.core.config import settings
 from app.core.jobs.service.manager import JobManager
 from app.core.jobs.domain.entities import JobRequest
 from app.core.jobs.domain.enums import JobType
@@ -49,7 +50,9 @@ class IngestPhase:
                     request,
                     self._storage.ingest_local_file,
                     file_path=path,
-                    source_type=source_type
+                    source_type=source_type,
+                    # The batch is ingested in the active language
+                    language=settings.APPLIANCE_LANGUAGE
                 )
 
                 result = IngestJobResult(

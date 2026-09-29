@@ -21,7 +21,7 @@ from starlette.routing import Route
 
 from deploy.instance.agent.activity import ActivitySampler
 from deploy.instance.agent.config import AgentSettings
-from deploy.instance.agent.session import AppSession, SessionBusy, UnknownLanguage
+from deploy.instance.agent.session import AppSession, UnknownLanguage
 from deploy.instance.agent.uploads import UploadRejected, upload_path
 
 logger = logging.getLogger(__name__)
@@ -80,11 +80,9 @@ def create_app(
         body = await request.json()
         language = str(body.get("language", ""))
         try:
-            app = await asyncio.to_thread(session.ensure, language, sampler.busy)
+            app = await asyncio.to_thread(session.ensure, language)
         except UnknownLanguage as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
-        except SessionBusy as exc:
-            return JSONResponse({"error": str(exc)}, status_code=409)
         return JSONResponse({"pid": app.pid, "language": app.language})
 
     @guard
@@ -95,7 +93,7 @@ def create_app(
     @guard
     async def upload(request: Request) -> JSONResponse:
         language = request.path_params["language"]
-        if language not in settings.databases:
+        if language not in settings.languages:
             return JSONResponse({"error": f"'{language}' is not a language this appliance serves."}, status_code=400)
         try:
             target = upload_path(

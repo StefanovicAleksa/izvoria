@@ -3,8 +3,8 @@
 """
 A language pack: every rule in Onyx that depends on the language being spoken, in one validated object.
 
-An appliance serves ONE language (`settings.APPLIANCE_LANGUAGE`); the pack for it is read from
-`data/languages/<code>.toml`. Nothing here translates anything: the transcript, the index and the answers all
+An appliance ingests and answers in every language that has a pack in `data/languages/<code>.toml`; one of
+them is active at a time (`settings.APPLIANCE_LANGUAGE`). Nothing here translates anything: the transcript, the index and the answers all
 stay in the language that was spoken, so a citation always points at the words a person actually said.
 """
 
@@ -190,6 +190,8 @@ class LanguagePack(_Frozen):
     code: str = Field(pattern=r"^[a-z]{2,3}$")
     # English name, used inside English-language prompts ("Write ... in Serbian").
     name: str
+    # The language's name for itself, shown where a person picks a language ("Srpski").
+    native_name: str
     transcription: TranscriptionRules
     punctuation: PunctuationRules
     search: SearchRules

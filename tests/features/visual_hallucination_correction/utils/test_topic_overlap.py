@@ -48,10 +48,3 @@ class TestTopicOverlapInOtherLanguages:
         appliance_language("sr")
 
         assert shares_topic("Terapija insulinom je počela u martu.", ['Text: "Терапија инсулином"'], min_shared=2)
-
-    def test_slovenian_function_words_are_not_topic(self, appliance_language):
-        appliance_language("sl")
-
-        shared = shared_on_screen_topic("To je tudi zdravljenje bolnika.", ['Slide: "tudi zdravljenje"'])
-
-        assert shared == {"zdravljenje"}

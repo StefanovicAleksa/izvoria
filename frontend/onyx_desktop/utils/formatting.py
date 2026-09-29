@@ -4,6 +4,7 @@
 """Display helpers. Pure functions, no Qt, so they are cheap to unit-test."""
 
 import re
+from datetime import datetime
 from typing import Iterable, List, Optional, Tuple
 
 _DOC_TAG = re.compile(r"\[Doc (\d+)]")
@@ -86,3 +87,23 @@ def elide(text: str, limit: int = 160) -> str:
     if len(collapsed) <= limit:
         return collapsed
     return collapsed[: limit - 1].rstrip() + "…"
+
+
+def when(moment: Optional[datetime], now: Optional[datetime] = None) -> str:
+    """
+    A history row's date, as short as stays unambiguous, in local time: "14:32" today,
+    "Yesterday 14:32", "12 Sep 14:32" this year, "12 Sep 2025" before that.
+    """
+    if moment is None:
+        return ""
+    local = moment.astimezone() if moment.tzinfo else moment
+    now = (now or datetime.now(local.tzinfo)).astimezone(local.tzinfo) if local.tzinfo else (now or datetime.now())
+    days = (now.date() - local.date()).days
+    clock = local.strftime("%H:%M")
+    if days == 0:
+        return clock
+    if days == 1:
+        return f"Yesterday {clock}"
+    if local.year == now.year:
+        return f"{local.day} {local.strftime('%b')} {clock}"
+    return f"{local.day} {local.strftime('%b')} {local.year}"

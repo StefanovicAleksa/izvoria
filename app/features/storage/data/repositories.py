@@ -59,6 +59,7 @@ class StorageRepository(IStorageRepository):
                     name=source.name,
                     source_type=source.source_type.value,
                     content_hash=source.content_hash,
+                    language=source.language,
                     file_id=source.file_id,
                     created_at=source.created_at,
                     updated_at=source.updated_at
@@ -125,6 +126,17 @@ class StorageRepository(IStorageRepository):
                 if not source_model:
                     raise SourceNotFound(f"Source with ID {source_id} not found.")
                 source_model.file.is_processed = True
+                return Source.model_validate(source_model)
+        except db_exc.DatabaseError as e:
+            raise map_storage_error(e)
+
+    def set_language(self, source_id: uuid.UUID, language: Optional[str]) -> Source:
+        try:
+            with self._db.session() as session:
+                source_model = session.get(SourceModel, source_id)
+                if not source_model:
+                    raise SourceNotFound(f"Source with ID {source_id} not found.")
+                source_model.language = language
                 return Source.model_validate(source_model)
         except db_exc.DatabaseError as e:
             raise map_storage_error(e)

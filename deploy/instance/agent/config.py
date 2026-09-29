@@ -1,11 +1,12 @@
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict
+from typing import Tuple
 
-# Appliance language -> its own database. An appliance serves one language per database: switching
-# APPLIANCE_LANGUAGE on an existing database fails OnyxEngine.start() (IndexLanguageMismatchError).
-DEFAULT_DATABASES = {"sr": "onyx_sr", "sl": "onyx_sl"}
+# One database holds every language: each chunk is keyword-indexed with its own language's stemmer. Must match the
+# packs in data/languages/ (and deploy/gateway/config.py's LANGUAGES).
+DEFAULT_DATABASE = "onyx"
+DEFAULT_LANGUAGES = ("en", "sr")
 
 
 @dataclass(frozen=True)
@@ -16,7 +17,8 @@ class AgentSettings:
     display: str = ":1"
     state_file: Path = Path("/var/run/onyx-agent/app.json")
     log_dir: Path = Path("/workspace/logs")
-    databases: Dict[str, str] = field(default_factory=lambda: dict(DEFAULT_DATABASES))
+    database: str = DEFAULT_DATABASE
+    languages: Tuple[str, ...] = DEFAULT_LANGUAGES
 
     @property
     def python(self) -> Path:

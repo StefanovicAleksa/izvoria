@@ -47,5 +47,13 @@ class LanguageDirs:
 
 
 def database_name(code: str) -> str:
-    """Each language is ingested into its own database: an index is built for one language's stemmer."""
+    """Each language is ingested into its own database, so its numbers are measured on its material alone."""
     return f"onyx_bench_{code}"
+
+
+def served_languages() -> list:
+    """
+    The languages the appliance serves: one per pack in data/languages/ (read from disk, so nothing reads
+    `settings` before a stage's child process sets its environment). Legacy packs (legacy/) are not measured.
+    """
+    return sorted(path.stem for path in (REPO_ROOT / "data" / "languages").glob("*.toml"))

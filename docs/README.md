@@ -34,6 +34,7 @@ The batch ingestion pipeline (`BatchMediaPipeline` for video, `BatchAudioPipelin
 - Standard search → [rag_retrieval](features/rag_retrieval.md) (hybrid dense + sparse search)
 - Verified search → rag_retrieval → [retrieval_hallucination_scrubber](features/retrieval_hallucination_scrubber.md)
 - Chat → rag_retrieval → retrieval_hallucination_scrubber → [qa_generation](features/qa_generation.md)
+- History → [search_history](features/search_history.md) (past searches, and how conversations are listed and reopened)
 
 See [orchestration.md](orchestration.md) for the full Phase/Pipeline inventory and [engine.md](engine.md) for how `OnyxEngine` exposes all of this.
 
@@ -43,7 +44,7 @@ See [orchestration.md](orchestration.md) for the full Phase/Pipeline inventory a
 - [core/jobs.md](core/jobs.md) — job lifecycle/audit-trail tracking
 - [core/model_manager.md](core/model_manager.md) — VRAM-budget-driven model load/unload orchestrator
 - [core/anchors.md](core/anchors.md) — where a chunk sits in its source (time, page, section) and how citations print it
-- [core/language.md](core/language.md) — language packs: every language-specific rule, per appliance language (en, sr, sl)
+- [core/language.md](core/language.md) — language packs: every language-specific rule, per served language (en, sr; Slovenian is legacy)
 
 ## Composition layer
 
@@ -56,7 +57,7 @@ See [orchestration.md](orchestration.md) for the full Phase/Pipeline inventory a
 
 All 20 features, in the same order as the pipeline table above:
 
-[scanner](features/scanner.md) · [storage](features/storage.md) · [audio_extractor](features/audio_extractor.md) · [vad](features/vad.md) · [domain_adaptation](features/domain_adaptation.md) · [transcription](features/transcription.md) · [hallucination_correction](features/hallucination_correction.md) · [diarization](features/diarization.md) · [sentence_reconstruction](features/sentence_reconstruction.md) · [domain_phonetic_correction](features/domain_phonetic_correction.md) · [contextual_retrieval](features/contextual_retrieval.md) · [visual_cue_detection](features/visual_cue_detection.md) · [frame_extraction](features/frame_extraction.md) · [visual_analysis](features/visual_analysis.md) · [visual_hallucination_correction](features/visual_hallucination_correction.md) · [visual_context_synthesis](features/visual_context_synthesis.md) · [context_unification](features/context_unification.md) · [clip_extractor](features/clip_extractor.md) · [rag_storage](features/rag_storage.md) · [rag_retrieval](features/rag_retrieval.md) · [retrieval_hallucination_scrubber](features/retrieval_hallucination_scrubber.md) · [qa_generation](features/qa_generation.md)
+[scanner](features/scanner.md) · [storage](features/storage.md) · [audio_extractor](features/audio_extractor.md) · [vad](features/vad.md) · [domain_adaptation](features/domain_adaptation.md) · [transcription](features/transcription.md) · [hallucination_correction](features/hallucination_correction.md) · [diarization](features/diarization.md) · [sentence_reconstruction](features/sentence_reconstruction.md) · [domain_phonetic_correction](features/domain_phonetic_correction.md) · [contextual_retrieval](features/contextual_retrieval.md) · [visual_cue_detection](features/visual_cue_detection.md) · [frame_extraction](features/frame_extraction.md) · [visual_analysis](features/visual_analysis.md) · [visual_hallucination_correction](features/visual_hallucination_correction.md) · [visual_context_synthesis](features/visual_context_synthesis.md) · [context_unification](features/context_unification.md) · [clip_extractor](features/clip_extractor.md) · [rag_storage](features/rag_storage.md) · [rag_retrieval](features/rag_retrieval.md) · [retrieval_hallucination_scrubber](features/retrieval_hallucination_scrubber.md) · [qa_generation](features/qa_generation.md) · [search_history](features/search_history.md)
 
 ## Legacy (dead code, kept for reference)
 

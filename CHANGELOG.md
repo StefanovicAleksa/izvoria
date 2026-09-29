@@ -4,6 +4,46 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## One appliance, every language (English and Serbian)
+
+A client's material is often mixed: some recordings in English, some in Serbian. An appliance served exactly one language, and it was written into the schema. `fts_document` was generated with that language's stemmer, and starting in another language failed with `IndexLanguageMismatchError`. Now one database holds every language that has a pack.
+
+- **A batch has a language.** The Ingest view has "Language of these files", and the CLI asks for it. The engine is rebuilt in that language before the batch runs.
+  - A recording in another language still fails the Whisper check, but the message names the language to use ("Ingest it again with Serbian selected."). The source is un-stamped and its wrong-language glossary discarded, so the retry works.
+  - A file already ingested in one language is refused in another (`SourceLanguageConflict`), because its transcript and later stages are cached per source.
+- **Each chunk carries its own stemmer** (migration `0004`). `vector_chunks.fts_config` (`REGCONFIG`) drives `fts_document`; existing chunks are stamped with the stemmer the old column named. `sources.language` and `research_reports.language` record the language of a file and of a report.
+- **Search finds evidence in every language.**
+  - The sparse leg builds one tsquery per text search configuration and matches each chunk only against its own.
+  - `simple` (Slovenian) gets the question without any pack's stop words; otherwise an English "in" matched every Slovenian chunk.
+  - The dense leg (BGE-M3) carries cross-language retrieval: an English question finds a Serbian chunk (integration test with the real embedder).
+  - Cyrillic queries are Latinised whichever language is active.
+- **Answers are written in the active language**, switched at runtime and remembered across runs (`onyx_data/<ENV>/active_language`).
+  - `Settings.use_language()` restores the defaults the previous pack replaced, so Serbian's Gemma doesn't linger into English.
+  - `OnyxBootstrapper.switch_language()` rebuilds the engine: seconds, no model load. It's refused while busy.
+  - The desktop has "Answer in" in the sidebar and "Answers in …" in the Chat, Search and Report headers. The CLI has a menu entry.
+- **A report stays in its language.** It renders with its own pack, not the active one, and resuming it switches to it first.
+- **`OnyxEngine.stop()` now frees every resident model.** A model left resident by a live call (`release_after=False`) would have outlived the engine, invisible to the rebuilt engine's orchestrator.
+- **Hosted demo: one `onyx` database.** The landing page's choice is only the language the app starts in. A running app is never relaunched for another language, and English is offered too. The old `onyx_sr` / `onyx_sl` material has to be re-ingested (`docs/deploy.md`).
+
+- **Slovenian is a legacy language.** Its pack moved to `data/languages/legacy/` (with a README on bringing it back) and is no longer served: not in the pickers, the CLI, search, the benchmarks or the hosted demo. `APPLIANCE_LANGUAGE=sl` fails at startup saying it's legacy. Two reasons: Whisper large-v3 reached only ~79% on Slovenian FLEURS, and the cross-language eval (`scripts/eval/cross_language`) showed bge-reranker-v2-m3 scoring Slovenian questions about English material near zero (40–50% hit@1 vs 100% native).
+- **The dense leg's best always reach the reranker** (`RAG_DENSE_CANDIDATES_KEPT`). The cross-language eval found that asking in another language than the material buried the right chunk under RRF: the keyword leg matches only the question's language, and any keyword match outscored the dense leg's #1. Serbian questions on English material went from 70% to 80% hit@1 (90% hit@3), and English questions on Slovenian material went from 80% to 90% (parity). English and Serbian search on their own material is score-for-score unchanged against the old SQL.
+
+Not done: detecting a file's language automatically, answering in the question's language, and a language check for documents and images (a wrong pick indexes them with the wrong stemmer, and only a reset fixes it).
+
+## History: pick up where you left off
+
+Closing the desktop app lost your place. Chat turns were already in `session_turns`, but nothing listed them: the GUI's JSON session index (`data/session_store.py`) was written and never read, and resuming a conversation didn't show its turns. Reports were stored with their whole lifecycle, yet the Report view never reopened one. Searches weren't kept at all.
+
+- **Search history** (`app/features/search_history`, migration `0003`). Every standard and verified search is stored with its hits in rank order and their scores; a verified search keeps what survived the scrubber. `chunk_ids` is not a foreign key, so a re-ingest can't erase what was searched for. Recording happens after the search, and a failure to record is logged, never raised.
+- **Engine read-side**: `list_conversations` / `get_conversation` / `delete_conversation` (`SessionMemoryAPI.list_sessions` / `get_all_turns` / `delete_session`), `list_searches` / `get_search` / `delete_search`, and `plan_cost(plan)`. They only require a started engine, so they work mid-ingestion. `get_chunks` got the same relaxation; it had refused while `INGESTING`/`RESEARCHING` although it only reads the database.
+- **Desktop**: a history pane in Chat, Search and Report.
+  - A conversation re-renders with its original `[Doc N]` numbers and continues where it stopped.
+  - A search reopens with its saved hits, and offers **Run again**.
+  - An unapproved outline returns to the approval step.
+  - A stopped, failed or interrupted report with an evidence bank offers **Resume**.
+  - Conversations and searches can be deleted; reports can't.
+- **History has its own thread** (`service/history_reader.py`), the second deliberate exception to the single engine worker after report cancel, because an ingestion holds that worker for hours. The JSON session index is gone: the database is the index, which also keeps the hosted demo's `onyx_sr` / `onyx_sl` histories apart.
+
 ## The scrubber no longer throws away the answer
 
 On the 2026-09-27 image test, chat refused "What does the green sign in the snow say?" although the sign was the reranker's first result. The relevance scrubber (Qwen2.5-7B) had rejected it: "The sign says 'STOP' and not 'GIMAr MOntaz MAutino'". Its wrong rejections share a pattern: it judges whether a chunk *answers* the question ("does not provide the specific year"), which its prompt says not to do.

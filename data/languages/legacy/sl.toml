@@ -2,6 +2,7 @@
 
 code = "sl"
 name = "Slovenian"
+native_name = "Slovenščina"
 
 [transcription]
 whisper_language = "sl"

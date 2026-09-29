@@ -111,7 +111,7 @@ def create_app(
         language = request.query_params.get("language", "")
         batch = request.query_params.get("batch", "")
         if language not in LANGUAGES:
-            return JSONResponse({"error": "Choose Serbian or Slovenian first."}, status_code=400)
+            return JSONResponse({"error": "Choose Serbian or English first."}, status_code=400)
         view = await controller.status()
         address = await controller.agent_address()
         if view.state not in (ApplianceState.READY, ApplianceState.BUSY) or not address:

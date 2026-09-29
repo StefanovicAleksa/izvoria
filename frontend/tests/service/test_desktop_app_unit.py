@@ -14,7 +14,6 @@ def wiring():
             patch("onyx_desktop.service.engine_bridge.EngineBridge", return_value=bridge), \
             patch("onyx_desktop.ui.main_window.MainWindow") as window_cls, \
             patch("onyx_desktop.service.log_relay.LogRelay"), \
-            patch("onyx_desktop.data.session_store.SessionStore"), \
             patch.object(desktop_app, "build_gateway"), \
             patch.object(desktop_app, "configure_logging"), \
             patch.object(desktop_app, "_assert_single_qt"):

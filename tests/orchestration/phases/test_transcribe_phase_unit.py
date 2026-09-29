@@ -11,6 +11,7 @@ from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.enums import ModelType
 from app.features.audio_extractor.exceptions.base import AudioExtractorError
 from app.features.transcription.domain.entities import Transcript
+from app.features.transcription.exceptions import LanguageMismatchError, TranscriptionError
 from app.features.domain_adaptation.domain.entities import DomainGlossary
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import VadJobResult
@@ -41,8 +42,11 @@ class TestTranscribePhaseUnit:
         return ModelManifest(model_type=ModelType.TRANSCRIPTION, model_path="fake_whisper", required_vram_mb=100)
 
     @pytest.fixture
+    def mock_storage_api(self): return Mock()
+
+    @pytest.fixture
     def phase(self, mock_job_manager, mock_transcription_api, mock_audio_extractor, mock_domain_repo,
-              mock_async_service, sample_manifest, mock_adapter):
+              mock_async_service, sample_manifest, mock_adapter, mock_storage_api):
         return TranscribePhase(
             job_manager=mock_job_manager,
             transcription_api=mock_transcription_api,
@@ -50,7 +54,8 @@ class TestTranscribePhaseUnit:
             domain_repo=mock_domain_repo,
             async_model_service=mock_async_service,
             transcribe_manifest=sample_manifest,
-            transcribe_adapter=mock_adapter
+            transcribe_adapter=mock_adapter,
+            storage_api=mock_storage_api
         )
 
     def test_preload_model(self, phase, mock_async_service, sample_manifest, mock_adapter):
@@ -128,3 +133,27 @@ class TestTranscribePhaseUnit:
         assert result.failed_count == 0
         mock_audio_extractor.get_extracted_audio_path.assert_not_called()
         mock_job_manager.run_job.assert_not_called()
+
+    def test_a_failed_language_check_forgets_the_sources_language_and_glossary(
+            self, phase, mock_job_manager, mock_audio_extractor, mock_domain_repo, mock_storage_api
+    ):
+        source_id = uuid.uuid4()
+        mock_audio_extractor.get_extracted_audio_path.return_value = "/vault/a.wav"
+        mock_job_manager.run_job.side_effect = LanguageMismatchError("spoken in 'en'")
+
+        result = phase.execute([VadJobResult(source_id=source_id, success=True, vad_map_id=uuid.uuid4())])
+
+        assert result.status == PhaseStatus.FAILED
+        mock_domain_repo.delete_glossary_by_source_id.assert_called_once_with(source_id)
+        mock_storage_api.clear_language.assert_called_once_with(source_id)
+
+    def test_any_other_failure_keeps_the_sources_language(
+            self, phase, mock_job_manager, mock_audio_extractor, mock_domain_repo, mock_storage_api
+    ):
+        mock_audio_extractor.get_extracted_audio_path.return_value = "/vault/a.wav"
+        mock_job_manager.run_job.side_effect = TranscriptionError("CUDA OOM")
+
+        phase.execute([VadJobResult(source_id=uuid.uuid4(), success=True, vad_map_id=uuid.uuid4())])
+
+        mock_domain_repo.delete_glossary_by_source_id.assert_not_called()
+        mock_storage_api.clear_language.assert_not_called()

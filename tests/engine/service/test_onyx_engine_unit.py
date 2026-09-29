@@ -9,14 +9,14 @@ from app.engine.service.onyx_engine import OnyxEngine
 from app.engine.domain.enums import EngineState
 from app.engine.exceptions.base import EngineError
 from app.core.database.exceptions import DBMigrationError
-from app.features.rag_retrieval.exceptions import IndexLanguageMismatchError
 from app.engine.domain.entities import IngestionReport
-from app.engine.exceptions.lifecycle import EngineOfflineError
+from app.engine.exceptions.lifecycle import EngineBusyError, EngineOfflineError
 from app.features.rag_retrieval.domain.entities import SearchQuery
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.qa_generation.domain.entities import QAResponse, QACitation, ConversationHistory
 from app.features.session_memory.domain.entities import SessionTurn
 from app.features.session_memory.domain.enums import SessionTurnMode
+from app.features.search_history.domain.enums import SearchHistoryMode
 from app.features.deep_research_report.domain.entities import (
     OutlineSection, ResearchPlan, SubQuestion,
 )
@@ -102,31 +102,34 @@ class TestOnyxEngineUnit:
         mock_db_manager.dispose.assert_called_once()
 
     @patch('app.engine.service.onyx_engine.db_manager')
-    def test_start_verifies_the_index_was_built_for_this_language(self, mock_db_manager, engine, mock_retrieval_api):
-        engine.start()
-
-        mock_retrieval_api.verify_index_language.assert_called_once_with()
-
-    @patch('app.engine.service.onyx_engine.db_manager')
-    def test_start_fails_on_an_index_built_for_another_language(self, mock_db_manager, engine, mock_retrieval_api):
-        mock_retrieval_api.verify_index_language.side_effect = IndexLanguageMismatchError("built for 'english'")
-
-        with pytest.raises(EngineError, match="built for 'english'"):
-            engine.start()
-
-        assert engine.get_state() == EngineState.ERROR
-
-    @patch('app.engine.service.onyx_engine.db_manager')
-    def test_start_migrates_the_database_before_checking_the_index(self, mock_db_manager, engine, mock_retrieval_api,
-                                                                    mock_upgrade_to_head):
+    def test_stop_frees_every_resident_model_after_the_worker_has_drained(self, mock_db_manager, engine,
+                                                                          mock_async_service):
         order = []
-        mock_upgrade_to_head.side_effect = lambda _: order.append("migrate")
-        mock_retrieval_api.verify_index_language.side_effect = lambda: order.append("verify")
-
+        mock_async_service.shutdown.side_effect = lambda: order.append("shutdown")
+        mock_async_service.release_all.side_effect = lambda: order.append("release_all")
         engine.start()
 
-        mock_upgrade_to_head.assert_called_once_with(mock_db_manager.get_engine.return_value)
-        assert order == ["migrate", "verify"]
+        engine.stop()
+
+        assert order == ["shutdown", "release_all"]
+
+    def test_active_language_is_the_settings_language(self, engine, appliance_language):
+        appliance_language("sr")
+
+        assert engine.active_language == "sr"
+
+    @pytest.mark.parametrize("state", [EngineState.BOOTING, EngineState.INGESTING, EngineState.RESEARCHING])
+    def test_require_idle_refuses_while_a_job_holds_the_engine(self, engine, state):
+        engine._state = state
+
+        with pytest.raises(EngineBusyError, match=state.value):
+            engine.require_idle()
+
+    @pytest.mark.parametrize("state", [EngineState.OFFLINE, EngineState.ONLINE, EngineState.ERROR])
+    def test_require_idle_passes_otherwise(self, engine, state):
+        engine._state = state
+
+        engine.require_idle()
 
     @patch('app.engine.service.onyx_engine.db_manager')
     def test_start_fails_when_the_migration_fails(self, mock_db_manager, engine, mock_upgrade_to_head):
@@ -821,3 +824,112 @@ class TestIngestImages:
             f"(handwriting?). That text is not indexed.")
         assert "image_description_error_0" in report.errors
         assert engine.get_state() == EngineState.ONLINE
+
+
+class TestOnyxEngineHistory:
+    """
+    Searches are recorded as shown, and every history read touches only the database: it must work while
+    ingestion or a report holds the GPU, and a failure to record must never cost the user their search.
+    """
+
+    @pytest.fixture
+    def search_history(self):
+        return Mock()
+
+    @pytest.fixture
+    def session_memory(self):
+        return Mock()
+
+    @pytest.fixture
+    def live_pipeline(self):
+        return Mock()
+
+    @pytest.fixture
+    def verified_pipeline(self):
+        return Mock()
+
+    @pytest.fixture
+    def engine(self, search_history, session_memory, live_pipeline, verified_pipeline):
+        engine = OnyxEngine(
+            async_model_service=Mock(), media_pipeline=Mock(), audio_pipeline=Mock(),
+            live_pipeline=live_pipeline, live_verified_pipeline=verified_pipeline, live_qa_pipeline=Mock(),
+            storage_api=Mock(), session_memory_api=session_memory, retrieval_api=Mock(),
+            search_history_api=search_history,
+        )
+        engine._state = EngineState.ONLINE
+        return engine
+
+    @staticmethod
+    def _chunk(score):
+        return RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload="p", raw_text="r",
+                              speaker_labels=[], start_sec=0.0, end_sec=1.0, relevance_score=score)
+
+    def _result(self, *scores):
+        result = Mock()
+        result.results = [self._chunk(s) for s in scores]
+        result.execution_time_ms = 640
+        return result
+
+    @pytest.mark.parametrize("method, pipeline_attr, execute, mode", [
+        ("search_standard", "live_pipeline", "execute_search", SearchHistoryMode.STANDARD),
+        ("search_verified", "verified_pipeline", "execute_verified_search", SearchHistoryMode.VERIFIED),
+    ])
+    def test_a_search_is_recorded_with_the_hits_it_returned(
+            self, request, engine, search_history, method, pipeline_attr, execute, mode):
+        result = self._result(0.9, 0.3)
+        getattr(request.getfixturevalue(pipeline_attr), execute).return_value = result
+
+        assert getattr(engine, method)(SearchQuery(prompt="notice period", limit=7)) is result
+
+        search_history.record.assert_called_once_with(
+            query="notice period", mode=mode, result_limit=7,
+            chunk_ids=[c.chunk_id for c in result.results], scores=[0.9, 0.3], execution_time_ms=640.0,
+        )
+
+    def test_a_failure_to_record_does_not_fail_the_search(self, engine, search_history, live_pipeline):
+        live_pipeline.execute_search.return_value = self._result(0.5)
+        search_history.record.side_effect = RuntimeError("history table missing")
+
+        assert engine.search_standard(SearchQuery(prompt="q", limit=5)).results
+
+    def test_a_failed_search_records_nothing(self, engine, search_history, live_pipeline):
+        live_pipeline.execute_search.side_effect = RuntimeError("model crashed")
+        with pytest.raises(EngineError):
+            engine.search_standard(SearchQuery(prompt="q", limit=5))
+        search_history.record.assert_not_called()
+
+    @pytest.mark.parametrize("state", [EngineState.INGESTING, EngineState.RESEARCHING, EngineState.ONLINE])
+    @pytest.mark.parametrize("call, api_attr, api_method, expected_args", [
+        (lambda e: e.list_conversations(10), "session_memory", "list_sessions", (10,)),
+        (lambda e: e.get_conversation(SESSION), "session_memory", "get_all_turns", ("SESSION",)),
+        (lambda e: e.delete_conversation(SESSION), "session_memory", "delete_session", ("SESSION",)),
+        (lambda e: e.list_searches(10), "search_history", "list", (10,)),
+        (lambda e: e.get_search(SESSION), "search_history", "get", ("SESSION",)),
+        (lambda e: e.delete_search(SESSION), "search_history", "delete", ("SESSION",)),
+    ])
+    def test_history_reads_work_while_the_gpu_is_busy(
+            self, request, engine, state, call, api_attr, api_method, expected_args):
+        engine._state = state
+        api = request.getfixturevalue(api_attr)
+        getattr(api, api_method).return_value = "value"
+
+        assert call(engine) == "value"
+        getattr(api, api_method).assert_called_once_with(*[SESSION if a == "SESSION" else a for a in expected_args])
+
+    def test_history_is_refused_while_offline(self, engine):
+        engine._state = EngineState.OFFLINE
+        with pytest.raises(EngineOfflineError):
+            engine.list_searches()
+
+    def test_history_errors_are_engine_errors(self, engine, session_memory):
+        session_memory.list_sessions.side_effect = RuntimeError("DB down")
+        with pytest.raises(EngineError):
+            engine.list_conversations()
+
+    def test_get_chunks_is_allowed_mid_ingestion(self, engine):
+        engine._state = EngineState.INGESTING
+        engine._retrieval_api.get_chunks.return_value = []
+        assert engine.get_chunks([uuid.uuid4()]) == []
+
+
+SESSION = uuid.uuid4()

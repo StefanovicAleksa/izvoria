@@ -31,11 +31,11 @@ class TestRenderExcerpt:
                            'Tekst koji je pročitao model za vid (neprovereno): "Ugovor o zakupu"; "2025"')
 
     def test_text_only_image_has_no_description_line(self, language_pack):
-        excerpt = render_excerpt(_description(ocr_text="EXIT", ocr_checked=True), language_pack("sl").images)
+        excerpt = render_excerpt(_description(ocr_text="EXIT", ocr_checked=True), language_pack("sr").images)
 
-        assert excerpt == "Besedilo na sliki (prebral OCR):\nEXIT"
+        assert excerpt == "Tekst na slici (pročitao OCR):\nEXIT"
 
-    @pytest.mark.parametrize("code", ["en", "sr", "sl"])
+    @pytest.mark.parametrize("code", ["en", "sr"])
     def test_every_pack_labels_the_description_as_machine_written(self, language_pack, code):
         excerpt = render_excerpt(_description(shows="a dog"), language_pack(code).images)
 
@@ -59,7 +59,7 @@ class TestWithheldText:
 
         assert "could not be read" not in excerpt
 
-    @pytest.mark.parametrize("code", ["en", "sr", "sl"])
+    @pytest.mark.parametrize("code", ["en", "sr"])
     def test_every_pack_has_the_note(self, language_pack, code):
         assert language_pack(code).images.withheld_text_note
 

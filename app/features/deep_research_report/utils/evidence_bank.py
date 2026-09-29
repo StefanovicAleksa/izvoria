@@ -14,6 +14,7 @@ from typing import Callable, Dict, Iterable, List, Optional, Tuple
 
 from app.core.anchors.domain.enums import AnchorKind
 from app.core.anchors.utils.formatting import format_location
+from app.core.language.domain.entities import DocumentRules
 from app.features.deep_research_report.domain.entities import EvidenceEntry
 from app.features.deep_research_report.domain.enums import EvidenceOrigin
 from app.features.qa_generation.utils.context_packer import (
@@ -146,10 +147,13 @@ def build_bank_index(entries: List[EvidenceEntry]) -> str:
     return "\n".join(lines)
 
 
-def entry_location(entry: EvidenceEntry) -> str:
-    """Where a bank entry sits in its source: "00:12:31–00:14:02", or "p. 7 · Article 7 Termination"."""
+def entry_location(entry: EvidenceEntry, rules: Optional[DocumentRules] = None) -> str:
+    """
+    Where a bank entry sits in its source: "00:12:31–00:14:02", or "p. 7 · Article 7 Termination". `rules` label
+    it in a given language (the report's); the active language's otherwise.
+    """
     return format_location(entry.anchor_kind, entry.start_sec, entry.end_sec,
-                           entry.page_start, entry.page_end, entry.section_path)
+                           entry.page_start, entry.page_end, entry.section_path, rules)
 
 
 def build_section_digest(sections: Iterable[Tuple[str, str]], max_chars: int = 600) -> str:

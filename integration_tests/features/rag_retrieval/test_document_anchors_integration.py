@@ -74,11 +74,12 @@ class TestDocumentAnchorsIntegration:
     def test_upgrade_backfills_transcript_positions_in_time_order_and_is_idempotent(self, db_manager):
         with db_manager.session() as session:
             source_id = _source(session, "interview.wav", "audio")
-            # Rows as an earlier build wrote them: no position
+            # Rows as an earlier build wrote them: no position (fts_config is today's, which the table requires)
             for start in (60.0, 0.0, 30.0):
                 session.execute(sa_text(
                     "INSERT INTO vector_chunks (id, source_id, chunk_id, start_sec, end_sec, text_payload, raw_text, "
-                    "speaker_labels, embedding) VALUES (:id, :sid, :cid, :start, :end, 't', 't', '[]', :emb)"),
+                    "speaker_labels, embedding, fts_config) "
+                    "VALUES (:id, :sid, :cid, :start, :end, 't', 't', '[]', :emb, 'english')"),
                     {"id": str(uuid.uuid4()), "sid": str(source_id), "cid": str(uuid.uuid4()), "start": start,
                      "end": start + 30, "emb": str([0.01] * 1024)})
 

@@ -120,6 +120,8 @@ from app.features.qa_reasoning.service.reasoning_api import ReasoningAPI
 
 from app.features.session_memory.data.repositories import SessionMemoryRepository
 from app.features.session_memory.service.session_memory_api import SessionMemoryAPI
+from app.features.search_history.data.repositories import SearchHistoryRepository
+from app.features.search_history.service.search_history_api import SearchHistoryAPI
 from app.features.deep_research_report.data.report_llm_adapter import LlamaCppReportAdapter
 from app.features.deep_research_report.data.postgres_report_repo import PostgresReportRepository
 from app.features.deep_research_report.data.report_file_store import ReportFileStore
@@ -177,6 +179,31 @@ class OnyxBootstrapper:
     Initializes all core services, repositories, APIs, phases, and pipelines,
     and injects them into the final OnyxEngine facade.
     """
+
+    @classmethod
+    def switch_language(cls, engine: Optional[IOnyxEngine], code: str,
+                        progress_listener: Optional[Callable] = None) -> IOnyxEngine:
+        """
+        Makes `code` the active language and returns a started engine built for it. Model paths are baked into
+        the manifests at build time (a language's pack may swap the small models), so the engine is rebuilt
+        rather than patched; that costs seconds, not a model load. Refused with EngineBusyError while a job
+        holds the engine. The language is remembered, so the next start is in it too.
+        """
+        if engine is not None:
+            engine.require_idle()
+            engine.stop()
+        previous = settings.APPLIANCE_LANGUAGE
+        settings.use_language(code)
+        try:
+            rebuilt = cls.build(progress_listener=progress_listener)
+            rebuilt.start()
+        except Exception:
+            # Leave the process in the language whose engine the caller can restart, not half-switched
+            settings.use_language(previous)
+            raise
+        settings.remember_language(code)
+        logger.info(f"Active language is now '{code}'.")
+        return rebuilt
 
     @classmethod
     def build(cls, progress_listener: Optional[Callable] = None) -> IOnyxEngine:
@@ -365,7 +392,7 @@ class OnyxBootstrapper:
         vad_phase = VadPhase(job_manager, vad_api, storage_api, async_service, vad_manifest, real_vad_adapter)
         domain_adaptation_phase = DomainAdaptationPhase(job_manager, domain_adaptation_api, audio_extractor, vad_repo)
         transcribe_phase = TranscribePhase(job_manager, transcription_api, audio_extractor, domain_repo, async_service,
-                                           transcribe_manifest, real_transcribe_adapter)
+                                           transcribe_manifest, real_transcribe_adapter, storage_api=storage_api)
         hallucination_correction_phase = HallucinationCorrectionPhase(job_manager, correction_api)
         diarize_phase = DiarizePhase(job_manager, diarization_api, audio_extractor, async_service, diarize_manifest,
                                      real_diarize_adapter)
@@ -510,7 +537,8 @@ class OnyxBootstrapper:
             research_report_pipeline=research_report_pipeline,
             report_api=report_api,
             document_pipeline=document_pipeline,
-            image_pipeline=image_pipeline
+            image_pipeline=image_pipeline,
+            search_history_api=SearchHistoryAPI(SearchHistoryRepository(db_manager)),
         )
 
         logger.info("Onyx Bootstrapper successfully constructed the Engine container.")

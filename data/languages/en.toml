@@ -5,6 +5,7 @@
 
 code = "en"
 name = "English"
+native_name = "English"
 
 [transcription]
 whisper_language = "en"

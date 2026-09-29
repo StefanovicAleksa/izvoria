@@ -70,17 +70,17 @@ class TestDocumentStructuringAPI:
         with pytest.raises(EmptyDocumentError):
             DocumentStructuringAPI().execute(_pdf("", "  "))
 
-    def test_slovenian_clauses_split_the_document(self, appliance_language, monkeypatch):
-        appliance_language("sl")
+    def test_serbian_clauses_split_the_document(self, appliance_language, monkeypatch):
+        appliance_language("sr")
         monkeypatch.setattr("app.features.document_structuring.service.structuring_api.settings.DOC_SHORT_DOCUMENT_WORDS", 5)
 
         structured = DocumentStructuringAPI().execute(_pdf(
-            "POGODBA O NAJEMU\n1. člen\nNajemodajalec odda najemniku poslovni prostor.\n"
-            "2. člen\nNajemnik plača najemnino do petega v mesecu."))
+            "UGOVOR O ZAKUPU\nČlan 1\nZakupodavac daje zakupcu poslovni prostor.\n"
+            "Član 2\nZakupac plaća zakupninu do petog u mesecu."))
 
         assert [c.section_path for c in structured.chunks] == [
-            "POGODBA O NAJEMU › 1. člen", "POGODBA O NAJEMU › 2. člen"]
-        assert structured.chunks[1].text == "2. člen\n\nNajemnik plača najemnino do petega v mesecu."
+            "UGOVOR O ZAKUPU › Član 1", "UGOVOR O ZAKUPU › Član 2"]
+        assert structured.chunks[1].text == "Član 2\n\nZakupac plaća zakupninu do petog u mesecu."
 
     def test_serbian_cyrillic_is_indexed_in_latin(self, appliance_language):
         appliance_language("sr")

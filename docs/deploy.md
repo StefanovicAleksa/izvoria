@@ -20,13 +20,13 @@ browser ──https──► Gateway VPS (~$5/mo, always on)       Caddy TLS →
 
 ## How a session works
 
-1. The tester signs in with the shared password (a signed `SameSite=strict` cookie, which is also the CSRF defence), picks **Serbian** or **Slovenian**, and clicks **Start appliance**.
+1. The tester signs in with the shared password (a signed `SameSite=strict` cookie, which is also the CSRF defence), picks the language the app starts in (**Serbian** or **English**), and clicks **Start appliance**.
 2. `ApplianceController` (`deploy/gateway/controller.py`) calls `PUT /api/v0/instances/{id}/ {"state": "running"}`, polls the instance until `actual_status == "running"`, reads the mapped ports for 8090 and 6080, waits for the agent's `/health` (Postgres + X display), then calls `POST /session {language}`.
-3. The agent (`deploy/instance/agent/session.py`) launches the desktop app with `APPLIANCE_LANGUAGE=<lang>` and `POSTGRES_DB=onyx_<lang>` in its environment. Real environment variables override `.env.prod` in pydantic-settings, so one checkout serves both languages from two databases. That's necessary because an appliance is single-language per database (`IndexLanguageMismatchError`). `OnyxEngine.start()` runs the Alembic migrations itself.
+3. The agent (`deploy/instance/agent/session.py`) launches the desktop app with `APPLIANCE_LANGUAGE=<lang>` and `POSTGRES_DB=onyx` in its environment. Real environment variables override `.env.prod` in pydantic-settings. One database holds every language, so the tester can ingest Serbian and English into the same appliance and ask about either in either language. `OnyxEngine.start()` runs the Alembic migrations itself.
 4. **Open appliance** loads `/desktop/vnc.html`. The gateway proxies noVNC's static files and the VNC WebSocket, and appends the websockify token itself. The token routes and authenticates in websockify's `TokenFile` plugin, and it never reaches the browser.
-5. Uploads go to `/workspace/uploads/<lang>/<YYYYMMDD-HHMMSS>/` on the box. Filenames are sanitised, and only the scanner's `ALLOWED_EXTENSIONS` are accepted; a test keeps the two lists in step. The page shows the folder to pick in the **Ingest** view.
+5. Uploads go to `/workspace/uploads/<lang>/<YYYYMMDD-HHMMSS>/` on the box, named for the language picked on the page. Filenames are sanitised, and only the scanner's `ALLOWED_EXTENSIONS` are accepted; a test keeps the two lists in step. The page shows the folder to pick in the **Ingest** view and the language to set there ("Language of these files"). The Ingest view's picker is what the batch actually uses.
 
-**Switching language** relaunches the app, and the agent refuses (409) while the appliance is busy, since killing the app mid-ingestion loses the run.
+**Switching language happens inside the app** (the sidebar's "Answer in"). `POST /session` returns a running app as it is, whatever language it started in, and never relaunches it. A relaunch would lose a running job, and it's no longer needed.
 
 **Busy** means GPU utilisation ≥10% or the app's process tree ≥20% CPU at any point in the last 5 minutes (`activity.py`). CPU counts too, because OCR, document conversion and ffmpeg keep the appliance working with the GPU idle.
 
@@ -58,13 +58,15 @@ ssh -p <ssh-port> root@<ssh-host> bash /workspace/onyx_v3/deploy/instance/onstar
 - Python 3.11 (deadsnakes), PostgreSQL 15 + pgvector (PGDG), XFCE + TigerVNC + noVNC, `mpv` (the app opens sources in the desktop's player), and fonts.
 - The appliance venv, with the CUDA build of llama-cpp-python.
 - The agent's own venv.
-- `/workspace/secrets.env`, and the `onyx_sr` / `onyx_sl` databases.
+- `/workspace/secrets.env`, and the `onyx` database (`create_databases.sh`).
 
 It prints `AGENT_SECRET` and `WEBSOCKIFY_TOKEN` for the gateway. Re-run it after `sync_to_box.sh … --code` whenever `requirements.txt` changes. `sync_to_box.sh` lists the models it copies; regenerate that list after adding one (the command is in the script).
 
 ### 3. Load the demo set
 
-Open the desktop once through the gateway, or directly via `ssh -L 6080:localhost:6080` and the token URL. Ingest the demo media for **each** language, since each has its own database. Then click **Stop**. From here on the box is only ever started from the landing page.
+Open the desktop once through the gateway, or directly via `ssh -L 6080:localhost:6080` and the token URL. Ingest the demo media, one batch per language, with **Language of these files** set for each; every language goes into the same `onyx` database. Then click **Stop**.
+
+**Moving from the two-database demo** (`onyx_sr`, `onyx_sl`): pull, re-run `provision.sh` (it creates `onyx`), restart the agent, and re-ingest the demo material into `onyx` as above. The old databases can then be dropped. Nothing merges them automatically. From here on the box is only ever started from the landing page.
 
 ### 4. Set up the gateway VPS
 
@@ -82,7 +84,7 @@ Caddy fetches the Let's Encrypt certificate itself. Send the tester the URL and 
 ### Updating
 
 - **Code:** `sync_to_box.sh … --code` while the box runs, then Stop/Start from the page. On the VPS, `git pull && systemctl restart onyx-gateway`.
-- **Logs:** on the box in `/workspace/logs/` (`app-sr.log`, `app-sl.log`, `agent.log`, …); on the VPS via `journalctl -u onyx-gateway`.
+- **Logs:** on the box in `/workspace/logs/` (`app.log`, `agent.log`, …); on the VPS via `journalctl -u onyx-gateway`.
 
 ## Costs (RTX 3090, September 2026 prices)
 

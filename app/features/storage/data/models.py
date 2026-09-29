@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from sqlalchemy import String, ForeignKey, Boolean, Integer, DateTime
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
+from typing import Optional
 
 from app.core.database.data.engine import Base
 
@@ -31,6 +32,9 @@ class SourceModel(Base):
     name: Mapped[str] = mapped_column(String, nullable=False)
     source_type: Mapped[str] = mapped_column(String, nullable=False)
     content_hash: Mapped[str] = mapped_column(String, unique=True, nullable=False, index=True)
+    # The language the file was ingested in ("sr"). NULL while nothing binds it: a file whose speech failed the
+    # language check is un-stamped, so ingesting it again with the right language starts clean.
+    language: Mapped[Optional[str]] = mapped_column(String, nullable=True)
 
     # Reversed FK: Source depends on File. unique=True enforces the 1-to-1 constraint.
     file_id: Mapped[uuid.UUID] = mapped_column(

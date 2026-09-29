@@ -390,7 +390,7 @@ def upgrade() -> None:
     sa.Column('context_text', sa.String(), nullable=True),
     sa.Column('speaker_labels', postgresql.JSONB(astext_type=sa.Text()), nullable=False),
     sa.Column('embedding', pgvector.sqlalchemy.vector.VECTOR(dim=1024), nullable=False),
-    # Stemmed with this appliance's language; RetrievalAPI.verify_index_language() refuses a mismatch on boot
+    # Stemmed with this appliance's language; 0004 replaces this with a configuration per chunk
     sa.Column('fts_document', postgresql.TSVECTOR(), sa.Computed(f"to_tsvector('{settings.FTS_LANGUAGE_CONFIG}', text_payload)", persisted=True), nullable=True),
     sa.ForeignKeyConstraint(['source_id'], ['sources.id'], ondelete='CASCADE'),
     sa.PrimaryKeyConstraint('id'),

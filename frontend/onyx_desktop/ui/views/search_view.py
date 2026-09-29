@@ -25,19 +25,24 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from onyx_desktop.domain.entities import Evidence, SearchOutcome
+from onyx_desktop.domain.entities import Evidence, SearchOutcome, SearchRecordRef
 from onyx_desktop.domain.enums import SearchMode
+from onyx_desktop.ui.widgets.answer_language import AnswerLanguageLabel
 from onyx_desktop.ui.widgets.evidence_card import EvidenceCard
+from onyx_desktop.ui.widgets.history_list import HistoryEntry, HistoryList
 from onyx_desktop.ui.widgets.source_panel import SourcePanel
-from onyx_desktop.utils.formatting import duration
+from onyx_desktop.utils.formatting import duration, when
 
 
 class SearchView(QWidget):
     searchRequested = Signal(str, object, int)   # prompt, SearchMode, limit
+    savedSearchChosen = Signal(object)           # record_id
+    savedSearchDeleteRequested = Signal(object)  # record_id
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._cards: List[EvidenceCard] = []
+        self._shown: Optional[SearchOutcome] = None
         self._build()
 
     def _build(self) -> None:
@@ -46,14 +51,28 @@ class SearchView(QWidget):
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
+        self._history = HistoryList(
+            "Past searches", "No searches yet. What you search for is kept here, with what it found.",
+            deletable=True, noun="search",
+        )
+        self._history.itemChosen.connect(self.savedSearchChosen)
+        self._history.deleteRequested.connect(self.savedSearchDeleteRequested)
+        splitter.addWidget(self._history)
+
         left = QWidget()
         layout = QVBoxLayout(left)
         layout.setContentsMargins(16, 14, 12, 14)
         layout.setSpacing(10)
 
+        header = QHBoxLayout()
         title = QLabel("Search")
         title.setProperty("role", "heading")
-        layout.addWidget(title)
+        header.addWidget(title)
+        # Verified search's relevance filter reads the question in this language
+        self._answer_language = AnswerLanguageLabel()
+        header.addWidget(self._answer_language)
+        header.addStretch(1)
+        layout.addLayout(header)
 
         blurb = QLabel(
             "Raw retrieval, with no answer generated on top. Use it to check what the index "
@@ -92,6 +111,20 @@ class SearchView(QWidget):
 
         layout.addLayout(controls)
 
+        saved_row = QHBoxLayout()
+        self._saved_banner = QLabel("")
+        self._saved_banner.setProperty("role", "banner-warning")
+        self._saved_banner.setWordWrap(True)
+        saved_row.addWidget(self._saved_banner, stretch=1)
+        self._run_again = QPushButton("Run again")
+        self._run_again.setToolTip("Search again with the same words and mode, against today's index.")
+        self._run_again.clicked.connect(self._on_run_again)
+        saved_row.addWidget(self._run_again)
+        self._saved_row = QWidget()
+        self._saved_row.setLayout(saved_row)
+        self._saved_row.hide()
+        layout.addWidget(self._saved_row)
+
         self._summary = QLabel("")
         self._summary.setProperty("role", "subtle")
         layout.addWidget(self._summary)
@@ -120,19 +153,52 @@ class SearchView(QWidget):
 
         splitter.addWidget(left)
         splitter.addWidget(right)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 3)
+        splitter.setStretchFactor(2, 2)
+        splitter.setSizes([230, 620, 420])
         outer.addWidget(splitter)
 
     # ---------- public API ----------
 
+    def set_answer_language(self, name: str) -> None:
+        self._answer_language.set_language(name)
+
     def set_busy(self, busy: bool) -> None:
         self._button.setEnabled(not busy)
         self._input.setEnabled(not busy)
+        self._run_again.setEnabled(not busy)
         self._button.setText("Searching…" if busy else "Search")
+
+    def set_saved_searches(self, records: List[SearchRecordRef]) -> None:
+        self._history.set_entries([
+            HistoryEntry(
+                key=record.record_id,
+                title=record.query,
+                badge=record.mode.value.capitalize(),
+                subtitle=f"{record.hit_count} hit{'s' if record.hit_count != 1 else ''} · {when(record.created_at)}",
+            )
+            for record in records
+        ])
+
+    def set_history_unavailable(self, text: str) -> None:
+        self._history.set_unavailable(text)
 
     def show_results(self, outcome: SearchOutcome) -> None:
         self._clear()
+        self._shown = outcome
+        if outcome.is_saved:
+            note = f"Saved results from {when(outcome.saved_at)}: what this search returned then."
+            if outcome.missing_hits:
+                note += f" {outcome.missing_hits} hit(s) are no longer in the index (re-ingested or removed)."
+            self._saved_banner.setText(note)
+            self._saved_row.show()
+            self._input.setText(outcome.query)
+            if outcome.mode is not None:
+                self._mode.setCurrentIndex(self._mode.findData(outcome.mode))
+        else:
+            self._saved_row.hide()
+            self._history.clear_selection()
         self._summary.setText(
             f"{len(outcome.hits)} result(s) for “{outcome.query}” "
             f"in {duration(outcome.execution_time_ms / 1000.0)}"
@@ -157,6 +223,7 @@ class SearchView(QWidget):
 
     def show_failure(self, message: str) -> None:
         self._clear()
+        self._saved_row.hide()
         self._summary.setText("")
         label = QLabel(message)
         label.setWordWrap(True)
@@ -174,6 +241,12 @@ class SearchView(QWidget):
         self.searchRequested.emit(
             prompt, SearchMode(self._mode.currentData()), self._limit.value()
         )
+
+    def _on_run_again(self) -> None:
+        if self._shown is None:
+            return
+        mode = self._shown.mode or SearchMode(self._mode.currentData())
+        self.searchRequested.emit(self._shown.query, mode, self._limit.value())
 
     def _on_review(self, evidence: Evidence) -> None:
         self._source_panel.show_evidence(evidence)

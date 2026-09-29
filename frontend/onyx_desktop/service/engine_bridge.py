@@ -17,10 +17,11 @@ from typing import Dict, List, Optional
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal
 
-from onyx_desktop.domain.entities import StatusSnapshot
+from onyx_desktop.domain.entities import LanguageOption, StatusSnapshot
 from onyx_desktop.domain.enums import ApplianceStatus, ChatMode, IngestMode, SearchMode
 from onyx_desktop.domain.interfaces import IEngineGateway
 from onyx_desktop.service.engine_worker import EngineWorker
+from onyx_desktop.service.history_reader import HistoryReader
 
 logger = logging.getLogger(__name__)
 
@@ -37,11 +38,14 @@ class EngineBridge(QObject):
     _bootRequested = Signal()
     _chatRequested = Signal(int, str, object, object, int)
     _searchRequested = Signal(int, str, object, int)
-    _ingestRequested = Signal(int, str, object)
+    _ingestRequested = Signal(int, str, object, str)  # rid, path, IngestMode, language
+    _languageRequested = Signal(int, str)             # rid, language code
     _reportPlanRequested = Signal(int, str, object)   # rid, topic, ReportMode
     _reportRequested = Signal(int, object, object)    # rid, ReportPlanDraft, ReportMode
+    _resumeRequested = Signal(int, object)            # rid, report_id
     _hydrateRequested = Signal(int, object)
     _shutdownRequested = Signal()
+    _historyRequested = Signal(int, str, object)      # rid, gateway method, args -- to the READER thread
 
     # Results, for views to connect to.
     booted = Signal()
@@ -51,10 +55,22 @@ class EngineBridge(QObject):
     evidenceFinished = Signal(int, object)
     reportPlanFinished = Signal(int, object)
     reportFinished = Signal(int, object)
+    languageSwitchFinished = Signal(int, object)  # rid, the language code switched to
+    languageChanged = Signal(str)                 # the active language, whenever it changes
     progressTicked = Signal(object)
     failed = Signal(int, str)
     busyChanged = Signal(bool)
     statusChanged = Signal(object)
+
+    # History results. Never touch busy/status: reading history is not "the appliance working".
+    conversationsListed = Signal(object)          # List[ConversationRef]
+    conversationLoaded = Signal(object, object)   # session_id, List[ChatMessage]
+    searchesListed = Signal(object)               # List[SearchRecordRef]
+    searchLoaded = Signal(object)                 # SearchOutcome (saved)
+    reportsListed = Signal(object)                # List[ReportRef]
+    reportLoaded = Signal(object)                 # ReportDocument
+    reportPlanLoaded = Signal(object)             # ReportPlanDraft
+    historyFailed = Signal(str, str)              # gateway method, user message
 
     def __init__(self, gateway: IEngineGateway, parent: Optional[QObject] = None):
         super().__init__(parent)
@@ -65,6 +81,10 @@ class EngineBridge(QObject):
         self._pending: Dict[int, str] = {}
         self._status = ApplianceStatus.OFFLINE
         self._stopped = False
+        # Configuration reads, not engine calls: safe on the GUI thread, and needed before boot to fill the
+        # language pickers. The worker reports every change after that.
+        self._languages = gateway.languages()
+        self._active_language = gateway.active_language()
 
         self._thread = QThread()
         self._thread.setObjectName("onyx-engine")
@@ -76,6 +96,7 @@ class EngineBridge(QObject):
         self._chatRequested.connect(self._worker.run_chat)
         self._searchRequested.connect(self._worker.run_search)
         self._ingestRequested.connect(self._worker.run_ingest)
+        self._languageRequested.connect(self._worker.run_switch_language)
         self._reportPlanRequested.connect(self._worker.run_report_plan)
         self._reportRequested.connect(self._worker.run_report)
         self._hydrateRequested.connect(self._worker.run_hydrate)
@@ -91,6 +112,8 @@ class EngineBridge(QObject):
             lambda rid, plan: self._settle(rid, self.reportPlanFinished, plan))
         self._worker.reportReady.connect(
             lambda rid, report: self._settle(rid, self.reportFinished, report))
+        self._worker.activeLanguage.connect(self._on_active_language)
+        self._worker.languageSwitched.connect(self._on_language_switched)
         self._worker.progressed.connect(self.progressTicked)
         self._worker.failed.connect(self._on_failed)
 
@@ -104,8 +127,23 @@ class EngineBridge(QObject):
             self._thread.quit, Qt.ConnectionType.DirectConnection
         )
         self._thread.finished.connect(self._worker.deleteLater)
+        self._resumeRequested.connect(self._worker.run_resume_report)
+
+        # The second deliberate exception to "one engine thread", after request_report_cancel: history
+        # reads run on their own thread so they stay usable while ingestion or a report holds the worker
+        # for hours. Safe because HistoryReader only reaches database-only gateway methods.
+        self._history_args: Dict[int, tuple] = {}
+        self._reader_thread = QThread()
+        self._reader_thread.setObjectName("onyx-history")
+        self._reader = HistoryReader(gateway)
+        self._reader.moveToThread(self._reader_thread)
+        self._historyRequested.connect(self._reader.run)
+        self._reader.ready.connect(self._on_history_ready)
+        self._reader.failed.connect(self._on_history_failed)
+        self._reader_thread.finished.connect(self._reader.deleteLater)
 
         self._thread.start()
+        self._reader_thread.start()
 
     # ---------- state ----------
 
@@ -120,6 +158,17 @@ class EngineBridge(QObject):
     @property
     def is_ingesting(self) -> bool:
         return "ingest" in self._pending.values()
+
+    @property
+    def languages(self) -> List[LanguageOption]:
+        return list(self._languages)
+
+    @property
+    def active_language(self) -> str:
+        return self._active_language
+
+    def language_name(self, code: str) -> str:
+        return next((option.name for option in self._languages if option.code == code), code)
 
     def _set_status(self, status: ApplianceStatus, detail: str = "") -> None:
         self._status = status
@@ -153,13 +202,23 @@ class EngineBridge(QObject):
         self._searchRequested.emit(request_id, prompt, mode, limit)
         return request_id
 
-    def start_ingest(self, path: str, mode: IngestMode) -> Optional[int]:
+    def start_ingest(self, path: str, mode: IngestMode, language: str) -> Optional[int]:
         request_id = self._begin(
-            "ingest", ApplianceStatus.INGESTING, f"Ingesting {path}…"
+            "ingest", ApplianceStatus.INGESTING, f"Ingesting {path} ({self.language_name(language)})…"
         )
         if request_id is None:
             return None
-        self._ingestRequested.emit(request_id, path, mode)
+        self._ingestRequested.emit(request_id, path, mode, language)
+        return request_id
+
+    def switch_language(self, code: str) -> Optional[int]:
+        """Rebuilds the engine in `code` on the worker thread. None when refused or already active."""
+        if code == self._active_language:
+            return None
+        request_id = self._begin("language", ApplianceStatus.WORKING, f"Switching to {self.language_name(code)}…")
+        if request_id is None:
+            return None
+        self._languageRequested.emit(request_id, code)
         return request_id
 
     def plan_report(self, topic: str, mode) -> Optional[int]:
@@ -175,6 +234,82 @@ class EngineBridge(QObject):
             return None
         self._reportRequested.emit(request_id, plan, mode)
         return request_id
+
+    def resume_report(self, report_id: uuid.UUID) -> Optional[int]:
+        request_id = self._begin("report", ApplianceStatus.RESEARCHING, "Resuming the report…")
+        if request_id is None:
+            return None
+        self._resumeRequested.emit(request_id, report_id)
+        return request_id
+
+    # ---------- history (reader thread) ----------
+
+    def list_conversations(self) -> Optional[int]:
+        return self._history("list_conversations")
+
+    def load_conversation(self, session_id: uuid.UUID) -> Optional[int]:
+        return self._history("load_conversation", session_id)
+
+    def delete_conversation(self, session_id: uuid.UUID) -> Optional[int]:
+        return self._history("delete_conversation", session_id)
+
+    def list_searches(self) -> Optional[int]:
+        return self._history("list_searches")
+
+    def load_search(self, record_id: uuid.UUID) -> Optional[int]:
+        return self._history("load_search", record_id)
+
+    def delete_search(self, record_id: uuid.UUID) -> Optional[int]:
+        return self._history("delete_search", record_id)
+
+    def list_reports(self) -> Optional[int]:
+        return self._history("list_reports")
+
+    def load_report(self, report_id: uuid.UUID) -> Optional[int]:
+        return self._history("load_report", report_id)
+
+    def load_report_plan(self, report_id: uuid.UUID) -> Optional[int]:
+        return self._history("load_report_plan", report_id)
+
+    @property
+    def history_available(self) -> bool:
+        """History lives in the appliance database, which only exists once the engine has started."""
+        # Not while the engine is rebuilt in another language: its database pool is disposed and replaced
+        return (self._status not in (ApplianceStatus.OFFLINE, ApplianceStatus.BOOTING, ApplianceStatus.ERROR)
+                and "language" not in self._pending.values())
+
+    def _history(self, method: str, *args) -> Optional[int]:
+        if not self.history_available or self._stopped:
+            return None
+        request_id = next(self._ids)
+        self._history_args[request_id] = args
+        self._historyRequested.emit(request_id, method, args)
+        return request_id
+
+    def _on_history_ready(self, request_id: int, method: str, payload) -> None:
+        args = self._history_args.pop(request_id, ())
+        if method == "list_conversations":
+            self.conversationsListed.emit(payload)
+        elif method == "load_conversation":
+            self.conversationLoaded.emit(args[0], payload)
+        elif method == "delete_conversation":
+            self.list_conversations()
+        elif method == "list_searches":
+            self.searchesListed.emit(payload)
+        elif method == "load_search":
+            self.searchLoaded.emit(payload)
+        elif method == "delete_search":
+            self.list_searches()
+        elif method == "list_reports":
+            self.reportsListed.emit(payload)
+        elif method == "load_report":
+            self.reportLoaded.emit(payload)
+        elif method == "load_report_plan":
+            self.reportPlanLoaded.emit(payload)
+
+    def _on_history_failed(self, request_id: int, method: str, message: str) -> None:
+        self._history_args.pop(request_id, None)
+        self.historyFailed.emit(method, message)
 
     def request_report_cancel(self, report_id) -> bool:
         """
@@ -220,6 +355,15 @@ class EngineBridge(QObject):
 
     # ---------- results ----------
 
+    def _on_language_switched(self, request_id: int, code: str) -> None:
+        self._on_active_language(code)
+        self._settle(request_id, self.languageSwitchFinished, code)
+
+    def _on_active_language(self, code: str) -> None:
+        if code != self._active_language:
+            self._active_language = code
+            self.languageChanged.emit(code)
+
     def _on_booted(self) -> None:
         self._set_status(ApplianceStatus.READY, "Ready")
         self.booted.emit()
@@ -256,6 +400,9 @@ class EngineBridge(QObject):
         if self._stopped:
             return True
         self._stopped = True
+        # The reader first: a history read is short, and it must not outlive the engine it reads through.
+        self._reader_thread.quit()
+        self._reader_thread.wait(min(timeout_ms, 10000))
         self._shutdownRequested.emit()
         finished = self._thread.wait(timeout_ms)
         if not finished:

@@ -46,7 +46,7 @@ class TestSpelledLetters:
 
 
 class TestPhoneticKeyInOtherLanguages:
-    """The same key built from the Serbian and Slovenian packs' alphabets, folds and letter names."""
+    """The same key built from the Serbian pack's alphabet, folds and letter names."""
 
     @pytest.mark.parametrize("heard, term", [
         ("Ćirić", "Čirić"),        # č and ć are the commonest Serbian mis-hearing
@@ -69,8 +69,6 @@ class TestPhoneticKeyInOtherLanguages:
     @pytest.mark.parametrize("code, tokens, letters", [
         ("sr", ["e", "ka", "ge"], "ekg"),
         ("sr", ["ce", "te"], "ct"),
-        ("sl", ["em", "er", "i"], "mri"),
-        ("sl", ["me", "re", "i"], "mri"),
     ])
     def test_spelled_out_acronyms_use_native_letter_names(self, appliance_language, code, tokens, letters):
         appliance_language(code)

@@ -20,7 +20,7 @@ import sys
 from typing import Dict, List
 
 from scripts.eval.language_benchmark.manifest import load_manifest
-from scripts.eval.language_benchmark.paths import BENCH_ROOT, LanguageDirs, REPO_ROOT, database_name
+from scripts.eval.language_benchmark.paths import BENCH_ROOT, LanguageDirs, REPO_ROOT, database_name, served_languages
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("language_benchmark")
@@ -124,7 +124,9 @@ def run_stage(stage: str, code: str, args: argparse.Namespace) -> None:
 def main(argv: List[str] = None) -> None:
     parser = argparse.ArgumentParser(prog="language_benchmark")
     parser.add_argument("stage", choices=[*STAGES, "all"])
-    parser.add_argument("--language", nargs="+", required=True, choices=sorted(load_manifest()))
+    # sources.toml keeps the legacy languages' sources (Slovenian); only served languages are measured
+    parser.add_argument("--language", nargs="+", required=True,
+                        choices=[code for code in sorted(load_manifest()) if code in served_languages()])
     parser.add_argument("--regenerate", action="store_true", help="gen-questions: rewrite an existing labels.json")
     parser.add_argument("--questions-per-source", type=int, default=10)
     parser.add_argument("--in-process", action="store_true", help=argparse.SUPPRESS)

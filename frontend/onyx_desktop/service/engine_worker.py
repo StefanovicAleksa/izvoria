@@ -38,6 +38,10 @@ class EngineWorker(QObject):
     evidenceReady = Signal(int, object)  # request_id, List[Evidence]
     reportPlanReady = Signal(int, object)  # request_id, ReportPlanDraft
     reportReady = Signal(int, object)      # request_id, ReportDocument
+    languageSwitched = Signal(int, str)    # request_id, the language now active
+    # The active language after any call that can change it: boot, a switch, an ingest in another language,
+    # resuming a report written in another one. Emitted before that call's terminal signal.
+    activeLanguage = Signal(str)
     progressed = Signal(object)          # ProgressTick
     failed = Signal(int, str, object)    # request_id, user_message, DesktopError
     finished = Signal()
@@ -54,6 +58,7 @@ class EngineWorker(QObject):
         try:
             self._gateway.set_progress_listener(self._emit_progress)
             self._gateway.boot()
+            self._emit_language()
             self.booted.emit()
         except Exception as exc:
             self._fail(0, exc, "Starting the appliance")
@@ -98,13 +103,26 @@ class EngineWorker(QObject):
         except Exception as exc:
             self._fail(request_id, exc, "Search")
 
-    @Slot(int, str, object)
-    def run_ingest(self, request_id: int, path: str, mode: IngestMode) -> None:
+    @Slot(int, str, object, str)
+    def run_ingest(self, request_id: int, path: str, mode: IngestMode, language: str) -> None:
         try:
-            summary = self._gateway.ingest(path, mode)
+            summary = self._gateway.ingest(path, mode, language)
+            self._emit_language()
             self.ingestReady.emit(request_id, summary)
         except Exception as exc:
+            self._emit_language()
             self._fail(request_id, exc, "Ingestion")
+
+    @Slot(int, str)
+    def run_switch_language(self, request_id: int, code: str) -> None:
+        try:
+            self._gateway.switch_language(code)
+            self._emit_language()
+            self.languageSwitched.emit(request_id, self._gateway.active_language())
+        except Exception as exc:
+            # A failed switch comes back up in the previous language; say which one that is
+            self._emit_language()
+            self._fail(request_id, exc, "Switching language")
 
     @Slot(int, str, object)
     def run_report_plan(self, request_id: int, topic: str, mode) -> None:
@@ -127,6 +145,17 @@ class EngineWorker(QObject):
             self._fail(request_id, exc, "Research report")
 
     @Slot(int, object)
+    def run_resume_report(self, request_id: int, report_id: uuid.UUID) -> None:
+        """Finishes a stopped report from its evidence bank; comes back through reportReady like a run."""
+        try:
+            report = self._gateway.resume_report(report_id)
+            self._emit_language()
+            self.reportReady.emit(request_id, report)
+        except Exception as exc:
+            self._emit_language()
+            self._fail(request_id, exc, "Resuming a research report")
+
+    @Slot(int, object)
     def run_hydrate(self, request_id: int, chunk_ids: List[uuid.UUID]) -> None:
         try:
             evidence = self._gateway.hydrate_evidence(list(chunk_ids))
@@ -135,6 +164,12 @@ class EngineWorker(QObject):
             self._fail(request_id, exc, "Loading cited excerpts")
 
     # ---------- helpers ----------
+
+    def _emit_language(self) -> None:
+        try:
+            self.activeLanguage.emit(self._gateway.active_language())
+        except Exception as exc:
+            logger.error(f"Could not read the active language: {exc}")
 
     def _emit_progress(self, tick: ProgressTick) -> None:
         """

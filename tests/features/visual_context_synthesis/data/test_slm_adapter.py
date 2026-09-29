@@ -78,9 +78,9 @@ class TestVisualSLMAdapter:
         mock_gc.assert_called_once()
 
 class TestSynthesisLanguage:
-    def test_slovenian_appliance_asks_for_slovenian_context(self, appliance_language):
-        """The VLM describes frames in English; the context stored beside a Slovenian transcript is Slovenian."""
-        appliance_language("sl")
+    def test_serbian_appliance_asks_for_serbian_context(self, appliance_language):
+        """The VLM describes frames in English; the context stored beside a Serbian transcript is Serbian."""
+        appliance_language("sr")
         llm = MagicMock(**{"create_chat_completion.return_value": {"choices": [{"message": {"content": "Graf."}}]}})
         manifest = ModelManifest(model_type=ModelType.VISUAL_CONTEXT_SYNTHESIS, model_path="/m.gguf",
                                  required_vram_mb=1)
@@ -92,4 +92,4 @@ class TestSynthesisLanguage:
 
         system_prompt = llm.create_chat_completion.call_args.kwargs["messages"][0]["content"]
         assert system_prompt.startswith(VISUAL_SYNTHESIS_SYSTEM_PROMPT)
-        assert "in Slovenian" in system_prompt
+        assert "in Serbian" in system_prompt
