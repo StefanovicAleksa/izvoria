@@ -22,9 +22,42 @@ The real engine does **not** boot on launch. The window opens immediately and yo
 before anything is drawn. `--autostart` does that click for you once the window is up (the hosted
 demo launches the app this way; see `docs/deploy.md`) — a failed boot still shows as a status.
 
+**Stop appliance** (same place, once it runs) shuts the engine down and frees the GPU without closing
+the window; **Start appliance** brings it back. It is disabled while anything runs — a chat turn, a
+search, an ingestion, a report, a language switch — because each of those holds the engine it would
+tear down, and ingestion has no safe stop point.
+
+One visual design, in light and dark: warm neutrals, serif headings, near-square corners, outlined
+citation tags and an ink sidebar in both modes. Light/dark is switched with the sun/moon button next to
+the wordmark, at any time (even mid-ingestion, since it's pure presentation), and remembered per user
+in QSettings. At launch the mode comes from `--mode`, else the remembered choice, else `ONYX_MODE`,
+else dark.
+
+The palettes and the stylesheet live in `ui/theme.py`. A switch re-applies the stylesheet, which
+repaints almost everything. A widget that bakes a colour into rich text or a pixmap while it builds
+(message bubbles' citation spans, the report document, the status dots, the mode toggle's icon) exposes `apply_theme()`, and `MainWindow.set_mode()` calls it on every such widget.
+**A new widget that reads `theme.X` into its content needs the same hook**, or it keeps the old
+mode's colour after a switch. Prefer a stylesheet role (`setProperty("role", ...)`) when one will do.
+
+### What the screen does not say
+
+The app shows people what the appliance did, not how. Keep it that way when adding UI text:
+
+- **No internals by name.** No models, GPU/VRAM, pipeline stages, job names, retrieval scores, chunk
+  counts, storage paths or engine log lines. Engine errors are mapped to plain sentences in
+  `utils/error_mapper.py` (and the per-file ones by `file_problem`); the detail goes to the log.
+- **Progress is general steps.** Ingestion shows *Preparing files → Analyzing audio → Contextualizing →
+  Analyzing visuals → Indexing* (fewer for audio, documents and images), each with its own bar; a
+  report shows *Planning → Gathering sources → Organizing → Writing section N → Finishing*.
+  `utils/progress_stages.py` is the only place that knows which engine job belongs to which step; a new
+  job must be added there, and a job it doesn't know is not shown at all. A step's bar is an estimate
+  (files done × jobs in the step) and is marked done outright when the next step starts.
+- The one exception is trust: an image's excerpt is still labelled an automatic description, because
+  it is machine-written and has to be checked against the picture.
+
 `--stub` is the loop to develop in. A real chat turn costs tens of seconds and a boot costs
 seconds more; the stub answers straight away and deliberately cycles through every branch the UI
-has to render — a grounded answer, an answer with *no* evidence, a Reasoned Answer clarification
+has to render — a grounded answer, an answer with *no* evidence, a Thorough answer (the engine's Reasoned Answer) clarification
 request, an unresolved clip path, and a failure (ask it anything containing "fail").
 
 ## Layout
@@ -36,7 +69,7 @@ onyx_desktop/
 ├── domain/      frozen dataclasses, enums, and IEngineGateway — no Qt, no app.*
 ├── data/        engine_gateway.py (the ONLY module importing app.*), stub_gateway, report_writer
 ├── service/     engine_bridge / engine_worker (threading), log_relay, desktop_app
-├── ui/          theme, main_window, views/, widgets/
+├── ui/          theme, icons, assets/, main_window, views/, widgets/
 ├── exceptions/  DesktopError and friends
 └── utils/       error_mapper, formatting
 ```
@@ -91,14 +124,13 @@ Two non-obvious things in here, both of which caused real hangs before they were
 
 - **Ingestion cannot be cancelled.** Nothing in the pipeline has a cooperative stop point, and the
   thread sits inside native transcription and LLM calls that ignore interruption. The Cancel
-  button is deliberately disabled with a tooltip saying so. Closing the window mid-ingestion asks
+  button is deliberately disabled, with a tooltip that just says a batch cannot be cancelled. Closing the window mid-ingestion asks
   whether to quit anyway and warns that partially indexed material may be left behind.
-- **Ingestion progress is partly blind.** Progress comes from a `JobManager` callback that fires
-  once per file per phase, plus the engine's log stream. Eleven batch phases have no logger at all
-  — including transcription and diarization, the two longest — so the display can sit still for
-  many minutes. The view says so explicitly ("no output for 4m 12s") rather than looking hung.
-  The durable fix is two `logger.info` lines per silent phase upstream; the view already
-  understands them and would start moving with no change here.
+- **Ingestion progress is coarse by design.** It comes from a `JobManager` callback that fires once
+  per file per job, folded into a few general steps (see *What the screen does not say*). The
+  longest jobs report only when a file finishes, so a step's bar can sit still for minutes on large
+  files; after 90 s without a tick the view says it is still working rather than looking hung. The
+  engine's log is still captured by `LogRelay` for diagnostics, but is not shown.
 - **Conversation history is not re-displayed.** Reopening a conversation sends the engine the same
   session id, so the answer model still reads the earlier turns — but the transcript starts empty,
   because `get_history` is capped at `CHAT_HISTORY_MAX_TURNS` and the engine cannot list sessions

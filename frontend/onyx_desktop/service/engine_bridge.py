@@ -45,10 +45,12 @@ class EngineBridge(QObject):
     _resumeRequested = Signal(int, object)            # rid, report_id
     _hydrateRequested = Signal(int, object)
     _shutdownRequested = Signal()
+    _stopRequested = Signal(int)                      # rid -- stops the engine, keeps the worker thread
     _historyRequested = Signal(int, str, object)      # rid, gateway method, args -- to the READER thread
 
     # Results, for views to connect to.
     booted = Signal()
+    stopped = Signal()                            # the engine was stopped from the UI; it can be booted again
     chatFinished = Signal(int, object)
     searchFinished = Signal(int, object)
     ingestFinished = Signal(int, object)
@@ -101,9 +103,11 @@ class EngineBridge(QObject):
         self._reportRequested.connect(self._worker.run_report)
         self._hydrateRequested.connect(self._worker.run_hydrate)
         self._shutdownRequested.connect(self._worker.shutdown)
+        self._stopRequested.connect(self._worker.stop_engine)
 
         # Results out.
         self._worker.booted.connect(self._on_booted)
+        self._worker.engineStopped.connect(self._on_engine_stopped)
         self._worker.chatReady.connect(lambda rid, msg: self._settle(rid, self.chatFinished, msg))
         self._worker.searchReady.connect(lambda rid, res: self._settle(rid, self.searchFinished, res))
         self._worker.ingestReady.connect(self._on_ingest_done)
@@ -177,10 +181,29 @@ class EngineBridge(QObject):
     # ---------- requests ----------
 
     def boot(self) -> None:
-        if self._status is not ApplianceStatus.OFFLINE:
+        # ERROR too: a failed boot offers "Retry start", which has to reach the worker
+        if self._status not in (ApplianceStatus.OFFLINE, ApplianceStatus.ERROR) or self._stopped:
             return
         self._set_status(ApplianceStatus.BOOTING, "Loading the appliance…")
         self._bootRequested.emit()
+
+    @property
+    def can_stop(self) -> bool:
+        """Only an idle, running appliance can be stopped: never mid-boot and never under a job."""
+        return self._status is ApplianceStatus.READY and not self._pending and not self._stopped
+
+    def stop_appliance(self) -> Optional[int]:
+        """
+        Stops the engine and frees its VRAM without closing the app; `boot()` starts it again. Refused
+        (None) while anything is in flight: a job holds the GPU, and the pipelines have no safe stop point.
+        """
+        if not self.can_stop:
+            return None
+        request_id = self._begin("stop", ApplianceStatus.WORKING, "Stopping the appliance…")
+        if request_id is None:
+            return None
+        self._stopRequested.emit(request_id)
+        return request_id
 
     def send_chat(
         self,
@@ -204,7 +227,7 @@ class EngineBridge(QObject):
 
     def start_ingest(self, path: str, mode: IngestMode, language: str) -> Optional[int]:
         request_id = self._begin(
-            "ingest", ApplianceStatus.INGESTING, f"Ingesting {path} ({self.language_name(language)})…"
+            "ingest", ApplianceStatus.INGESTING, f"Adding material ({self.language_name(language)})…"
         )
         if request_id is None:
             return None
@@ -274,9 +297,9 @@ class EngineBridge(QObject):
     @property
     def history_available(self) -> bool:
         """History lives in the appliance database, which only exists once the engine has started."""
-        # Not while the engine is rebuilt in another language: its database pool is disposed and replaced
+        # Not while the engine is rebuilt in another language or stopped: its database pool is being disposed
         return (self._status not in (ApplianceStatus.OFFLINE, ApplianceStatus.BOOTING, ApplianceStatus.ERROR)
-                and "language" not in self._pending.values())
+                and not {"language", "stop"} & set(self._pending.values()))
 
     def _history(self, method: str, *args) -> Optional[int]:
         if not self.history_available or self._stopped:
@@ -367,6 +390,14 @@ class EngineBridge(QObject):
     def _on_booted(self) -> None:
         self._set_status(ApplianceStatus.READY, "Ready")
         self.booted.emit()
+
+    def _on_engine_stopped(self, request_id: int) -> None:
+        # Not _settle: that would report the appliance READY
+        self._pending.pop(request_id, None)
+        if not self._pending:
+            self.busyChanged.emit(False)
+        self._set_status(ApplianceStatus.OFFLINE, "Stopped")
+        self.stopped.emit()
 
     def _on_ingest_done(self, request_id: int, summary) -> None:
         self._settle(request_id, self.ingestFinished, summary)

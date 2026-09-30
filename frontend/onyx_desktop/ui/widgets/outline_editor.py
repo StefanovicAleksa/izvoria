@@ -55,16 +55,15 @@ class _SectionCard(QFrame):
         self._brief.setFixedHeight(54)
         layout.addWidget(self._brief)
 
-        questions = QLabel("Searches for this section")
+        questions = QLabel("What to look for")
         questions.setProperty("role", "subtle")
         layout.addWidget(questions)
 
         self._questions = QTextEdit("\n".join(section.questions))
-        self._questions.setPlaceholderText("One search per line")
+        self._questions.setPlaceholderText("One topic or phrase per line")
         self._questions.setFixedHeight(56)
         self._questions.setToolTip(
-            "These are run against the archive verbatim. Specific wording that appears in the "
-            "recordings finds more than an abstract theme."
+            "Specific wording that appears in your material finds more than an abstract theme."
         )
         layout.addWidget(self._questions)
 
@@ -148,7 +147,6 @@ class OutlineEditor(QWidget):
 
         self._scope.setText(plan.scope_note or "The appliance proposed this outline from your archive.")
         self._cost.setText(
-            f"{plan.indexed_source_count} indexed recording(s), {plan.indexed_chunk_count} excerpt(s). "
             f"Roughly {plan.estimated_minutes} minutes; chat and search are unavailable while it runs."
         )
 

@@ -236,7 +236,7 @@ class TestReportRendering:
         view.show_report(_document())
 
         assert "2 section(s)" in view._summary.text()
-        assert "2 gathering round(s)" in view._summary.text()
+        assert "gathering round" not in view._summary.text()
         assert view._partial.isVisible() is False
 
     def test_a_cancelled_report_is_flagged_as_partial(self, view):

@@ -22,7 +22,6 @@ from PySide6.QtCore import QUrl, Signal
 from PySide6.QtWidgets import QTextBrowser, QWidget
 
 from onyx_desktop.domain.entities import Evidence, ReportDocument
-from onyx_desktop.ui import theme
 
 logger = logging.getLogger(__name__)
 
@@ -45,13 +44,18 @@ class ReportDocumentView(QTextBrowser):
         self.setOpenExternalLinks(False)
         self.anchorClicked.connect(self._on_anchor)
 
-        self.setStyleSheet(
-            f"QTextBrowser {{ background-color: {theme.SURFACE}; border: 1px solid {theme.BORDER};"
-            f" border-radius: 8px; padding: 16px; font-size: 14px; }}"
-            f"QTextBrowser a {{ color: {theme.CITATION}; text-decoration: none; font-weight: 600; }}"
-        )
+        # Styled by the app stylesheet; citation links take the application palette's link colour
+        self.setObjectName("ReportDocument")
 
     # ---------- public API ----------
+
+    def apply_theme(self) -> None:
+        """Markdown bakes the link colour into the document when it is parsed, so a shown report is re-parsed."""
+        if self._report is None:
+            return
+        position = self.verticalScrollBar().value()
+        self.setMarkdown(self._report.markdown)
+        self.verticalScrollBar().setValue(position)
 
     def show_report(self, report: ReportDocument) -> None:
         self._report = report

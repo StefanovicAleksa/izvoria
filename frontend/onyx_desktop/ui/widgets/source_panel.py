@@ -16,6 +16,7 @@ prominently and is copyable, so it can be scrubbed to.
 """
 
 import logging
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
@@ -81,7 +82,7 @@ class SourcePanel(QWidget):
         # The timestamp is the whole point when the file is a full recording, so it is rendered
         # large rather than as fine print.
         self._span = QLabel("")
-        self._span.setStyleSheet("font-size: 17px; font-weight: 600;")
+        self._span.setProperty("role", "heading")
         self._span.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         header.addWidget(self._span)
 
@@ -149,14 +150,15 @@ class SourcePanel(QWidget):
         self._chip.setText(evidence.doc_label)
         self._span.setText(location(evidence))
         self._excerpt.setText(
-            evidence.excerpt or "(no transcript text is stored for this chunk)"
+            evidence.excerpt or "(no text is stored for this excerpt)"
         )
 
         speakers = speaker_summary(evidence.speakers)
         self._speakers.setText(f"Speakers: {speakers}" if speakers else "")
         self._speakers.setVisible(bool(speakers))
 
-        self._path.setText(evidence.clip_path or "")
+        # The name only: the full path would lay out the appliance's storage for anyone reading the screen
+        self._path.setText(Path(evidence.clip_path).name if evidence.clip_path else "")
         self._path.setVisible(bool(evidence.clip_path))
 
         if evidence.media_kind is MediaKind.IMAGE:
@@ -166,8 +168,8 @@ class SourcePanel(QWidget):
 
         if evidence.media_kind is MediaKind.IMAGE:
             self._kind_note.setText(
-                "This opens the image itself. The excerpt above is a machine description of it, and any "
-                "text read off it; check it against the picture."
+                "This opens the image itself. The excerpt above is an automatic description of it; check it "
+                "against the picture."
             )
             self._open.setText("Open image")
             self._open.setEnabled(True)
@@ -178,7 +180,7 @@ class SourcePanel(QWidget):
             )
             self._open.setText("Open document")
             self._open.setEnabled(True)
-            self._open.setToolTip("A system viewer cannot be told which page to show, so turn to the page above")
+            self._open.setToolTip("Turn to the page shown above")
         elif evidence.media_kind is MediaKind.CLIP:
             self._kind_note.setText(
                 "This file is the cited excerpt itself — it opens at the right moment."
@@ -188,22 +190,22 @@ class SourcePanel(QWidget):
             self._open.setToolTip("")
         elif evidence.media_kind is MediaKind.FULL_SOURCE:
             self._kind_note.setText(
-                f"No clip was cut for this chunk, so this opens the whole recording. "
+                f"This opens the whole recording. "
                 f"Skip to {timespan(evidence.start_sec, evidence.end_sec)} to hear it."
             )
             self._open.setText("Open full recording")
             self._open.setEnabled(True)
             self._open.setToolTip(
-                "A system player cannot be told where to start, so seek to the timestamp above"
+                "Skip to the time shown above"
             )
         else:
             self._kind_note.setText(
-                "No source file was resolved for this citation, so there is nothing to open. "
-                "The excerpt above is still the verbatim transcript."
+                "The source file for this citation is not available. The excerpt above is still the "
+                "original wording."
             )
             self._open.setText("Open source")
             self._open.setEnabled(False)
-            self._open.setToolTip("This citation has no file on disk")
+            self._open.setToolTip("The source file is not available")
 
     def open_current(self) -> None:
         """Opens whatever is currently shown. Used when a card's own button was the click."""

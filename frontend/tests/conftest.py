@@ -89,3 +89,16 @@ def qt_app():
 
     app = QApplication([])
     yield app
+
+
+@pytest.fixture(autouse=True)
+def _isolate_settings(tmp_path):
+    """
+    The light/dark choice is saved to QSettings. Pointed at a per-test directory, so no test reads the
+    developer's real preference or writes one into it.
+    """
+    from PySide6.QtCore import QSettings
+
+    for fmt in (QSettings.Format.NativeFormat, QSettings.Format.IniFormat):
+        QSettings.setPath(fmt, QSettings.Scope.UserScope, str(tmp_path / "settings"))
+    yield

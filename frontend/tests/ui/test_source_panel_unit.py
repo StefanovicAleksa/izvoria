@@ -99,7 +99,7 @@ class TestSourcePanel:
     def test_a_chunk_with_no_stored_text_says_so(self, panel, tmp_path):
         panel.show_evidence(make_evidence(tmp_path, excerpt=""))
 
-        assert "no transcript text" in panel._excerpt.text()
+        assert "no text is stored" in panel._excerpt.text()
 
     def test_opening_hands_the_file_to_the_desktop(self, panel, tmp_path):
         evidence = make_evidence(tmp_path)
@@ -123,7 +123,8 @@ class TestSourcePanel:
 
         opened.assert_not_called()
         assert panel._problem.isVisible() is True
-        assert "no longer in the vault" in failures[0]
+        assert "no longer available" in failures[0]
+        assert "/" not in failures[0]  # the file name only, never the storage path
 
     def test_a_desktop_with_no_handler_is_reported(self, panel, tmp_path):
         panel.show_evidence(make_evidence(tmp_path))
@@ -162,7 +163,7 @@ class TestImageSource:
                                           location="image"))
 
         assert panel._open.text() == "Open image" and panel._open.isEnabled()
-        assert "machine description" in panel._kind_note.text()
+        assert "automatic description" in panel._kind_note.text()
         assert panel._thumbnail.isVisible() and panel._thumbnail.pixmap().height() == 320
 
     def test_the_preview_is_cleared_for_the_next_non_image(self, panel, tmp_path):

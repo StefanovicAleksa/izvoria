@@ -12,7 +12,7 @@ from onyx_desktop.domain.entities import StatusSnapshot
 from onyx_desktop.domain.enums import ApplianceStatus
 from onyx_desktop.ui import theme
 
-_LABELS = {
+STATUS_LABELS = {
     ApplianceStatus.OFFLINE: "Offline",
     ApplianceStatus.BOOTING: "Starting",
     ApplianceStatus.READY: "Ready",
@@ -27,17 +27,17 @@ class StatusBar(QFrame):
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.setObjectName("StatusBar")
-        self.setFixedHeight(34)
+        self.setFixedHeight(30)
 
         layout = QHBoxLayout(self)
-        layout.setContentsMargins(14, 0, 14, 0)
+        layout.setContentsMargins(16, 0, 16, 0)
         layout.setSpacing(8)
 
         self._dot = QLabel("●")
         layout.addWidget(self._dot)
 
         self._state = QLabel("Offline")
-        self._state.setStyleSheet("font-weight: 600;")
+        self._state.setProperty("role", "strong")
         layout.addWidget(self._state)
 
         self._detail = QLabel("")
@@ -51,11 +51,17 @@ class StatusBar(QFrame):
 
         self.apply(StatusSnapshot(status=ApplianceStatus.OFFLINE, detail="Not started"))
 
+    def apply_theme(self) -> None:
+        self.apply(self._snapshot)
+
     def apply(self, snapshot: StatusSnapshot) -> None:
+        self._snapshot = snapshot
         colour = theme.STATUS_COLOURS.get(snapshot.status.value, theme.TEXT_MUTED)
-        self._dot.setStyleSheet(f"color: {colour}; font-size: 15px;")
-        self._state.setText(_LABELS.get(snapshot.status, snapshot.status.value.title()))
-        self._detail.setText(snapshot.detail)
+        self._dot.setStyleSheet(f"color: {colour}; font-size: 12px;")
+        label = STATUS_LABELS.get(snapshot.status, snapshot.status.value.title())
+        self._state.setText(label)
+        # "Ready · Ready" says nothing twice
+        self._detail.setText("" if snapshot.detail == label else snapshot.detail)
 
     def set_phase(self, text: str) -> None:
         self._phase.setText(text)

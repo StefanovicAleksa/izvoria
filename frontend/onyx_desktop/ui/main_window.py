@@ -2,7 +2,8 @@
 # Path: frontend/onyx_desktop/ui/main_window.py
 
 """
-The shell: sidebar, the three views, the status bar, and the shutdown choreography.
+The shell: sidebar, the four views, the status bar, starting and stopping the appliance, and the
+shutdown choreography.
 
 The close path is the subtle part. Blocking the GUI thread inside `closeEvent` to wait for the
 engine would stop the event loop that has to deliver the worker's reply, so the close is deferred:
@@ -13,7 +14,7 @@ import logging
 import uuid
 from typing import Optional
 
-from PySide6.QtCore import QTimer, Slot
+from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -26,6 +27,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QStackedWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -33,7 +35,6 @@ from PySide6.QtWidgets import (
 from onyx_desktop.domain.entities import (
     ChatMessage,
     IngestionSummary,
-    LogLine,
     ProgressTick,
     SearchOutcome,
     StatusSnapshot,
@@ -41,13 +42,17 @@ from onyx_desktop.domain.entities import (
 from onyx_desktop.domain.enums import ApplianceStatus, ChatMode, IngestMode, SearchMode
 from onyx_desktop.service.engine_bridge import EngineBridge
 from onyx_desktop.service.log_relay import LogRelay
+from onyx_desktop.ui import appearance, icons, theme
 from onyx_desktop.ui.views.chat_view import ChatView
 from onyx_desktop.ui.views.ingest_view import IngestView
 from onyx_desktop.ui.views.report_view import ReportView
 from onyx_desktop.ui.views.search_view import SearchView
-from onyx_desktop.ui.widgets.status_bar import StatusBar
+from onyx_desktop.ui.widgets.status_bar import STATUS_LABELS, StatusBar
 
 logger = logging.getLogger(__name__)
+
+# The nav button id IS the QStackedWidget index, so this order must match the views added in _build.
+_NAV = ("Chat", "Search", "Ingest", "Report")
 
 
 class MainWindow(QMainWindow):
@@ -68,6 +73,7 @@ class MainWindow(QMainWindow):
         self.resize(1440, 900)
 
         self._build()
+        self._paint_icons()
         self._connect()
         self._ingest.set_languages(self._bridge.languages, self._bridge.active_language)
         self._show_active_language(self._bridge.active_language)
@@ -105,32 +111,84 @@ class MainWindow(QMainWindow):
     def _sidebar(self) -> QWidget:
         frame = QFrame()
         frame.setObjectName("Sidebar")
-        frame.setFixedWidth(210)
+        frame.setFixedWidth(228)
 
         layout = QVBoxLayout(frame)
-        layout.setContentsMargins(12, 16, 12, 16)
-        layout.setSpacing(6)
+        layout.setContentsMargins(0, 22, 0, 16)
+        layout.setSpacing(2)
 
-        brand = QLabel("ONYX")
-        brand.setStyleSheet("font-size: 17px; font-weight: 700; letter-spacing: 3px;")
-        layout.addWidget(brand)
-
+        brand_row = QHBoxLayout()
+        brand_row.setContentsMargins(20, 0, 14, 0)
+        brand_box = QVBoxLayout()
+        brand_box.setSpacing(2)
+        brand = QLabel("Onyx")
+        brand.setProperty("role", "brand")
+        brand_box.addWidget(brand)
         subtitle = QLabel("On-premise appliance")
         subtitle.setProperty("role", "subtle")
-        layout.addWidget(subtitle)
-        layout.addSpacing(18)
+        brand_box.addWidget(subtitle)
+        brand_row.addLayout(brand_box, stretch=1)
+
+        # Pure presentation, so it works at any time -- mid-ingestion included
+        self._mode_toggle = QToolButton()
+        self._mode_toggle.setObjectName("ModeToggle")
+        self._mode_toggle.setIconSize(icons.ICON_SIZE)
+        self._mode_toggle.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._mode_toggle.clicked.connect(self._on_mode_toggled)
+        brand_row.addWidget(self._mode_toggle, alignment=Qt.AlignmentFlag.AlignTop)
+        layout.addLayout(brand_row)
+        layout.addSpacing(26)
+
+        section = QLabel("WORKSPACE")
+        section.setProperty("role", "section")
+        section.setContentsMargins(20, 0, 20, 6)
+        layout.addWidget(section)
 
         self._nav = QButtonGroup(self)
         self._nav.setExclusive(True)
-        for index, label in enumerate(("Chat", "Search", "Ingest", "Report")):
+        for index, label in enumerate(_NAV):
             button = QPushButton(label)
             button.setProperty("role", "nav")
             button.setCheckable(True)
             button.setChecked(index == 0)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
             self._nav.addButton(button, index)
             layout.addWidget(button)
 
         layout.addStretch(1)
+        layout.addWidget(self._appliance_card())
+
+        if self._stub_mode:
+            note = QLabel("Stub gateway — no GPU, no database, canned answers.")
+            note.setProperty("role", "subtle")
+            note.setWordWrap(True)
+            note.setContentsMargins(20, 10, 20, 0)
+            layout.addWidget(note)
+
+        return frame
+
+    def _appliance_card(self) -> QWidget:
+        """The appliance's own controls, grouped: what it is doing, its answer language, start and stop."""
+        holder = QWidget()
+        holder.setObjectName("SidebarBlock")
+        outer = QVBoxLayout(holder)
+        outer.setContentsMargins(12, 0, 12, 0)
+
+        card = QFrame()
+        card.setObjectName("ApplianceCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(14, 12, 14, 14)
+        layout.setSpacing(8)
+
+        state_row = QHBoxLayout()
+        state_row.setSpacing(8)
+        self._card_dot = QLabel("●")
+        state_row.addWidget(self._card_dot)
+        self._card_state = QLabel("Offline")
+        self._card_state.setProperty("role", "strong")
+        state_row.addWidget(self._card_state, stretch=1)
+        layout.addLayout(state_row)
+        layout.addSpacing(2)
 
         answer_label = QLabel("Answer in")
         answer_label.setProperty("role", "subtle")
@@ -139,28 +197,59 @@ class MainWindow(QMainWindow):
         for option in self._bridge.languages:
             self._language.addItem(option.name, option.code)
         self._language.setToolTip(
-            "The language answers, reports and verified searches are written in. Search finds evidence in "
-            "every language, and excerpts are always quoted in their own. Switching restarts the appliance "
-            "in seconds; it loads no model."
+            "The language answers and reports are written in. Search covers material in every language, "
+            "and excerpts are always quoted in their own. Switching takes a few seconds."
         )
         # Switching rebuilds the engine, so it waits until one is running
         self._language.setEnabled(False)
         self._language.currentIndexChanged.connect(self._on_language_chosen)
         layout.addWidget(self._language)
-        layout.addSpacing(8)
+        layout.addSpacing(4)
 
         self._start_button = QPushButton("Start appliance")
         self._start_button.setProperty("role", "primary")
         self._start_button.clicked.connect(self._bridge.boot)
         layout.addWidget(self._start_button)
 
-        if self._stub_mode:
-            note = QLabel("Stub gateway — no GPU, no database, canned answers.")
-            note.setProperty("role", "subtle")
-            note.setWordWrap(True)
-            layout.addWidget(note)
+        self._stop_button = QPushButton("Stop appliance")
+        self._stop_button.setProperty("role", "danger-outline")
+        self._stop_button.clicked.connect(self._on_stop_clicked)
+        self._stop_button.setVisible(False)
+        layout.addWidget(self._stop_button)
 
-        return frame
+        outer.addWidget(card)
+        self._apply_card_status(self._bridge.status)
+        return holder
+
+    def _paint_icons(self) -> None:
+        """The mode toggle's icon is a pixmap in the palette's colours, so it is redrawn whenever the mode changes."""
+        p = theme.PALETTE
+        # Shows where a click goes, not where you are
+        target = "light" if theme.MODE == "dark" else "dark"
+        self._mode_toggle.setIcon(icons.nav_icon("sun" if target == "light" else "moon",
+                                                 p.sidebar_muted, p.sidebar_text))
+        self._mode_toggle.setToolTip(f"Switch to {target} mode")
+
+    @Slot()
+    def _on_mode_toggled(self) -> None:
+        self.set_mode("light" if theme.MODE == "dark" else "dark")
+
+    def set_mode(self, mode: str) -> None:
+        """
+        Switches light/dark in place. The stylesheet repaints most of the window; the few widgets that bake a
+        colour into rich text or a pixmap at build time expose apply_theme() and redraw themselves.
+        """
+        if mode == theme.MODE:
+            return
+        theme.use(mode)
+        theme.apply_to(QApplication.instance())
+        self._paint_icons()
+        self._apply_card_status(self._bridge.status)
+        for widget in self.findChildren(QWidget):
+            apply_theme = getattr(widget, "apply_theme", None)
+            if callable(apply_theme):
+                apply_theme()
+        appearance.save_mode(mode)
 
     def _connect(self) -> None:
         self._nav.idClicked.connect(self._views.setCurrentIndex)
@@ -191,6 +280,7 @@ class MainWindow(QMainWindow):
 
         self._bridge.languageChanged.connect(self._show_active_language)
         self._bridge.booted.connect(self._on_booted)
+        self._bridge.stopped.connect(self._on_stopped)
         self._bridge.chatFinished.connect(self._on_chat_finished)
         self._bridge.searchFinished.connect(self._on_search_finished)
         self._bridge.ingestFinished.connect(self._on_ingest_finished)
@@ -201,16 +291,52 @@ class MainWindow(QMainWindow):
         self._bridge.busyChanged.connect(self._on_busy)
         self._bridge.failed.connect(self._on_failed)
 
-        self._relay.lineLogged.connect(self._on_log_line)
-        self._relay.phaseChanged.connect(self._ingest.set_phase_from_log)
 
     # ---------- engine events ----------
 
     @Slot()
     def _on_booted(self) -> None:
-        self._start_button.setVisible(False)
         self._language.setEnabled(not self._bridge.is_busy)
+        self._refresh_appliance_controls()
         self._refresh_history()
+
+    @Slot()
+    def _on_stop_clicked(self) -> None:
+        self._bridge.stop_appliance()
+
+    @Slot()
+    def _on_stopped(self) -> None:
+        """The engine is down but the window stays: what is on screen stays readable, history waits for a start."""
+        self._start_button.setText("Start appliance")
+        self._language.setEnabled(False)
+        for view in (self._chat, self._search, self._report):
+            view.set_history_unavailable("Start the appliance to see history.")
+        self._refresh_appliance_controls()
+
+    def _refresh_appliance_controls(self) -> None:
+        """
+        Start while the engine is down, Stop while it is up. Stop is refused, not merely hidden, while
+        anything runs -- a chat turn, a search, an ingestion, a report, a language switch -- because each of
+        them holds the engine it would tear down.
+        """
+        status = self._bridge.status
+        engine_down = status in (ApplianceStatus.OFFLINE, ApplianceStatus.ERROR)
+        self._start_button.setVisible(engine_down)
+        self._start_button.setEnabled(engine_down)
+        self._stop_button.setVisible(not engine_down)
+        can_stop = self._bridge.can_stop
+        self._stop_button.setEnabled(can_stop)
+        self._stop_button.setToolTip(
+            "Stops the appliance. Start it again at any time."
+            if can_stop else
+            "Wait for the current job to finish before stopping the appliance."
+        )
+        self._apply_card_status(status)
+
+    def _apply_card_status(self, status: ApplianceStatus) -> None:
+        colour = theme.STATUS_COLOURS.get(status.value, theme.TEXT_MUTED)
+        self._card_dot.setStyleSheet(f"color: {colour}; font-size: 13px;")
+        self._card_state.setText(STATUS_LABELS.get(status, status.value.title()))
 
     @Slot(str)
     def _show_active_language(self, code: str) -> None:
@@ -258,8 +384,8 @@ class MainWindow(QMainWindow):
     def _on_status(self, snapshot: StatusSnapshot) -> None:
         self._status.apply(snapshot)
         if snapshot.status is ApplianceStatus.ERROR:
-            self._start_button.setVisible(True)
             self._start_button.setText("Retry start")
+        self._refresh_appliance_controls()
 
     @Slot(bool)
     def _on_busy(self, busy: bool) -> None:
@@ -272,6 +398,7 @@ class MainWindow(QMainWindow):
         self._report.set_busy(busy)
         self._language.setEnabled(not busy and self._bridge.status is not ApplianceStatus.OFFLINE
                                   and self._bridge.status is not ApplianceStatus.ERROR)
+        self._refresh_appliance_controls()
         if ingesting:
             self._views.setCurrentWidget(self._ingest)
         elif self._bridge.is_researching:
@@ -301,10 +428,6 @@ class MainWindow(QMainWindow):
             self._report.apply_tick(tick)
         else:
             self._ingest.apply_tick(tick)
-
-    @Slot(object)
-    def _on_log_line(self, line: LogLine) -> None:
-        self._ingest.append_log(line)
 
     @Slot(int, str)
     def _on_failed(self, _request_id: int, message: str) -> None:
@@ -427,16 +550,15 @@ class MainWindow(QMainWindow):
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
         researching = self._bridge.is_researching
-        box.setWindowTitle("Research in progress" if researching else "Ingestion in progress")
+        box.setWindowTitle("Report in progress" if researching else "Adding material")
         box.setText(
-            "A research report is running and holds the GPU."
+            "A report is being written."
             if researching else
-            "An ingestion is running and cannot be interrupted."
+            "Material is being added and this cannot be interrupted."
         )
         box.setInformativeText(
-            "The pipeline has no stop point — it is inside native transcription and LLM "
-            "calls that ignore interruption. Quitting now ends the process mid-file and may "
-            "leave partially indexed material in the vault, with no way to resume."
+            "Quitting now stops it partway. Some files may be left half-added and will need to be "
+            "added again."
         )
         keep = box.addButton("Keep running", QMessageBox.ButtonRole.RejectRole)
         box.addButton("Quit anyway", QMessageBox.ButtonRole.DestructiveRole)

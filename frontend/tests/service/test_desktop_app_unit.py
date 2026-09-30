@@ -38,3 +38,37 @@ class TestRun:
         desktop_app.run(["onyx"])
 
         bridge.boot.assert_not_called()
+
+    def test_the_flag_picks_the_mode(self, wiring):
+        with patch("onyx_desktop.ui.theme.use") as use:
+            desktop_app.run(["onyx"], mode="light")
+        use.assert_called_once_with("light")
+
+    def test_the_environment_picks_it_when_nothing_else_does(self, wiring, monkeypatch):
+        monkeypatch.setenv("ONYX_MODE", "light")
+        with patch("onyx_desktop.ui.theme.use") as use:
+            desktop_app.run(["onyx"])
+        use.assert_called_once_with("light")
+
+    def test_the_default_is_dark(self, wiring, monkeypatch):
+        monkeypatch.delenv("ONYX_MODE", raising=False)
+        with patch("onyx_desktop.ui.theme.use") as use:
+            desktop_app.run(["onyx"])
+        use.assert_called_once_with("dark")
+
+    def test_the_mode_picked_in_the_app_beats_the_environment(self, wiring, monkeypatch):
+        from onyx_desktop.ui import appearance
+
+        monkeypatch.setenv("ONYX_MODE", "dark")
+        appearance.save_mode("light")
+        with patch("onyx_desktop.ui.theme.use") as use:
+            desktop_app.run(["onyx"])
+        use.assert_called_once_with("light")
+
+    def test_an_explicit_flag_beats_the_mode_picked_in_the_app(self, wiring):
+        from onyx_desktop.ui import appearance
+
+        appearance.save_mode("light")
+        with patch("onyx_desktop.ui.theme.use") as use:
+            desktop_app.run(["onyx"], mode="dark")
+        use.assert_called_once_with("dark")

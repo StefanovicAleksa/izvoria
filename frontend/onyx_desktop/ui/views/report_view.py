@@ -32,6 +32,7 @@ from onyx_desktop.ui.widgets.history_list import HistoryEntry, HistoryList
 from onyx_desktop.ui.widgets.outline_editor import OutlineEditor
 from onyx_desktop.ui.widgets.report_document import ReportDocumentView
 from onyx_desktop.ui.widgets.source_panel import SourcePanel
+from onyx_desktop.utils.progress_stages import report_step
 from onyx_desktop.utils.formatting import when
 
 logger = logging.getLogger(__name__)
@@ -89,7 +90,7 @@ class ReportView(QWidget):
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(16, 14, 12, 14)
+        left_layout.setContentsMargins(24, 20, 16, 20)
         left_layout.setSpacing(10)
 
         header = QHBoxLayout()
@@ -114,7 +115,7 @@ class ReportView(QWidget):
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(12, 14, 16, 14)
+        right_layout.setContentsMargins(16, 20, 24, 20)
         right_layout.setSpacing(10)
         review = QLabel("Source review")
         review.setProperty("role", "heading")
@@ -141,8 +142,8 @@ class ReportView(QWidget):
         layout.setSpacing(10)
 
         blurb = QLabel(
-            "Give a topic. The appliance searches your archive, proposes an outline for you to "
-            "approve, then writes a cited report from what it finds."
+            "Give a topic. The appliance proposes an outline for you to approve, then writes a cited report "
+            "from your material."
         )
         blurb.setWordWrap(True)
         blurb.setProperty("role", "subtle")
@@ -155,12 +156,11 @@ class ReportView(QWidget):
 
         controls = QHBoxLayout()
         self._mode = QComboBox()
-        self._mode.addItem("Deep Research — one sweep", ReportMode.DEEP)
-        self._mode.addItem("Exhaustive — repeats until nothing new", ReportMode.EXHAUSTIVE)
+        self._mode.addItem("Standard", ReportMode.DEEP)
+        self._mode.addItem("Exhaustive", ReportMode.EXHAUSTIVE)
         self._mode.setToolTip(
-            "Exhaustive re-searches for any section the first sweep could not support, using wording "
-            "it found in your archive. Slower, but 'not covered' then means the material really is "
-            "absent rather than badly asked for."
+            "Exhaustive looks harder for anything a section is missing. Slower, but when it says a topic is "
+            "not covered, the material really does not cover it."
         )
         controls.addWidget(self._mode, stretch=1)
 
@@ -205,8 +205,7 @@ class ReportView(QWidget):
         layout.addWidget(self._phase)
 
         note = QLabel(
-            "Chat and search are unavailable while this runs — the appliance has one GPU and this "
-            "run is using it."
+            "Chat and search are unavailable while the report is being written."
         )
         note.setWordWrap(True)
         note.setProperty("role", "subtle")
@@ -214,8 +213,7 @@ class ReportView(QWidget):
 
         self._stop = QPushButton("Stop")
         self._stop.setToolTip(
-            "Stops after the section currently being written — up to about a minute and a half. "
-            "Everything already written is kept."
+            "Stops after the section being written now. Everything already written is kept."
         )
         self._stop.clicked.connect(self._on_stop)
         layout.addWidget(self._stop)
@@ -251,8 +249,8 @@ class ReportView(QWidget):
 
         self._resume = QPushButton("Resume")
         self._resume.setToolTip(
-            "Writes the sections this report never reached, from the evidence it already gathered. "
-            "Nothing is searched again, so the citations already written keep their numbers."
+            "Finishes the sections this report did not reach. The citations already written keep their "
+            "numbers."
         )
         self._resume.setVisible(False)
         self._resume.clicked.connect(self._on_resume)
@@ -305,7 +303,7 @@ class ReportView(QWidget):
         self._progress.setRange(0, remaining + 1)  # one job per section left, plus the summary
         self._progress.setValue(0)
         self._running_topic.setText(f"Resuming: {ref.topic if ref else ''}")
-        self._phase.setText("Writing the sections left pending…")
+        self._phase.setText("Finishing the remaining sections…")
         self._stop.setEnabled(True)
         self._stop.setText("Stop")
         self._stack.setCurrentIndex(_RUNNING)
@@ -325,7 +323,7 @@ class ReportView(QWidget):
         self._failure.setVisible(False)
         self._outline.setVisible(False)
         self._scoping.setText(
-            f"Searching the archive and drafting an outline for \u201c{topic}\u201d\u2026 "
+            f"Drafting an outline for \u201c{topic}\u201d\u2026 "
             f"This takes about a minute."
         )
         self._scoping.setVisible(True)
@@ -367,8 +365,10 @@ class ReportView(QWidget):
         if tick.state.value == "completed":
             self._steps_done += 1
             self._progress.setValue(min(self._steps_done, self._progress.maximum()))
-        if tick.detail:
-            self._phase.setText(tick.detail)
+        # A general step, never the internal job or its own detail line
+        step = report_step(tick.phase, tick.detail)
+        if step:
+            self._phase.setText(step)
 
     def show_report(self, report: ReportDocument) -> None:
         self._document = report
@@ -378,8 +378,7 @@ class ReportView(QWidget):
 
         cited = len(report.evidence)
         self._summary.setText(
-            f"{report.section_count} section(s), {cited} cited excerpt(s), "
-            f"{report.rounds_used} gathering round(s)."
+            f"{report.section_count} section(s), {cited} cited excerpt(s)."
         )
 
         if report.is_partial:
@@ -461,7 +460,7 @@ class ReportView(QWidget):
             self._topic.setText(ref.topic)
             self._history.select(report_id)
             self._show_note(
-                "This report was stopped before any evidence was gathered, so there is nothing to resume. "
+                "This report was stopped before it gathered anything, so there is nothing to resume. "
                 "Its topic is filled in above: plan it again to start over."
             )
         else:
@@ -499,8 +498,7 @@ class ReportView(QWidget):
     def _on_citation_missing(self, doc_number: int) -> None:
         """A citation that cannot be checked has to say so, not do nothing."""
         self.show_failure(
-            f"[Doc {doc_number}] cannot be opened: its excerpt is no longer in the evidence bank, "
-            f"most likely because that recording was re-ingested."
+            f"[Doc {doc_number}] cannot be opened: its source is no longer available."
         )
 
     def _on_save(self) -> None:

@@ -44,6 +44,7 @@ class EngineWorker(QObject):
     activeLanguage = Signal(str)
     progressed = Signal(object)          # ProgressTick
     failed = Signal(int, str, object)    # request_id, user_message, DesktopError
+    engineStopped = Signal(int)            # request_id: the engine is down, the thread keeps running
     finished = Signal()
 
     def __init__(self, gateway: IEngineGateway):
@@ -77,6 +78,18 @@ class EngineWorker(QObject):
             logger.error(f"Shutdown raised and was swallowed so the window can close: {exc}")
         finally:
             self.finished.emit()
+
+    @Slot(int)
+    def stop_engine(self, request_id: int) -> None:
+        """
+        Stops the engine and frees its VRAM but, unlike shutdown(), keeps this thread's event loop alive so
+        the appliance can be started again from the same window.
+        """
+        try:
+            self._gateway.shutdown()
+            self.engineStopped.emit(request_id)
+        except Exception as exc:
+            self._fail(request_id, exc, "Stopping the appliance")
 
     # ---------- work ----------
 
