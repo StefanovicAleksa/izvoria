@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 from onyx_desktop.domain.entities import ReportDocument
+from onyx_desktop.utils.i18n import tr
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ def save_markdown(report: ReportDocument, destination: str) -> Optional[str]:
 
     except OSError as exc:
         logger.error(f"Could not save report {report.report_id} to {target}: {exc}")
-        return f"Could not write that file:\n{exc.strerror or exc}"
+        return tr("Could not write that file: {reason}", reason=exc.strerror or exc)
 
 
 def _plain_citations(markdown: str) -> str:

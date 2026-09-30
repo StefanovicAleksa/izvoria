@@ -165,6 +165,35 @@ QToolButton#ModeToggle:hover {{
     background-color: {p.sidebar_raised};
     border-color: {p.sidebar_border};
 }}
+/* The display-language button shares the toggle's box; its text is the language code ("EN") */
+QToolButton#ModeToggle {{
+    color: {p.sidebar_muted};
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 1px;
+}}
+QToolButton#ModeToggle:hover {{
+    color: {p.sidebar_text};
+}}
+QToolButton#ModeToggle::menu-indicator {{
+    image: none;
+    width: 0px;
+}}
+QMenu {{
+    background-color: {p.surface};
+    color: {p.text};
+    border: 1px solid {p.border};
+    border-radius: {RADIUS_CONTROL}px;
+    padding: 4px;
+}}
+QMenu::item {{
+    padding: 6px 24px 6px 12px;
+    border-radius: 2px;
+}}
+QMenu::item:selected {{
+    background-color: {p.accent_soft};
+    color: {p.text};
+}}
 
 /* ---- sidebar ---- */
 QFrame#Sidebar {{
@@ -409,6 +438,14 @@ QLabel[role="banner-danger"] {{
     color: {p.danger};
     border-left: 3px solid {p.danger};
     padding: 9px 12px;
+    border-radius: {RADIUS_CONTROL}px;
+}}
+/* Reassurance, not a warning: the accent rule marks it as information */
+QLabel[role="notice"] {{
+    background-color: {p.surface_raised};
+    color: {p.text_muted};
+    border-left: 3px solid {p.accent};
+    padding: 10px 14px;
     border-radius: {RADIUS_CONTROL}px;
 }}
 QLabel[role="chip"] {{

@@ -33,6 +33,7 @@ from PySide6.QtWidgets import (
 
 from onyx_desktop.domain.entities import Evidence
 from onyx_desktop.domain.enums import MediaKind
+from onyx_desktop.ui import translate as tl
 from onyx_desktop.ui.system_open import open_source
 from onyx_desktop.ui.widgets.image_thumbnail import set_thumbnail
 from onyx_desktop.utils.formatting import location, speaker_summary, timespan
@@ -58,9 +59,7 @@ class SourcePanel(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        self._placeholder = QLabel(
-            "Select a citation to review the words behind it."
-        )
+        self._placeholder = tl.label("Select a citation to review the words behind it.")
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._placeholder.setWordWrap(True)
         self._placeholder.setProperty("role", "subtle")
@@ -86,8 +85,9 @@ class SourcePanel(QWidget):
         self._span.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         header.addWidget(self._span)
 
-        self._copy = QPushButton("⎘ copy")
-        self._copy.setToolTip("Copy the cited timestamp range")
+        self._copy = QPushButton()
+        tl.text(self._copy, "⎘ copy")
+        tl.tooltip(self._copy, "Copy the cited location")
         self._copy.clicked.connect(self._on_copy)
         header.addWidget(self._copy)
 
@@ -120,7 +120,8 @@ class SourcePanel(QWidget):
         self._kind_note.setProperty("role", "subtle")
         card_layout.addWidget(self._kind_note)
 
-        self._open = QPushButton("Open source")
+        self._open = QPushButton()
+        tl.text(self._open, "Open source")
         self._open.setProperty("role", "primary")
         self._open.clicked.connect(self._on_open)
         card_layout.addWidget(self._open)
@@ -149,12 +150,11 @@ class SourcePanel(QWidget):
 
         self._chip.setText(evidence.doc_label)
         self._span.setText(location(evidence))
-        self._excerpt.setText(
-            evidence.excerpt or "(no text is stored for this excerpt)"
-        )
+        tl.text(self._excerpt, tl.plain(evidence.excerpt) if evidence.excerpt
+                else "(no text is stored for this excerpt)")
 
         speakers = speaker_summary(evidence.speakers)
-        self._speakers.setText(f"Speakers: {speakers}" if speakers else "")
+        tl.text(self._speakers, "Speakers: {names}", names=speakers)
         self._speakers.setVisible(bool(speakers))
 
         # The name only: the full path would lay out the appliance's storage for anyone reading the screen
@@ -166,46 +166,35 @@ class SourcePanel(QWidget):
         else:
             set_thumbnail(self._thumbnail, None)
 
+        span = timespan(evidence.start_sec, evidence.end_sec)
         if evidence.media_kind is MediaKind.IMAGE:
-            self._kind_note.setText(
-                "This opens the image itself. The excerpt above is an automatic description of it; check it "
-                "against the picture."
-            )
-            self._open.setText("Open image")
+            tl.text(self._kind_note, "This opens the image itself. The excerpt above is an automatic description "
+                                     "of it; check it against the picture.")
+            tl.text(self._open, "Open image")
             self._open.setEnabled(True)
-            self._open.setToolTip("")
+            tl.tooltip(self._open, tl.plain(""))
         elif evidence.media_kind is MediaKind.DOCUMENT:
-            self._kind_note.setText(
-                f"This opens the whole document. The excerpt above is at {location(evidence)}."
-            )
-            self._open.setText("Open document")
+            tl.text(self._kind_note, "This opens the whole document. The excerpt above is at {location}.",
+                    location=location(evidence))
+            tl.text(self._open, "Open document")
             self._open.setEnabled(True)
-            self._open.setToolTip("Turn to the page shown above")
+            tl.tooltip(self._open, "Turn to the page shown above")
         elif evidence.media_kind is MediaKind.CLIP:
-            self._kind_note.setText(
-                "This file is the cited excerpt itself — it opens at the right moment."
-            )
-            self._open.setText("Open clip")
+            tl.text(self._kind_note, "This file is the cited excerpt itself — it opens at the right moment.")
+            tl.text(self._open, "Open clip")
             self._open.setEnabled(True)
-            self._open.setToolTip("")
+            tl.tooltip(self._open, tl.plain(""))
         elif evidence.media_kind is MediaKind.FULL_SOURCE:
-            self._kind_note.setText(
-                f"This opens the whole recording. "
-                f"Skip to {timespan(evidence.start_sec, evidence.end_sec)} to hear it."
-            )
-            self._open.setText("Open full recording")
+            tl.text(self._kind_note, "This opens the whole recording. Skip to {time} to hear it.", time=span)
+            tl.text(self._open, "Open full recording")
             self._open.setEnabled(True)
-            self._open.setToolTip(
-                "Skip to the time shown above"
-            )
+            tl.tooltip(self._open, "Skip to the time shown above")
         else:
-            self._kind_note.setText(
-                "The source file for this citation is not available. The excerpt above is still the "
-                "original wording."
-            )
-            self._open.setText("Open source")
+            tl.text(self._kind_note, "The source file for this citation is not available. The excerpt above is "
+                                     "still the original wording.")
+            tl.text(self._open, "Open source")
             self._open.setEnabled(False)
-            self._open.setToolTip("The source file is not available")
+            tl.tooltip(self._open, "The source file is not available")
 
     def open_current(self) -> None:
         """Opens whatever is currently shown. Used when a card's own button was the click."""

@@ -27,6 +27,7 @@ from onyx_desktop.data.report_writer import default_save_path, save_markdown
 from onyx_desktop.domain.entities import Evidence, ProgressTick, ReportDocument, ReportPlanDraft, ReportRef
 from onyx_desktop.domain.enums import ReportMode, ReportRunStatus
 from onyx_desktop.ui import theme
+from onyx_desktop.ui import translate as tl
 from onyx_desktop.ui.widgets.answer_language import AnswerLanguageLabel
 from onyx_desktop.ui.widgets.history_list import HistoryEntry, HistoryList
 from onyx_desktop.ui.widgets.outline_editor import OutlineEditor
@@ -34,6 +35,7 @@ from onyx_desktop.ui.widgets.report_document import ReportDocumentView
 from onyx_desktop.ui.widgets.source_panel import SourcePanel
 from onyx_desktop.utils.progress_stages import report_step
 from onyx_desktop.utils.formatting import when
+from onyx_desktop.utils.i18n import N_, tr, tr_n
 
 logger = logging.getLogger(__name__)
 
@@ -46,14 +48,14 @@ _REPORT_PHASES = {
 }
 
 _STATUS_LABELS = {
-    ReportRunStatus.COMPLETED: "Finished",
-    ReportRunStatus.AWAITING_APPROVAL: "Outline not approved",
-    ReportRunStatus.CANCELLED: "Stopped",
-    ReportRunStatus.FAILED: "Failed",
+    ReportRunStatus.COMPLETED: N_("Finished"),
+    ReportRunStatus.AWAITING_APPROVAL: N_("Outline not approved"),
+    ReportRunStatus.CANCELLED: N_("Stopped"),
+    ReportRunStatus.FAILED: N_("Failed"),
     # Only one report runs at a time and never across app runs, so a listed row in either of these was
     # interrupted (the app closed or crashed mid-run).
-    ReportRunStatus.GATHERING: "Interrupted",
-    ReportRunStatus.WRITING: "Interrupted",
+    ReportRunStatus.GATHERING: N_("Interrupted"),
+    ReportRunStatus.WRITING: N_("Interrupted"),
 }
 
 
@@ -83,8 +85,9 @@ class ReportView(QWidget):
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
         self._history = HistoryList(
-            "Reports", "No reports yet. Finished, stopped and unapproved reports are kept here.",
+            N_("Reports"), N_("No reports yet. Finished, stopped and unapproved reports are kept here."),
         )
+        self._reports: List[ReportRef] = []
         self._history.itemChosen.connect(self._on_history_chosen)
         splitter.addWidget(self._history)
 
@@ -94,9 +97,7 @@ class ReportView(QWidget):
         left_layout.setSpacing(10)
 
         header = QHBoxLayout()
-        heading = QLabel("Research report")
-        heading.setProperty("role", "heading")
-        header.addWidget(heading)
+        header.addWidget(tl.label("Research report", role="heading"))
         self._answer_language = AnswerLanguageLabel()
         header.addWidget(self._answer_language)
         header.addStretch(1)
@@ -117,12 +118,9 @@ class ReportView(QWidget):
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(16, 20, 24, 20)
         right_layout.setSpacing(10)
-        review = QLabel("Source review")
-        review.setProperty("role", "heading")
-        right_layout.addWidget(review)
-        hint = QLabel("Click a [Doc N] citation in the report to check it against the recording.")
+        right_layout.addWidget(tl.label("Source review", role="heading"))
+        hint = tl.label("Click a [Doc N] citation in the report to check it against its source.", role="subtle")
         hint.setWordWrap(True)
-        hint.setProperty("role", "subtle")
         right_layout.addWidget(hint)
         self._source_panel = SourcePanel()
         right_layout.addWidget(self._source_panel, stretch=1)
@@ -141,30 +139,30 @@ class ReportView(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
-        blurb = QLabel(
+        blurb = tl.label(
             "Give a topic. The appliance proposes an outline for you to approve, then writes a cited report "
-            "from your material."
+            "from your material.",
+            role="subtle",
         )
         blurb.setWordWrap(True)
-        blurb.setProperty("role", "subtle")
         layout.addWidget(blurb)
 
         self._topic = QLineEdit()
-        self._topic.setPlaceholderText("e.g. chain of custody for the evidence bag")
+        tl.placeholder(self._topic, "e.g. chain of custody for the evidence bag")
         self._topic.returnPressed.connect(self._on_plan)
         layout.addWidget(self._topic)
 
         controls = QHBoxLayout()
         self._mode = QComboBox()
-        self._mode.addItem("Standard", ReportMode.DEEP)
-        self._mode.addItem("Exhaustive", ReportMode.EXHAUSTIVE)
-        self._mode.setToolTip(
-            "Exhaustive looks harder for anything a section is missing. Slower, but when it says a topic is "
-            "not covered, the material really does not cover it."
-        )
+        self._mode.addItem("", ReportMode.DEEP)
+        self._mode.addItem("", ReportMode.EXHAUSTIVE)
+        tl.items(self._mode, ["Standard", "Exhaustive"])
+        tl.tooltip(self._mode, "Exhaustive looks harder for anything a section is missing. Slower, but when it "
+                               "says a topic is not covered, the material really does not cover it.")
         controls.addWidget(self._mode, stretch=1)
 
-        self._plan_button = QPushButton("Plan research")
+        self._plan_button = QPushButton()
+        tl.text(self._plan_button, "Plan research")
         self._plan_button.setProperty("role", "primary")
         self._plan_button.clicked.connect(self._on_plan)
         controls.addWidget(self._plan_button)
@@ -199,22 +197,19 @@ class ReportView(QWidget):
         self._progress.setTextVisible(False)
         layout.addWidget(self._progress)
 
-        self._phase = QLabel("Starting…")
+        self._phase = tl.label("Starting…")
         self._phase.setWordWrap(True)
         self._phase.setProperty("role", "subtle")
         layout.addWidget(self._phase)
 
-        note = QLabel(
-            "Chat and search are unavailable while the report is being written."
-        )
+        note = tl.label("Chat and search are unavailable while the report is being written.")
         note.setWordWrap(True)
         note.setProperty("role", "subtle")
         layout.addWidget(note)
 
-        self._stop = QPushButton("Stop")
-        self._stop.setToolTip(
-            "Stops after the section being written now. Everything already written is kept."
-        )
+        self._stop = QPushButton()
+        tl.text(self._stop, "Stop")
+        tl.tooltip(self._stop, "Stops after the section being written now. Everything already written is kept.")
         self._stop.clicked.connect(self._on_stop)
         layout.addWidget(self._stop)
 
@@ -242,21 +237,22 @@ class ReportView(QWidget):
         layout.addWidget(self._body, stretch=1)
 
         buttons = QHBoxLayout()
-        new_report = QPushButton("New report")
+        new_report = QPushButton()
+        tl.text(new_report, "New report")
         new_report.clicked.connect(self._on_discard)
         buttons.addWidget(new_report)
         buttons.addStretch(1)
 
-        self._resume = QPushButton("Resume")
-        self._resume.setToolTip(
-            "Finishes the sections this report did not reach. The citations already written keep their "
-            "numbers."
-        )
+        self._resume = QPushButton()
+        tl.text(self._resume, "Resume")
+        tl.tooltip(self._resume, "Finishes the sections this report did not reach. The citations already written "
+                                 "keep their numbers.")
         self._resume.setVisible(False)
         self._resume.clicked.connect(self._on_resume)
         buttons.addWidget(self._resume)
 
-        self._save = QPushButton("Save as Markdown…")
+        self._save = QPushButton()
+        tl.text(self._save, "Save as Markdown…")
         self._save.setProperty("role", "primary")
         self._save.clicked.connect(self._on_save)
         buttons.addWidget(self._save)
@@ -278,18 +274,23 @@ class ReportView(QWidget):
 
     def set_reports(self, reports: List[ReportRef]) -> None:
         self._refs = {ref.report_id: ref for ref in reports}
+        self._reports = list(reports)
+        tl.on_retranslate(self, "history", self._render_history)
+        if self._document is not None:
+            self._sync_resume()
+
+    def _render_history(self) -> None:
         self._history.set_entries([
             HistoryEntry(
                 key=ref.report_id,
                 title=ref.topic,
-                badge=_STATUS_LABELS.get(ref.status, ref.status.value),
+                badge=tr(_STATUS_LABELS.get(ref.status, ref.status.value)),
                 subtitle=when(ref.completed_at or ref.created_at),
             )
-            for ref in reports
+            for ref in self._reports
         ])
         if self._document is not None:
             self._history.select(self._document.report_id)
-            self._sync_resume()
 
     def set_history_unavailable(self, text: str) -> None:
         self._history.set_unavailable(text)
@@ -302,10 +303,10 @@ class ReportView(QWidget):
         self._steps_done = 0
         self._progress.setRange(0, remaining + 1)  # one job per section left, plus the summary
         self._progress.setValue(0)
-        self._running_topic.setText(f"Resuming: {ref.topic if ref else ''}")
-        self._phase.setText("Finishing the remaining sections…")
+        tl.text(self._running_topic, "Resuming: {topic}", topic=ref.topic if ref else "")
+        tl.text(self._phase, "Finishing the remaining sections…")
         self._stop.setEnabled(True)
-        self._stop.setText("Stop")
+        tl.text(self._stop, "Stop")
         self._stack.setCurrentIndex(_RUNNING)
 
     def start_planning(self, topic: str) -> None:
@@ -322,10 +323,7 @@ class ReportView(QWidget):
         self._plan = None
         self._failure.setVisible(False)
         self._outline.setVisible(False)
-        self._scoping.setText(
-            f"Drafting an outline for \u201c{topic}\u201d\u2026 "
-            f"This takes about a minute."
-        )
+        tl.text(self._scoping, "Drafting an outline for “{topic}”… This takes about a minute.", topic=topic)
         self._scoping.setVisible(True)
         self._stack.setCurrentIndex(_COMPOSE)
 
@@ -346,10 +344,10 @@ class ReportView(QWidget):
         self._steps_done = 0
         self._progress.setRange(0, max(1, plan.expected_job_count))
         self._progress.setValue(0)
-        self._running_topic.setText(f"Researching: {plan.topic}")
-        self._phase.setText("Starting…")
+        tl.text(self._running_topic, "Researching: {topic}", topic=plan.topic)
+        tl.text(self._phase, "Starting…")
         self._stop.setEnabled(True)
-        self._stop.setText("Stop")
+        tl.text(self._stop, "Stop")
         self._stack.setCurrentIndex(_RUNNING)
 
     def apply_tick(self, tick: ProgressTick) -> None:
@@ -366,9 +364,8 @@ class ReportView(QWidget):
             self._steps_done += 1
             self._progress.setValue(min(self._steps_done, self._progress.maximum()))
         # A general step, never the internal job or its own detail line
-        step = report_step(tick.phase, tick.detail)
-        if step:
-            self._phase.setText(step)
+        if report_step(tick.phase, tick.detail):
+            tl.text(self._phase, lambda phase=tick.phase, detail=tick.detail: report_step(phase, detail))
 
     def show_report(self, report: ReportDocument) -> None:
         self._document = report
@@ -376,16 +373,12 @@ class ReportView(QWidget):
         self._failure.setVisible(False)
         self._body.show_report(report)
 
-        cited = len(report.evidence)
-        self._summary.setText(
-            f"{report.section_count} section(s), {cited} cited excerpt(s)."
-        )
+        tl.text(self._summary, lambda: tr_n(report.section_count, "{n} section", "{n} sections") + ", "
+                + tr_n(len(report.evidence), "{n} cited excerpt.", "{n} cited excerpts."))
 
         if report.is_partial:
-            self._partial.setText(
-                "This report was stopped before it finished. The sections below are complete and cited; "
-                "the rest were never written."
-            )
+            tl.text(self._partial, "This report was stopped before it finished. The sections below are complete "
+                                   "and cited; the rest were never written.")
             self._partial.setProperty("role", "banner-warning")
             self._partial.style().unpolish(self._partial)
             self._partial.style().polish(self._partial)
@@ -402,7 +395,7 @@ class ReportView(QWidget):
 
     def show_failure(self, message: str) -> None:
         self._scoping.setVisible(False)
-        self._failure.setText(message)
+        tl.text(self._failure, tl.plain(message))   # already in the display language
         self._failure.setProperty("role", "banner-danger")
         self._failure.style().unpolish(self._failure)
         self._failure.style().polish(self._failure)
@@ -437,7 +430,7 @@ class ReportView(QWidget):
         if self._running_report_id is None:
             return
         self._stop.setEnabled(False)
-        self._stop.setText("Stopping after this section…")
+        tl.text(self._stop, "Stopping after this section…")
         self.cancelRequested.emit(self._running_report_id)
 
     def _on_resume(self) -> None:
@@ -459,10 +452,10 @@ class ReportView(QWidget):
             self._on_discard()
             self._topic.setText(ref.topic)
             self._history.select(report_id)
-            self._show_note(
+            self._show_note(tr(
                 "This report was stopped before it gathered anything, so there is nothing to resume. "
                 "Its topic is filled in above: plan it again to start over."
-            )
+            ))
         else:
             self.savedReportRequested.emit(report_id)
 
@@ -474,7 +467,7 @@ class ReportView(QWidget):
         self._resume.setVisible(resumable)
 
     def _show_note(self, message: str) -> None:
-        self._failure.setText(message)
+        tl.text(self._failure, tl.plain(message))
         self._failure.setProperty("role", "banner-warning")
         self._failure.style().unpolish(self._failure)
         self._failure.style().polish(self._failure)
@@ -497,16 +490,15 @@ class ReportView(QWidget):
 
     def _on_citation_missing(self, doc_number: int) -> None:
         """A citation that cannot be checked has to say so, not do nothing."""
-        self.show_failure(
-            f"[Doc {doc_number}] cannot be opened: its source is no longer available."
-        )
+        self.show_failure(tr("[Doc {number}] cannot be opened: its source is no longer available.", number=doc_number))
 
     def _on_save(self) -> None:
         if self._document is None:
             return
 
         destination, _ = QFileDialog.getSaveFileName(
-            self, "Save report", default_save_path(self._document), "Markdown (*.md);;All files (*)"
+            self, tr("Save report"), default_save_path(self._document),
+            f"{tr('Markdown')} (*.md);;{tr('All files')} (*)"
         )
         if not destination:
             return
@@ -515,4 +507,4 @@ class ReportView(QWidget):
         if error:
             self.show_failure(error)
         else:
-            self._summary.setText(f"Saved to {destination}")
+            tl.text(self._summary, "Saved to {path}", path=destination)

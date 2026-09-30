@@ -39,6 +39,28 @@ repaints almost everything. A widget that bakes a colour into rich text or a pix
 **A new widget that reads `theme.X` into its content needs the same hook**, or it keeps the old
 mode's colour after a switch. Prefer a stylesheet role (`setProperty("role", ...)`) when one will do.
 
+### Display language
+
+The app's own text (labels, buttons, messages, step names, dates) can be read in English or Serbian, switched
+with the **EN / SR** button next to the wordmark. Like light/dark it applies instantly, even mid-job, and is
+remembered per user; `ONYX_DISPLAY_LANGUAGE` picks it when nothing is remembered. It is **separate from
+"Answer in"**, which is the appliance's language: someone can read the app in Serbian and have it answer in
+English. Answers, excerpts, report text and file names are never translated.
+
+- **Write English, wrap it.** Every on-screen string goes through `utils/i18n.py`: `tr("Start appliance")`,
+  `tr("Step {current} of {total}", ...)`, `tr_n(n, "{n} file", "{n} files")` for plurals, and `N_("...")`
+  to mark a string in a table that is translated where shown. The English text is the key.
+- **Set text through `ui/translate.py`,** not `setText()`: `tl.label("Chat")`, `tl.text(widget, ...)`,
+  `tl.tooltip(...)`, `tl.items(combo, [...])`, or `tl.on_retranslate(...)` for content re-rendered from
+  data. Each call records how to produce its text and replays it on a switch, which is what makes the switch
+  instant without per-view refresh code. A bound widget's text set with a plain `setText()` would be
+  overwritten by the next switch.
+- **A catalog per language** in `onyx_desktop/locales/<code>.toml` (`[meta]` code, native name, plural rule;
+  `[strings]` English → translation). A missing string falls back to English at runtime, but
+  `tests/utils/test_i18n_catalogs_unit.py` reads the source for every string and fails on a missing, stale or
+  placeholder-breaking entry, and on a served language pack (`data/languages/*.toml`) with no catalog.
+  Adding a language: copy `sr.toml`, translate, set `plural` (`english` or `slavic`), run the tests.
+
 ### What the screen does not say
 
 The app shows people what the appliance did, not how. Keep it that way when adding UI text:

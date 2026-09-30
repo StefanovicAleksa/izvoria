@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
 
 from onyx_desktop.domain.entities import Evidence
 from onyx_desktop.domain.enums import MediaKind
+from onyx_desktop.ui import translate as tl
 from onyx_desktop.ui.widgets.image_thumbnail import set_thumbnail
 from onyx_desktop.utils.formatting import location, speaker_summary, timespan
 
@@ -81,7 +82,9 @@ class EvidenceCard(QFrame):
 
         layout.addLayout(header)
 
-        excerpt = QLabel(self._evidence.excerpt or "(no text available for this excerpt)")
+        excerpt = QLabel()
+        tl.text(excerpt, tl.plain(self._evidence.excerpt) if self._evidence.excerpt
+                else "(no text available for this excerpt)")
         excerpt.setWordWrap(True)
         excerpt.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         if not self._evidence.excerpt:
@@ -109,7 +112,7 @@ class EvidenceCard(QFrame):
             path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             footer.addWidget(path, stretch=1)
         else:
-            missing = QLabel("source not available")
+            missing = tl.label("source not available")
             missing.setProperty("role", "warning-text")
             footer.addWidget(missing, stretch=1)
 
@@ -124,27 +127,24 @@ class EvidenceCard(QFrame):
         button.setProperty("role", "primary")
 
         if not self._evidence.is_playable:
-            button.setText("Open source")
+            tl.text(button, "Open source")
             button.setEnabled(False)
-            button.setToolTip(
-                "The source file for this citation is not available"
-            )
+            tl.tooltip(button, "The source file for this citation is not available")
             return button
 
         button.clicked.connect(lambda: self.openRequested.emit(self._evidence))
         if self._evidence.media_kind is MediaKind.IMAGE:
-            button.setText("Open image ↗")
-            button.setToolTip("Opens the image in your image viewer — the excerpt is an automatic description of it")
+            tl.text(button, "Open image ↗")
+            tl.tooltip(button, "Opens the image in your image viewer — the excerpt is an automatic description of it")
         elif self._evidence.media_kind is MediaKind.DOCUMENT:
-            button.setText("Open document ↗")
-            button.setToolTip(f"Opens the whole document — the excerpt is at {location(self._evidence)}")
+            tl.text(button, "Open document ↗")
+            tl.tooltip(button, "Opens the whole document — the excerpt is at {location}",
+                       location=location(self._evidence))
         elif self._evidence.media_kind is MediaKind.FULL_SOURCE:
-            button.setText("Open recording ↗")
-            button.setToolTip(
-                "Opens the whole recording — skip to "
-                f"{timespan(self._evidence.start_sec, self._evidence.end_sec)}"
-            )
+            tl.text(button, "Open recording ↗")
+            tl.tooltip(button, "Opens the whole recording — skip to {time}",
+                       time=timespan(self._evidence.start_sec, self._evidence.end_sec))
         else:
-            button.setText("Open clip ↗")
-            button.setToolTip("Opens this exact excerpt in your video player")
+            tl.text(button, "Open clip ↗")
+            tl.tooltip(button, "Opens this exact excerpt in your video player")
         return button

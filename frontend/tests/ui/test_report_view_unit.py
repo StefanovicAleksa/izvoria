@@ -196,7 +196,7 @@ class TestRunProgress:
                                      detail="Writing section 1/2: Handling"))
 
         assert view._progress.value() == 1
-        assert "Writing section 1/2" in view._phase.text()
+        assert "Writing section 1 of 2: Handling" == view._phase.text()
 
     def test_ticks_from_other_work_are_ignored(self, view):
         """
@@ -235,7 +235,7 @@ class TestReportRendering:
     def test_a_finished_report_is_shown_with_its_counts(self, view):
         view.show_report(_document())
 
-        assert "2 section(s)" in view._summary.text()
+        assert "2 sections" in view._summary.text()
         assert "gathering round" not in view._summary.text()
         assert view._partial.isVisible() is False
 

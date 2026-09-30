@@ -13,7 +13,7 @@ pytestmark = pytest.mark.gui
 
 @pytest.fixture
 def pane(qt_app):
-    widget = HistoryList("Past searches", "Nothing yet.", deletable=True, noun="search")
+    widget = HistoryList("Past searches", "Nothing yet.", deletable=True, delete_label="Delete search")
     yield widget
     widget.deleteLater()
 

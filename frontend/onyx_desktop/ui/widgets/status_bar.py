@@ -11,16 +11,23 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QWidget
 from onyx_desktop.domain.entities import StatusSnapshot
 from onyx_desktop.domain.enums import ApplianceStatus
 from onyx_desktop.ui import theme
+from onyx_desktop.ui import translate as tl
+from onyx_desktop.utils.i18n import N_, tr
 
+# English keys; shown through tr()
 STATUS_LABELS = {
-    ApplianceStatus.OFFLINE: "Offline",
-    ApplianceStatus.BOOTING: "Starting",
-    ApplianceStatus.READY: "Ready",
-    ApplianceStatus.WORKING: "Working",
-    ApplianceStatus.INGESTING: "Ingesting",
-    ApplianceStatus.RESEARCHING: "Researching",
-    ApplianceStatus.ERROR: "Error",
+    ApplianceStatus.OFFLINE: N_("Offline"),
+    ApplianceStatus.BOOTING: N_("Starting"),
+    ApplianceStatus.READY: N_("Ready"),
+    ApplianceStatus.WORKING: N_("Working"),
+    ApplianceStatus.INGESTING: N_("Ingesting"),
+    ApplianceStatus.RESEARCHING: N_("Researching"),
+    ApplianceStatus.ERROR: N_("Error"),
 }
+
+
+def status_label(status: ApplianceStatus) -> str:
+    return tr(STATUS_LABELS.get(status, status.value.title()))
 
 
 class StatusBar(QFrame):
@@ -36,7 +43,7 @@ class StatusBar(QFrame):
         self._dot = QLabel("●")
         layout.addWidget(self._dot)
 
-        self._state = QLabel("Offline")
+        self._state = QLabel()
         self._state.setProperty("role", "strong")
         layout.addWidget(self._state)
 
@@ -49,7 +56,7 @@ class StatusBar(QFrame):
         self._phase.setAlignment(Qt.AlignmentFlag.AlignRight)
         layout.addWidget(self._phase)
 
-        self.apply(StatusSnapshot(status=ApplianceStatus.OFFLINE, detail="Not started"))
+        self.apply(StatusSnapshot(status=ApplianceStatus.OFFLINE, detail=N_("Not started")))
 
     def apply_theme(self) -> None:
         self.apply(self._snapshot)
@@ -58,10 +65,11 @@ class StatusBar(QFrame):
         self._snapshot = snapshot
         colour = theme.STATUS_COLOURS.get(snapshot.status.value, theme.TEXT_MUTED)
         self._dot.setStyleSheet(f"color: {colour}; font-size: 12px;")
-        label = STATUS_LABELS.get(snapshot.status, snapshot.status.value.title())
-        self._state.setText(label)
-        # "Ready · Ready" says nothing twice
-        self._detail.setText("" if snapshot.detail == label else snapshot.detail)
+        tl.text(self._state, lambda: status_label(snapshot.status))
+        # Details are English keys from the bridge, or messages already translated; tr() leaves the latter as is.
+        # "Ready · Ready" says nothing twice.
+        tl.text(self._detail, lambda: "" if snapshot.detail in ("", STATUS_LABELS.get(snapshot.status))
+                else tr(snapshot.detail))
 
     def set_phase(self, text: str) -> None:
         self._phase.setText(text)

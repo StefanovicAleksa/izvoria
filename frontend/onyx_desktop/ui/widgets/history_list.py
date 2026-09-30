@@ -16,6 +16,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
+from onyx_desktop.ui import translate as tl
+from onyx_desktop.utils.i18n import N_, tr
+
 _KEY_ROLE = Qt.ItemDataRole.UserRole
 # Matches the stylesheet's item padding (7px 8px), plus a little slack so a descender is never clipped
 _ITEM_PADDING_X = 16
@@ -35,21 +38,22 @@ class HistoryList(QWidget):
     deleteRequested = Signal(object)  # key
 
     def __init__(self, title: str, empty_text: str, deletable: bool = False,
-                 noun: str = "entry", parent: Optional[QWidget] = None):
+                 delete_label: str = "Delete", delete_title: str = "Delete", parent: Optional[QWidget] = None):
+        """Every text is an English key, translated where it is shown."""
         super().__init__(parent)
         self._empty_text = empty_text
-        self._noun = noun
+        self._delete_title = delete_title
+        self._unavailable: Optional[str] = N_("Start the appliance to see history.")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 20, 8, 20)
         layout.setSpacing(8)
 
-        heading = QLabel(title)
-        heading.setProperty("role", "heading")
-        layout.addWidget(heading)
+        layout.addWidget(tl.label(title, role="heading"))
 
-        self._placeholder = QLabel("Start the appliance to see history.")
+        self._placeholder = QLabel()
         self._placeholder.setProperty("role", "subtle")
+        tl.text(self._placeholder, lambda: tr(self._unavailable or self._empty_text))
         self._placeholder.setWordWrap(True)
         # Takes the list's space while the list is hidden, so the heading stays at the top
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
@@ -72,7 +76,8 @@ class HistoryList(QWidget):
         self._list.hide()
         layout.addWidget(self._list, stretch=1)
 
-        self._delete = QPushButton(f"Delete {noun}")
+        self._delete = QPushButton()
+        tl.text(self._delete, delete_label)
         self._delete.setVisible(deletable)
         self._delete.setEnabled(False)
         self._delete.clicked.connect(self._on_delete)
@@ -97,7 +102,8 @@ class HistoryList(QWidget):
             self._list.addItem(item)
             if entry.key == current:
                 self._list.setCurrentItem(item)
-        self._placeholder.setText(self._empty_text)
+        self._unavailable = None
+        tl.retranslate_widget(self._placeholder)
         self._placeholder.setVisible(not entries)
         self._list.setVisible(bool(entries))
         self._fit_items()
@@ -121,9 +127,11 @@ class HistoryList(QWidget):
             item.setSizeHint(QSize(width, text.height() + 2 * _ITEM_PADDING_Y))
 
     def set_unavailable(self, text: str) -> None:
+        """`text` is an English key, or a message already translated (tr() leaves those as they are)."""
         self._list.clear()
         self._list.hide()
-        self._placeholder.setText(text)
+        self._unavailable = text
+        tl.retranslate_widget(self._placeholder)
         self._placeholder.show()
         self._sync_buttons()
 
@@ -164,8 +172,8 @@ class HistoryList(QWidget):
             return
         title = item.text().split("\n", 1)[0]
         answer = QMessageBox.question(
-            self, f"Delete {self._noun}",
-            f"Delete “{title}” from the history? This cannot be undone.",
+            self, tr(self._delete_title),
+            tr("Delete “{title}” from the history? This cannot be undone.", title=title),
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

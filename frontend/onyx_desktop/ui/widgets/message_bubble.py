@@ -24,8 +24,10 @@ from PySide6.QtWidgets import (
 from onyx_desktop.domain.entities import ChatMessage
 from onyx_desktop.domain.enums import MessageRole, TurnOutcome
 from onyx_desktop.ui import theme
+from onyx_desktop.ui import translate as tl
 from onyx_desktop.ui.widgets.evidence_card import EvidenceCard
 from onyx_desktop.utils.formatting import duration, split_doc_tags
+from onyx_desktop.utils.i18n import N_, tr_n
 
 
 class MessageBubble(QFrame):
@@ -54,22 +56,22 @@ class MessageBubble(QFrame):
 
         if self._message.is_ungrounded:
             layout.addWidget(self._banner(
-                "No source evidence was returned for this answer — it is not traceable to "
-                "the ingested material and should not be relied on.",
+                N_("No sources were found for this answer — it cannot be traced to your material "
+                "and should not be relied on."),
                 "banner-danger",
             ))
 
         if self._message.outcome is TurnOutcome.NEEDS_CLARIFICATION:
             layout.addWidget(self._banner(
-                "The appliance needs a narrower question before it will answer from the "
-                "evidence. Reply below and it will re-run with your clarification.",
+                N_("The appliance needs a narrower question before it can answer from your material. "
+                "Reply below and it will try again with your clarification."),
                 "banner-warning",
             ))
 
         if self._message.critique_unresolved:
             layout.addWidget(self._banner(
-                "Parts of this answer are only weakly supported by the sources. Check the citations "
-                "closely.",
+                N_("Parts of this answer are only weakly supported by the sources. Check the citations "
+                "closely."),
                 "banner-warning",
             ))
 
@@ -87,10 +89,9 @@ class MessageBubble(QFrame):
             layout.addWidget(footer)
 
     def _speaker_label(self) -> QLabel:
-        who = "You" if self._message.role is MessageRole.USER else "Onyx"
-        label = QLabel(who)
-        label.setProperty("role", "speaker")
-        return label
+        if self._message.role is MessageRole.USER:
+            return tl.label("You", role="speaker")
+        return tl.label(tl.plain("Onyx"), role="speaker")   # a name, the same in every language
 
     def _body(self) -> QLabel:
         """
@@ -112,7 +113,7 @@ class MessageBubble(QFrame):
     def _render_body(self) -> None:
         label = self._body_label
         if self._message.role is MessageRole.USER:
-            label.setText(self._message.text)
+            label.setText(self._message.text)   # the user's own words: never translated
             return
 
         parts = []
@@ -129,22 +130,24 @@ class MessageBubble(QFrame):
         label.setText("".join(parts))
 
     def _footer(self) -> Optional[QLabel]:
-        bits = []
-        if self._message.latency_ms:
-            bits.append(duration(self._message.latency_ms / 1000.0))
-        if self._message.evidence:
-            bits.append(f"{len(self._message.evidence)} citation(s)")
-        if not bits:
+        message = self._message
+        if not message.latency_ms and not message.evidence:
             return None
-        label = QLabel(" · ".join(bits))
-        label.setProperty("role", "subtle")
-        return label
+
+        def footer() -> str:
+            bits = []
+            if message.latency_ms:
+                bits.append(duration(message.latency_ms / 1000.0))
+            if message.evidence:
+                bits.append(tr_n(len(message.evidence), "{n} citation", "{n} citations"))
+            return " · ".join(bits)
+
+        return tl.label(footer, role="subtle")
 
     @staticmethod
     def _banner(text: str, role: str) -> QLabel:
-        label = QLabel(text)
+        label = tl.label(text, role=role)
         label.setWordWrap(True)
-        label.setProperty("role", role)
         return label
 
 

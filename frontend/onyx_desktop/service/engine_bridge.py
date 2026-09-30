@@ -22,6 +22,7 @@ from onyx_desktop.domain.enums import ApplianceStatus, ChatMode, IngestMode, Sea
 from onyx_desktop.domain.interfaces import IEngineGateway
 from onyx_desktop.service.engine_worker import EngineWorker
 from onyx_desktop.service.history_reader import HistoryReader
+from onyx_desktop.utils.i18n import N_, tr
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +176,7 @@ class EngineBridge(QObject):
         return next((option.name for option in self._languages if option.code == code), code)
 
     def _set_status(self, status: ApplianceStatus, detail: str = "") -> None:
+        """`detail` is an English key (the status bar translates it) or a message already translated."""
         self._status = status
         self.statusChanged.emit(StatusSnapshot(status=status, detail=detail))
 
@@ -184,7 +186,7 @@ class EngineBridge(QObject):
         # ERROR too: a failed boot offers "Retry start", which has to reach the worker
         if self._status not in (ApplianceStatus.OFFLINE, ApplianceStatus.ERROR) or self._stopped:
             return
-        self._set_status(ApplianceStatus.BOOTING, "Loading the appliance…")
+        self._set_status(ApplianceStatus.BOOTING, N_("Loading the appliance…"))
         self._bootRequested.emit()
 
     @property
@@ -199,7 +201,7 @@ class EngineBridge(QObject):
         """
         if not self.can_stop:
             return None
-        request_id = self._begin("stop", ApplianceStatus.WORKING, "Stopping the appliance…")
+        request_id = self._begin("stop", ApplianceStatus.WORKING, N_("Stopping the appliance…"))
         if request_id is None:
             return None
         self._stopRequested.emit(request_id)
@@ -212,14 +214,14 @@ class EngineBridge(QObject):
         mode: ChatMode,
         limit: int = 5,
     ) -> Optional[int]:
-        request_id = self._begin("chat", ApplianceStatus.WORKING, "Answering…")
+        request_id = self._begin("chat", ApplianceStatus.WORKING, N_("Answering…"))
         if request_id is None:
             return None
         self._chatRequested.emit(request_id, prompt, session_id, mode, limit)
         return request_id
 
     def run_search(self, prompt: str, mode: SearchMode, limit: int = 5) -> Optional[int]:
-        request_id = self._begin("search", ApplianceStatus.WORKING, "Searching…")
+        request_id = self._begin("search", ApplianceStatus.WORKING, N_("Searching…"))
         if request_id is None:
             return None
         self._searchRequested.emit(request_id, prompt, mode, limit)
@@ -227,7 +229,7 @@ class EngineBridge(QObject):
 
     def start_ingest(self, path: str, mode: IngestMode, language: str) -> Optional[int]:
         request_id = self._begin(
-            "ingest", ApplianceStatus.INGESTING, f"Adding material ({self.language_name(language)})…"
+            "ingest", ApplianceStatus.INGESTING, N_("Adding material…")
         )
         if request_id is None:
             return None
@@ -238,28 +240,28 @@ class EngineBridge(QObject):
         """Rebuilds the engine in `code` on the worker thread. None when refused or already active."""
         if code == self._active_language:
             return None
-        request_id = self._begin("language", ApplianceStatus.WORKING, f"Switching to {self.language_name(code)}…")
+        request_id = self._begin("language", ApplianceStatus.WORKING, N_("Switching the answer language…"))
         if request_id is None:
             return None
         self._languageRequested.emit(request_id, code)
         return request_id
 
     def plan_report(self, topic: str, mode) -> Optional[int]:
-        request_id = self._begin("report_plan", ApplianceStatus.WORKING, "Planning the report…")
+        request_id = self._begin("report_plan", ApplianceStatus.WORKING, N_("Planning the report…"))
         if request_id is None:
             return None
         self._reportPlanRequested.emit(request_id, topic, mode)
         return request_id
 
     def run_report(self, plan, mode) -> Optional[int]:
-        request_id = self._begin("report", ApplianceStatus.RESEARCHING, "Researching…")
+        request_id = self._begin("report", ApplianceStatus.RESEARCHING, N_("Researching…"))
         if request_id is None:
             return None
         self._reportRequested.emit(request_id, plan, mode)
         return request_id
 
     def resume_report(self, report_id: uuid.UUID) -> Optional[int]:
-        request_id = self._begin("report", ApplianceStatus.RESEARCHING, "Resuming the report…")
+        request_id = self._begin("report", ApplianceStatus.RESEARCHING, N_("Resuming the report…"))
         if request_id is None:
             return None
         self._resumeRequested.emit(request_id, report_id)
@@ -352,7 +354,7 @@ class EngineBridge(QObject):
         return "report" in self._pending.values()
 
     def hydrate_evidence(self, chunk_ids: List[uuid.UUID]) -> Optional[int]:
-        request_id = self._begin("hydrate", ApplianceStatus.WORKING, "Loading excerpts…")
+        request_id = self._begin("hydrate", ApplianceStatus.WORKING, N_("Loading excerpts…"))
         if request_id is None:
             return None
         self._hydrateRequested.emit(request_id, list(chunk_ids))
@@ -364,10 +366,10 @@ class EngineBridge(QObject):
         behind a long job and surface as a confusing error minutes later.
         """
         if self._status is ApplianceStatus.OFFLINE or self._status is ApplianceStatus.BOOTING:
-            self.failed.emit(0, "The appliance is not running yet.")
+            self.failed.emit(0, tr("The appliance is not running yet."))
             return None
         if self._pending:
-            self.failed.emit(0, "The appliance is already working on something.")
+            self.failed.emit(0, tr("The appliance is already working on something."))
             return None
 
         request_id = next(self._ids)
@@ -388,7 +390,7 @@ class EngineBridge(QObject):
             self.languageChanged.emit(code)
 
     def _on_booted(self) -> None:
-        self._set_status(ApplianceStatus.READY, "Ready")
+        self._set_status(ApplianceStatus.READY, N_("Ready"))
         self.booted.emit()
 
     def _on_engine_stopped(self, request_id: int) -> None:
@@ -396,7 +398,7 @@ class EngineBridge(QObject):
         self._pending.pop(request_id, None)
         if not self._pending:
             self.busyChanged.emit(False)
-        self._set_status(ApplianceStatus.OFFLINE, "Stopped")
+        self._set_status(ApplianceStatus.OFFLINE, N_("Stopped"))
         self.stopped.emit()
 
     def _on_ingest_done(self, request_id: int, summary) -> None:
@@ -406,7 +408,7 @@ class EngineBridge(QObject):
         self._pending.pop(request_id, None)
         if not self._pending:
             self.busyChanged.emit(False)
-            self._set_status(ApplianceStatus.READY, "Ready")
+            self._set_status(ApplianceStatus.READY, N_("Ready"))
         signal.emit(request_id, payload)
 
     def _on_failed(self, request_id: int, message: str, error) -> None:
@@ -441,5 +443,5 @@ class EngineBridge(QObject):
                 "Engine worker did not finish within %sms; a batch job is likely still running.",
                 timeout_ms,
             )
-        self._set_status(ApplianceStatus.OFFLINE, "Stopped")
+        self._set_status(ApplianceStatus.OFFLINE, N_("Stopped"))
         return finished

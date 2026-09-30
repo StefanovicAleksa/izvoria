@@ -87,6 +87,7 @@ An appliance serves every language that has a pack in `data/languages/<code>.tom
 - **Never hard-code language again.** An English word list, an `[a-z]` class, a refusal sentence, a Whisper language code or a stemmer name in new code is a bug on a Serbian appliance. Add a field to the pack instead (`LanguagePack` validates it at startup), and give `en.toml` the value the code used to hard-code, so English doesn't move.
 - **Prompts stay English.** Wrap a prompt whose output is stored or shown in `pack.localize_prompt()`; it's a no-op for English. Don't write per-language prompt copies.
 - **A pack's `[models]` table overrides Settings.** Serbian swaps Llama 3.2 3B and Qwen2.5-3B for Gemma 4 E4B. An explicit env value always wins.
+- **The desktop app's own text is a separate "display language"** (`frontend/onyx_desktop/locales/<code>.toml`, switched in the app, independent of the answer language). A new served pack needs a display catalog too; `frontend/tests/utils/test_i18n_catalogs_unit.py` fails until it has one. See `frontend/README.md`.
 - **Unit tests switch language with the `appliance_language` fixture** (`tests/conftest.py`), which changes it for every module at once; `language_pack(code)` loads a shipped pack.
 
 

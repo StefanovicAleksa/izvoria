@@ -72,7 +72,7 @@ class TestReportSteps:
     @pytest.mark.parametrize("job,detail,expected", [
         ("rag_retrieval", "Searching the corpus (12 queries)", "Gathering sources…"),
         ("research_outline", "Assigning evidence to the outline", "Organizing the findings…"),
-        ("research_section", "Writing section 2/5: Background", "Writing section 2/5: Background"),
+        ("research_section", "Writing section 2/5: Background", "Writing section 2 of 5: Background"),
         ("research_summary", "Writing the executive summary", "Finishing the report…"),
         ("something_else", "internal", None),
     ])

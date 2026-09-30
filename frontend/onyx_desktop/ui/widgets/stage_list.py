@@ -15,6 +15,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QFrame, QGridLayout, QLabel, QProgressBar, QWidget
 
 from onyx_desktop.utils.progress_stages import Stage
+from onyx_desktop.ui import translate as tl
+from onyx_desktop.utils.i18n import N_
 
 _BAR_STEPS = 1000
 
@@ -33,10 +35,10 @@ _MARKS = {
     StageState.FAILED: "✕",
 }
 _CAPTIONS = {
-    StageState.WAITING: "Waiting",
-    StageState.ACTIVE: "In progress",
-    StageState.DONE: "Done",
-    StageState.FAILED: "Stopped",
+    StageState.WAITING: N_("Waiting"),
+    StageState.ACTIVE: N_("In progress"),
+    StageState.DONE: N_("Done"),
+    StageState.FAILED: N_("Stopped"),
 }
 
 
@@ -67,7 +69,7 @@ class StageList(QFrame):
             mark = QLabel()
             mark.setFixedWidth(16)
             mark.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            label = QLabel(stage.label)
+            label = tl.label(stage.label)
             label.setMinimumWidth(170)
             bar = QProgressBar()
             bar.setObjectName("StageBar")
@@ -143,7 +145,7 @@ class StageList(QFrame):
         row = self._rows[key]
         row["state"] = state
         row["mark"].setText(_MARKS[state])
-        row["caption"].setText(_CAPTIONS[state])
+        tl.text(row["caption"], _CAPTIONS[state])
         row["label"].setProperty("role", "strong" if state is StageState.ACTIVE else "")
         for widget in (row["label"],):
             widget.style().unpolish(widget)

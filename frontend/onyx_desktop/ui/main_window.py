@@ -15,7 +15,7 @@ import uuid
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, Slot
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QActionGroup, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QStackedWidget,
+    QMenu,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -43,16 +44,19 @@ from onyx_desktop.domain.enums import ApplianceStatus, ChatMode, IngestMode, Sea
 from onyx_desktop.service.engine_bridge import EngineBridge
 from onyx_desktop.service.log_relay import LogRelay
 from onyx_desktop.ui import appearance, icons, theme
+from onyx_desktop.ui import translate as tl
 from onyx_desktop.ui.views.chat_view import ChatView
 from onyx_desktop.ui.views.ingest_view import IngestView
 from onyx_desktop.ui.views.report_view import ReportView
 from onyx_desktop.ui.views.search_view import SearchView
-from onyx_desktop.ui.widgets.status_bar import STATUS_LABELS, StatusBar
+from onyx_desktop.ui.widgets.status_bar import StatusBar, status_label
+from onyx_desktop.utils import i18n
+from onyx_desktop.utils.i18n import N_, tr
 
 logger = logging.getLogger(__name__)
 
 # The nav button id IS the QStackedWidget index, so this order must match the views added in _build.
-_NAV = ("Chat", "Search", "Ingest", "Report")
+_NAV = (N_("Chat"), N_("Search"), N_("Ingest"), N_("Report"))
 
 
 class MainWindow(QMainWindow):
@@ -69,7 +73,7 @@ class MainWindow(QMainWindow):
         self._shutdown_done = False
         self._closing = False
 
-        self.setWindowTitle("Onyx" + ("  —  stub mode" if stub_mode else ""))
+        tl.title(self, lambda: "Onyx" + (f"  —  {tr('stub mode')}" if stub_mode else ""))
         self.resize(1440, 900)
 
         self._build()
@@ -124,10 +128,30 @@ class MainWindow(QMainWindow):
         brand = QLabel("Onyx")
         brand.setProperty("role", "brand")
         brand_box.addWidget(brand)
-        subtitle = QLabel("On-premise appliance")
-        subtitle.setProperty("role", "subtle")
-        brand_box.addWidget(subtitle)
+        brand_box.addWidget(tl.label("On-premise appliance", role="subtle"))
         brand_row.addLayout(brand_box, stretch=1)
+
+        # The display language: what the app's own text is written in. Separate from "Answer in" below, which
+        # is the appliance's language; like the light/dark toggle, it is pure presentation and works any time.
+        self._display_language = QToolButton()
+        self._display_language.setObjectName("ModeToggle")
+        self._display_language.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._display_language.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        menu = QMenu(self._display_language)
+        group = QActionGroup(menu)
+        group.setExclusive(True)
+        self._display_actions = {}
+        for language in i18n.available():
+            action = menu.addAction(language.name)
+            action.setCheckable(True)
+            action.setChecked(language.code == i18n.current())
+            action.triggered.connect(lambda _checked=False, code=language.code: self.set_display_language(code))
+            group.addAction(action)
+            self._display_actions[language.code] = action
+        self._display_language.setMenu(menu)
+        tl.text(self._display_language, lambda: i18n.current().upper())
+        tl.tooltip(self._display_language, "Display language")
+        brand_row.addWidget(self._display_language, alignment=Qt.AlignmentFlag.AlignTop)
 
         # Pure presentation, so it works at any time -- mid-ingestion included
         self._mode_toggle = QToolButton()
@@ -139,15 +163,15 @@ class MainWindow(QMainWindow):
         layout.addLayout(brand_row)
         layout.addSpacing(26)
 
-        section = QLabel("WORKSPACE")
-        section.setProperty("role", "section")
+        section = tl.label(lambda: tr("Workspace").upper(), role="section")
         section.setContentsMargins(20, 0, 20, 6)
         layout.addWidget(section)
 
         self._nav = QButtonGroup(self)
         self._nav.setExclusive(True)
         for index, label in enumerate(_NAV):
-            button = QPushButton(label)
+            button = QPushButton()
+            tl.text(button, label)
             button.setProperty("role", "nav")
             button.setCheckable(True)
             button.setChecked(index == 0)
@@ -159,8 +183,8 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._appliance_card())
 
         if self._stub_mode:
-            note = QLabel("Stub gateway — no GPU, no database, canned answers.")
-            note.setProperty("role", "subtle")
+            # Developer-only (--stub), so it is not translated
+            note = tl.label(tl.plain("Stub gateway — no GPU, no database, canned answers."), role="subtle")
             note.setWordWrap(True)
             note.setContentsMargins(20, 10, 20, 0)
             layout.addWidget(note)
@@ -184,34 +208,35 @@ class MainWindow(QMainWindow):
         state_row.setSpacing(8)
         self._card_dot = QLabel("●")
         state_row.addWidget(self._card_dot)
-        self._card_state = QLabel("Offline")
+        self._card_state = QLabel()
         self._card_state.setProperty("role", "strong")
         state_row.addWidget(self._card_state, stretch=1)
         layout.addLayout(state_row)
         layout.addSpacing(2)
 
-        answer_label = QLabel("Answer in")
+        answer_label = tl.label("Answer in")
         answer_label.setProperty("role", "subtle")
         layout.addWidget(answer_label)
         self._language = QComboBox()
         for option in self._bridge.languages:
             self._language.addItem(option.name, option.code)
-        self._language.setToolTip(
-            "The language answers and reports are written in. Search covers material in every language, "
-            "and excerpts are always quoted in their own. Switching takes a few seconds."
-        )
+        tl.tooltip(self._language, "The language answers and reports are written in. Search covers material in "
+                                   "every language, and excerpts are always quoted in their own. Switching takes a "
+                                   "few seconds.")
         # Switching rebuilds the engine, so it waits until one is running
         self._language.setEnabled(False)
         self._language.currentIndexChanged.connect(self._on_language_chosen)
         layout.addWidget(self._language)
         layout.addSpacing(4)
 
-        self._start_button = QPushButton("Start appliance")
+        self._start_button = QPushButton()
+        tl.text(self._start_button, "Start appliance")
         self._start_button.setProperty("role", "primary")
         self._start_button.clicked.connect(self._bridge.boot)
         layout.addWidget(self._start_button)
 
-        self._stop_button = QPushButton("Stop appliance")
+        self._stop_button = QPushButton()
+        tl.text(self._stop_button, "Stop appliance")
         self._stop_button.setProperty("role", "danger-outline")
         self._stop_button.clicked.connect(self._on_stop_clicked)
         self._stop_button.setVisible(False)
@@ -228,7 +253,7 @@ class MainWindow(QMainWindow):
         target = "light" if theme.MODE == "dark" else "dark"
         self._mode_toggle.setIcon(icons.nav_icon("sun" if target == "light" else "moon",
                                                  p.sidebar_muted, p.sidebar_text))
-        self._mode_toggle.setToolTip(f"Switch to {target} mode")
+        tl.tooltip(self._mode_toggle, "Switch to light mode" if target == "light" else "Switch to dark mode")
 
     @Slot()
     def _on_mode_toggled(self) -> None:
@@ -250,6 +275,20 @@ class MainWindow(QMainWindow):
             if callable(apply_theme):
                 apply_theme()
         appearance.save_mode(mode)
+
+    def set_display_language(self, code: str) -> None:
+        """
+        Switches the language of the app's own text in place, at any time. Every string was set through
+        `ui/translate.py`, which replays it in the new language -- headings, dynamic lines and history alike.
+        The answer language is untouched: it belongs to the appliance, and has its own picker.
+        """
+        if code == i18n.current():
+            return
+        i18n.use(code)
+        tl.retranslate_all()
+        for language_code, action in self._display_actions.items():
+            action.setChecked(language_code == code)
+        appearance.save_display_language(code)
 
     def _connect(self) -> None:
         self._nav.idClicked.connect(self._views.setCurrentIndex)
@@ -307,10 +346,10 @@ class MainWindow(QMainWindow):
     @Slot()
     def _on_stopped(self) -> None:
         """The engine is down but the window stays: what is on screen stays readable, history waits for a start."""
-        self._start_button.setText("Start appliance")
+        tl.text(self._start_button, "Start appliance")
         self._language.setEnabled(False)
         for view in (self._chat, self._search, self._report):
-            view.set_history_unavailable("Start the appliance to see history.")
+            view.set_history_unavailable(N_("Start the appliance to see history."))
         self._refresh_appliance_controls()
 
     def _refresh_appliance_controls(self) -> None:
@@ -326,17 +365,18 @@ class MainWindow(QMainWindow):
         self._stop_button.setVisible(not engine_down)
         can_stop = self._bridge.can_stop
         self._stop_button.setEnabled(can_stop)
-        self._stop_button.setToolTip(
+        tl.tooltip(
+            self._stop_button,
             "Stops the appliance. Start it again at any time."
             if can_stop else
-            "Wait for the current job to finish before stopping the appliance."
+            "Wait for the current job to finish before stopping the appliance.",
         )
         self._apply_card_status(status)
 
     def _apply_card_status(self, status: ApplianceStatus) -> None:
         colour = theme.STATUS_COLOURS.get(status.value, theme.TEXT_MUTED)
         self._card_dot.setStyleSheet(f"color: {colour}; font-size: 13px;")
-        self._card_state.setText(STATUS_LABELS.get(status, status.value.title()))
+        tl.text(self._card_state, lambda: status_label(status))
 
     @Slot(str)
     def _show_active_language(self, code: str) -> None:
@@ -375,7 +415,7 @@ class MainWindow(QMainWindow):
             "list_reports": self._report,
         }.get(method)
         if listing is not None:
-            listing.set_history_unavailable(f"History could not be loaded: {message}")
+            listing.set_history_unavailable(tr("History could not be loaded: {reason}", reason=message))
             return
         owner = self._chat if "conversation" in method else self._search if "search" in method else self._report
         owner.show_failure(message)
@@ -384,7 +424,7 @@ class MainWindow(QMainWindow):
     def _on_status(self, snapshot: StatusSnapshot) -> None:
         self._status.apply(snapshot)
         if snapshot.status is ApplianceStatus.ERROR:
-            self._start_button.setText("Retry start")
+            tl.text(self._start_button, "Retry start")
         self._refresh_appliance_controls()
 
     @Slot(bool)
@@ -550,18 +590,18 @@ class MainWindow(QMainWindow):
         box = QMessageBox(self)
         box.setIcon(QMessageBox.Icon.Warning)
         researching = self._bridge.is_researching
-        box.setWindowTitle("Report in progress" if researching else "Adding material")
+        box.setWindowTitle(tr("Report in progress") if researching else tr("Adding material"))
         box.setText(
-            "A report is being written."
+            tr("A report is being written.")
             if researching else
-            "Material is being added and this cannot be interrupted."
+            tr("Material is being added and this cannot be interrupted.")
         )
-        box.setInformativeText(
+        box.setInformativeText(tr(
             "Quitting now stops it partway. Some files may be left half-added and will need to be "
             "added again."
-        )
-        keep = box.addButton("Keep running", QMessageBox.ButtonRole.RejectRole)
-        box.addButton("Quit anyway", QMessageBox.ButtonRole.DestructiveRole)
+        ))
+        keep = box.addButton(tr("Keep running"), QMessageBox.ButtonRole.RejectRole)
+        box.addButton(tr("Quit anyway"), QMessageBox.ButtonRole.DestructiveRole)
         box.setDefaultButton(keep)
         box.exec()
         return box.clickedButton() is not keep

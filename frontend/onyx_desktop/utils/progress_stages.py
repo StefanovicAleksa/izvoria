@@ -11,10 +11,12 @@ place that knows which job belongs to which, so the mapping can change without t
 A job with no step here (a future one, say) is ignored rather than shown under its internal name.
 """
 
+import re
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
 
 from onyx_desktop.domain.enums import IngestMode
+from onyx_desktop.utils.i18n import N_, tr
 
 
 @dataclass(frozen=True)
@@ -23,13 +25,14 @@ class Stage:
     label: str
 
 
-PREPARING = Stage("preparing", "Preparing files")
-AUDIO = Stage("audio", "Analyzing audio")
-DOCUMENTS = Stage("documents", "Reading documents")
-IMAGES = Stage("images", "Analyzing images")
-CONTEXT = Stage("context", "Contextualizing")
-VISUALS = Stage("visuals", "Analyzing visuals")
-INDEXING = Stage("indexing", "Indexing")
+# Labels are English keys, translated where they are shown
+PREPARING = Stage("preparing", N_("Preparing files"))
+AUDIO = Stage("audio", N_("Analyzing audio"))
+DOCUMENTS = Stage("documents", N_("Reading documents"))
+IMAGES = Stage("images", N_("Analyzing images"))
+CONTEXT = Stage("context", N_("Contextualizing"))
+VISUALS = Stage("visuals", N_("Analyzing visuals"))
+INDEXING = Stage("indexing", N_("Indexing"))
 
 # The steps each batch goes through, in the order the pipeline runs them.
 STAGES_BY_MODE: Dict[IngestMode, Tuple[Stage, ...]] = {
@@ -89,13 +92,15 @@ JOBS_PER_STAGE: Dict[Tuple[IngestMode, str], int] = {
 
 # Report runs: what a person sees while a report is planned and written.
 _REPORT_STEP: Dict[str, str] = {
-    "research_scoping": "Planning the report…",
-    "rag_retrieval": "Gathering sources…",
-    "rag_reranking": "Gathering sources…",
-    "retrieval_scrubbing": "Gathering sources…",
-    "research_outline": "Organizing the findings…",
-    "research_summary": "Finishing the report…",
+    "research_scoping": N_("Planning the report…"),
+    "rag_retrieval": N_("Gathering sources…"),
+    "rag_reranking": N_("Gathering sources…"),
+    "retrieval_scrubbing": N_("Gathering sources…"),
+    "research_outline": N_("Organizing the findings…"),
+    "research_summary": N_("Finishing the report…"),
 }
+# The engine's own line for a section, "Writing section 3/8: Background", re-said in the display language
+_SECTION_DETAIL = re.compile(r"^Writing section (\d+)/(\d+):\s*(.*)$", re.S)
 
 
 def stage_for(job: str) -> Optional[Stage]:
@@ -104,9 +109,15 @@ def stage_for(job: str) -> Optional[Stage]:
 
 def report_step(job: str, detail: Optional[str]) -> Optional[str]:
     """
-    The line shown under a running report's bar. Section writing keeps its own detail ("Writing section 3/8:
-    Title"): the titles are the user's own outline, so they say nothing about how the appliance works.
+    The line shown under a running report's bar, in the display language. Section writing names the section
+    ("Writing section 3 of 8: Title"): the titles are the user's own outline, so they say nothing about how the
+    appliance works.
     """
     if job == "research_section":
-        return detail or "Writing…"
-    return _REPORT_STEP.get(job)
+        match = _SECTION_DETAIL.match(detail or "")
+        if match is None:
+            return tr("Writing…")
+        return tr("Writing section {current} of {total}: {title}",
+                  current=int(match.group(1)), total=int(match.group(2)), title=match.group(3))
+    step = _REPORT_STEP.get(job)
+    return tr(step) if step else None

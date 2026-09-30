@@ -4,6 +4,8 @@ from typing import Optional
 
 from PySide6.QtWidgets import QLabel, QWidget
 
+from onyx_desktop.ui import translate as tl
+
 
 class AnswerLanguageLabel(QLabel):
     """
@@ -16,4 +18,4 @@ class AnswerLanguageLabel(QLabel):
         self.setProperty("role", "subtle")
 
     def set_language(self, name: str) -> None:
-        self.setText(f"Answers in {name}")
+        tl.text(self, "Answers in {language}", language=name)
