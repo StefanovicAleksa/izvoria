@@ -7,7 +7,12 @@ import re
 from datetime import datetime
 from typing import Iterable, List, Optional, Tuple
 
+from onyx_desktop.utils.i18n import N_, tr
+
 _DOC_TAG = re.compile(r"\[Doc (\d+)]")
+
+_MONTHS = (N_("Jan"), N_("Feb"), N_("Mar"), N_("Apr"), N_("May"), N_("Jun"),
+           N_("Jul"), N_("Aug"), N_("Sep"), N_("Oct"), N_("Nov"), N_("Dec"))
 
 
 def timestamp(seconds: float) -> str:
@@ -39,12 +44,12 @@ def duration(seconds: float) -> str:
     except (TypeError, ValueError):
         total = 0
     if total < 60:
-        return f"{total}s"
+        return tr("{s}s", s=total)
     hours, remainder = divmod(total, 3600)
     minutes, secs = divmod(remainder, 60)
     if hours:
-        return f"{hours}h {minutes:02d}m"
-    return f"{minutes}m {secs:02d}s"
+        return tr("{h}h {m}m", h=hours, m=f"{minutes:02d}")
+    return tr("{m}m {s}s", m=minutes, s=f"{secs:02d}")
 
 
 def score(value: Optional[float]) -> str:
@@ -103,7 +108,9 @@ def when(moment: Optional[datetime], now: Optional[datetime] = None) -> str:
     if days == 0:
         return clock
     if days == 1:
-        return f"Yesterday {clock}"
+        return tr("Yesterday {time}", time=clock)
+    # Not strftime('%b'): that follows the process locale, not the display language
+    month = tr(_MONTHS[local.month - 1])
     if local.year == now.year:
-        return f"{local.day} {local.strftime('%b')} {clock}"
-    return f"{local.day} {local.strftime('%b')} {local.year}"
+        return tr("{day} {month} {time}", day=local.day, month=month, time=clock)
+    return tr("{day} {month} {year}", day=local.day, month=month, year=local.year)

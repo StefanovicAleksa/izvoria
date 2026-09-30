@@ -23,6 +23,8 @@ from PySide6.QtWidgets import (
 
 from onyx_desktop.domain.entities import ReportOutlineDraft, ReportPlanDraft
 from onyx_desktop.ui import theme
+from onyx_desktop.ui import translate as tl
+from onyx_desktop.utils.i18n import tr
 
 
 class _SectionCard(QFrame):
@@ -41,30 +43,28 @@ class _SectionCard(QFrame):
 
         header = QHBoxLayout()
         self._title = QLineEdit(section.title)
-        self._title.setPlaceholderText("Section heading")
+        tl.placeholder(self._title, "Section heading")
         header.addWidget(self._title, stretch=1)
 
-        remove = QPushButton("Drop")
-        remove.setToolTip("Leave this section out of the report entirely.")
+        remove = QPushButton()
+        tl.text(remove, "Drop")
+        tl.tooltip(remove, "Leave this section out of the report entirely.")
         remove.clicked.connect(lambda: self.removeRequested.emit(self._key))
         header.addWidget(remove)
         layout.addLayout(header)
 
         self._brief = QTextEdit(section.brief)
-        self._brief.setPlaceholderText("What this section must cover")
+        tl.placeholder(self._brief, "What this section must cover")
         self._brief.setFixedHeight(54)
         layout.addWidget(self._brief)
 
-        questions = QLabel("What to look for")
-        questions.setProperty("role", "subtle")
+        questions = tl.label("What to look for", role="subtle")
         layout.addWidget(questions)
 
         self._questions = QTextEdit("\n".join(section.questions))
-        self._questions.setPlaceholderText("One topic or phrase per line")
+        tl.placeholder(self._questions, "One topic or phrase per line")
         self._questions.setFixedHeight(56)
-        self._questions.setToolTip(
-            "Specific wording that appears in your material finds more than an abstract theme."
-        )
+        tl.tooltip(self._questions, "Specific wording that appears in your material finds more than an abstract theme.")
         layout.addWidget(self._questions)
 
     @property
@@ -128,11 +128,13 @@ class OutlineEditor(QWidget):
 
         buttons = QHBoxLayout()
         buttons.addStretch(1)
-        discard = QPushButton("Discard")
+        discard = QPushButton()
+        tl.text(discard, "Discard")
         discard.clicked.connect(self.discarded.emit)
         buttons.addWidget(discard)
 
-        self._start = QPushButton("Start research")
+        self._start = QPushButton()
+        tl.text(self._start, "Start research")
         self._start.setProperty("role", "primary")
         self._start.clicked.connect(self._on_start)
         buttons.addWidget(self._start)
@@ -145,10 +147,11 @@ class OutlineEditor(QWidget):
         self._clear_cards()
         self._warning.setVisible(False)
 
-        self._scope.setText(plan.scope_note or "The appliance proposed this outline from your archive.")
-        self._cost.setText(
-            f"Roughly {plan.estimated_minutes} minutes; chat and search are unavailable while it runs."
-        )
+        # The scope note is written by the engine, in the report's language: shown as it is
+        tl.text(self._scope, tl.plain(plan.scope_note) if plan.scope_note
+                else "The appliance proposed this outline from your material.")
+        tl.text(self._cost, "Roughly {minutes} minutes; chat and search are unavailable while it runs.",
+                minutes=plan.estimated_minutes)
 
         for section in plan.sections:
             card = _SectionCard(section)
@@ -163,7 +166,7 @@ class OutlineEditor(QWidget):
 
     def _on_remove(self, key: str) -> None:
         if len(self._cards) == 1:
-            self._warn("A report needs at least one section.")
+            self._warn(tr("A report needs at least one section."))
             return
         for card in list(self._cards):
             if card.key == key:
@@ -178,10 +181,10 @@ class OutlineEditor(QWidget):
         sections = [card.to_draft() for card in self._cards]
         untitled = [index + 1 for index, s in enumerate(sections) if not s.title]
         if untitled:
-            self._warn(f"Section {untitled[0]} needs a heading before this can run.")
+            self._warn(tr("Section {number} needs a heading before this can run.", number=untitled[0]))
             return
         if not sections:
-            self._warn("A report needs at least one section.")
+            self._warn(tr("A report needs at least one section."))
             return
 
         self._warning.setVisible(False)
@@ -201,7 +204,7 @@ class OutlineEditor(QWidget):
     # ---------- plumbing ----------
 
     def _warn(self, message: str) -> None:
-        self._warning.setText(message)
+        tl.text(self._warning, tl.plain(message))
         self._warning.setProperty("role", "banner-warning")
         self._warning.style().unpolish(self._warning)
         self._warning.style().polish(self._warning)

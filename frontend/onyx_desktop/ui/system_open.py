@@ -17,6 +17,7 @@ from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 
 from onyx_desktop.domain.entities import Evidence
+from onyx_desktop.utils.i18n import tr
 
 logger = logging.getLogger(__name__)
 
@@ -31,16 +32,16 @@ def open_source(evidence: Evidence) -> Optional[str]:
     path = evidence.clip_path
     if not path:
         return (
-            "The source file for this citation is not available, so there is nothing to open."
+            tr("The source file for this citation is not available, so there is nothing to open.")
         )
 
     # A vault row can outlive its file. Saying so beats the desktop quietly doing nothing.
     if not os.path.exists(path):
         logger.warning(f"Cited file is missing from the vault: {path}")
-        return f"This file is no longer available: {os.path.basename(path)}"
+        return tr("This file is no longer available: {name}", name=os.path.basename(path))
 
     if not QDesktopServices.openUrl(QUrl.fromLocalFile(path)):
-        return (
+        return tr(
             "The desktop could not open this file — no default application is registered "
             "for this file type."
         )

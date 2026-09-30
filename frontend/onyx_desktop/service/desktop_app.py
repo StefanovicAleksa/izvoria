@@ -102,11 +102,15 @@ def run(
     app.setApplicationName("Onyx")
     app.setOrganizationName("Onyx")
     from onyx_desktop.ui import appearance
+    from onyx_desktop.utils import i18n
 
     # Before any widget exists: widgets read the palette's colours while they build themselves. The in-app
     # switch is the user's latest word, so it beats the environment but not an explicit flag.
     theme.use(mode or appearance.saved_mode() or os.environ.get("ONYX_MODE") or theme.DEFAULT_MODE)
     theme.apply_to(app)
+    # Same order for the display language: the choice made in the app, then the environment, then English
+    display = appearance.saved_display_language() or os.environ.get("ONYX_DISPLAY_LANGUAGE") or i18n.BASE
+    i18n.use(display if display in {language.code for language in i18n.available()} else i18n.BASE)
 
     relay = LogRelay()
     configure_logging(relay)

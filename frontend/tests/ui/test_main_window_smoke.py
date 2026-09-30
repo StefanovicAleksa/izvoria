@@ -245,6 +245,61 @@ class TestModeSwitch:
         assert dark_citation not in bubble._body_label.text()
 
 
+class TestDisplayLanguage:
+    """The app's own text switches language in place, separately from the language answers are written in."""
+
+    def test_switching_relabels_the_whole_window_and_back(self, window):
+        from onyx_desktop.ui import appearance
+        from onyx_desktop.utils import i18n
+
+        window.show()
+        window._bridge.boot()
+        pump(600)
+        answer_language = window._bridge.active_language
+
+        window.set_display_language("sr")
+
+        assert i18n.current() == "sr"
+        assert window._nav.button(0).text() == "Razgovor"
+        assert window._stop_button.text() == "Zaustavi sistem"
+        assert window._card_state.text() == "Spreman"
+        assert window._display_language.text() == "SR"
+        assert appearance.saved_display_language() == "sr"
+        # The appliance's language is its own setting and does not move
+        assert window._bridge.active_language == answer_language
+
+        window.set_display_language("en")
+        assert window._nav.button(0).text() == "Chat"
+
+    def test_dynamic_text_already_on_screen_is_re_said(self, window):
+        window.show()
+        window._bridge.boot()
+        pump(600)
+        window._bridge.run_search("q", SearchMode.STANDARD, 5)
+        pump(600)
+        assert window._search._summary.text().startswith("5 results for")
+
+        window.set_display_language("sr")
+
+        assert window._search._summary.text().startswith("5 rezultata za")
+        assert "rezultat" in window._search._history._list.item(0).text()
+
+    def test_it_works_while_the_appliance_is_busy(self, window):
+        window.show()
+        window._bridge.boot()
+        pump(600)
+        window._bridge.run_search("q", SearchMode.STANDARD, 5)
+        assert window._bridge.is_busy
+
+        window.set_display_language("sr")
+        assert window._nav.button(1).text() == "Pretraga"
+        pump(600)
+
+    def test_the_picker_lists_every_display_language_by_its_own_name(self, window):
+        names = [action.text() for action in window._display_language.menu().actions()]
+        assert names[:2] == ["English", "Srpski"]
+
+
 class TestMainWindowShutdown:
     def test_closing_stops_the_engine_and_lets_the_window_close(self, qt_app, stub_gateway):
         bridge = EngineBridge(stub_gateway)

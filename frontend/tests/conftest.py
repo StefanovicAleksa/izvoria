@@ -102,3 +102,13 @@ def _isolate_settings(tmp_path):
     for fmt in (QSettings.Format.NativeFormat, QSettings.Format.IniFormat):
         QSettings.setPath(fmt, QSettings.Scope.UserScope, str(tmp_path / "settings"))
     yield
+
+
+@pytest.fixture(autouse=True)
+def _english_display_language():
+    """Tests assert on English text, so every test starts and ends with the app in English."""
+    from onyx_desktop.utils import i18n
+
+    i18n.use(i18n.BASE)
+    yield
+    i18n.use(i18n.BASE)

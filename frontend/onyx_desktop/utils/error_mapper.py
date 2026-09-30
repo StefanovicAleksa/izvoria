@@ -24,65 +24,66 @@ from onyx_desktop.exceptions.gateway import (
     InvalidRequestError,
     OutOfMemoryError,
 )
+from onyx_desktop.utils.i18n import N_, tr
 
 # Engine exception class name -> (desktop exception, operator-facing sentence).
 # Names come from app/engine/exceptions/ and the feature exception modules.
 _BY_NAME: Dict[str, Tuple[Type[DesktopError], str]] = {
     "EngineOfflineError": (
         ApplianceOfflineError,
-        "The appliance is not running. Start it before asking a question.",
+        N_("The appliance is not running. Start it before asking a question."),
     ),
     "EngineBusyError": (
         ApplianceBusyError,
-        "The appliance is busy adding material and cannot answer questions until it finishes.",
+        N_("The appliance is busy adding material and cannot answer questions until it finishes."),
     ),
     "EngineBootError": (
         ApplianceBootError,
-        "The appliance could not start. Try again, and contact your administrator if it keeps failing.",
+        N_("The appliance could not start. Try again, and contact your administrator if it keeps failing."),
     ),
     "OutOfVramError": (
         OutOfMemoryError,
-        "The appliance does not have enough free memory for this request right now. Try again shortly.",
+        N_("The appliance does not have enough free memory for this request right now. Try again shortly."),
     ),
     "GenerationOOMError": (
         OutOfMemoryError,
-        "This request was too large to answer. A shorter conversation or fewer sources usually works.",
+        N_("This request was too large to answer. A shorter conversation or fewer sources usually works."),
     ),
     "CudaCrashError": (
         EngineCallFailedError,
-        "The appliance ran into a hardware fault and needs to be restarted.",
+        N_("The appliance ran into a hardware fault and needs to be restarted."),
     ),
     "ContextLengthExceededError": (
         InvalidRequestError,
-        "This conversation has grown too long. Start a new conversation to continue.",
+        N_("This conversation has grown too long. Start a new conversation to continue."),
     ),
     "ContextWindowExceededError": (
         InvalidRequestError,
-        "This conversation has grown too long. Start a new conversation to continue.",
+        N_("This conversation has grown too long. Start a new conversation to continue."),
     ),
     "ModelNotFoundError": (
         ApplianceBootError,
-        "The appliance is missing some of its files. Contact your administrator.",
+        N_("The appliance is missing some of its files. Contact your administrator."),
     ),
     "ModelLoadError": (
         ApplianceBootError,
-        "The appliance could not load one of its components. Contact your administrator.",
+        N_("The appliance could not load one of its components. Contact your administrator."),
     ),
     "MissingClipError": (
         EngineCallFailedError,
-        "The source file for that citation is no longer available.",
+        N_("The source file for that citation is no longer available."),
     ),
     "DatabaseError": (
         EngineCallFailedError,
-        "The appliance could not reach its storage. Contact your administrator if this continues.",
+        N_("The appliance could not reach its storage. Contact your administrator if this continues."),
     ),
     "DatabaseConnectionError": (
         EngineCallFailedError,
-        "The appliance could not reach its storage. Contact your administrator if this continues.",
+        N_("The appliance could not reach its storage. Contact your administrator if this continues."),
     ),
 }
 
-_GENERIC = "The appliance could not complete that request."
+_GENERIC = N_("The appliance could not complete that request.")
 
 
 def map_engine_error(exc: BaseException, context: str = "") -> DesktopError:
@@ -100,18 +101,18 @@ def map_engine_error(exc: BaseException, context: str = "") -> DesktopError:
         match = _BY_NAME.get(klass.__name__)
         if match is not None:
             desktop_class, message = match
-            return desktop_class(message, original_exception=exc)
+            return desktop_class(tr(message), original_exception=exc)
 
     # pydantic rejects a blank prompt before any model loads; surface that as the user's mistake
     # rather than as an appliance failure.
     if type(exc).__name__ == "ValidationError":
         return InvalidRequestError(
-            "That request was not valid. A question cannot be empty, and at most 20 sources "
-            "can be requested.",
+            tr("That request was not valid. A question cannot be empty, and at most 20 sources "
+               "can be requested."),
             original_exception=exc,
         )
 
-    return EngineCallFailedError(_GENERIC, original_exception=exc)
+    return EngineCallFailedError(tr(_GENERIC), original_exception=exc)
 
 
 # ---------- per-file ingestion problems ----------
@@ -119,20 +120,20 @@ def map_engine_error(exc: BaseException, context: str = "") -> DesktopError:
 # Engine messages for a file that was not added, matched to one plain sentence each. The engine's own wording
 # names its components and internal ids, which a person adding files neither needs nor should see.
 _FILE_PROBLEMS = (
-    (("already ingested as",), "It was added before in another language."),
-    (("heard", "not transcribed"), "Its spoken language does not match the one selected."),
-    (("unsupported", "not supported"), "This file type is not supported."),
-    (("corrupt", "could not be read", "cannot be read", "no audio"), "The file could not be read."),
+    (("already ingested as",), N_("It was added before in another language.")),
+    (("heard", "not transcribed"), N_("Its spoken language does not match the one selected.")),
+    (("unsupported", "not supported"), N_("This file type is not supported.")),
+    (("corrupt", "could not be read", "cannot be read", "no audio"), N_("The file could not be read.")),
 )
-_FILE_PROBLEM_FALLBACK = "It could not be processed."
+_FILE_PROBLEM_FALLBACK = N_("It could not be processed.")
 
 
 def file_problem(message: str) -> str:
     lowered = (message or "").lower()
     for needles, sentence in _FILE_PROBLEMS:
         if any(needle in lowered for needle in needles):
-            return sentence
-    return _FILE_PROBLEM_FALLBACK
+            return tr(sentence)
+    return tr(_FILE_PROBLEM_FALLBACK)
 
 
 def file_label(key: str) -> str:

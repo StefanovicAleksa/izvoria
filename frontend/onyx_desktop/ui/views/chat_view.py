@@ -34,11 +34,13 @@ from PySide6.QtWidgets import (
 
 from onyx_desktop.domain.entities import ChatMessage, ConversationRef, Evidence
 from onyx_desktop.domain.enums import ChatMode, MessageRole, TurnOutcome
+from onyx_desktop.ui import translate as tl
 from onyx_desktop.ui.widgets.answer_language import AnswerLanguageLabel
 from onyx_desktop.ui.widgets.history_list import HistoryEntry, HistoryList
 from onyx_desktop.ui.widgets.message_bubble import MessageRow
 from onyx_desktop.ui.widgets.source_panel import SourcePanel
 from onyx_desktop.utils.formatting import when
+from onyx_desktop.utils.i18n import N_, tr, tr_n
 
 _MAX_CLARIFICATION_ROUNDS = 3
 
@@ -74,9 +76,10 @@ class ChatView(QWidget):
 
         # --- far left: past conversations ---
         self._history = HistoryList(
-            "Conversations", "No conversations yet. Ask a question to start one.",
-            deletable=True, noun="conversation",
+            N_("Conversations"), N_("No conversations yet. Ask a question to start one."),
+            deletable=True, delete_label=N_("Delete conversation"), delete_title=N_("Delete conversation"),
         )
+        self._conversations: List[ConversationRef] = []
         self._history.itemChosen.connect(self._on_history_chosen)
         self._history.deleteRequested.connect(self.conversationDeleteRequested)
         splitter.addWidget(self._history)
@@ -88,14 +91,13 @@ class ChatView(QWidget):
         left_layout.setSpacing(10)
 
         header = QHBoxLayout()
-        title = QLabel("Chat")
-        title.setProperty("role", "heading")
-        header.addWidget(title)
+        header.addWidget(tl.label("Chat", role="heading"))
         self._answer_language = AnswerLanguageLabel()
         header.addWidget(self._answer_language)
         header.addStretch(1)
 
-        self._new_button = QPushButton("New conversation")
+        self._new_button = QPushButton()
+        tl.text(self._new_button, "New conversation")
         self._new_button.clicked.connect(self._on_new_conversation)
         header.addWidget(self._new_button)
         left_layout.addLayout(header)
@@ -118,15 +120,13 @@ class ChatView(QWidget):
         right_layout.setContentsMargins(16, 20, 24, 20)
         right_layout.setSpacing(10)
 
-        review_title = QLabel("Source review")
-        review_title.setProperty("role", "heading")
-        right_layout.addWidget(review_title)
+        right_layout.addWidget(tl.label("Source review", role="heading"))
 
-        hint = QLabel(
+        hint = tl.label(
             "Every claim should be checkable. Pick a citation to read the words it came from, "
-            "and open the recording if you want to hear them."
+            "and open the recording if you want to hear them.",
+            role="subtle",
         )
-        hint.setProperty("role", "subtle")
         hint.setWordWrap(True)
         right_layout.addWidget(hint)
 
@@ -148,9 +148,7 @@ class ChatView(QWidget):
         layout.setSpacing(8)
 
         self._input = _Composer()
-        self._input.setPlaceholderText(
-            "Ask a question about your material…  (Enter to send, Shift+Enter for a new line)"
-        )
+        tl.placeholder(self._input, "Ask a question about your material…  (Enter to send, Shift+Enter for a new line)")
         self._input.setFixedHeight(84)
         self._input.submitted.connect(self._on_send)
         layout.addWidget(self._input)
@@ -159,20 +157,19 @@ class ChatView(QWidget):
         controls.setSpacing(8)
 
         self._mode = QComboBox()
-        self._mode.addItem("Quick answer", ChatMode.SINGLE_PASS)
-        self._mode.addItem("Thorough answer", ChatMode.REASONING)
-        self._mode.setToolTip(
-            "A thorough answer looks further and double-checks itself. It is much slower and may ask you to "
-            "narrow the question first."
-        )
+        self._mode.addItem("", ChatMode.SINGLE_PASS)
+        self._mode.addItem("", ChatMode.REASONING)
+        tl.items(self._mode, ["Quick answer", "Thorough answer"])
+        tl.tooltip(self._mode, "A thorough answer looks further and double-checks itself. It is much slower and "
+                               "may ask you to narrow the question first.")
         controls.addWidget(self._mode)
 
-        controls.addWidget(QLabel("Sources:"))
+        controls.addWidget(tl.label("Sources:"))
         self._limit = QSpinBox()
         # The engine's SearchQuery caps limit at 20; anything higher is a validation error.
         self._limit.setRange(1, 20)
         self._limit.setValue(5)
-        self._limit.setToolTip("How many sources the answer may draw on (up to 20)")
+        tl.tooltip(self._limit, "How many sources the answer may draw on (up to 20)")
         controls.addWidget(self._limit)
 
         controls.addStretch(1)
@@ -181,7 +178,8 @@ class ChatView(QWidget):
         self._clarification_hint.setProperty("role", "subtle")
         controls.addWidget(self._clarification_hint)
 
-        self._send = QPushButton("Ask")
+        self._send = QPushButton()
+        tl.text(self._send, "Ask")
         self._send.setProperty("role", "primary")
         self._send.clicked.connect(self._on_send)
         controls.addWidget(self._send)
@@ -202,16 +200,20 @@ class ChatView(QWidget):
         self._send.setEnabled(not busy)
         self._input.setEnabled(not busy)
         self._new_button.setEnabled(not busy)
-        self._send.setText("Working…" if busy else "Ask")
+        tl.text(self._send, "Working…" if busy else "Ask")
 
     def set_conversations(self, conversations: List[ConversationRef]) -> None:
+        self._conversations = list(conversations)
+        tl.on_retranslate(self, "history", self._render_history)
+
+    def _render_history(self) -> None:
         self._history.set_entries([
             HistoryEntry(
                 key=ref.session_id,
                 title=ref.title,
-                subtitle=f"{when(ref.last_at)} · {ref.turn_count} turn{'s' if ref.turn_count != 1 else ''}",
+                subtitle=f"{when(ref.last_at)} · {tr_n(ref.turn_count, '{n} turn', '{n} turns')}",
             )
-            for ref in conversations
+            for ref in self._conversations
         ])
         self._history.select(self._session_id)
 
@@ -231,9 +233,11 @@ class ChatView(QWidget):
         for message in messages:
             self.add_message(message)
             if message.missing_evidence:
-                self._add_system_note(
-                    f"{message.missing_evidence} source(s) this answer cited are no longer available."
-                )
+                self._add_system_note(lambda count=message.missing_evidence: tr_n(
+                    count,
+                    "{n} source this answer cited is no longer available.",
+                    "{n} sources this answer cited are no longer available.",
+                ))
         self._history.select(session_id)
 
     def forget_conversation(self, session_id: uuid.UUID) -> None:
@@ -257,7 +261,7 @@ class ChatView(QWidget):
 
     def show_failure(self, message: str) -> None:
         self._drop_pending()
-        self._add_system_note(message, danger=True)
+        self._add_system_note(tl.plain(message), danger=True)   # already in the display language
 
     # ---------- events ----------
 
@@ -325,22 +329,21 @@ class ChatView(QWidget):
                 self._clarifying_question = self._last_user_text()
             rounds = len(self._clarifications)
             if rounds >= _MAX_CLARIFICATION_ROUNDS:
-                self._add_system_note(
-                    f"Reached the clarification limit ({_MAX_CLARIFICATION_ROUNDS} rounds) "
-                    "without a grounded answer. Try asking a narrower question outright."
-                )
+                self._add_system_note(lambda: tr(
+                    "Reached the clarification limit ({rounds} rounds) without an answer from your material. "
+                    "Try asking a narrower question outright.", rounds=_MAX_CLARIFICATION_ROUNDS,
+                ))
                 self._reset_clarification()
             else:
-                self._clarification_hint.setText(
-                    f"clarifying · round {rounds + 1} of {_MAX_CLARIFICATION_ROUNDS}"
-                )
+                tl.text(self._clarification_hint, "clarifying · round {current} of {total}",
+                        current=rounds + 1, total=_MAX_CLARIFICATION_ROUNDS)
         else:
             self._reset_clarification()
 
     def _reset_clarification(self) -> None:
         self._clarifying_question = None
         self._clarifications = []
-        self._clarification_hint.setText("")
+        tl.text(self._clarification_hint, tl.plain(""))
 
     def _last_user_text(self) -> str:
         for index in reversed(range(self._transcript_layout.count())):
@@ -360,13 +363,10 @@ class ChatView(QWidget):
         self._scroll_to_bottom()
 
     def _show_pending(self, mode: ChatMode) -> None:
-        text = (
-            "Working on a thorough answer… this takes a while."
-            if mode is ChatMode.REASONING
-            else "Answering…"
+        label = tl.label(
+            "Working on a thorough answer… this takes a while." if mode is ChatMode.REASONING else "Answering…",
+            role="subtle",
         )
-        label = QLabel(text)
-        label.setProperty("role", "subtle")
         label.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         self._pending_row = label
         self._insert(label)
@@ -378,10 +378,9 @@ class ChatView(QWidget):
         self._pending_row.deleteLater()
         self._pending_row = None
 
-    def _add_system_note(self, text: str, danger: bool = False) -> None:
-        label = QLabel(text)
+    def _add_system_note(self, text: tl.Source, danger: bool = False) -> None:
+        label = tl.label(text, role="banner-danger" if danger else "banner-warning")
         label.setWordWrap(True)
-        label.setProperty("role", "banner-danger" if danger else "banner-warning")
         self._insert(label)
 
     def _clear_transcript(self) -> None:

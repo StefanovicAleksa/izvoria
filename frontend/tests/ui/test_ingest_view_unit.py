@@ -127,6 +127,15 @@ class TestSteps:
         text = view._report._errors.text()
         assert text == "• talk.mp4: Its spoken language does not match the one selected."
 
+    def test_a_run_reassures_that_a_still_bar_is_normal_and_the_notice_goes_when_done(self, view):
+        assert not view._patience.isVisibleTo(view)
+        self._start(view)
+        assert view._patience.isVisibleTo(view)
+        assert "no need to restart" in view._patience.text()
+
+        view.show_summary(IngestionSummary(target_path="/media", scanned=1, succeeded=1))
+        assert not view._patience.isVisibleTo(view)
+
     def test_there_is_no_engine_log_on_screen(self, view):
         assert not hasattr(view, "_log")
         assert not hasattr(view, "append_log")

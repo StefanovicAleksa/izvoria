@@ -50,6 +50,7 @@ from onyx_desktop.domain.enums import (
 from onyx_desktop.domain.interfaces import IEngineGateway
 from onyx_desktop.exceptions.gateway import ApplianceOfflineError, InvalidRequestError
 from onyx_desktop.utils.error_mapper import map_engine_error
+from onyx_desktop.utils.i18n import tr
 
 logger = logging.getLogger(__name__)
 
@@ -218,7 +219,7 @@ class OnyxEngineGateway(IEngineGateway):
         try:
             stored = engine.get_report(plan.report_id)
             if stored is None:
-                raise InvalidRequestError("That research plan is no longer available; scope it again.")
+                raise InvalidRequestError(tr("That research plan is no longer available; scope it again."))
 
             approved = self._apply_edits(stored.plan, plan)
             if mode is ReportMode.EXHAUSTIVE:
@@ -344,7 +345,7 @@ class OnyxEngineGateway(IEngineGateway):
         try:
             record = engine.get_search(record_id)
             if record is None:
-                raise InvalidRequestError("That search is no longer in the history.")
+                raise InvalidRequestError(tr("That search is no longer in the history."))
             chunks = {c.chunk_id: c for c in engine.get_chunks(list(record.chunk_ids))}
             hits = []
             for rank, (chunk_id, score) in enumerate(zip(record.chunk_ids, record.scores), start=1):
@@ -386,7 +387,7 @@ class OnyxEngineGateway(IEngineGateway):
         try:
             report = engine.get_report(report_id)
             if report is None:
-                raise InvalidRequestError("That report no longer exists.")
+                raise InvalidRequestError(tr("That report no longer exists."))
             return self._map_report(report)
         except Exception as exc:
             raise map_engine_error(exc, context="Loading a research report")
@@ -396,7 +397,7 @@ class OnyxEngineGateway(IEngineGateway):
         try:
             report = engine.get_report(report_id)
             if report is None:
-                raise InvalidRequestError("That research plan is no longer available; scope it again.")
+                raise InvalidRequestError(tr("That research plan is no longer available; scope it again."))
             expected_job_count, estimated_minutes = engine.plan_cost(report.plan)
             corpus = report.corpus
             return self._plan_draft(
@@ -770,5 +771,5 @@ class OnyxEngineGateway(IEngineGateway):
 
     def _require_engine(self):
         if self._engine is None:
-            raise ApplianceOfflineError("The appliance is not running. Start it first.")
+            raise ApplianceOfflineError(tr("The appliance is not running. Start it first."))
         return self._engine
