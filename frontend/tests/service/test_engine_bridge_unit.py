@@ -177,6 +177,74 @@ class TestShutdown:
         assert instance.stop(timeout_ms=5000) is True
 
 
+class TestStopAppliance:
+    """Stopping from the UI frees the engine but keeps the worker, so the same window can start it again."""
+
+    def test_it_is_refused_before_boot(self, bridge):
+        assert bridge.can_stop is False
+        assert bridge.stop_appliance() is None
+        assert bridge.status is ApplianceStatus.OFFLINE
+
+    def test_it_is_refused_while_a_job_is_in_flight(self, bridge):
+        bridge.boot()
+        wait_for(bridge.booted)
+
+        bridge.send_chat("one", SESSION_ID, ChatMode.SINGLE_PASS, 5)
+        assert bridge.can_stop is False
+        assert bridge.stop_appliance() is None
+
+        wait_for(bridge.chatFinished)
+        assert bridge.can_stop is True
+
+    def test_it_shuts_the_engine_down_and_goes_offline(self, bridge, stub_gateway):
+        bridge.boot()
+        wait_for(bridge.booted)
+        states = []
+        bridge.busyChanged.connect(states.append)
+
+        assert bridge.stop_appliance() is not None
+        wait_for(bridge.stopped)
+
+        assert stub_gateway._booted is False
+        assert bridge.status is ApplianceStatus.OFFLINE
+        assert bridge.is_busy is False
+        assert states == [True, False]
+        assert bridge._thread.isRunning() is True
+        assert bridge.history_available is False
+
+    def test_the_appliance_boots_again_after_a_stop(self, bridge, stub_gateway):
+        bridge.boot()
+        wait_for(bridge.booted)
+        bridge.stop_appliance()
+        wait_for(bridge.stopped)
+
+        bridge.boot()
+        wait_for(bridge.booted)
+
+        assert stub_gateway._booted is True
+        assert bridge.status is ApplianceStatus.READY
+
+    def test_history_is_closed_while_stopping(self, bridge):
+        bridge.boot()
+        wait_for(bridge.booted)
+
+        bridge.stop_appliance()
+        assert bridge.list_conversations() is None
+        wait_for(bridge.stopped)
+
+    def test_a_failed_boot_can_be_retried(self, bridge, stub_gateway, monkeypatch):
+        real_boot = stub_gateway.boot
+        monkeypatch.setattr(stub_gateway, "boot", lambda: (_ for _ in ()).throw(RuntimeError("db down")))
+        bridge.boot()
+        wait_for(bridge.failed)
+        assert bridge.status is ApplianceStatus.ERROR
+
+        monkeypatch.setattr(stub_gateway, "boot", real_boot)
+        bridge.boot()
+        wait_for(bridge.booted)
+        assert bridge.status is ApplianceStatus.READY
+
+
 class TestReportRequests:
     def test_planning_and_running_go_through_the_worker_queue(self, bridge):
         bridge._status = ApplianceStatus.READY

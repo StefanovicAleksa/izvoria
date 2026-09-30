@@ -84,7 +84,7 @@ class ChatView(QWidget):
         # --- left: conversation ---
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        left_layout.setContentsMargins(16, 14, 12, 14)
+        left_layout.setContentsMargins(24, 20, 16, 20)
         left_layout.setSpacing(10)
 
         header = QHBoxLayout()
@@ -115,7 +115,7 @@ class ChatView(QWidget):
         # --- right: review ---
         right = QWidget()
         right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(12, 14, 16, 14)
+        right_layout.setContentsMargins(16, 20, 24, 20)
         right_layout.setSpacing(10)
 
         review_title = QLabel("Source review")
@@ -149,7 +149,7 @@ class ChatView(QWidget):
 
         self._input = _Composer()
         self._input.setPlaceholderText(
-            "Ask a question about the ingested material…  (Enter to send, Shift+Enter for a new line)"
+            "Ask a question about your material…  (Enter to send, Shift+Enter for a new line)"
         )
         self._input.setFixedHeight(84)
         self._input.submitted.connect(self._on_send)
@@ -159,11 +159,11 @@ class ChatView(QWidget):
         controls.setSpacing(8)
 
         self._mode = QComboBox()
-        self._mode.addItem("Chat — single pass", ChatMode.SINGLE_PASS)
-        self._mode.addItem("Reasoned Answer — multi-pass", ChatMode.REASONING)
+        self._mode.addItem("Quick answer", ChatMode.SINGLE_PASS)
+        self._mode.addItem("Thorough answer", ChatMode.REASONING)
         self._mode.setToolTip(
-            "Reasoned Answer mode reasons over several retrieval rounds and self-critiques its answer. "
-            "It is substantially slower and often asks a clarifying question first."
+            "A thorough answer looks further and double-checks itself. It is much slower and may ask you to "
+            "narrow the question first."
         )
         controls.addWidget(self._mode)
 
@@ -172,7 +172,7 @@ class ChatView(QWidget):
         # The engine's SearchQuery caps limit at 20; anything higher is a validation error.
         self._limit.setRange(1, 20)
         self._limit.setValue(5)
-        self._limit.setToolTip("How many retrieved chunks the answer may draw on (engine max: 20)")
+        self._limit.setToolTip("How many sources the answer may draw on (up to 20)")
         controls.addWidget(self._limit)
 
         controls.addStretch(1)
@@ -232,8 +232,7 @@ class ChatView(QWidget):
             self.add_message(message)
             if message.missing_evidence:
                 self._add_system_note(
-                    f"{message.missing_evidence} source(s) this answer cited are no longer in the index "
-                    "(the file was re-ingested or removed)."
+                    f"{message.missing_evidence} source(s) this answer cited are no longer available."
                 )
         self._history.select(session_id)
 
@@ -362,9 +361,9 @@ class ChatView(QWidget):
 
     def _show_pending(self, mode: ChatMode) -> None:
         text = (
-            "Reasoning over several retrieval rounds… this takes a while."
+            "Working on a thorough answer… this takes a while."
             if mode is ChatMode.REASONING
-            else "Retrieving, scrubbing and answering…"
+            else "Answering…"
         )
         label = QLabel(text)
         label.setProperty("role", "subtle")

@@ -68,10 +68,22 @@ _LANGUAGES = (
     LanguageOption(code="sr", name="Srpski"),
 )
 
-_PHASES = [
-    "scan", "ingest", "audio_extraction", "vad", "transcribe",
-    "diarize", "contextual_retrieval", "context_unification", "rag_indexing",
-]
+# The jobs each batch pipeline reports, in order (app/orchestration/service/pipelines/), so the Ingest view's
+# steps move the way they do on the real appliance.
+_AUDIO_JOBS = ["vad", "domain_adaptation", "transcribe", "hallucination_correction", "diarize",
+               "sentence_reconstruction", "phonetic_correction", "contextual_retrieval"]
+_PHASES_BY_MODE = {
+    IngestMode.VIDEO: ["file_ingest", "audio_extraction", *_AUDIO_JOBS, "visual_cue_detection",
+                       "frame_extraction", "visual_analysis", "visual_hallucination_correction",
+                       "visual_context_synthesis", "context_unification", "rag_indexing", "clip_extraction"],
+    IngestMode.AUDIO: ["file_ingest", "audio_extraction", *_AUDIO_JOBS, "context_unification", "rag_indexing"],
+    IngestMode.DOCUMENT: ["file_ingest", "document_conversion", "document_contextualization",
+                          "context_unification", "rag_indexing"],
+    IngestMode.IMAGE: ["file_ingest", "image_description", "context_unification", "rag_indexing"],
+}
+
+
+_NEW = object()  # a fresh source id per tick, for the report phases that have no file behind them
 
 
 class StubEngineGateway(IEngineGateway):
@@ -221,11 +233,14 @@ class StubEngineGateway(IEngineGateway):
         self._ingesting = True
         try:
             files = 3
-            for phase in _PHASES:
+            sources = [uuid.uuid4() for _ in range(files)]
+            phases = _PHASES_BY_MODE[mode]
+            self._tick("directory_scan", JobProgressState.COMPLETED, 0, source_id=None)
+            for phase in phases:
                 for index in range(files):
-                    self._tick(phase, JobProgressState.STARTED, index)
-                    time.sleep(self._latency * 0.12)
-                    self._tick(phase, JobProgressState.COMPLETED, index)
+                    self._tick(phase, JobProgressState.STARTED, index, source_id=sources[index])
+                    time.sleep(self._latency * 0.05)
+                    self._tick(phase, JobProgressState.COMPLETED, index, source_id=sources[index])
             return IngestionSummary(
                 target_path=path,
                 scanned=files,
@@ -235,8 +250,9 @@ class StubEngineGateway(IEngineGateway):
                 clips_extracted=0 if mode in (IngestMode.DOCUMENT, IngestMode.IMAGE) else 57,
                 pages_converted=42 if mode is IngestMode.DOCUMENT else 0,
                 images_described=files - 1 if mode is IngestMode.IMAGE else 0,
-                duration_seconds=self._latency * len(_PHASES) * files,
-                errors=(("rag_indexing_error_0", "Stub: one file failed on purpose"),),
+                duration_seconds=self._latency * len(phases) * files,
+                errors=((f"{path.rstrip('/')}/stub_file_2.mp4",
+                         "Whisper heard 'de' (probability 0.97) in source stub, not English, so it was not transcribed"),),
             )
         finally:
             self._ingesting = False
@@ -469,13 +485,13 @@ class StubEngineGateway(IEngineGateway):
             section_count=len(plan.sections), evidence_count=len(evidence)), plan=plan, document=document)
         return document
 
-    def _tick(self, phase: str, state: JobProgressState, index: int) -> None:
+    def _tick(self, phase: str, state: JobProgressState, index: int, source_id=_NEW) -> None:
         if self._progress is None:
             return
         self._progress(ProgressTick(
             phase=phase,
             state=state,
-            source_id=uuid.uuid4(),
+            source_id=uuid.uuid4() if source_id is _NEW else source_id,
             detail=f"stub_file_{index}.mp4",
         ))
 

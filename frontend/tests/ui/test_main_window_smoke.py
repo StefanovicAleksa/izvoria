@@ -123,6 +123,128 @@ class TestMainWindowSmoke:
         assert window._chat._clarification_hint.text() != ""
 
 
+class TestApplianceControls:
+    def test_only_start_shows_before_boot(self, window):
+        window.show()
+        assert window._start_button.isVisible() is True
+        assert window._stop_button.isVisible() is False
+
+    def test_stop_replaces_start_once_running(self, window):
+        window.show()
+        window._bridge.boot()
+        pump(600)
+        assert window._start_button.isVisible() is False
+        assert window._stop_button.isVisible() is True
+        assert window._stop_button.isEnabled() is True
+
+    def test_stop_cannot_be_pressed_while_a_job_runs(self, window):
+        window.show()
+        window._bridge.boot()
+        pump(600)
+
+        window._bridge.run_search("q", SearchMode.STANDARD, 5)
+        assert window._stop_button.isEnabled() is False
+
+        pump(600)
+        assert window._stop_button.isEnabled() is True
+
+    def test_stopping_brings_start_back_and_it_starts_again(self, window):
+        window.show()
+        window._bridge.boot()
+        pump(600)
+
+        window._stop_button.click()
+        pump(600)
+        assert window._bridge.status is ApplianceStatus.OFFLINE
+        assert window._start_button.isVisible() is True
+        assert window._stop_button.isVisible() is False
+        assert window._language.isEnabled() is False
+
+        window._start_button.click()
+        pump(600)
+        assert window._bridge.status is ApplianceStatus.READY
+        assert window._stop_button.isEnabled() is True
+
+
+class TestThemes:
+    @pytest.mark.parametrize("mode", ["dark", "light"])
+    def test_the_window_builds_in_each_mode(self, qt_app, stub_gateway, mode):
+        from onyx_desktop.ui import theme
+
+        try:
+            theme.use(mode)
+            theme.apply_to(qt_app)
+            bridge = EngineBridge(stub_gateway)
+            window = MainWindow(bridge, LogRelay(), stub_mode=True)
+            window.show()
+            pump(100)
+            assert window._views.count() == 4
+            bridge.stop(timeout_ms=5000)
+            window.deleteLater()
+        finally:
+            theme.use()
+            theme.apply_to(qt_app)
+
+
+class TestModeSwitch:
+    """Light/dark is switched in place, at any time, and remembered."""
+
+    @pytest.fixture(autouse=True)
+    def _restore_theme(self, qt_app):
+        from onyx_desktop.ui import theme
+
+        yield
+        theme.use()
+        theme.apply_to(qt_app)
+
+    def test_the_toggle_switches_the_whole_app_and_back(self, window, qt_app):
+        from onyx_desktop.ui import appearance, theme
+
+        window.show()
+        assert theme.MODE == "dark"
+        assert window._mode_toggle.toolTip() == "Switch to light mode"
+
+        window._mode_toggle.click()
+
+        assert theme.MODE == "light"
+        assert qt_app.styleSheet() == theme.STYLESHEET
+        assert window._mode_toggle.toolTip() == "Switch to dark mode"
+        assert appearance.saved_mode() == "light"
+
+        window._mode_toggle.click()
+        assert theme.MODE == "dark"
+        assert appearance.saved_mode() == "dark"
+
+    def test_it_works_while_the_appliance_is_busy(self, window):
+        from onyx_desktop.ui import theme
+
+        window.show()
+        window._bridge.boot()
+        pump(600)
+        window._bridge.run_search("q", SearchMode.STANDARD, 5)
+        assert window._bridge.is_busy is True
+
+        window._mode_toggle.click()
+        assert theme.MODE == "light"
+        pump(600)
+
+    def test_citations_already_on_screen_take_the_new_colour(self, window):
+        from onyx_desktop.ui import theme
+        from onyx_desktop.ui.widgets.message_bubble import MessageBubble
+
+        window.show()
+        window._chat.add_message(ChatMessage(role=MessageRole.ASSISTANT, text="Signed on the 14th [Doc 1]."))
+        (bubble,) = window.findChildren(MessageBubble)
+        dark_citation = theme.CITATION
+        assert dark_citation in bubble._body_label.text()
+
+        window.set_mode("light")
+
+        assert theme.CITATION != dark_citation
+        assert theme.CITATION in bubble._body_label.text()
+        assert dark_citation not in bubble._body_label.text()
+
+
 class TestMainWindowShutdown:
     def test_closing_stops_the_engine_and_lets_the_window_close(self, qt_app, stub_gateway):
         bridge = EngineBridge(stub_gateway)
@@ -179,7 +301,7 @@ class TestMainWindowHistory:
         pump(400)
 
         assert booted._search._saved_row.isVisibleTo(booted._search)
-        assert "no longer in the index" in booted._search._saved_banner.text()
+        assert "no longer available" in booted._search._saved_banner.text()
         assert booted._search._input.text() == "retention schedule cover letter"
 
     def test_an_unapproved_report_reopens_in_the_approval_step(self, booted):

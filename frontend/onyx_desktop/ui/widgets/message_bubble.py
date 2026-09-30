@@ -25,7 +25,6 @@ from onyx_desktop.domain.entities import ChatMessage
 from onyx_desktop.domain.enums import MessageRole, TurnOutcome
 from onyx_desktop.ui import theme
 from onyx_desktop.ui.widgets.evidence_card import EvidenceCard
-from onyx_desktop.ui.widgets.reasoning_trace import ReasoningTrace
 from onyx_desktop.utils.formatting import duration, split_doc_tags
 
 
@@ -69,15 +68,12 @@ class MessageBubble(QFrame):
 
         if self._message.critique_unresolved:
             layout.addWidget(self._banner(
-                "The answer's own self-critique had unresolved concerns about how well the "
-                "evidence supports it. Check the citations closely.",
+                "Parts of this answer are only weakly supported by the sources. Check the citations "
+                "closely.",
                 "banner-warning",
             ))
 
         layout.addWidget(self._body())
-
-        if self._message.reasoning:
-            layout.addWidget(ReasoningTrace(self._message.reasoning))
 
         for evidence in self._message.evidence:
             card = EvidenceCard(evidence)
@@ -93,10 +89,7 @@ class MessageBubble(QFrame):
     def _speaker_label(self) -> QLabel:
         who = "You" if self._message.role is MessageRole.USER else "Onyx"
         label = QLabel(who)
-        label.setStyleSheet(
-            f"color: {theme.TEXT_MUTED}; font-size: 11px; font-weight: 600; "
-            "letter-spacing: 0.5px;"
-        )
+        label.setProperty("role", "speaker")
         return label
 
     def _body(self) -> QLabel:
@@ -108,10 +101,19 @@ class MessageBubble(QFrame):
         label = QLabel()
         label.setWordWrap(True)
         label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._body_label = label
+        self._render_body()
+        return label
 
+    def apply_theme(self) -> None:
+        """The citation colour is inside the rich text, out of the stylesheet's reach, so it is re-rendered."""
+        self._render_body()
+
+    def _render_body(self) -> None:
+        label = self._body_label
         if self._message.role is MessageRole.USER:
             label.setText(self._message.text)
-            return label
+            return
 
         parts = []
         for segment, doc_number in split_doc_tags(self._message.text):
@@ -125,12 +127,9 @@ class MessageBubble(QFrame):
                     f'<span style="color:{theme.CITATION}; font-weight:600;">{escaped}</span>'
                 )
         label.setText("".join(parts))
-        return label
 
     def _footer(self) -> Optional[QLabel]:
         bits = []
-        if self._message.total_iterations:
-            bits.append(f"{self._message.total_iterations} reasoning iteration(s)")
         if self._message.latency_ms:
             bits.append(duration(self._message.latency_ms / 1000.0))
         if self._message.evidence:

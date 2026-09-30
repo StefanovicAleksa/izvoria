@@ -11,7 +11,7 @@ from onyx_desktop.exceptions.gateway import (
     InvalidRequestError,
     OutOfMemoryError,
 )
-from onyx_desktop.utils.error_mapper import map_engine_error
+from onyx_desktop.utils.error_mapper import file_label, file_problem, map_engine_error
 
 
 # Stand-ins named exactly as the engine's classes are. The mapper matches on class name walked
@@ -101,9 +101,37 @@ class TestMapEngineError:
         original = ApplianceBusyError("Already mapped.")
         assert map_engine_error(original) is original
 
-    def test_context_is_included_only_in_the_generic_message(self):
-        generic = map_engine_error(RuntimeError("boom"), context="Chat")
-        assert "(Chat)" in generic.user_message
+    def test_the_operation_name_is_never_shown(self):
+        # It names an internal operation; the worker logs it with the original exception instead
+        assert map_engine_error(RuntimeError("boom"), context="Video ingestion").user_message == (
+            "The appliance could not complete that request.")
+        assert "Chat" not in map_engine_error(EngineBusyError("x"), context="Chat").user_message
 
-        specific = map_engine_error(EngineBusyError("x"), context="Chat")
-        assert "Chat" not in specific.user_message
+    @pytest.mark.parametrize("name", [
+        "EngineBusyError", "EngineBootError", "OutOfVramError", "GenerationOOMError", "CudaCrashError",
+        "ContextLengthExceededError", "ModelNotFoundError", "ModelLoadError", "DatabaseError",
+    ])
+    def test_messages_do_not_name_the_appliances_components(self, name):
+        message = map_engine_error(type(name, (Exception,), {})("x")).user_message.lower()
+        for word in ("gpu", "vram", "model", "weights", "database", "container", "cuda", "context window"):
+            assert word not in message
+
+
+class TestFileProblems:
+    @pytest.mark.parametrize("engine_message,expected", [
+        ("Whisper heard 'de' (probability 0.97) in source 1234, not English, so it was not transcribed: ...",
+         "Its spoken language does not match the one selected."),
+        ("talk.mp4 was already ingested as 'sr'. Ingest it with 'sr' selected, or reset the index.",
+         "It was added before in another language."),
+        ("CUDA error: an illegal memory access in transcribe", "It could not be processed."),
+    ])
+    def test_engine_wording_becomes_one_plain_sentence(self, engine_message, expected):
+        assert file_problem(engine_message) == expected
+
+    @pytest.mark.parametrize("key,expected", [
+        ("/media/batch/talk.mp4", "talk.mp4"),
+        ("C:\\media\\talk.mp4", "talk.mp4"),
+        ("talk.mp4", "talk.mp4"),
+    ])
+    def test_a_path_key_shows_only_the_file_name(self, key, expected):
+        assert file_label(key) == expected

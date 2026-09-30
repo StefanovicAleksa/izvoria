@@ -44,8 +44,8 @@ def make_evidence(media_kind=MediaKind.CLIP, **overrides):
     return Evidence(**values)
 
 
-def card_for(qt_app, evidence, show_scores=False):
-    widget = EvidenceCard(evidence, show_scores=show_scores)
+def card_for(qt_app, evidence):
+    widget = EvidenceCard(evidence)
     widget.show()
     return widget
 
@@ -120,16 +120,12 @@ class TestReviewGesture:
         card.close()
 
 
-class TestScores:
-    def test_scores_are_shown_only_when_asked(self, qt_app):
-        with_scores = card_for(qt_app, make_evidence(), show_scores=True)
-        assert "rrf 0.770" in label_text(with_scores)
-        assert "rerank 0.910" in label_text(with_scores)
-        with_scores.close()
-
-        without = card_for(qt_app, make_evidence(), show_scores=False)
-        assert "rrf" not in label_text(without)
-        without.close()
+class TestWhatIsShown:
+    def test_ranking_scores_are_never_shown(self, qt_app):
+        card = card_for(qt_app, make_evidence())
+        text = label_text(card)
+        assert "rrf" not in text and "rerank" not in text and "0.770" not in text
+        card.close()
 
 
 class TestImageEvidence:
@@ -143,7 +139,7 @@ class TestImageEvidence:
                                               location="image"))
 
         assert open_button(card).text() == "Open image ↗"
-        assert "machine description" in open_button(card).toolTip()
+        assert "automatic description" in open_button(card).toolTip()
         pixmap = card._thumbnail.pixmap()
         assert card._thumbnail.isVisible() and (pixmap.width(), pixmap.height()) == (180, 90)
         card.close()

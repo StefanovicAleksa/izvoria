@@ -81,7 +81,13 @@ def _sample_clip() -> Optional[str]:
     return None
 
 
-def run(argv: List[str], stub: bool = False, autostart: bool = False) -> int:
+def run(
+    argv: List[str],
+    stub: bool = False,
+    autostart: bool = False,
+    mode: Optional[str] = None,
+) -> int:
+    """`mode` picks light or dark; None falls back to the mode last picked in the app, then ONYX_MODE, then dark."""
     # Imported here, after apply_runtime_environment() has run.
     from PySide6.QtWidgets import QApplication
 
@@ -95,7 +101,12 @@ def run(argv: List[str], stub: bool = False, autostart: bool = False) -> int:
     app = QApplication(argv)
     app.setApplicationName("Onyx")
     app.setOrganizationName("Onyx")
-    app.setStyleSheet(theme.STYLESHEET)
+    from onyx_desktop.ui import appearance
+
+    # Before any widget exists: widgets read the palette's colours while they build themselves. The in-app
+    # switch is the user's latest word, so it beats the environment but not an explicit flag.
+    theme.use(mode or appearance.saved_mode() or os.environ.get("ONYX_MODE") or theme.DEFAULT_MODE)
+    theme.apply_to(app)
 
     relay = LogRelay()
     configure_logging(relay)

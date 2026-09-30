@@ -14,6 +14,7 @@ button is disabled *with a reason*, never quietly hidden: an operator needs to b
 "this claim has no reviewable source" apart from "I forgot to look".
 """
 
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import Qt, Signal
@@ -28,9 +29,8 @@ from PySide6.QtWidgets import (
 
 from onyx_desktop.domain.entities import Evidence
 from onyx_desktop.domain.enums import MediaKind
-from onyx_desktop.ui import theme
 from onyx_desktop.ui.widgets.image_thumbnail import set_thumbnail
-from onyx_desktop.utils.formatting import location, score, speaker_summary, timespan
+from onyx_desktop.utils.formatting import location, speaker_summary, timespan
 
 
 class EvidenceCard(QFrame):
@@ -39,13 +39,12 @@ class EvidenceCard(QFrame):
     openRequested = Signal(object)     # Evidence -- launch the system player now
     reviewRequested = Signal(object)   # Evidence -- show it in the review panel
 
-    def __init__(self, evidence: Evidence, show_scores: bool = False,
-                 parent: Optional[QWidget] = None):
+    def __init__(self, evidence: Evidence, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._evidence = evidence
         self.setProperty("role", "card")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._build(show_scores)
+        self._build()
 
     @property
     def evidence(self) -> Evidence:
@@ -56,7 +55,7 @@ class EvidenceCard(QFrame):
         self.reviewRequested.emit(self._evidence)
         super().mousePressEvent(event)
 
-    def _build(self, show_scores: bool) -> None:
+    def _build(self) -> None:
         layout = QVBoxLayout(self)
         layout.setContentsMargins(12, 10, 12, 12)
         layout.setSpacing(8)
@@ -80,19 +79,9 @@ class EvidenceCard(QFrame):
 
         header.addStretch(1)
 
-        # Scores only mean something on ranked results. A hydrated citation has none, so showing
-        # them there would be inventing precision that does not exist.
-        if show_scores:
-            score_text = f"rrf {score(self._evidence.relevance_score)}"
-            if self._evidence.rerank_score is not None:
-                score_text += f" · rerank {score(self._evidence.rerank_score)}"
-            scores = QLabel(score_text)
-            scores.setProperty("role", "subtle")
-            header.addWidget(scores)
-
         layout.addLayout(header)
 
-        excerpt = QLabel(self._evidence.excerpt or "(no transcript text available for this chunk)")
+        excerpt = QLabel(self._evidence.excerpt or "(no text available for this excerpt)")
         excerpt.setWordWrap(True)
         excerpt.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         if not self._evidence.excerpt:
@@ -115,22 +104,21 @@ class EvidenceCard(QFrame):
         footer.addWidget(self._open_button())
 
         if self._evidence.clip_path:
-            path = QLabel(self._evidence.clip_path)
+            path = QLabel(Path(self._evidence.clip_path).name)
             path.setProperty("role", "subtle")
             path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
-            path.setToolTip(self._evidence.clip_path)
             footer.addWidget(path, stretch=1)
         else:
-            missing = QLabel("source unresolved")
-            missing.setStyleSheet(f"color: {theme.WARNING};")
+            missing = QLabel("source not available")
+            missing.setProperty("role", "warning-text")
             footer.addWidget(missing, stretch=1)
 
         layout.addLayout(footer)
 
     def _open_button(self) -> QPushButton:
         """
-        One click straight to the player. The label names what will actually open, since a chunk
-        without an extracted clip yields the entire recording rather than the excerpt.
+        One click straight to the player. The label names what will actually open, since an excerpt
+        without its own clip opens the entire recording.
         """
         button = QPushButton()
         button.setProperty("role", "primary")
@@ -139,21 +127,21 @@ class EvidenceCard(QFrame):
             button.setText("Open source")
             button.setEnabled(False)
             button.setToolTip(
-                "No source file was resolved for this citation, so there is nothing to open"
+                "The source file for this citation is not available"
             )
             return button
 
         button.clicked.connect(lambda: self.openRequested.emit(self._evidence))
         if self._evidence.media_kind is MediaKind.IMAGE:
             button.setText("Open image ↗")
-            button.setToolTip("Opens the image in your image viewer — the excerpt is a machine description of it")
+            button.setToolTip("Opens the image in your image viewer — the excerpt is an automatic description of it")
         elif self._evidence.media_kind is MediaKind.DOCUMENT:
             button.setText("Open document ↗")
             button.setToolTip(f"Opens the whole document — the excerpt is at {location(self._evidence)}")
         elif self._evidence.media_kind is MediaKind.FULL_SOURCE:
             button.setText("Open recording ↗")
             button.setToolTip(
-                "No clip was cut for this chunk, so the whole recording opens — skip to "
+                "Opens the whole recording — skip to "
                 f"{timespan(self._evidence.start_sec, self._evidence.end_sec)}"
             )
         else:

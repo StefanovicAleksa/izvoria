@@ -61,7 +61,7 @@ class SearchView(QWidget):
 
         left = QWidget()
         layout = QVBoxLayout(left)
-        layout.setContentsMargins(16, 14, 12, 14)
+        layout.setContentsMargins(24, 20, 16, 20)
         layout.setSpacing(10)
 
         header = QHBoxLayout()
@@ -75,8 +75,7 @@ class SearchView(QWidget):
         layout.addLayout(header)
 
         blurb = QLabel(
-            "Raw retrieval, with no answer generated on top. Use it to check what the index "
-            "returns for a query."
+            "Find passages in your material without generating an answer."
         )
         blurb.setProperty("role", "subtle")
         blurb.setWordWrap(True)
@@ -86,7 +85,7 @@ class SearchView(QWidget):
         controls.setSpacing(8)
 
         self._input = QLineEdit()
-        self._input.setPlaceholderText("Search the ingested material…")
+        self._input.setPlaceholderText("Search your material…")
         self._input.returnPressed.connect(self._on_search)
         controls.addWidget(self._input, stretch=1)
 
@@ -94,8 +93,7 @@ class SearchView(QWidget):
         self._mode.addItem("Standard", SearchMode.STANDARD)
         self._mode.addItem("Verified", SearchMode.VERIFIED)
         self._mode.setToolTip(
-            "Verified adds an SLM relevance pass that drops chunks which do not actually answer "
-            "the query. Slower, and it loads a second model."
+            "Verified keeps only the passages that directly answer the query. Slower."
         )
         controls.addWidget(self._mode)
 
@@ -117,7 +115,7 @@ class SearchView(QWidget):
         self._saved_banner.setWordWrap(True)
         saved_row.addWidget(self._saved_banner, stretch=1)
         self._run_again = QPushButton("Run again")
-        self._run_again.setToolTip("Search again with the same words and mode, against today's index.")
+        self._run_again.setToolTip("Search again with the same words and mode, against the material as it is now.")
         self._run_again.clicked.connect(self._on_run_again)
         saved_row.addWidget(self._run_again)
         self._saved_row = QWidget()
@@ -141,7 +139,7 @@ class SearchView(QWidget):
 
         right = QWidget()
         right_layout = QVBoxLayout(right)
-        right_layout.setContentsMargins(12, 14, 16, 14)
+        right_layout.setContentsMargins(16, 20, 24, 20)
         right_layout.setSpacing(10)
 
         review_title = QLabel("Source review")
@@ -190,7 +188,7 @@ class SearchView(QWidget):
         if outcome.is_saved:
             note = f"Saved results from {when(outcome.saved_at)}: what this search returned then."
             if outcome.missing_hits:
-                note += f" {outcome.missing_hits} hit(s) are no longer in the index (re-ingested or removed)."
+                note += f" {outcome.missing_hits} of these results are no longer available."
             self._saved_banner.setText(note)
             self._saved_row.show()
             self._input.setText(outcome.query)
@@ -205,8 +203,7 @@ class SearchView(QWidget):
         )
         if not outcome.hits:
             empty = QLabel(
-                "Nothing matched. Either the material has not been ingested, or the wording is "
-                "far from how it was said on the recording."
+                "Nothing matched. The material may not have been added yet, or try different wording."
             )
             empty.setWordWrap(True)
             empty.setProperty("role", "subtle")
@@ -215,7 +212,7 @@ class SearchView(QWidget):
             return
 
         for hit in outcome.hits:
-            card = EvidenceCard(hit.as_evidence(), show_scores=True)
+            card = EvidenceCard(hit.as_evidence())
             card.reviewRequested.connect(self._on_review)
             card.openRequested.connect(self._on_open)
             self._cards.append(card)

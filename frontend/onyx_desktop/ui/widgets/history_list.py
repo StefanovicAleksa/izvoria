@@ -10,12 +10,16 @@ resume a report) belongs to the view that owns it.
 from dataclasses import dataclass
 from typing import Hashable, List, Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QEvent, QRect, QSize, Qt, Signal
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMessageBox, QPushButton, QVBoxLayout, QWidget,
 )
 
 _KEY_ROLE = Qt.ItemDataRole.UserRole
+# Matches the stylesheet's item padding (7px 8px), plus a little slack so a descender is never clipped
+_ITEM_PADDING_X = 16
+_ITEM_PADDING_Y = 9
 
 
 @dataclass(frozen=True)
@@ -37,7 +41,7 @@ class HistoryList(QWidget):
         self._noun = noun
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 14, 8, 14)
+        layout.setContentsMargins(16, 20, 8, 20)
         layout.setSpacing(8)
 
         heading = QLabel(title)
@@ -47,10 +51,18 @@ class HistoryList(QWidget):
         self._placeholder = QLabel("Start the appliance to see history.")
         self._placeholder.setProperty("role", "subtle")
         self._placeholder.setWordWrap(True)
-        layout.addWidget(self._placeholder)
+        # Takes the list's space while the list is hidden, so the heading stays at the top
+        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(self._placeholder, stretch=1)
 
         self._list = QListWidget()
         self._list.setWordWrap(True)
+        # Titles wrap, so a horizontal scrollbar only ever shows a sliver of nothing
+        self._list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._list.setTextElideMode(Qt.TextElideMode.ElideNone)
+        # Qt's delegate sizes a wrapped item without the stylesheet's padding and before the list has its
+        # width, cutting entries off after the title; each item is sized from its own wrapped text instead.
+        self._list.viewport().installEventFilter(self)
         self._list.setUniformItemSizes(False)
         # Two-line entries with wrapped titles run into each other without a gap.
         self._list.setSpacing(5)
@@ -88,7 +100,25 @@ class HistoryList(QWidget):
         self._placeholder.setText(self._empty_text)
         self._placeholder.setVisible(not entries)
         self._list.setVisible(bool(entries))
+        self._fit_items()
         self._sync_buttons()
+
+    def eventFilter(self, watched, event) -> bool:
+        if watched is self._list.viewport() and event.type() == QEvent.Type.Resize:
+            self._fit_items()
+        return super().eventFilter(watched, event)
+
+    def _fit_items(self) -> None:
+        width = self._list.viewport().width() - 2 * _ITEM_PADDING_X
+        if width <= 0:
+            return
+        metrics = QFontMetrics(self._list.font())
+        for index in range(self._list.count()):
+            item = self._list.item(index)
+            text = metrics.boundingRect(
+                QRect(0, 0, width, 100000), int(Qt.TextFlag.TextWordWrap), item.text()
+            )
+            item.setSizeHint(QSize(width, text.height() + 2 * _ITEM_PADDING_Y))
 
     def set_unavailable(self, text: str) -> None:
         self._list.clear()

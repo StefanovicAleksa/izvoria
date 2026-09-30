@@ -31,12 +31,13 @@ def open_source(evidence: Evidence) -> Optional[str]:
     path = evidence.clip_path
     if not path:
         return (
-            "No source file was resolved for this citation, so there is nothing to open."
+            "The source file for this citation is not available, so there is nothing to open."
         )
 
     # A vault row can outlive its file. Saying so beats the desktop quietly doing nothing.
     if not os.path.exists(path):
-        return f"This file is no longer in the vault:\n{path}"
+        logger.warning(f"Cited file is missing from the vault: {path}")
+        return f"This file is no longer available: {os.path.basename(path)}"
 
     if not QDesktopServices.openUrl(QUrl.fromLocalFile(path)):
         return (

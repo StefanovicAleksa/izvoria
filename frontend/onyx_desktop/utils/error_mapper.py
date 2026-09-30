@@ -2,7 +2,10 @@
 # Path: frontend/onyx_desktop/utils/error_mapper.py
 
 """
-Translates engine exceptions into the desktop hierarchy, with a sentence the operator can act on.
+Translates engine exceptions into the desktop hierarchy, with a plain sentence the person using it can act on.
+
+The sentences never name the appliance's components (models, GPU, database, pipeline stages): the details go
+to the log with the original exception, and the screen says what happened and what to do.
 
 Matching is by class name walked over the exception's MRO rather than by importing
 `app.engine.exceptions`, for two reasons: this module stays importable (and unit-testable) with
@@ -31,58 +34,51 @@ _BY_NAME: Dict[str, Tuple[Type[DesktopError], str]] = {
     ),
     "EngineBusyError": (
         ApplianceBusyError,
-        "The appliance is ingesting media and cannot answer questions until it finishes. "
-        "Ingestion and live answering share the same GPU.",
+        "The appliance is busy adding material and cannot answer questions until it finishes.",
     ),
     "EngineBootError": (
         ApplianceBootError,
-        "The appliance failed to start. Check that the database is running and the model "
-        "weights are present.",
+        "The appliance could not start. Try again, and contact your administrator if it keeps failing.",
     ),
     "OutOfVramError": (
         OutOfMemoryError,
-        "Not enough GPU memory for this step. Close other GPU programs and try again.",
+        "The appliance does not have enough free memory for this request right now. Try again shortly.",
     ),
     "GenerationOOMError": (
         OutOfMemoryError,
-        "The answer model ran out of GPU memory. A shorter conversation or fewer sources "
-        "will usually fit.",
+        "This request was too large to answer. A shorter conversation or fewer sources usually works.",
     ),
     "CudaCrashError": (
         EngineCallFailedError,
-        "The GPU driver reported a fault. The appliance needs to be restarted.",
+        "The appliance ran into a hardware fault and needs to be restarted.",
     ),
     "ContextLengthExceededError": (
         InvalidRequestError,
-        "This conversation is too long for the answer model's context. Start a new "
-        "conversation to continue.",
+        "This conversation has grown too long. Start a new conversation to continue.",
     ),
     "ContextWindowExceededError": (
         InvalidRequestError,
-        "This conversation is too long for the answer model's context. Start a new "
-        "conversation to continue.",
+        "This conversation has grown too long. Start a new conversation to continue.",
     ),
     "ModelNotFoundError": (
         ApplianceBootError,
-        "A model file is missing. Run ./models_download.sh to fetch the weights.",
+        "The appliance is missing some of its files. Contact your administrator.",
     ),
     "ModelLoadError": (
         ApplianceBootError,
-        "A model could not be loaded. Check the model path and the weights file.",
+        "The appliance could not load one of its components. Contact your administrator.",
     ),
     "MissingClipError": (
         EngineCallFailedError,
-        "The source clip for that citation is missing from the vault.",
+        "The source file for that citation is no longer available.",
     ),
     "DatabaseError": (
         EngineCallFailedError,
-        "The appliance could not reach its database. Check that the database container "
-        "is running.",
+        "The appliance could not reach its storage. Contact your administrator if this continues.",
     ),
     "DatabaseConnectionError": (
         EngineCallFailedError,
-        "The appliance could not reach its database. Check that the database container "
-        "is running.",
+        "The appliance could not reach its storage. Contact your administrator if this continues.",
     ),
 }
 
@@ -94,8 +90,8 @@ def map_engine_error(exc: BaseException, context: str = "") -> DesktopError:
     Returns the desktop exception for `exc`, already carrying a user-facing sentence.
 
     A DesktopError passes through untouched so a mapped error is never double-wrapped.
-    `context` names the operation ("Chat", "Standard search") and is appended to the generic
-    message only, where it is the difference between a useless error and a locatable one.
+    `context` names the operation ("Chat", "Standard search"). It is not shown: the worker logs it beside the
+    original exception, which is where locating a failure happens, while the screen gets a plain sentence.
     """
     if isinstance(exc, DesktopError):
         return exc
@@ -115,5 +111,30 @@ def map_engine_error(exc: BaseException, context: str = "") -> DesktopError:
             original_exception=exc,
         )
 
-    detail = f"{_GENERIC} ({context})" if context else _GENERIC
-    return EngineCallFailedError(detail, original_exception=exc)
+    return EngineCallFailedError(_GENERIC, original_exception=exc)
+
+
+# ---------- per-file ingestion problems ----------
+
+# Engine messages for a file that was not added, matched to one plain sentence each. The engine's own wording
+# names its components and internal ids, which a person adding files neither needs nor should see.
+_FILE_PROBLEMS = (
+    (("already ingested as",), "It was added before in another language."),
+    (("heard", "not transcribed"), "Its spoken language does not match the one selected."),
+    (("unsupported", "not supported"), "This file type is not supported."),
+    (("corrupt", "could not be read", "cannot be read", "no audio"), "The file could not be read."),
+)
+_FILE_PROBLEM_FALLBACK = "It could not be processed."
+
+
+def file_problem(message: str) -> str:
+    lowered = (message or "").lower()
+    for needles, sentence in _FILE_PROBLEMS:
+        if any(needle in lowered for needle in needles):
+            return sentence
+    return _FILE_PROBLEM_FALLBACK
+
+
+def file_label(key: str) -> str:
+    """The file's own name when the engine keyed the error by path; otherwise the key as it is."""
+    return str(key).replace("\\", "/").rstrip("/").rsplit("/", 1)[-1] or str(key)
