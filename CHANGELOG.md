@@ -4,6 +4,19 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Warm models for chat and report mode
+
+Every chat turn used to load and free four models: BGE-M3, the reranker, the Qwen2.5-7B scrubber and Qwen3.5-9B. A follow-up turn loaded a fifth, because the query rewrite opened the same Qwen3.5 file under its own `n_ctx`. The orchestrator was a single slot: every acquire evicted everything else.
+
+- **The orchestrator is a budgeted, warm pool.** A model is ACTIVE while held. When a type in `MODEL_KEEP_WARM_TYPES` (embedder, reranker, `QA_GENERATION`, `REPORT_AUTHORING`) is released, it goes IDLE: still in VRAM, handed out again for free, and evicted only when a later load needs the room. The orchestrator then evicts the IDLE set that frees the fewest megabytes (least recently used on a tie), so a 1 GB reranker evicts the 1 GB embedder, not the 7.8 GB report model. Plain LRU did exactly that in the first warm report test.
+  - A waiting acquire (live APIs, every preload) never evicts an ACTIVE model. It loads beside the models in use when it fits, so a preload overlaps the current stage's compute.
+  - A batch acquire (ingestion) still evicts everything, and ingestion now starts with `release_all()`.
+  - `MODEL_KEEP_WARM=False` restores the single slot.
+- **Budgeting uses what a load actually took** (free VRAM before and after, which includes llama.cpp's KV cache). On-disk size was wrong both ways: `models/bge-m3` is 4.3 GB on disk and 1.1 GB loaded. On the 12 GB dev card, BGE-M3 (1090 MB), the reranker (1088 MB) and Qwen3.5-9B at 128K (7788 MB) stay resident together with ~1.1 GB free. The backpack is learned only while exactly one model is in use, and the telemetry thread now reads torch's counters under the orchestrator's lock. Read outside it, a sample could land mid-eviction (a model freed, the peak not yet reset) and record the freed model's size as a spike. That charged 1084 MB (BGE-M3's size) to the embedder and to llama.cpp's Qwen, which allocates nothing through torch, and made the reranker and the answer model evict each other every turn. Measured: no model needs transient memory to load, and reranking 40 long chunks takes 143 MB.
+- **The scrubber loads only when it has something to judge.** When every chunk scores at or above `RETRIEVAL_SCRUBBER_TRUST_RERANK_SCORE`, no model is loaded, and the live pipelines no longer preload it. On a warm card its load evicts the answer model.
+- **The follow-up rewrite runs on the answer model** (`ReasoningAPI(rewrite_manifest=, rewrite_loader=)`), loaded by the QA adapter so it keeps its 128K settings. The Reasoned-Answer loop keeps its own `QA_REASONER` model: it runs beside the answer phase, and sharing one instance there would let one phase's release free it under the other.
+- **Report mode:** scoping leaves the report model warm, so plan → write loads it once instead of twice, and gather rounds reuse the embedder and reranker. `test_deep_research_report_pipeline_integration.py` checks both pool shapes.
+
 ## One appliance, every language (English and Serbian)
 
 A client's material is often mixed: some recordings in English, some in Serbian. An appliance served exactly one language, and it was written into the schema. `fts_document` was generated with that language's stemmer, and starting in another language failed with `IndexLanguageMismatchError`. Now one database holds every language that has a pack.

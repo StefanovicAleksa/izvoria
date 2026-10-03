@@ -67,7 +67,8 @@ class TestLiveVerifiedRetrievalPipelineUnit:
 
         mock_retrieval_phase.preload_model.assert_called_once_with()
         mock_reranking_phase.preload_model.assert_called_once_with()
-        mock_scrubber_phase.preload_model.assert_called_once_with()
+        # The scrubber loads lazily, only for chunks below the rerank trust score, so it is never preloaded
+        mock_scrubber_phase.preload_model.assert_not_called()
         assert mock_reranking_phase.execute.call_args.kwargs == {"top_n": 4}
         mock_scrubber_phase.execute.assert_called_once_with([(rerank_job, reranked_result)])
 

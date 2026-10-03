@@ -5,6 +5,7 @@ import os
 import gc
 import uuid
 import pytest
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
 
 from app.core.config import settings
 from app.core.database.data.engine import Base
@@ -42,6 +43,26 @@ from app.orchestration.service.phases.rag_reranking_phase import RagRerankingPha
 from app.orchestration.service.phases.retrieval_scrubber_phase import RetrievalScrubberPhase
 from app.orchestration.service.phases.qa_generation_phase import QAGenerationPhase
 from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
+
+
+class _CountingLoader:
+    """Wraps a real adapter and counts loads and unloads; everything else passes through."""
+
+    def __init__(self, inner):
+        self._inner = inner
+        self.load_count = 0
+        self.unload_count = 0
+
+    def load(self, manifest):
+        self.load_count += 1
+        return self._inner.load(manifest)
+
+    def unload(self, model) -> bool:
+        self.unload_count += 1
+        return self._inner.unload(model)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
 
 
 class TestLiveQAPipelineIntegration:
@@ -144,13 +165,13 @@ class TestLiveQAPipelineIntegration:
         yield
         clear_gpu()
 
-    @pytest.fixture
-    def pipeline_setup(self):
+    @staticmethod
+    def _build(keep_warm=None):
         job_repo = JobRepository(db_manager)
         job_manager = JobManager(job_repo)
 
         vram_monitor = PyTorchVramMonitor()
-        orchestrator = ModelManagerOrchestrator(vram_monitor)
+        orchestrator = ModelManagerOrchestrator(vram_monitor, keep_warm_types=keep_warm)
         bg_worker = BackgroundModelWorker(orchestrator)
         async_service = AsyncModelService(bg_worker)
 
@@ -161,12 +182,12 @@ class TestLiveQAPipelineIntegration:
         rag_phase = RagRetrievalPhase(job_manager, retrieval_api, async_service, prompt_adapter)
 
         # Scrubber Phase Dependencies
-        scrubber_adapter = QwenRetrievalScrubberAdapter()
+        scrubber_adapter = _CountingLoader(QwenRetrievalScrubberAdapter())
         scrubber_api = RetrievalScrubberAPI(scrubber_adapter, orchestrator)
         scrub_phase = RetrievalScrubberPhase(job_manager, scrubber_api, async_service, scrubber_adapter)
 
         # QA Generation Phase Dependencies
-        qa_adapter = LlamaCppGenerationAdapter()
+        qa_adapter = _CountingLoader(LlamaCppGenerationAdapter())
         qa_api = QAGenerationAPI(qa_adapter, orchestrator)
         qa_phase = QAGenerationPhase(job_manager, qa_api, async_service, qa_adapter)
 
@@ -181,9 +202,62 @@ class TestLiveQAPipelineIntegration:
             scrubber_phase=scrub_phase,
             qa_generation_phase=qa_phase
         )
+        return qa_pipeline, async_service, qa_adapter, scrubber_adapter
 
+    @pytest.fixture
+    def pipeline_setup(self):
+        qa_pipeline, async_service, _, _ = self._build()
         yield qa_pipeline
         async_service.shutdown()
+
+    @pytest.fixture
+    def warm_setup(self):
+        built = self._build(keep_warm=[ModelType.RAG_EMBEDDING, ModelType.RAG_RERANKING, ModelType.QA_GENERATION])
+        yield built
+        built[1].release_all()
+        built[1].shutdown()
+
+    @staticmethod
+    def _chat_with_deadline(qa_pipeline, query, seconds=600):
+        """A turn that parks on a held model never returns; fail instead of hanging the suite."""
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            turn = pool.submit(qa_pipeline.execute_chat, uuid.uuid4(), query)
+            try:
+                return turn.result(timeout=seconds)
+            except FuturesTimeout:
+                pytest.fail(f"a warm chat turn did not finish in {seconds}s: a model acquire is parked")
+
+    @pytest.mark.integration
+    def test_warm_turns_that_need_the_scrubber_complete(self, warm_setup, monkeypatch):
+        """
+        Every chunk below the trust threshold, so every turn loads the scrubber, which does not fit beside the warm
+        answer model. It must evict the idle answer model, and the answer model's preload must come after it.
+        """
+        from app.core.config import settings
+        monkeypatch.setattr(settings, "RETRIEVAL_SCRUBBER_TRUST_RERANK_SCORE", 2.0)
+        qa_pipeline, _, qa_loader, scrubber_loader = warm_setup
+        query = SearchQuery(prompt="What time did the defendant enter the bank, and what were they wearing?", limit=3)
+
+        for _ in range(3):
+            result = self._chat_with_deadline(qa_pipeline, query)
+            assert "red jacket" in result.generated_answer.lower()
+
+        assert scrubber_loader.load_count == 3
+
+    @pytest.mark.integration
+    def test_warm_turns_with_trusted_evidence_load_the_answer_model_once(self, warm_setup, monkeypatch):
+        from app.core.config import settings
+        monkeypatch.setattr(settings, "RETRIEVAL_SCRUBBER_TRUST_RERANK_SCORE", 0.0)
+        qa_pipeline, _, qa_loader, scrubber_loader = warm_setup
+        query = SearchQuery(prompt="What time did the defendant enter the bank, and what were they wearing?", limit=3)
+
+        for _ in range(3):
+            result = self._chat_with_deadline(qa_pipeline, query)
+            assert "red jacket" in result.generated_answer.lower()
+
+        assert scrubber_loader.load_count == 0, "trusted evidence must not load the scrubber"
+        assert qa_loader.load_count == 1, f"the answer model was loaded {qa_loader.load_count} times in 3 turns"
+        assert qa_loader.unload_count == 0
 
     @pytest.mark.integration
     def test_live_qa_pipeline_end_to_end(self, pipeline_setup):

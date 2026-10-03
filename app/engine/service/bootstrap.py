@@ -220,7 +220,8 @@ class OnyxBootstrapper:
         job_manager = JobManager(job_repo, progress_listener=progress_listener)
 
         vram_monitor = PyTorchVramMonitor()
-        orchestrator = ModelManagerOrchestrator(vram_monitor)
+        keep_warm = [ModelType(t) for t in settings.MODEL_KEEP_WARM_TYPES] if settings.MODEL_KEEP_WARM else []
+        orchestrator = ModelManagerOrchestrator(vram_monitor, keep_warm_types=keep_warm)
         bg_worker = BackgroundModelWorker(orchestrator)
         async_service = AsyncModelService(bg_worker)
 
@@ -365,7 +366,8 @@ class OnyxBootstrapper:
 
         # --- Feature: Reasoned Answer (Reasoner + Session Memory) ---
         reasoner_adapter = QwenReasonerAdapter()
-        reasoning_api = ReasoningAPI(adapter=reasoner_adapter, orchestrator=orchestrator)
+        reasoning_api = ReasoningAPI(adapter=reasoner_adapter, orchestrator=orchestrator,
+                                     rewrite_manifest=qa_api.manifest, rewrite_loader=qa_adapter)
 
         session_memory_repo = SessionMemoryRepository(db_manager)
         session_memory_api = SessionMemoryAPI(session_memory_repo)

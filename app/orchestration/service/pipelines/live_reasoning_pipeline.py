@@ -115,7 +115,7 @@ class LiveReasoningPipeline:
             raise WorkflowStateError(f"Pipeline halted: Reranking failed. Errors: {rerank_result.errors}")
         reranked_results = _extract_all(rerank_result, RagRerankingJobResult)
 
-        self._scrubber_phase.preload_model()
+        # Not preloaded: the scrubber API loads its model only when a chunk scores below the rerank trust threshold
         scrub_result = self._scrubber_phase.execute(reranked_results)
         if scrub_result.status == PhaseStatus.FAILED:
             raise WorkflowStateError(f"Pipeline halted: Scrubbing failed. Errors: {scrub_result.errors}")

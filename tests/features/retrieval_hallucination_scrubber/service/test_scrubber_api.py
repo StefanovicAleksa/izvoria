@@ -135,3 +135,34 @@ class TestRerankTrust:
         kept, _ = api.scrub_retrieved_chunks("What does the sign say?", [chunk])
 
         assert kept == [] and adapter.evaluate_relevance.call_count == 1
+
+    def test_all_trusted_chunks_never_load_the_slm(self, adapter, monkeypatch):
+        """On a warm GPU, loading the scrubber evicts the answer model, so a scrub with nothing to judge loads nothing."""
+        from app.core.config import settings
+        monkeypatch.setattr(settings, "RETRIEVAL_SCRUBBER_TRUST_RERANK_SCORE", 0.5)
+        orchestrator = MagicMock()
+        api = RetrievalScrubberAPI(adapter=adapter, orchestrator=orchestrator)
+        first, second = self._chunk("a", 0.93), self._chunk("b", 0.5)
+
+        kept, audits = api.scrub_retrieved_chunks("Q?", [first, second])
+
+        assert kept == [first, second]
+        assert audits == [ScrubAudit(chunk_id=c.chunk_id, is_relevant=True, kept_by_rerank_score=True)
+                          for c in (first, second)]
+        orchestrator.acquire_model.assert_not_called()
+        orchestrator.release_model.assert_not_called()
+        adapter.evaluate_relevance.assert_not_called()
+
+    def test_one_untrusted_chunk_loads_the_slm_once(self, adapter, monkeypatch):
+        from app.core.config import settings
+        monkeypatch.setattr(settings, "RETRIEVAL_SCRUBBER_TRUST_RERANK_SCORE", 0.5)
+        orchestrator = MagicMock()
+        api = RetrievalScrubberAPI(adapter=adapter, orchestrator=orchestrator)
+        adapter.evaluate_relevance.side_effect = lambda **kw: ScrubAudit(chunk_id=kw["chunk_id"], is_relevant=True)
+
+        api.scrub_retrieved_chunks("Q?", [self._chunk("a", 0.93), self._chunk("b", 0.2)])
+
+        orchestrator.acquire_model.assert_called_once()
+        orchestrator.release_model.assert_called_once_with(
+            orchestrator.acquire_model.return_value, adapter, flush=True
+        )

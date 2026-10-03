@@ -3,7 +3,7 @@
 
 import pytest
 import uuid
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from app.engine.service.onyx_engine import OnyxEngine
 from app.engine.domain.enums import EngineState
@@ -305,8 +305,22 @@ class TestOnyxEngineUnit:
 
         engine.ingest_videos("/dummy/path")
 
-        mock_async_service.release_all.assert_called_once_with()
+        # Once before (warm chat models leave the GPU) and once after
+        assert mock_async_service.release_all.call_args_list == [call(), call()]
         assert engine.get_state() == EngineState.ONLINE
+
+    @patch('app.engine.service.onyx_engine.db_manager')
+    def test_ingestion_evicts_warm_models_before_the_pipeline_runs(
+            self, _, engine, mock_media_pipeline, mock_async_service
+    ):
+        engine.start()
+        released_before_run = []
+        mock_media_pipeline.process_directory.side_effect = \
+            lambda *a, **k: released_before_run.append(mock_async_service.release_all.call_count) or {}
+
+        engine.ingest_videos("/dummy/path")
+
+        assert released_before_run == [1]
 
     @patch('app.engine.service.onyx_engine.db_manager')
     def test_failed_chat_releases_all_models(self, _, engine, mock_live_qa_pipeline, mock_async_service):

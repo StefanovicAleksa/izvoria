@@ -49,17 +49,29 @@ class RetrievalScrubberAPI:
                 required_vram_mb=settings.RETRIEVAL_SCRUBBER_VRAM_REQUIREMENT_MB
             )
 
+            trust = settings.RETRIEVAL_SCRUBBER_TRUST_RERANK_SCORE
+
+            def trusted(chunk: RetrievedChunk) -> bool:
+                # The cross-encoder is the better relevance judge; the SLM second-guessing a chunk it
+                # ranked this high was how answering evidence got thrown away
+                return trust is not None and chunk.rerank_score is not None and chunk.rerank_score >= trust
+
+            if all(trusted(chunk) for chunk in raw_chunks):
+                # Nothing for the SLM to judge, so don't load it: on a warm GPU that load would evict the answer model
+                logger.info(f"Retrieval Scrubber skipped: all {len(raw_chunks)} chunks are trusted by rerank score.")
+                return list(raw_chunks), [
+                    ScrubAudit(chunk_id=chunk.chunk_id, is_relevant=True, kept_by_rerank_score=True)
+                    for chunk in raw_chunks
+                ]
+
             loaded_model = self._orchestrator.acquire_model(manifest, self._adapter, wait_for_clear=True)
 
             surviving_chunks: List[RetrievedChunk] = []
             audits: List[ScrubAudit] = []
 
             try:
-                trust = settings.RETRIEVAL_SCRUBBER_TRUST_RERANK_SCORE
                 for chunk in raw_chunks:
-                    if trust is not None and chunk.rerank_score is not None and chunk.rerank_score >= trust:
-                        # The cross-encoder is the better relevance judge; the SLM second-guessing a chunk it
-                        # ranked this high was how answering evidence got thrown away
+                    if trusted(chunk):
                         audits.append(ScrubAudit(chunk_id=chunk.chunk_id, is_relevant=True,
                                                  kept_by_rerank_score=True))
                         surviving_chunks.append(chunk)

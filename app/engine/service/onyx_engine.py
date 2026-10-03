@@ -183,6 +183,8 @@ class OnyxEngine(IOnyxEngine):
 
         logger.info("Locking Engine for batch ingestion...")
         try:
+            # Chat and report models stay warm between calls; ingestion starts from an empty GPU
+            self._async_service.release_all()
             self._force_aggressive_garbage_collection()
         except Exception as e:
             with self._state_lock:

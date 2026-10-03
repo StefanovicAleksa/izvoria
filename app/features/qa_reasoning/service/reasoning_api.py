@@ -7,6 +7,7 @@ from app.core.config import settings
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.enums import ModelType
+from app.core.model_manager.domain.interfaces import IModelLoader
 
 from app.features.qa_generation.utils.context_packer import has_document_chunks
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
@@ -29,8 +30,17 @@ class ReasoningAPI:
     def __init__(
             self,
             adapter: IReasonerAdapter,
-            orchestrator: ModelManagerOrchestrator
+            orchestrator: ModelManagerOrchestrator,
+            rewrite_manifest: Optional[ModelManifest] = None,
+            rewrite_loader: Optional[IModelLoader] = None
     ):
+        """
+        `rewrite_manifest`/`rewrite_loader` run the follow-up rewrite on another model, loaded by that model's own
+        loader. Bootstrap passes the answer model's: it is usually warm when a follow-up arrives, so the rewrite costs
+        no load, where the reasoner's own manifest (same GGUF, different n_ctx) would evict it and load the file again.
+        Only the rewrite borrows it. The reasoning loop runs beside the answer phase, and two phases sharing one
+        instance would let one's release free the model under the other.
+        """
         self._adapter = adapter
         self._orchestrator = orchestrator
         self._manifest = ModelManifest(
@@ -38,6 +48,10 @@ class ReasoningAPI:
             model_path=settings.QA_REASONER_MODEL_PATH,
             required_vram_mb=settings.QA_REASONER_VRAM_REQUIREMENT_MB
         )
+        if (rewrite_manifest is None) != (rewrite_loader is None):
+            raise ValueError("rewrite_manifest and rewrite_loader are given together or not at all.")
+        self._rewrite_manifest = rewrite_manifest or self._manifest
+        self._rewrite_loader: IModelLoader = rewrite_loader or adapter
 
     def _acquire(self) -> LoadedModel:
         return self._orchestrator.acquire_model(self._manifest, self._adapter, wait_for_clear=True)
@@ -52,7 +66,9 @@ class ReasoningAPI:
             return question
 
         try:
-            loaded_model = self._acquire()
+            loaded_model = self._orchestrator.acquire_model(
+                self._rewrite_manifest, self._rewrite_loader, wait_for_clear=True
+            )
             try:
                 rewritten = self._adapter.rewrite_query(loaded_model, question, prior_session_context)
             except JSONReasonerParseError as parse_err:
@@ -60,7 +76,7 @@ class ReasoningAPI:
                 return question
             finally:
                 if release_after:
-                    self._orchestrator.release_model(loaded_model, self._adapter, flush=True)
+                    self._orchestrator.release_model(loaded_model, self._rewrite_loader, flush=True)
 
             logger.info(f"Rewrote follow-up '{question}' as standalone query '{rewritten}'")
             return rewritten

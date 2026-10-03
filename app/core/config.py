@@ -128,6 +128,16 @@ class Settings(BaseSettings):
         return self.BASE_DIR / self.DATA_DIR / self.ENV / "active_language"
 
     # ==========================================
+    # MODEL RESIDENCY
+    # ==========================================
+    # Models of these types stay in VRAM when their holder releases them, and are evicted (the fewest megabytes that
+    # make room) only when a later load needs the room, so a chat turn or report round reuses them instead of reloading.
+    # Measured 2026-10-03 on the 12 GB dev card: BGE-M3 1090 MB + reranker 1088 MB + Qwen3.5-9B at 128K q8_0
+    # 7788 MB, with ~1.1 GB left free. Ingestion still evicts everything. False restores the single-slot pool.
+    MODEL_KEEP_WARM: bool = True
+    MODEL_KEEP_WARM_TYPES: List[str] = ["rag_embedding", "rag_reranking", "qa_generation", "report_authoring"]
+
+    # ==========================================
     # MODEL PATHS & VRAM REQUIREMENTS
     # ==========================================
     DISCOVERY_SCOUT_MODEL_PATH: str = "models/whisper-tiny-en"

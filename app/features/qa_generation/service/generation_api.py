@@ -62,6 +62,10 @@ class QAGenerationAPI:
             required_vram_mb=settings.QA_GENERATION_VRAM_REQUIREMENT_MB
         )
 
+    @property
+    def manifest(self) -> ModelManifest:
+        return self._manifest
+
     def _pack_context(
             self,
             loaded_model: LoadedModel,
