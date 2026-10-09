@@ -244,3 +244,27 @@ class TestReportRepositoryIntegration:
 
     def test_a_missing_report_reads_back_as_none(self, repository):
         assert repository.get_report(uuid.uuid4()) is None
+
+    def test_each_user_sees_only_their_own_reports(self, repository):
+        """The hosted API: users of one firm share a database, but a report is its scoper's."""
+        mine, theirs, shared = uuid.uuid4(), uuid.uuid4(), uuid.uuid4()
+        repository.create_report("mine", _plan(mine), _corpus())
+        repository.create_report("theirs", _plan(theirs), _corpus())
+        repository.create_report("appliance", _plan(shared), _corpus())
+        repository.set_owner(mine, "alice")
+        repository.set_owner(theirs, "bob")
+
+        assert repository.get_report(mine, owner_id="alice").topic == "mine"
+        assert repository.get_report(theirs, owner_id="alice") is None
+        assert repository.get_report(shared, owner_id="alice") is None
+        listed = {r.id for r in repository.list_reports(owner_id="alice")}
+        assert mine in listed and not listed & {theirs, shared}
+        # The appliance (no owner) still sees everything
+        assert {mine, theirs, shared} <= {r.id for r in repository.list_reports(limit=500)}
+        assert repository.get_report(theirs).topic == "theirs"
+
+    def test_setting_the_owner_of_a_missing_report_raises(self, repository):
+        from app.features.deep_research_report.exceptions.database import ReportNotFoundError
+
+        with pytest.raises(ReportNotFoundError):
+            repository.set_owner(uuid.uuid4(), "alice")

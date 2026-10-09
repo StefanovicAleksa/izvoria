@@ -29,6 +29,20 @@ class TestBuildLlama:
             type_k=8, type_v=8, verbose=False
         )
 
+    @patch("llama_cpp.Llama")
+    def test_server_backend_returns_a_client_without_loading_weights(self, mock_llama):
+        from app.core.model_manager.data.llama_server_chat_model import LlamaServerChatModel
+        with patch("app.core.config.settings.LLM_BACKEND", "llama_server"), \
+                patch("app.core.config.settings.LLM_SERVER_URL", "http://127.0.0.1:9999"):
+            result = build_llama("/models/m.gguf", 65536, "q8_0")
+
+        assert isinstance(result, LlamaServerChatModel)
+        mock_llama.assert_not_called()
+
+    def test_unknown_backend_raises(self):
+        with patch("app.core.config.settings.LLM_BACKEND", "vllm"), pytest.raises(ValueError, match="vllm"):
+            build_llama("/models/m.gguf", 4096, "f16")
+
 
 class TestChatCompletion:
     def test_calls_the_model_chat_handler_with_the_thinking_switch(self):
@@ -67,3 +81,16 @@ class TestStripReasoning:
     ])
     def test_removes_think_blocks(self, text, expected):
         assert strip_reasoning(text) == expected
+
+
+class TestChatCompletionOnAChatModel:
+    def test_an_ichatmodel_is_asked_directly(self):
+        from app.core.model_manager.domain.interfaces import IChatModel
+        llm = MagicMock(spec=IChatModel)
+        llm.chat.return_value = {"choices": [{"message": {"content": "ok"}}]}
+        messages = [{"role": "user", "content": "hi"}]
+
+        result = chat_completion(llm, messages, enable_thinking=True, temperature=0.1, max_tokens=7)
+
+        assert result == llm.chat.return_value
+        llm.chat.assert_called_once_with(messages, enable_thinking=True, temperature=0.1, max_tokens=7)

@@ -55,6 +55,11 @@ class Evidence:
     # Where a document excerpt sits ("p. 7 · Article 7 Termination"), formatted by the gateway. Empty for a
     # recording, whose place is its time range; a document's start_sec/end_sec are 0.0.
     location: str = ""
+    # The anchor behind `location`, for opening a file at it: "time", "page", "line", "section" or "image". A
+    # LINE anchor keeps its first and last line in page_start/page_end, as everywhere else (docs/core/anchors.md).
+    anchor_kind: str = ""
+    page_start: Optional[int] = None
+    page_end: Optional[int] = None
 
     # Only meaningful for ranked search hits; a hydration read returns 0.0/None for these,
     # so they stay out of citation cards.
@@ -136,6 +141,9 @@ class SearchHit:
     clip_path: Optional[str] = None
     media_kind: MediaKind = MediaKind.UNRESOLVED
     location: str = ""
+    anchor_kind: str = ""
+    page_start: Optional[int] = None
+    page_end: Optional[int] = None
 
     def as_evidence(self) -> Evidence:
         """Search hits feed the same evidence card and player as citations do."""
@@ -150,6 +158,9 @@ class SearchHit:
             clip_path=self.clip_path,
             media_kind=self.media_kind,
             location=self.location,
+            anchor_kind=self.anchor_kind,
+            page_start=self.page_start,
+            page_end=self.page_end,
             relevance_score=self.relevance_score,
             rerank_score=self.rerank_score,
         )
@@ -234,6 +245,12 @@ class ReportRef:
     completed_at: Optional[datetime] = None
     section_count: int = 0
     evidence_count: int = 0
+    # The report's name; "" for one from before titles, which is listed by its request
+    title: str = ""
+
+    @property
+    def display_title(self) -> str:
+        return self.title or self.topic
 
     @property
     def awaiting_approval(self) -> bool:
@@ -288,6 +305,8 @@ class ReportPlanDraft:
     topic: str
     scope_note: str = ""
     sections: Tuple[ReportOutlineDraft, ...] = ()
+    # The scoping model's proposed name for the report, editable before approval; "" if it proposed none
+    title: str = ""
     indexed_source_count: int = 0
     indexed_chunk_count: int = 0
     expected_job_count: int = 0
@@ -310,6 +329,7 @@ class ReportDocument:
     markdown: str
     status: ReportRunStatus
     mode: ReportMode = ReportMode.DEEP
+    title: str = ""
     evidence: Tuple[Evidence, ...] = ()
     markdown_path: Optional[str] = None
     section_count: int = 0
@@ -317,6 +337,10 @@ class ReportDocument:
     rounds_used: int = 1
     indexed_source_count: int = 0
     swept_source_count: int = 0
+
+    @property
+    def display_title(self) -> str:
+        return self.title or self.topic
 
     @property
     def is_partial(self) -> bool:

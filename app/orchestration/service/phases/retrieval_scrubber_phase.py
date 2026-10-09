@@ -5,6 +5,7 @@ import logging
 import concurrent.futures
 from typing import List, Optional, Tuple
 
+from app.orchestration.utils.preload_slot import PreloadSlot
 from app.core.config import settings
 from app.core.jobs.service.manager import JobManager
 from app.core.jobs.domain.entities import JobRequest
@@ -26,6 +27,9 @@ logger = logging.getLogger(__name__)
 
 
 class RetrievalScrubberPhase:
+    # One per request thread: concurrent requests share this Phase (see PreloadSlot)
+    _preload_future = PreloadSlot()
+
     def __init__(
             self,
             job_manager: JobManager,

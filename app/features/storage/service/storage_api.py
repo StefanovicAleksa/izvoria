@@ -17,9 +17,9 @@ from app.features.storage.exceptions.not_found import FileNotFound
 
 
 class StorageAPI:
-    def __init__(self, repository: IStorageRepository):
+    def __init__(self, repository: IStorageRepository, file_manager: Optional[FileManager] = None):
         self.repository = repository
-        self.file_manager = FileManager()
+        self.file_manager = file_manager or FileManager()
 
     def ingest_raw_file(self, file_path: str, delete_original: bool = False) -> File:
         """Vaults a standalone file without a Source (e.g., audio extractions)."""
@@ -127,6 +127,29 @@ class StorageAPI:
             return False
         self.file_manager.delete(deleted.file_path)
         return True
+
+    def replace_file(self, file_id: uuid.UUID, new_path: str | Path) -> File:
+        """
+        Moves `new_path` into the vault in place of a file's current bytes, then deletes the old bytes. The record
+        keeps its id, so everything pointing at it follows; its path, size and type become the new file's. A
+        source's content_hash stays the hash of what was uploaded, so the same upload still dedups.
+        """
+        record = self.repository.get_file_by_id(file_id)
+        if not record:
+            raise FileNotFound(f"Database record missing for file ID: {file_id}")
+        new_src = Path(new_path)
+        dest_path = self.file_manager.generate_path(new_src.suffix)
+        try:
+            size = self.file_manager.store_file(new_src, dest_path, move=True)
+            guessed_mime, _ = mimetypes.guess_type(dest_path)
+            updated = self.repository.update_file(record.model_copy(update={
+                "file_path": str(dest_path), "file_size_bytes": size, "mime_type": guessed_mime,
+            }))
+        except Exception as e:
+            self.file_manager.delete(dest_path)
+            raise StorageError(f"Replacing file {file_id} failed: {str(e)}") from e
+        self.file_manager.delete(record.file_path)
+        return updated
 
     def get_file_path(self, file_id: uuid.UUID) -> Path:
         """

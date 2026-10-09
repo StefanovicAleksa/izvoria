@@ -184,12 +184,28 @@ class IReportRepository(ABC):
         pass
 
     @abstractmethod
-    def get_report(self, report_id: uuid.UUID) -> Optional[Report]:
+    def rename_report(self, report_id: uuid.UUID, title: str) -> None:
+        """Sets the report's title; "" clears it, so it is shown by its request again."""
+        pass
+
+    @abstractmethod
+    def set_markdown_path(self, report_id: uuid.UUID, markdown_path: str) -> None:
+        """Points the report at a re-rendered file (after a rename); its status is left as it is."""
+        pass
+
+    @abstractmethod
+    def set_owner(self, report_id: uuid.UUID, owner_id: str) -> None:
+        """Records which user the report belongs to (the hosted API)."""
+        pass
+
+    @abstractmethod
+    def get_report(self, report_id: uuid.UUID, owner_id: Optional[str] = None) -> Optional[Report]:
         """The full report: plan, sections and evidence bank."""
         pass
 
     @abstractmethod
-    def list_reports(self, session_id: Optional[uuid.UUID] = None, limit: int = 50) -> List[ReportSummary]:
+    def list_reports(self, session_id: Optional[uuid.UUID] = None, limit: int = 50,
+                     owner_id: Optional[str] = None) -> List[ReportSummary]:
         """Newest first. Scoped to one conversation when session_id is given."""
         pass
 

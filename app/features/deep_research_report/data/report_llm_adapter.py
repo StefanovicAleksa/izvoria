@@ -26,6 +26,7 @@ from app.features.deep_research_report.domain.interfaces import IReportLlmAdapte
 from app.features.deep_research_report.exceptions.pipeline import JSONPlanParseError
 from app.features.deep_research_report.utils.error_mapper import map_report_error
 from app.features.deep_research_report.utils.evidence_bank import format_timestamp
+from app.features.deep_research_report.utils.titles import clean_title
 
 logger = logging.getLogger(__name__)
 
@@ -219,6 +220,7 @@ class LlamaCppReportAdapter(IReportLlmAdapter):
         return ResearchPlan(
             report_id=report_id,
             topic=topic,
+            title=clean_title(parsed.get("title")),
             scope_note=str(parsed.get("scope_note") or "").strip(),
             sections=linked,
             sub_questions=sub_questions,

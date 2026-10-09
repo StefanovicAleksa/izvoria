@@ -150,6 +150,9 @@ rounds_single = "> Pretraga u jednom krugu ({mode} režim)."
 scrubber = "> Filter pretrage: {state}."
 scrubber_enabled = "uključen"
 scrubber_disabled = "isključen"
+requested = "> Zahtev: {topic}"
+document_label = "Istraživački izveštaj"
+page_of = "Strana {page} od {pages}"
 
 [report.mode_names]
 deep = "dubinski"

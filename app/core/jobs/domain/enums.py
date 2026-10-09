@@ -34,6 +34,7 @@ class JobType(str, Enum):
     CONTEXT_UNIFICATION = "context_unification"  # Phase 15
     CLIP_EXTRACTION = "clip_extraction"  # Phase 15.5
     RAG_INDEXING = "rag_indexing"  # Phase 16
+    STORAGE_COMPACTION = "storage_compaction"  # after indexing
 
     # Document ingestion (PDF / DOCX)
     DOCUMENT_CONVERSION = "document_conversion"

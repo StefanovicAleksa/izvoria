@@ -105,3 +105,15 @@ class TestSessionMemoryHistoryIntegration:
         assert api.delete_session(drop) == 2
         assert api.get_all_turns(drop) == []
         assert [t.question for t in api.get_all_turns(keep)] == ["Keep?"]
+
+    def test_each_user_sees_only_their_own_turns(self, api: SessionMemoryAPI):
+        """The hosted API: a conversation id guessed from another user reads as empty and lists as nothing."""
+        session_id = uuid.uuid4()
+        api.record_turn(session_id, "alice asks", "answer", owner_id="alice")
+
+        assert api.get_history(session_id, owner_id="bob") == []
+        assert api.get_all_turns(session_id, owner_id="bob") == []
+        assert session_id not in {s.session_id for s in api.list_sessions(owner_id="bob")}
+        assert api.delete_session(session_id, owner_id="bob") == 0
+        assert [t.question for t in api.get_history(session_id, owner_id="alice")] == ["alice asks"]
+        assert session_id in {s.session_id for s in api.list_sessions(owner_id="alice")}

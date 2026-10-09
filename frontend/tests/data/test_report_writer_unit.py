@@ -105,6 +105,13 @@ def test_default_filename(topic, expected):
     assert default_filename(document) == expected
 
 
+def test_a_titled_report_is_saved_under_its_title():
+    document = ReportDocument(report_id=REPORT_ID, topic="create a report on custody", title="Chain of Custody",
+                              markdown="", status=ReportRunStatus.COMPLETED)
+
+    assert default_filename(document) == "chain-of-custody.md"
+
+
 class TestDefaultSavePath:
     def test_it_is_absolute_and_outside_the_repository(self):
         """

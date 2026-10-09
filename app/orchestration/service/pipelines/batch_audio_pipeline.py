@@ -4,7 +4,7 @@
 import logging
 import uuid
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 # The scanner's list: a format the scan drops never reaches this pipeline's filter, so there is one list
 from app.features.scanner.utils.filters import AUDIO_EXTENSIONS
@@ -23,6 +23,7 @@ from app.orchestration.domain.entities import (
     DomainPhoneticCorrectionJobResult,
     ContextualRetrievalJobResult,
     ContextUnificationJobResult,
+    RagIndexingJobResult,
 )
 from app.orchestration.exceptions.workflow import WorkflowStateError, WorkflowExecutionError
 
@@ -39,6 +40,7 @@ from app.orchestration.service.phases.domain_phonetic_correction_phase import Do
 from app.orchestration.service.phases.contextual_retrieval_phase import ContextualRetrievalPhase
 from app.orchestration.service.phases.context_unification_phase import ContextUnificationPhase
 from app.orchestration.service.phases.rag_indexing_phase import RagIndexingPhase
+from app.orchestration.service.phases.storage_compaction_phase import StorageCompactionPhase
 
 logger = logging.getLogger(__name__)
 
@@ -58,7 +60,8 @@ class BatchAudioPipeline:
             domain_phonetic_correction_phase: DomainPhoneticCorrectionPhase,
             contextual_retrieval_phase: ContextualRetrievalPhase,
             context_unification_phase: ContextUnificationPhase,
-            rag_indexing_phase: RagIndexingPhase
+            rag_indexing_phase: RagIndexingPhase,
+            storage_compaction_phase: Optional[StorageCompactionPhase] = None
     ):
         self._scan_phase = scan_phase
         self._ingest_phase = ingest_phase
@@ -73,6 +76,7 @@ class BatchAudioPipeline:
         self._contextual_retrieval_phase = contextual_retrieval_phase
         self._context_unification_phase = context_unification_phase
         self._rag_indexing_phase = rag_indexing_phase
+        self._storage_compaction_phase = storage_compaction_phase
 
     def _discard_pending_preloads(self) -> None:
         """
@@ -244,6 +248,13 @@ class BatchAudioPipeline:
             # ==========================================
             rag_indexing_result = self._rag_indexing_phase.execute(successful_unification_items)
             pipeline_results[PipelinePhase.RAG_INDEXING] = rag_indexing_result
+
+            # ==========================================
+            # LAST: STORAGE COMPACTION (CPU BOUND)
+            # ==========================================
+            if self._storage_compaction_phase is not None and self._storage_compaction_phase.enabled():
+                pipeline_results[PipelinePhase.STORAGE_COMPACTION] = self._storage_compaction_phase.execute(
+                    [item for item in rag_indexing_result.items if isinstance(item, RagIndexingJobResult)])
 
             logger.info(f"========== Audio Pipeline Completed for Batch [{target_directory}] ==========")
             return pipeline_results

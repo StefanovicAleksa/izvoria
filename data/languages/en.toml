@@ -130,6 +130,9 @@ rounds_single = "> Searched in a single round ({mode} mode)."
 scrubber = "> Retrieval scrubber: {state}."
 scrubber_enabled = "enabled"
 scrubber_disabled = "disabled"
+requested = "> Request: {topic}"
+document_label = "Research report"
+page_of = "Page {page} of {pages}"
 
 [report.mode_names]
 deep = "deep"

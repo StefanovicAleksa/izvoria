@@ -34,7 +34,7 @@ def render(report: Report, link_citations: bool = False) -> str:
     entries = report.evidence_by_doc_number
     strings = get_language_pack(report.language).report
     parts: List[str] = [
-        f"# {report.topic}",
+        f"# {report.display_title}",
         "",
         _provenance(report),
         "",
@@ -58,20 +58,27 @@ def render(report: Report, link_citations: bool = False) -> str:
 
 
 def _provenance(report: Report) -> str:
+    return "\n".join(provenance_lines(report))
+
+
+def provenance_lines(report: Report) -> List[str]:
     """
-    The coverage claim, stated rather than implied.
+    The coverage claim, stated rather than implied: one quoted line each (the request, when the report has a
+    title; when it was generated from what; how much of the corpus was swept; how hard it searched; the scrubber).
 
     A report that looked at 50 of 214 indexed sources is still useful; a report that looked at 50 and reads
     as though it covered all 214 is dangerous. Likewise the scrubber setting: it changes what was allowed
     to reach the writer, so the reader is told which way it was set.
     """
     strings = get_language_pack(report.language).report
+    # The title is the model's name for the report; the request is what was actually asked, so it stays on record
+    request = [strings.requested.format(topic=" ".join(report.topic.split()))] if report.title else []
     generated = (report.completed_at or report.created_at or datetime.now()).strftime("%Y-%m-%d %H:%M")
     cited = len(report.cited_doc_numbers)
     sources_cited = len({e.source_id for e in report.evidence if e.doc_number in set(report.cited_doc_numbers)})
     mode = strings.mode_names.get(report.mode.value, report.mode.value)
 
-    lines = [strings.generated.format(
+    lines = request + [strings.generated.format(
         generated=generated, cited=cited, sources=sources_cited,
         excerpt_noun=strings.noun("excerpt", cited), source_noun=strings.noun("source", sources_cited),
     )]
@@ -94,7 +101,7 @@ def _provenance(report: Report) -> str:
     lines.append(strings.scrubber.format(
         state=strings.scrubber_enabled if report.scrub_enabled else strings.scrubber_disabled
     ))
-    return "\n".join(lines)
+    return lines
 
 
 def _cite(text: str, link_citations: bool) -> str:

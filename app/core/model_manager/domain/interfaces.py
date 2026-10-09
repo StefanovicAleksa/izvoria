@@ -1,7 +1,7 @@
 # Canvas: model_interfaces_v2
 # Path: app/core/model_manager/domain/interfaces.py
 from abc import ABC, abstractmethod
-from typing import Any, Tuple
+from typing import Any, Dict, List, Tuple
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel, VramStatus
 
@@ -52,4 +52,27 @@ class IModelLoader(ABC):
         """
         Safely deletes the model instance from memory.
         """
+        pass
+
+class IChatModel(ABC):
+    """
+    A chat-tuned GGUF model as the Qwen adapters use it: the subset of llama_cpp.Llama they call, so an in-process
+    Llama and a llama-server client are interchangeable as `LoadedModel.model_instance`. `chat()` returns the
+    OpenAI-shaped completion dict (`choices[0].message.content`, `choices[0].finish_reason`).
+    """
+
+    @abstractmethod
+    def tokenize(self, text: bytes, add_bos: bool = True, special: bool = False) -> List[int]:
+        pass
+
+    @abstractmethod
+    def n_ctx(self) -> int:
+        pass
+
+    @abstractmethod
+    def chat(self, messages: List[Dict[str, str]], enable_thinking: bool, **kwargs: Any) -> Dict[str, Any]:
+        pass
+
+    @abstractmethod
+    def close(self) -> None:
         pass

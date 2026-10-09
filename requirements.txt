@@ -77,3 +77,12 @@ sentence-transformers>=2.7.0
 # no embedded media player, so QtMultimedia is not needed -- which keeps ~500MB and Qt's
 # hardware-decode crashes off the appliance. Source files open in the desktop's own player.
 PySide6-Essentials>=6.7.0
+
+# --- Report export (app/features/report_export) ---
+# A report as a PDF, laid out in pure Python: no native library and no binary, on a box with no package manager.
+# fpdf2 writes the PDF (its own deps: fonttools, defusedxml, Pillow); ziamath typesets the writer's LaTeX into
+# vector SVG with its bundled STIX Two Math font; markdown-it-py (already here through rich) reads section bodies.
+# The text fonts ship in data/fonts. Not reportlab, weasyprint or pandoc: native deps or a binary.
+fpdf2>=2.8.0
+ziamath>=0.13
+markdown-it-py>=3.0.0

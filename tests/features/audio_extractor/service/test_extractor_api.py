@@ -32,7 +32,7 @@ class TestAudioExtractorAPI:
     def test_extract_audio_idempotency_skip(self, api, mock_ffmpeg, mock_repo, mock_storage):
         """Verifies that if an extraction already exists, it is returned immediately without processing."""
         video_source_id = uuid.uuid4()
-        existing_record = MagicMock(spec=AudioExtraction)
+        existing_record = AudioExtraction(id=uuid.uuid4(), source_id=video_source_id, extracted_file_id=uuid.uuid4())
 
         # Simulate that the DB already has an extraction record
         mock_repo.get_latest_by_source_id.return_value = existing_record
@@ -42,6 +42,7 @@ class TestAudioExtractorAPI:
         # Assert we returned the cached record and completely bypassed FFmpeg & Storage
         assert result == existing_record
         mock_repo.get_latest_by_source_id.assert_called_once_with(video_source_id)
+        mock_storage.get_file_path.assert_called_once_with(existing_record.extracted_file_id)
         mock_storage.get_source.assert_not_called()
         mock_ffmpeg.extract_audio.assert_not_called()
 
@@ -157,3 +158,64 @@ class TestAudioExtractorAPI:
             api.get_extracted_audio_path(uuid.uuid4())
 
         mock_storage.get_file_path.assert_not_called()
+
+
+class TestDiscardedAudio:
+    @pytest.fixture
+    def mock_ffmpeg(self):
+        return Mock()
+
+    @pytest.fixture
+    def mock_repo(self):
+        return Mock()
+
+    @pytest.fixture
+    def mock_storage(self):
+        return Mock()
+
+    @pytest.fixture
+    def api(self, mock_ffmpeg, mock_repo, mock_storage):
+        return AudioExtractorAPI(mock_ffmpeg, mock_repo, mock_storage)
+
+    def test_a_cached_extraction_whose_wav_is_gone_is_extracted_again(self, api, mock_ffmpeg, mock_repo,
+                                                                       mock_storage):
+        source_id = uuid.uuid4()
+        stale = AudioExtraction(id=uuid.uuid4(), source_id=source_id, extracted_file_id=uuid.uuid4())
+        mock_repo.get_latest_by_source_id.return_value = stale
+        mock_storage.get_file_path.side_effect = FileNotFoundError("Physical file missing")
+        source = MagicMock(id=source_id, source_type=SourceType.VIDEO)
+        source.file.file_path = "/vault/vid.mp4"
+        mock_storage.get_source.return_value = source
+        mock_ffmpeg.extract_audio.return_value = Path("/tmp/onyx_audio_1.wav")
+        mock_storage.ingest_raw_file.return_value = MagicMock(id=uuid.uuid4())
+        mock_repo.create.side_effect = lambda x: x
+
+        result = api.extract_audio_from_video(source_id)
+
+        mock_storage.delete_raw_file.assert_called_once_with(stale.extracted_file_id)
+        mock_ffmpeg.extract_audio.assert_called_once_with("/vault/vid.mp4")
+        assert result.extracted_file_id == mock_storage.ingest_raw_file.return_value.id
+
+    def test_discard_deletes_the_wav_and_reports_its_size(self, api, mock_repo, mock_storage):
+        source_id = uuid.uuid4()
+        extraction = AudioExtraction(id=uuid.uuid4(), source_id=source_id, extracted_file_id=uuid.uuid4())
+        mock_repo.get_latest_by_source_id.return_value = extraction
+        mock_storage.get_file.return_value = MagicMock(file_size_bytes=115_200_000)
+
+        assert api.discard_extracted_audio(source_id) == 115_200_000
+        mock_storage.get_file.assert_called_once_with(extraction.extracted_file_id)
+        mock_storage.delete_raw_file.assert_called_once_with(extraction.extracted_file_id)
+
+    def test_a_dry_run_only_measures(self, api, mock_repo, mock_storage):
+        mock_repo.get_latest_by_source_id.return_value = AudioExtraction(
+            id=uuid.uuid4(), source_id=uuid.uuid4(), extracted_file_id=uuid.uuid4())
+        mock_storage.get_file.return_value = MagicMock(file_size_bytes=10)
+
+        assert api.discard_extracted_audio(uuid.uuid4(), dry_run=True) == 10
+        mock_storage.delete_raw_file.assert_not_called()
+
+    def test_a_source_without_audio_frees_nothing(self, api, mock_repo, mock_storage):
+        mock_repo.get_latest_by_source_id.return_value = None
+
+        assert api.discard_extracted_audio(uuid.uuid4()) == 0
+        mock_storage.delete_raw_file.assert_not_called()

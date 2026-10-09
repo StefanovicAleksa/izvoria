@@ -92,6 +92,21 @@ class Settings(BaseSettings):
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    # What the vault keeps after a recording is indexed. The defaults are the appliance's; the hosted web version
+    # turns all three around to store one compact file per recording (docs/web_deploy.md, "Storage").
+    # A per-chunk clip repeats its stretch of the recording; without one a citation is cut from the original.
+    VIDEO_CLIPS_ENABLED: bool = True
+    # The 16 kHz WAV only the audio stages read; dropped once its source is indexed, re-extracted if ever needed.
+    KEEP_EXTRACTED_AUDIO: bool = True
+    # Replace an indexed recording's original with a smaller copy a browser plays as it is (H.264/AAC MP4, AAC
+    # m4a). Ingestion always reads the upload itself; the copy is only what is kept and played back.
+    COMPACT_MEDIA_ORIGINALS: bool = False
+    COMPACT_VIDEO_MAX_HEIGHT: int = 720
+    COMPACT_VIDEO_CRF: int = 26
+    COMPACT_AUDIO_BITRATE_KBPS: int = 64
+    # The original stays unless the copy is at least this much smaller
+    COMPACT_MIN_SAVING: float = 0.2
+
     # ==========================================
     # PERFORMANCE TUNING
     # ==========================================
@@ -136,6 +151,37 @@ class Settings(BaseSettings):
     # 7788 MB, with ~1.1 GB left free. Ingestion still evicts everything. False restores the single-slot pool.
     MODEL_KEEP_WARM: bool = True
     MODEL_KEEP_WARM_TYPES: List[str] = ["rag_embedding", "rag_reranking", "qa_generation", "report_authoring"]
+
+    # ==========================================
+    # HOSTED / MULTI-USER SERVING (web_deploy/)
+    # ==========================================
+    # Every default below keeps the single-user appliance exactly as it was. The hosted web API turns them on so
+    # several users can chat, search and run reports at once against models that never leave VRAM.
+    #
+    # Where the Qwen chat adapters (answer, reasoner, report writer, retrieval scrubber) run: "llama_cpp" loads the
+    # GGUF in this process; "llama_server" talks to a local llama.cpp `llama-server` that holds the weights once and
+    # decodes several requests in parallel slots. Ingestion always runs in-process.
+    LLM_BACKEND: str = "llama_cpp"
+    LLM_SERVER_URL: str = "http://127.0.0.1:8081"
+    # Tokens the server's KV cache holds across all slots; requests are admitted against it so a full cache
+    # never fails a request mid-decode. 0 reads it from the server (/props) on first use.
+    LLM_SERVER_KV_TOKENS: int = 0
+    # One request may run this long (a report section, a 100K-token prefill).
+    LLM_SERVER_TIMEOUT_S: float = 1800.0
+    # Loaded once (Orchestrator.warm_up) and never released or evicted: the live path's PyTorch models.
+    MODEL_PINNED_TYPES: List[str] = []
+    # Served outside this process (LLM_BACKEND=llama_server): handed out without budgeting, never unloaded.
+    MODEL_EXTERNAL_TYPES: List[str] = []
+    # Live calls run concurrently instead of being gated on the engine state; requires every live model type to be
+    # pinned or external (the orchestrator refuses any other live acquire).
+    ENGINE_CONCURRENT_LIVE: bool = False
+    # Research reports allowed at once when ENGINE_CONCURRENT_LIVE is on (the desktop runs one, exclusively).
+    REPORT_MAX_CONCURRENT: int = 1
+    # Chunks the retrieval scrubber judges at once; > 1 only pays off against llama-server's parallel slots.
+    RETRIEVAL_SCRUBBER_CONCURRENCY: int = 1
+    # VRAM the orchestrator treats as taken by someone else (the hosted ingestion worker leaves the live models'
+    # share of the card alone).
+    VRAM_HEADROOM_MB: float = 0.0
 
     # ==========================================
     # MODEL PATHS & VRAM REQUIREMENTS

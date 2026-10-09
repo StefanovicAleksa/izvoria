@@ -68,3 +68,49 @@ class TestCrossEncoderRerankerAdapter:
         assert CrossEncoderRerankerAdapter().unload(loaded) is True
         assert not hasattr(loaded, "model_instance")
         mock_gc.assert_called_once()
+
+
+class TestConcurrentScoring:
+    """One resident reranker serves every concurrent request; its fast tokenizer must never run on two threads."""
+
+    def test_scores_from_several_threads_take_turns(self):
+        import threading
+        import time
+        state = {"active": 0, "most": 0}
+        lock = threading.Lock()
+
+        def predict(pairs, **_):
+            with lock:
+                state["active"] += 1
+                state["most"] = max(state["most"], state["active"])
+            time.sleep(0.02)
+            with lock:
+                state["active"] -= 1
+            return [0.5] * len(pairs)
+
+        encoder = MagicMock()
+        encoder.predict.side_effect = predict
+        model = LoadedModel(manifest=ModelManifest(model_type=ModelType.RAG_RERANKING, model_path="/m",
+                                                   required_vram_mb=1.0), model_instance=encoder)
+        adapter = CrossEncoderRerankerAdapter()
+
+        threads = [threading.Thread(target=adapter.score, args=(model, "q", ["a", "b"])) for _ in range(5)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        assert encoder.predict.call_count == 5
+        assert state["most"] == 1
+
+    def test_a_failed_predict_releases_the_lock(self):
+        encoder = MagicMock()
+        encoder.predict.side_effect = [RuntimeError("CUDA error"), [0.9]]
+        model = LoadedModel(manifest=ModelManifest(model_type=ModelType.RAG_RERANKING, model_path="/m",
+                                                   required_vram_mb=1.0), model_instance=encoder)
+        adapter = CrossEncoderRerankerAdapter()
+
+        with pytest.raises(RerankInferenceError):
+            adapter.score(model, "q", ["a"])
+
+        assert adapter.score(model, "q", ["b"]) == [0.9]

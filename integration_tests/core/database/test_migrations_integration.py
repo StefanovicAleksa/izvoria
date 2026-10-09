@@ -42,7 +42,8 @@ _PRE_ALEMBIC_DROPS = (
     "DROP COLUMN section_path, DROP COLUMN position",
     "ALTER TABLE session_turns DROP COLUMN mode, DROP COLUMN standalone_query, DROP COLUMN evidence_chunk_ids, "
     "DROP COLUMN first_doc_number",
-    "ALTER TABLE research_reports DROP COLUMN mode, DROP COLUMN rounds_used",
+    "ALTER TABLE research_reports DROP COLUMN mode, DROP COLUMN rounds_used, DROP COLUMN owner_id, DROP COLUMN title",
+    "ALTER TABLE session_turns DROP COLUMN owner_id",
     "ALTER TABLE research_report_evidence DROP COLUMN anchor_kind, DROP COLUMN page_start, DROP COLUMN page_end, "
     "DROP COLUMN section_path",
     "DROP TABLE image_descriptions",
@@ -55,6 +56,17 @@ def _admin(sql: str) -> None:
     connection = psycopg2.connect(host=settings.POSTGRES_SERVER, port=settings.POSTGRES_PORT,
                                   user=settings.POSTGRES_USER, password=settings.POSTGRES_PASSWORD,
                                   dbname=settings.POSTGRES_DB)
+    connection.autocommit = True
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(sql)
+    finally:
+        connection.close()
+
+
+def _admin_on(database: str, sql: str) -> None:
+    connection = psycopg2.connect(host=settings.POSTGRES_SERVER, port=settings.POSTGRES_PORT,
+                                  user=settings.POSTGRES_USER, password=settings.POSTGRES_PASSWORD, dbname=database)
     connection.autocommit = True
     try:
         with connection.cursor() as cursor:
@@ -181,6 +193,85 @@ class TestMigrationsIntegration:
                                            {"id": turn_id}).scalar()
         assert [tuple(c) for c in chunks] == [(0.0, 0, "time"), (30.0, 1, "time")]
         assert turn_mode == "chat"
+
+    def test_history_owner_is_added_to_an_existing_appliance_with_its_history_kept_shared(self, scratch_engine):
+        """0005 runs on every appliance at its next start: existing history must survive, owned by nobody."""
+        with scratch_engine.begin() as connection:
+            command.upgrade(_config(connection), "0004")
+        turn_id, search_id = uuid.uuid4(), uuid.uuid4()
+        with scratch_engine.begin() as connection:
+            connection.execute(text(
+                "INSERT INTO session_turns (id, session_id, question, answer_text, created_at) "
+                "VALUES (:id, :session, 'Q?', 'A.', now())"), {"id": turn_id, "session": uuid.uuid4()})
+            connection.execute(text(
+                "INSERT INTO search_history (id, query, mode, result_limit, created_at) "
+                "VALUES (:id, 'q', 'standard', 5, now())"), {"id": search_id})
+
+        upgrade_to_head(scratch_engine)
+
+        with scratch_engine.connect() as connection:
+            assert connection.execute(text("SELECT owner_id FROM session_turns WHERE id = :id"),
+                                      {"id": turn_id}).one() == (None,)
+            assert connection.execute(text("SELECT owner_id FROM search_history WHERE id = :id"),
+                                      {"id": search_id}).one() == (None,)
+        inspector = inspect(scratch_engine)
+        for table in ("session_turns", "search_history", "research_reports"):
+            owner = {c["name"]: c for c in inspector.get_columns(table)}["owner_id"]
+            assert owner["nullable"] is True
+            assert f"ix_{table}_owner_id" in {i["name"] for i in inspector.get_indexes(table)}
+
+    def test_report_titles_are_added_with_every_existing_report_kept_and_untitled(self, scratch_engine):
+        """0006 runs on every appliance at its next start: a report from before keeps its request as its name."""
+        with scratch_engine.begin() as connection:
+            command.upgrade(_config(connection), "0005")
+        report_id = uuid.uuid4()
+        with scratch_engine.begin() as connection:
+            connection.execute(text(
+                "INSERT INTO research_reports (id, topic, status, created_at, updated_at) "
+                "VALUES (:id, 'how do central bank actions affect markets', 'completed', now(), now())"),
+                {"id": report_id})
+
+        upgrade_to_head(scratch_engine)
+
+        with scratch_engine.connect() as connection:
+            assert connection.execute(text("SELECT topic, title FROM research_reports WHERE id = :id"),
+                                      {"id": report_id}).one() == ("how do central bank actions affect markets", None)
+        title = {c["name"]: c for c in inspect(scratch_engine).get_columns("research_reports")}["title"]
+        assert title["nullable"] is True
+
+    def test_firm_databases_migrated_at_once_each_reach_head(self):
+        """The hosted API starts one engine per firm, and two firms' first requests can arrive together."""
+        import threading
+        names = [f"{SCRATCH_DB}_firm_{i}" for i in range(3)]
+        engines = []
+        try:
+            for name in names:
+                _admin(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
+                _admin(f'CREATE DATABASE "{name}"')
+                _admin_on(name, "CREATE EXTENSION IF NOT EXISTS vector")
+                engines.append(create_engine(make_url(settings.DATABASE_URL).set(database=name)))
+            errors = []
+
+            def migrate(engine):
+                try:
+                    upgrade_to_head(engine)
+                except Exception as e:
+                    errors.append(e)
+
+            threads = [threading.Thread(target=migrate, args=(engine,)) for engine in engines]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=120)
+
+            assert errors == []
+            assert [_revision(engine) for engine in engines] == [HEAD] * len(engines)
+            assert all(_drift(engine) == [] for engine in engines)
+        finally:
+            for engine in engines:
+                engine.dispose()
+            for name in names:
+                _admin(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
 
     def test_downgrade_is_refused(self, scratch_engine):
         upgrade_to_head(scratch_engine)

@@ -98,7 +98,8 @@
 
 <script>
 const $ = (id) => document.getElementById(id);
-const DESKTOP_URL = "/desktop/vnc.html?autoconnect=1&resize=remote&reconnect=1&path=desktop/websockify";
+// The desktop with its Sources panel, where cited recordings and documents arrive from the appliance
+const DESKTOP_URL = "/appliance";
 const SPINNING = new Set(["starting", "booting", "stopping", "gpu_unavailable"]);
 let state = null, runningLanguage = null, pollTimer = null;
 

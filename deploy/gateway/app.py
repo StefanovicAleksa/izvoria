@@ -18,7 +18,7 @@ from starlette.applications import Starlette
 from starlette.middleware import Middleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, Response
+from starlette.responses import FileResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket
 
@@ -26,7 +26,8 @@ from deploy.gateway.agent_client import AgentClient, AgentRefused, AgentUnavaila
 from deploy.gateway.config import AGENT_PORT, LANGUAGES, NOVNC_PORT, GatewaySettings
 from deploy.gateway.controller import ApplianceController, ApplianceState
 from deploy.gateway.idle_monitor import IdleMonitor
-from deploy.gateway.proxy import proxy_static, proxy_websocket
+from deploy.gateway.proxy import proxy_static, proxy_websocket, stream_source
+from deploy.gateway.sources import OFFER_ID, VARIANTS, source_events
 from deploy.gateway.vast_client import FakeVastClient, IVastClient, VastClient
 
 logger = logging.getLogger(__name__)
@@ -62,6 +63,15 @@ def create_app(
 
     async def index(request: Request) -> Response:
         return FileResponse(STATIC_DIR / "index.html")
+
+    async def appliance(request: Request) -> Response:
+        # The desktop and its Sources panel. Signed out, the landing page is where to start.
+        if not signed_in(request):
+            return RedirectResponse("/", status_code=303)
+        return FileResponse(STATIC_DIR / "appliance.html", headers={"Cache-Control": "no-store"})
+
+    async def sources_script(request: Request) -> Response:
+        return FileResponse(STATIC_DIR / "sources.js", media_type="text/javascript")
 
     async def me(request: Request) -> JSONResponse:
         return JSONResponse({"authenticated": signed_in(request), "languages": LANGUAGES,
@@ -116,7 +126,7 @@ def create_app(
         address = await controller.agent_address()
         if view.state not in (ApplianceState.READY, ApplianceState.BUSY) or not address:
             return JSONResponse({"error": "Start the appliance before uploading."}, status_code=409)
-        with monitor.upload_in_flight():
+        with monitor.transfer_in_flight():
             try:
                 result = await agent.upload(address, language, batch, request.path_params["filename"],
                                             request.stream())
@@ -125,6 +135,28 @@ def create_app(
             except AgentUnavailable as exc:
                 return JSONResponse({"error": str(exc)}, status_code=502)
         return JSONResponse(result, status_code=201)
+
+    @guard
+    async def sources_stream(request: Request) -> Response:
+        """The Sources panel's feed of what the tester opened in the desktop app (Server-Sent Events)."""
+        events = source_events(agent, controller.agent_address, request.headers.get("last-event-id"))
+        return StreamingResponse(events, media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+    @guard
+    async def source_file(request: Request) -> Response:
+        """One offered file, streamed from the box. Only an opaque id and a fixed variant name come from the browser."""
+        offer_id, variant = request.path_params["offer_id"], request.path_params["variant"]
+        if not OFFER_ID.match(offer_id) or variant not in VARIANTS:
+            return JSONResponse({"error": "No such source."}, status_code=400)
+        address = await controller.agent_address()
+        if not address:
+            return JSONResponse({"error": "The appliance is off."}, status_code=409)
+        try:
+            upstream = await agent.open_source(address, offer_id, variant, request.headers.get("range"))
+        except AgentUnavailable as exc:
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        return stream_source(upstream, monitor.transfer_in_flight)
 
     @guard
     async def desktop_static(request: Request) -> Response:
@@ -158,6 +190,8 @@ def create_app(
     app = Starlette(
         routes=[
             Route("/", index),
+            Route("/appliance", appliance),
+            Route("/assets/sources.js", sources_script),
             Route("/api/me", me),
             Route("/api/login", login, methods=["POST"]),
             Route("/api/logout", logout, methods=["POST"]),
@@ -166,6 +200,8 @@ def create_app(
             Route("/api/stop", stop, methods=["POST"]),
             Route("/api/uploads", new_upload_batch, methods=["POST"]),
             Route("/api/upload/{filename}", upload, methods=["PUT"]),
+            Route("/api/sources/stream", sources_stream),
+            Route("/api/sources/{offer_id}/{variant}", source_file),
             WebSocketRoute("/desktop/websockify", desktop_socket),
             Route("/desktop/{path:path}", desktop_static),
         ],

@@ -56,3 +56,15 @@ class TestSearchHistoryIntegration:
         assert api.delete(drop.id) is False
         assert api.get(drop.id) is None
         assert api.get(keep.id) is not None
+
+    def test_each_user_sees_only_their_own_searches(self, api):
+        """The hosted API: two users of one firm share a database but not their history."""
+        mine = api.record("mine", SearchHistoryMode.STANDARD, 5, [], [], 1, owner_id="alice")
+        theirs = api.record("theirs", SearchHistoryMode.STANDARD, 5, [], [], 1, owner_id="bob")
+
+        assert [s.id for s in api.list(owner_id="alice") if s.id in (mine.id, theirs.id)] == [mine.id]
+        assert api.get(theirs.id, owner_id="alice") is None
+        assert api.delete(theirs.id, owner_id="alice") is False
+        assert api.get(theirs.id, owner_id="bob") is not None
+        # The appliance (no owner) still sees everything
+        assert {mine.id, theirs.id} <= {s.id for s in api.list()}

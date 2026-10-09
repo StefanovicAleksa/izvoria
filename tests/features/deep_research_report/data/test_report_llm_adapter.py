@@ -125,6 +125,26 @@ class TestScope:
         assert plan.revision == 1
 
     @patch("app.features.deep_research_report.data.report_llm_adapter.chat_completion")
+    def test_the_proposed_title_is_kept_tidied_and_the_request_stays_the_topic(self, mock_chat, adapter, model):
+        mock_chat.return_value = _reply(json.dumps({
+            "title": '"Supply, Demand and Price Elasticity."',
+            "sections": [{"key": "s1", "title": "Handling"}],
+        }))
+
+        plan = adapter.scope(model, "create a report on microeconomics", _corpus())
+
+        assert plan.title == "Supply, Demand and Price Elasticity"
+        assert plan.topic == "create a report on microeconomics"
+
+    @patch("app.features.deep_research_report.data.report_llm_adapter.chat_completion")
+    def test_a_plan_without_a_title_falls_back_to_its_request(self, mock_chat, adapter, model):
+        mock_chat.return_value = _reply(json.dumps({"sections": [{"key": "s1", "title": "Handling"}]}))
+
+        plan = adapter.scope(model, "Chain of custody", _corpus())
+
+        assert (plan.title, plan.display_title) == ("", "Chain of custody")
+
+    @patch("app.features.deep_research_report.data.report_llm_adapter.chat_completion")
     def test_the_corpus_overview_and_real_excerpts_reach_the_prompt(self, mock_chat, adapter, model):
         """
         The grounding checkpoint: the planner sees real source names and real transcript, so it cannot

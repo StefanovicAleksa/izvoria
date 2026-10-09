@@ -11,6 +11,7 @@ behaviour was broken. Importing these entities costs no torch import.
 """
 
 import uuid
+from dataclasses import replace
 
 import pytest
 from unittest.mock import MagicMock, patch
@@ -184,6 +185,7 @@ class TestChatMapping:
         # The text comes from the citation-hydrating read, not from the citation itself.
         assert message.evidence[0].excerpt.startswith("SPEAKER_01:")
         assert message.evidence[0].clip_path == "/vault/clip.mp4"
+        assert (message.evidence[0].anchor_kind, message.evidence[0].page_start) == ("time", None)
         assert message.is_ungrounded is False
 
     def test_grouped_citation_tags_are_normalized_so_the_ui_can_link_them(
@@ -416,6 +418,13 @@ class TestReportMapping:
         assert [s.key for s in approved.sections] == ["s1", "s2"]
         assert [q.text for q in approved.sub_questions] == ["Who sealed the bag?", "Where was it stored?"]
 
+    def test_the_edited_title_reaches_the_approved_plan(self, gateway_and_engine):
+        gateway, _ = gateway_and_engine
+        plan = self._plan()
+        draft = replace(self._draft([ReportOutlineDraft(key="s1", title="Handling")]), title=" Evidence Handling ")
+
+        assert gateway._apply_edits(plan, draft).title == "Evidence Handling"
+
     def test_a_renamed_section_keeps_its_key(self, gateway_and_engine):
         """The engine re-attaches evidence by key across revisions; regenerating one would detach it."""
         gateway, _ = gateway_and_engine
@@ -590,6 +599,20 @@ class TestDocuments:
         assert evidence.location == "p. 7 · Article 7 Termination"
         assert evidence.media_kind is MediaKind.DOCUMENT
         assert evidence.is_playable is True
+        # The raw anchor too, so the hosted box can open the PDF at its page
+        assert (evidence.anchor_kind, evidence.page_start, evidence.page_end) == ("page", 7, 7)
+
+    def test_hydrated_evidence_keeps_its_anchor(self, gateway_and_engine):
+        from app.core.anchors.domain.enums import AnchorKind
+
+        gateway, engine = gateway_and_engine
+        engine.get_chunks.return_value = [make_chunk(
+            extracted_file_id=None, physical_path="/vault/lease.pdf", start_sec=0.0, end_sec=0.0,
+            anchor_kind=AnchorKind.PAGE, page_start=3, page_end=4, speaker_labels=[])]
+
+        (evidence,) = gateway.hydrate_evidence([CHUNK_ID])
+
+        assert (evidence.anchor_kind, evidence.page_start, evidence.page_end) == ("page", 3, 4)
 
     def test_a_transcript_hit_has_no_document_location(self, gateway_and_engine):
         from onyx_desktop.domain.enums import SearchMode
@@ -646,6 +669,8 @@ class TestImagesAndLines:
 
         assert evidence.location == "lines 120–164 · CHAPTER IV."
         assert evidence.media_kind is MediaKind.DOCUMENT
+        # A LINE anchor's lines travel in page_start/page_end, as everywhere else
+        assert (evidence.anchor_kind, evidence.page_start, evidence.page_end) == ("line", 120, 164)
 
     def test_image_mode_runs_image_ingestion(self, gateway_and_engine):
         from onyx_desktop.domain.enums import IngestMode
@@ -770,6 +795,16 @@ class TestHistory:
         refs = gateway.list_reports()
 
         assert [(r.topic, r.resumable) for r in refs] == [("Stopped one", True), ("Stopped early", False)]
+
+    def test_list_reports_carries_the_title(self, gateway_and_engine):
+        from app.features.deep_research_report.domain.entities import ReportSummary
+        gateway, engine = gateway_and_engine
+        engine.list_reports.return_value = [
+            ReportSummary(id=REPORT_ID, topic="create a report on retention", title="Retention Duties",
+                          status=ReportStatus.COMPLETED),
+        ]
+
+        assert [(r.title, r.display_title) for r in gateway.list_reports()] == [("Retention Duties",) * 2]
 
     def test_resume_report_renders_the_finished_report(self, gateway_and_engine, monkeypatch):
         gateway, engine = gateway_and_engine

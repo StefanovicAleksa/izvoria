@@ -2,3 +2,5 @@
 starlette>=0.41,<1
 uvicorn[standard]>=0.32
 psutil>=6
+# Decodes a cited TXT/Markdown file exactly as the appliance did (cp1250/cp1251 Serbian texts), so lines match.
+charset-normalizer>=3.3

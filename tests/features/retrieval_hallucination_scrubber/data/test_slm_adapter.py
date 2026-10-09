@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.enums import ModelType
+from app.core.model_manager.domain.interfaces import IChatModel
 from app.features.retrieval_hallucination_scrubber.data.slm_adapter import QwenRetrievalScrubberAdapter
 
 
@@ -33,10 +34,10 @@ class TestQwenRetrievalScrubberAdapter:
 
     def test_evaluate_relevance_rejection(self, manifest: ModelManifest) -> None:
         adapter = QwenRetrievalScrubberAdapter()
-        mock_llm = MagicMock()
+        mock_llm = MagicMock(spec=IChatModel)
 
         json_payload = '{"is_relevant": false, "discard_reason": "Discusses cafeteria, not MRI."}'
-        mock_llm.create_chat_completion.return_value = {
+        mock_llm.chat.return_value = {
             "choices": [{"message": {"content": json_payload}}]
         }
         loaded_model = LoadedModel(manifest=manifest, model_instance=mock_llm)
@@ -48,15 +49,18 @@ class TestQwenRetrievalScrubberAdapter:
         assert audit.is_relevant is False
         assert audit.discard_reason == "Discusses cafeteria, not MRI."
 
-        call_kwargs = mock_llm.create_chat_completion.call_args[1]
-        assert call_kwargs["response_format"]["type"] == "json_object"
+        call_kwargs = mock_llm.chat.call_args[1]
+        assert call_kwargs["response_format"] == {"type": "json_object"}
+        assert call_kwargs["enable_thinking"] is False
+        assert call_kwargs["temperature"] == 0.0
+        assert call_kwargs["max_tokens"] == 150
 
     def test_evaluate_relevance_acceptance(self, manifest: ModelManifest) -> None:
         adapter = QwenRetrievalScrubberAdapter()
-        mock_llm = MagicMock()
+        mock_llm = MagicMock(spec=IChatModel)
 
         json_payload = '{"is_relevant": true, "discard_reason": null}'
-        mock_llm.create_chat_completion.return_value = {
+        mock_llm.chat.return_value = {
             "choices": [{"message": {"content": json_payload}}]
         }
         loaded_model = LoadedModel(manifest=manifest, model_instance=mock_llm)
@@ -68,10 +72,10 @@ class TestQwenRetrievalScrubberAdapter:
 
     def test_evaluate_relevance_salvages_conversational_filler(self, manifest: ModelManifest) -> None:
         adapter = QwenRetrievalScrubberAdapter()
-        mock_llm = MagicMock()
+        mock_llm = MagicMock(spec=IChatModel)
 
         json_payload = 'Sure! Here is your JSON:\n{"is_relevant": false, "discard_reason": "Not related."}\nHave a great day!'
-        mock_llm.create_chat_completion.return_value = {
+        mock_llm.chat.return_value = {
             "choices": [{"message": {"content": json_payload}}]
         }
         loaded_model = LoadedModel(manifest=manifest, model_instance=mock_llm)
@@ -100,9 +104,29 @@ class TestQwenRetrievalScrubberAdapter:
         from app.features.retrieval_hallucination_scrubber.exceptions.pipeline import JSONScrubParseError
 
         adapter = QwenRetrievalScrubberAdapter()
-        mock_llm = MagicMock()
-        mock_llm.create_chat_completion.return_value = {"choices": [{"message": {"content": "[true]"}}]}
+        mock_llm = MagicMock(spec=IChatModel)
+        mock_llm.chat.return_value = {"choices": [{"message": {"content": "[true]"}}]}
         loaded_model = LoadedModel(manifest=manifest, model_instance=mock_llm)
 
         with pytest.raises(JSONScrubParseError):
             adapter.evaluate_relevance(loaded_model, uuid.uuid4(), "prompt", "text")
+
+
+    def test_evaluate_relevance_strips_a_thinking_block(self, manifest: ModelManifest) -> None:
+        adapter = QwenRetrievalScrubberAdapter()
+        mock_llm = MagicMock(spec=IChatModel)
+        mock_llm.chat.return_value = {"choices": [{"message": {
+            "content": '<think>{"is_relevant": true}</think>{"is_relevant": false, "discard_reason": "Off topic."}'
+        }}]}
+        loaded_model = LoadedModel(manifest=manifest, model_instance=mock_llm)
+
+        audit = adapter.evaluate_relevance(loaded_model, uuid.uuid4(), "prompt", "text")
+
+        assert audit.is_relevant is False
+        assert audit.discard_reason == "Off topic."
+
+    @patch("app.features.retrieval_hallucination_scrubber.data.slm_adapter.build_llama")
+    def test_model_is_built_through_the_shared_llama_builder(self, mock_build: MagicMock) -> None:
+        QwenRetrievalScrubberAdapter._get_llama_model("/fake/qwen.gguf")
+
+        mock_build.assert_called_once_with("/fake/qwen.gguf", 4096, "f16")

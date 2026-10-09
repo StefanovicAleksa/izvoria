@@ -35,8 +35,8 @@ def default_save_path(report: ReportDocument) -> str:
 
 
 def default_filename(report: ReportDocument) -> str:
-    """A filesystem-safe suggestion for the save dialog, from the report's own topic."""
-    slug = "".join(char if char.isalnum() else "-" for char in report.topic.lower())
+    """A filesystem-safe suggestion for the save dialog, from the report's title (or, before titles, its topic)."""
+    slug = "".join(char if char.isalnum() else "-" for char in report.display_title.lower())
     while "--" in slug:
         slug = slug.replace("--", "-")
     slug = slug.strip("-")[:60].rstrip("-")

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Onyx Appliance</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --panel: #ffffff; --text: #1b1b1a; --muted: #6b6b66; --line: #e2e2dd;
+    --accent: #1f3d5c; --accent-text: #ffffff; --mark: #fff1b8; --err: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #131312; --panel: #1d1d1b; --text: #ecece8; --muted: #9a9a93; --line: #2f2f2c;
+            --accent: #8fb3d9; --accent-text: #0e1a26; --mark: #4a3f12; --err: #f08a82; }
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body { margin: 0; background: var(--bg); color: var(--text); display: flex; flex-direction: column;
+         font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { display: flex; align-items: center; gap: 12px; padding: 6px 12px; border-bottom: 1px solid var(--line);
+           background: var(--panel); flex: none; }
+  header h1 { font-size: 14px; letter-spacing: 3px; margin: 0; }
+  header a { color: var(--muted); font-size: 13px; }
+  header .grow { flex: 1; }
+  button, a.button { padding: 6px 12px; font: inherit; font-weight: 600; border-radius: 6px; cursor: pointer;
+           border: 1px solid var(--line); background: var(--panel); color: var(--text); text-decoration: none;
+           display: inline-block; }
+  button.primary, a.button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button[aria-pressed="true"] { border-color: var(--accent); }
+  .count { display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 9px;
+           background: var(--accent); color: var(--accent-text); font-size: 12px; text-align: center; }
+  .count[hidden] { display: none; }
+
+  main { flex: 1; display: flex; min-height: 0; }
+  #desktop { flex: 1; border: 0; min-width: 0; background: #000; }
+  aside { width: 400px; flex: none; border-left: 1px solid var(--line); background: var(--panel);
+          display: flex; flex-direction: column; min-height: 0; }
+  body.collapsed aside { display: none; }
+  @media (max-width: 900px) {
+    main { flex-direction: column; }
+    aside { width: auto; height: 50vh; border-left: 0; border-top: 1px solid var(--line); }
+  }
+  .scroll { overflow-y: auto; padding: 16px; flex: 1; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin: 0 0 10px; }
+  .empty { color: var(--muted); }
+  .title { font-weight: 600; font-size: 15px; overflow-wrap: anywhere; }
+  .where { color: var(--muted); overflow-wrap: anywhere; }
+  .viewer { margin: 12px 0; }
+  .viewer video, .viewer img { width: 100%; max-height: 60vh; background: #000; border-radius: 6px; display: block; }
+  .viewer img { object-fit: contain; background: transparent; }
+  .viewer audio { width: 100%; }
+  .viewer iframe.pdf { width: 100%; height: 60vh; border: 1px solid var(--line); border-radius: 6px; background: #fff; }
+  .note { color: var(--muted); font-size: 13px; margin: 6px 0; }
+  .error { color: var(--err); font-size: 13px; margin: 6px 0; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+  .excerpt { white-space: pre-wrap; overflow-wrap: anywhere; border-left: 3px solid var(--line); padding: 4px 0 4px 10px;
+             margin: 10px 0; max-height: 30vh; overflow-y: auto; }
+  .lines { font: 12px/1.6 ui-monospace, "SFMono-Regular", Menlo, monospace; border: 1px solid var(--line);
+           border-radius: 6px; max-height: 60vh; overflow: auto; padding: 4px 0; }
+  .lines div { display: flex; white-space: pre-wrap; overflow-wrap: anywhere; padding: 0 8px; }
+  .lines div.cited { background: var(--mark); }
+  .lines span.n { color: var(--muted); min-width: 4.5em; text-align: right; padding-right: 12px; flex: none;
+                  user-select: none; }
+  ul.history { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--line); }
+  ul.history li { padding: 8px 0; border-bottom: 1px solid var(--line); cursor: pointer; display: flex; gap: 8px; }
+  ul.history li:hover .title, ul.history li.current .title { color: var(--accent); }
+  ul.history .kind { color: var(--muted); font-size: 12px; flex: none; width: 52px; }
+  ul.history .title { font-size: 13px; font-weight: 500; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>ONYX</h1>
+  <a href="/">Home</a>
+  <span class="grow"></span>
+  <button id="toggle" type="button" aria-pressed="true" aria-controls="sources">
+    Sources<span class="count" id="unseen" hidden></span>
+  </button>
+</header>
+<main>
+  <iframe id="desktop" title="Onyx appliance desktop" allow="clipboard-read; clipboard-write; fullscreen"
+          src="/desktop/vnc.html?autoconnect=1&amp;resize=remote&amp;reconnect=1&amp;path=desktop/websockify"></iframe>
+  <aside id="sources" aria-label="Sources">
+    <div class="scroll">
+      <h2>Source</h2>
+      <p class="empty" id="empty">Click <b>Open source</b> on a citation in the appliance. The source opens here:
+        recordings play with sound from the cited moment, documents open at the cited page or lines, and everything
+        can be downloaded.</p>
+      <p class="error" id="feed-error" hidden></p>
+      <div id="current" hidden></div>
+      <h2 id="history-heading" hidden>Earlier</h2>
+      <ul class="history" id="history"></ul>
+    </div>
+  </aside>
+</main>
+<script src="/assets/sources.js"></script>
+</body>
+</html>

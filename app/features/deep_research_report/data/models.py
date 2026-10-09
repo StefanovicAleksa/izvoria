@@ -28,6 +28,8 @@ class ResearchReportModel(Base):
     session_id: Mapped[Optional[uuid.UUID]] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
 
     topic: Mapped[str] = mapped_column(Text, nullable=False)
+    # The report's name (the scoping model's proposal, edited at approval or renamed later); NULL before titles
+    title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(String, nullable=False, default=ReportStatus.AWAITING_APPROVAL.value,
                                         index=True)
     scope_note: Mapped[str] = mapped_column(Text, nullable=False, server_default="")
@@ -47,6 +49,8 @@ class ResearchReportModel(Base):
     # The language the report is written in ("sr"). A report reopened or resumed after the active language
     # changed is still rendered and finished in this one.
     language: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    # The user who asked for it, on the hosted multi-user API; NULL on the appliance, where reports are shared.
+    owner_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
 
     error_message: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 

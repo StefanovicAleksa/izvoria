@@ -31,7 +31,7 @@ class TestSessionMemoryAPI:
         mock_repo.get_history.return_value = turns
 
         assert api.get_history(session_id) == turns
-        mock_repo.get_history.assert_called_once_with(session_id, 7)
+        mock_repo.get_history.assert_called_once_with(session_id, 7, owner_id=None)
 
     def test_get_history_wraps_repo_errors(self, api, mock_repo):
         mock_repo.get_history.side_effect = RuntimeError("DB down")
@@ -73,7 +73,7 @@ class TestSessionMemoryAPI:
         mock_repo.record_turn.assert_called_once_with(
             session_id, "Q", "It rose [Doc 4].",
             mode=SessionTurnMode.CHAT, standalone_query="Q standalone",
-            evidence_chunk_ids=[chunk_id], first_doc_number=4
+            evidence_chunk_ids=[chunk_id], first_doc_number=4, owner_id=None
         )
 
     def test_record_reasoning_turn_strips_its_own_tags(self, api, mock_repo):
@@ -85,7 +85,7 @@ class TestSessionMemoryAPI:
         mock_repo.record_turn.assert_called_once_with(
             session_id, "Q", "It rose and then fell.",
             mode=SessionTurnMode.REASONING, standalone_query=None,
-            evidence_chunk_ids=[], first_doc_number=1
+            evidence_chunk_ids=[], first_doc_number=1, owner_id=None
         )
 
     def test_record_turn_wraps_repo_errors(self, api, mock_repo):
@@ -117,15 +117,15 @@ class TestSessionMemoryAPIHistoryAccess:
         mock_repo.get_all_turns.return_value = turns
 
         assert api.get_all_turns(session_id) == turns
-        mock_repo.get_all_turns.assert_called_once_with(session_id)
+        mock_repo.get_all_turns.assert_called_once_with(session_id, owner_id=None)
         mock_repo.get_history.assert_not_called()
 
     def test_list_and_delete_delegate(self, api, mock_repo):
         session_id = uuid.uuid4()
         api.list_sessions(limit=30)
         api.delete_session(session_id)
-        mock_repo.list_sessions.assert_called_once_with(30)
-        mock_repo.delete_session.assert_called_once_with(session_id)
+        mock_repo.list_sessions.assert_called_once_with(30, owner_id=None)
+        mock_repo.delete_session.assert_called_once_with(session_id, owner_id=None)
 
     @pytest.mark.parametrize("method, args", [
         ("get_all_turns", (uuid.uuid4(),)), ("list_sessions", ()), ("delete_session", (uuid.uuid4(),)),
@@ -134,3 +134,30 @@ class TestSessionMemoryAPIHistoryAccess:
         getattr(mock_repo, method).side_effect = RuntimeError("DB down")
         with pytest.raises(SessionMemorySystemError):
             getattr(api, method)(*args)
+
+
+class TestSessionMemoryAPIOwnership:
+    """The hosted API scopes every read and write to the user asking."""
+
+    @pytest.fixture
+    def mock_repo(self):
+        return MagicMock()
+
+    @pytest.fixture
+    def api(self, mock_repo):
+        return SessionMemoryAPI(mock_repo)
+
+    def test_the_owner_reaches_every_repository_call(self, api, mock_repo):
+        session_id = uuid.uuid4()
+
+        api.get_history(session_id, owner_id="u1")
+        api.get_all_turns(session_id, owner_id="u1")
+        api.list_sessions(10, owner_id="u1")
+        api.delete_session(session_id, owner_id="u1")
+        api.record_turn(session_id, "Q", "A", owner_id="u1")
+
+        assert mock_repo.get_history.call_args.kwargs["owner_id"] == "u1"
+        mock_repo.get_all_turns.assert_called_once_with(session_id, owner_id="u1")
+        mock_repo.list_sessions.assert_called_once_with(10, owner_id="u1")
+        mock_repo.delete_session.assert_called_once_with(session_id, owner_id="u1")
+        assert mock_repo.record_turn.call_args.kwargs["owner_id"] == "u1"

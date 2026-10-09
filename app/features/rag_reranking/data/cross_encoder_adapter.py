@@ -3,6 +3,7 @@
 import os
 import gc
 import logging
+import threading
 from typing import Any, List
 
 import torch
@@ -24,6 +25,11 @@ class CrossEncoderRerankerAdapter(IRerankerAdapter):
     # Query + contextualized chunk (~250 words of transcript plus generated context) fits well within this.
     MAX_SEQ_LENGTH = 1024
     BATCH_SIZE = 16
+
+    def __init__(self):
+        # One predict at a time: the resident model is shared by every concurrent request and its fast
+        # tokenizer is not thread-safe. Uncontended on the single-user appliance.
+        self._inference_lock = threading.Lock()
 
     @staticmethod
     def _get_cross_encoder(model_path: str) -> Any:
@@ -72,12 +78,13 @@ class CrossEncoderRerankerAdapter(IRerankerAdapter):
 
         try:
             encoder: Any = model.model_instance
-            scores = encoder.predict(
-                [(query, text) for text in texts],
-                batch_size=self.BATCH_SIZE,
-                show_progress_bar=False,
-                convert_to_numpy=True
-            )
+            with self._inference_lock:
+                scores = encoder.predict(
+                    [(query, text) for text in texts],
+                    batch_size=self.BATCH_SIZE,
+                    show_progress_bar=False,
+                    convert_to_numpy=True
+                )
             return [float(score) for score in scores]
         except Exception as e:
             raise map_rerank_error(e, context="Scoring query/chunk pairs") from e

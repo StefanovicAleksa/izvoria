@@ -4,10 +4,12 @@ import logging
 import re
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from app.core.anchors.domain.enums import AnchorKind
 from app.core.config import settings
+from app.core.language.service.language_api import active_language
 from app.core.model_manager.domain.entities import LoadedModel, ModelManifest
 from app.core.model_manager.domain.enums import ModelType
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
@@ -24,6 +26,7 @@ from app.features.deep_research_report.utils.error_mapper import map_report_erro
 from app.features.deep_research_report.utils.evidence_bank import (
     build_bank_index, build_section_digest, chunks_for_section, pack_section_evidence,
 )
+from app.features.deep_research_report.utils.titles import clean_title
 from app.features.deep_research_report.utils.query_log import (
     already_asked, format_attempts, normalise_query,
 )
@@ -105,7 +108,7 @@ class ReportAuthoringAPI:
                 self._release(loaded_model, release_after)
 
             report = self._repository.create_report(
-                topic=topic, plan=plan, corpus=corpus, session_id=session_id, language=settings.APPLIANCE_LANGUAGE
+                topic=topic, plan=plan, corpus=corpus, session_id=session_id, language=active_language()
             )
             logger.info(
                 f"Proposed {len(plan.sections)} section(s) and {len(plan.sub_questions)} sub-question(s) "
@@ -119,7 +122,7 @@ class ReportAuthoringAPI:
     def approve_plan(self, report_id: uuid.UUID, plan: ResearchPlan) -> Report:
         """Stores the user's approved outline and moves the report to GATHERING. No model involved."""
         try:
-            return self._repository.replace_plan(report_id, plan)
+            return self._repository.replace_plan(report_id, plan.model_copy(update={"title": clean_title(plan.title)}))
         except Exception as e:
             raise map_report_error(e, context=f"Approving the plan of report {report_id}") from e
 
@@ -488,15 +491,47 @@ class ReportAuthoringAPI:
     # 6. READS / STATUS
     # ==========================================
 
-    def get_report(self, report_id: uuid.UUID) -> Optional[Report]:
+    def get_report(self, report_id: uuid.UUID, owner_id: Optional[str] = None) -> Optional[Report]:
+        """None when it does not exist, or (hosted API) belongs to someone other than `owner_id`."""
         try:
-            return self._repository.get_report(report_id)
+            if owner_id is None:
+                return self._repository.get_report(report_id)
+            return self._repository.get_report(report_id, owner_id=owner_id)
         except Exception as e:
             raise map_report_error(e, context=f"Loading report {report_id}") from e
 
-    def list_reports(self, session_id: Optional[uuid.UUID] = None, limit: int = 50) -> List[ReportSummary]:
+    def rename_report(self, report_id: uuid.UUID, title: str) -> Optional[Report]:
+        """
+        Gives the report a new title ("" goes back to showing its request). A report already written to disk is
+        rendered again, so the saved file carries the new title too. None when the report does not exist.
+        """
         try:
-            return self._repository.list_reports(session_id, limit)
+            report = self._repository.get_report(report_id)
+            if report is None:
+                return None
+            self._repository.rename_report(report_id, clean_title(title))
+            renamed = self._repository.get_report(report_id)
+            if renamed is not None and renamed.markdown_path:
+                path = self._file_store.write_markdown(report_id, markdown_renderer.render(renamed))
+                self._repository.set_markdown_path(report_id, path)
+                _remove_replaced(renamed.markdown_path, path)
+                renamed = renamed.model_copy(update={"markdown_path": path})
+            return renamed
+        except Exception as e:
+            raise map_report_error(e, context=f"Renaming report {report_id}") from e
+
+    def set_owner(self, report_id: uuid.UUID, owner_id: str) -> None:
+        try:
+            self._repository.set_owner(report_id, owner_id)
+        except Exception as e:
+            raise map_report_error(e, context=f"Setting the owner of report {report_id}") from e
+
+    def list_reports(self, session_id: Optional[uuid.UUID] = None, limit: int = 50,
+                     owner_id: Optional[str] = None) -> List[ReportSummary]:
+        try:
+            if owner_id is None:
+                return self._repository.list_reports(session_id, limit)
+            return self._repository.list_reports(session_id, limit, owner_id=owner_id)
         except Exception as e:
             raise map_report_error(e, context="Listing reports") from e
 
@@ -510,3 +545,13 @@ class ReportAuthoringAPI:
             self._repository.set_status(report_id, status, error_message)
         except Exception as e:
             raise map_report_error(e, context=f"Setting the status of report {report_id}") from e
+
+
+def _remove_replaced(old_path: str, new_path: str) -> None:
+    """The file a re-render replaced (it lands in the day's folder, so the path changes); best effort."""
+    if old_path == new_path:
+        return
+    try:
+        Path(old_path).unlink(missing_ok=True)
+    except OSError as e:
+        logger.warning(f"Could not remove the replaced report file {old_path}: {e}")

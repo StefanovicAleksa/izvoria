@@ -29,10 +29,13 @@ class SessionMemoryAPI:
     def __init__(self, repository: ISessionMemoryRepository):
         self._repo = repository
 
-    def get_history(self, session_id: uuid.UUID) -> List[SessionTurn]:
-        """The session's most recent turns (at most CHAT_HISTORY_MAX_TURNS), oldest first."""
+    def get_history(self, session_id: uuid.UUID, owner_id: Optional[str] = None) -> List[SessionTurn]:
+        """
+        The session's most recent turns (at most CHAT_HISTORY_MAX_TURNS), oldest first. With `owner_id` (the hosted
+        API) only that user's turns: another user's conversation id reads as a new, empty conversation.
+        """
         try:
-            return self._repo.get_history(session_id, settings.CHAT_HISTORY_MAX_TURNS)
+            return self._repo.get_history(session_id, settings.CHAT_HISTORY_MAX_TURNS, owner_id=owner_id)
         except Exception as e:
             raise map_session_memory_error(e)
 
@@ -50,23 +53,23 @@ class SessionMemoryAPI:
         ]
         return "\n\n".join(parts)
 
-    def get_all_turns(self, session_id: uuid.UUID) -> List[SessionTurn]:
+    def get_all_turns(self, session_id: uuid.UUID, owner_id: Optional[str] = None) -> List[SessionTurn]:
         """Every turn of the session, oldest first: for showing a conversation again, not for a prompt."""
         try:
-            return self._repo.get_all_turns(session_id)
+            return self._repo.get_all_turns(session_id, owner_id=owner_id)
         except Exception as e:
             raise map_session_memory_error(e)
 
-    def list_sessions(self, limit: int = 200) -> List[SessionSummary]:
+    def list_sessions(self, limit: int = 200, owner_id: Optional[str] = None) -> List[SessionSummary]:
         """Conversations, most recently active first."""
         try:
-            return self._repo.list_sessions(limit)
+            return self._repo.list_sessions(limit, owner_id=owner_id)
         except Exception as e:
             raise map_session_memory_error(e)
 
-    def delete_session(self, session_id: uuid.UUID) -> int:
+    def delete_session(self, session_id: uuid.UUID, owner_id: Optional[str] = None) -> int:
         try:
-            return self._repo.delete_session(session_id)
+            return self._repo.delete_session(session_id, owner_id=owner_id)
         except Exception as e:
             raise map_session_memory_error(e)
 
@@ -81,7 +84,8 @@ class SessionMemoryAPI:
         mode: SessionTurnMode = SessionTurnMode.CHAT,
         standalone_query: Optional[str] = None,
         evidence_chunk_ids: Optional[List[uuid.UUID]] = None,
-        first_doc_number: int = 1
+        first_doc_number: int = 1,
+        owner_id: Optional[str] = None
     ) -> SessionTurn:
         """
         Chat answers keep their tags, which already use the conversation-wide numbers. Reasoned Answer turns number
@@ -95,7 +99,8 @@ class SessionMemoryAPI:
                 mode=mode,
                 standalone_query=standalone_query,
                 evidence_chunk_ids=list(evidence_chunk_ids or []),
-                first_doc_number=first_doc_number
+                first_doc_number=first_doc_number,
+                owner_id=owner_id
             )
         except Exception as e:
             raise map_session_memory_error(e)

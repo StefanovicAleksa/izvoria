@@ -34,6 +34,11 @@ Qt's multimedia stack — and its hardware-decode crash on NVIDIA hardware witho
 driver — is not in the process at all. The cost is that a system player cannot be told to start at a
 timestamp, so a citation into a whole recording shows the cited span prominently instead.
 
+On the hosted demo box the agent launches the app with `ONYX_SOURCE_OFFER_URL`/`ONYX_SOURCE_OFFER_TOKEN`, and
+`system_open.open_source` posts the citation to the agent instead (`data/source_offer_client.py`, stdlib only), so
+the source reaches the tester's browser with sound, at its page or lines, with a download. Without those variables
+nothing changes. See "Sources in your browser" in `docs/deploy.md`.
+
 Everything above the gateway speaks in frozen dataclasses from
 `frontend/onyx_desktop/domain/entities.py`. No pydantic entity and no `app.*` type crosses onto the
 GUI thread, which is what lets the entire UI run and be tested against a stub gateway with no GPU,

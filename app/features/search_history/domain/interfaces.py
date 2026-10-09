@@ -20,21 +20,22 @@ class ISearchHistoryRepository(ABC):
         chunk_ids: List[uuid.UUID],
         scores: List[float],
         execution_time_ms: float,
+        owner_id: Optional[str] = None,
     ) -> SearchRecord:
         """Persists one search and its ranked results."""
         pass
 
     @abstractmethod
-    def list(self, limit: int) -> List[SearchRecordSummary]:
-        """The most recent `limit` searches, newest first."""
+    def list(self, limit: int, owner_id: Optional[str] = None) -> List[SearchRecordSummary]:
+        """The most recent `limit` searches, newest first (only `owner_id`'s, when given)."""
         pass
 
     @abstractmethod
-    def get(self, record_id: uuid.UUID) -> Optional[SearchRecord]:
+    def get(self, record_id: uuid.UUID, owner_id: Optional[str] = None) -> Optional[SearchRecord]:
         """One search with its results, or None if it does not exist."""
         pass
 
     @abstractmethod
-    def delete(self, record_id: uuid.UUID) -> bool:
+    def delete(self, record_id: uuid.UUID, owner_id: Optional[str] = None) -> bool:
         """Removes one search; says whether it existed."""
         pass

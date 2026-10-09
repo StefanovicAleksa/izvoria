@@ -90,13 +90,19 @@ class TestBatchMediaPipelineUnit:
     def mock_rag_indexing(self): return Mock()
 
     @pytest.fixture
+    def mock_storage_compaction(self):
+        phase = Mock()
+        phase.enabled.return_value = False  # the appliance's defaults
+        return phase
+
+    @pytest.fixture
     def pipeline(self,
                  mock_scan, mock_ingest, mock_extract, mock_vad,
                  mock_domain_adaptation, mock_transcribe, mock_hallucination_correction,
                  mock_diarize, mock_sentence, mock_phonetic, mock_contextual,
                  mock_visual_cue, mock_frame_extraction, mock_visual_analysis,
                  mock_visual_hallucination_correction, mock_visual_context_synthesis,
-                 mock_context_unification, mock_clip_extraction, mock_rag_indexing):
+                 mock_context_unification, mock_clip_extraction, mock_rag_indexing, mock_storage_compaction):
         return BatchMediaPipeline(
             scan_phase=mock_scan,
             ingest_phase=mock_ingest,
@@ -116,7 +122,8 @@ class TestBatchMediaPipelineUnit:
             visual_context_synthesis_phase=mock_visual_context_synthesis,
             context_unification_phase=mock_context_unification,
             clip_extraction_phase=mock_clip_extraction,
-            rag_indexing_phase=mock_rag_indexing
+            rag_indexing_phase=mock_rag_indexing,
+            storage_compaction_phase=mock_storage_compaction
         )
 
     @staticmethod
@@ -236,3 +243,53 @@ class TestBatchMediaPipelineUnit:
         mock_visual_context_synthesis.execute.assert_not_called()
         assert events[:2] == ["discard synthesis", "preload embedder"]
         mock_rag_indexing.execute.assert_called_once()
+
+    def _run_all(self, pipeline, mocks):
+        source_id = uuid.uuid4()
+        self._configure_successful_run(source_id, *mocks)
+        return source_id, pipeline.process_directory("/dummy/path", SourceType.VIDEO)
+
+    @pytest.fixture
+    def all_mocks(self, mock_scan, mock_ingest, mock_extract, mock_vad, mock_domain_adaptation, mock_transcribe,
+                  mock_hallucination_correction, mock_diarize, mock_sentence, mock_phonetic, mock_contextual,
+                  mock_visual_cue, mock_frame_extraction, mock_visual_analysis,
+                  mock_visual_hallucination_correction, mock_visual_context_synthesis, mock_context_unification,
+                  mock_clip_extraction, mock_rag_indexing):
+        return (mock_scan, mock_ingest, mock_extract, mock_vad, mock_domain_adaptation, mock_transcribe,
+                mock_hallucination_correction, mock_diarize, mock_sentence, mock_phonetic, mock_contextual,
+                mock_visual_cue, mock_frame_extraction, mock_visual_analysis, mock_visual_hallucination_correction,
+                mock_visual_context_synthesis, mock_context_unification, mock_clip_extraction, mock_rag_indexing)
+
+    def test_without_clips_only_the_index_is_built(self, pipeline, all_mocks, mock_clip_extraction,
+                                                    mock_rag_indexing, monkeypatch):
+        monkeypatch.setattr("app.orchestration.service.pipelines.batch_media_pipeline.settings.VIDEO_CLIPS_ENABLED",
+                            False)
+
+        _, results = self._run_all(pipeline, all_mocks)
+
+        mock_clip_extraction.execute.assert_not_called()
+        mock_rag_indexing.execute.assert_called_once()
+        assert PipelinePhase.CLIP_EXTRACTION not in results
+        assert PipelinePhase.RAG_INDEXING in results
+
+    def test_storage_compaction_runs_last_on_what_was_indexed(self, pipeline, all_mocks, mock_clip_extraction,
+                                                             mock_rag_indexing, mock_storage_compaction):
+        mock_storage_compaction.enabled.return_value = True
+        order = []
+        mock_clip_extraction.execute.side_effect = lambda *a: order.append("clips") or mock_clip_extraction.execute.return_value
+        compacted = PhaseBatchResult(phase=PipelinePhase.STORAGE_COMPACTION, status=PhaseStatus.COMPLETED)
+        mock_storage_compaction.execute.side_effect = lambda items: order.append("compaction") or compacted
+
+        source_id, results = self._run_all(pipeline, all_mocks)
+
+        indexed = mock_rag_indexing.execute.return_value.items
+        mock_storage_compaction.execute.assert_called_once_with(indexed)
+        assert indexed[0].source_id == source_id
+        assert order == ["clips", "compaction"]
+        assert results[PipelinePhase.STORAGE_COMPACTION] is compacted
+
+    def test_storage_compaction_is_skipped_when_disabled(self, pipeline, all_mocks, mock_storage_compaction):
+        _, results = self._run_all(pipeline, all_mocks)
+
+        mock_storage_compaction.execute.assert_not_called()
+        assert PipelinePhase.STORAGE_COMPACTION not in results

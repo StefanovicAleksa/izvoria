@@ -5,6 +5,7 @@ import concurrent.futures
 import uuid
 from typing import List, Optional, Tuple
 
+from app.orchestration.utils.preload_slot import PreloadSlot
 from app.core.config import settings
 from app.core.jobs.service.manager import JobManager
 from app.core.jobs.domain.entities import JobRequest
@@ -32,6 +33,9 @@ class ReasonerPhase:
     multi-iteration loop lives in LiveReasoningPipeline, not here — this Phase, like every
     other Phase, wraps exactly one logical step.
     """
+
+    # One per request thread: concurrent requests share this Phase (see PreloadSlot)
+    _preload_future = PreloadSlot()
 
     def __init__(
             self,

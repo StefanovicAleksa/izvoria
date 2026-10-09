@@ -220,3 +220,27 @@ class TestPostgresSearchRepository:
 
         assert chunk.anchor_kind is AnchorKind.PAGE
         assert (chunk.page_start, chunk.page_end, chunk.section_path, chunk.position) == (7, 8, "Article 7", 12)
+
+
+class TestInjectedDatabase:
+    """The hosted API gives each firm's search its own database; without one, the appliance's own."""
+
+    @patch("app.features.rag_retrieval.data.postgres_search_repo.db_manager")
+    def test_a_given_database_is_used_instead_of_the_appliances(self, appliance_db):
+        firm_db = MagicMock()
+        firm_session = firm_db.session.return_value.__enter__.return_value
+        firm_session.execute.return_value.mappings.return_value.all.return_value = []
+
+        PostgresSearchRepository(firm_db).fetch_chunks([uuid.uuid4()])
+
+        firm_session.execute.assert_called_once()
+        appliance_db.session.assert_not_called()
+
+    @patch("app.features.rag_retrieval.data.postgres_search_repo.db_manager")
+    def test_without_a_database_the_appliances_is_used(self, appliance_db):
+        session = appliance_db.session.return_value.__enter__.return_value
+        session.execute.return_value.mappings.return_value.all.return_value = []
+
+        PostgresSearchRepository().list_indexed_sources()
+
+        session.execute.assert_called_once()

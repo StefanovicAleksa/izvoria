@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import uuid
 from typing import Dict, List, Optional, Tuple
 
+from app.orchestration.utils.preload_slot import PreloadSlot
 from app.core.config import settings
 from app.core.jobs.domain.entities import CancellationToken, JobRequest
 from app.core.jobs.domain.enums import JobType
@@ -64,6 +65,9 @@ class ReportAuthoringPhase:
     Progress still ticks per unit: each section is its own `run_job`, so a caller sees "section 4 of 8"
     even though the model never moves.
     """
+
+    # One per request thread: concurrent requests share this Phase (see PreloadSlot)
+    _preload_future = PreloadSlot()
 
     def __init__(
             self,

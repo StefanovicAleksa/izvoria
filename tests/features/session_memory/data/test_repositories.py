@@ -169,3 +169,76 @@ class TestSessionMemoryRepository:
         session.execute.side_effect = db_exc.ConnectionError("Unreachable")
         with pytest.raises(SessionMemorySystemError):
             repository.delete_session(uuid.uuid4())
+
+
+class TestSessionMemoryOwner:
+    """The hosted API scopes conversations to the signed-in user; the appliance (owner None) keeps them shared."""
+
+    @pytest.fixture
+    def session(self):
+        return MagicMock()
+
+    @pytest.fixture
+    def repository(self, session):
+        db_manager = Mock()
+        db_manager.session.return_value.__enter__ = Mock(return_value=session)
+        db_manager.session.return_value.__exit__ = Mock(return_value=False)
+        return SessionMemoryRepository(db_manager)
+
+    @staticmethod
+    def _where(session) -> str:
+        """The statement from its WHERE on: a full-row SELECT names the owner_id column either way."""
+        statement = session.execute.call_args[0][0]
+        sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
+        return sql[sql.index("WHERE"):] if "WHERE" in sql else sql[sql.index("FROM"):]
+
+    def test_record_turn_stores_the_owner(self, repository, session):
+        repository.record_turn(uuid.uuid4(), "Q", "A", owner_id="user-7")
+
+        assert session.add.call_args[0][0].owner_id == "user-7"
+
+    def test_record_turn_without_an_owner_stores_none(self, repository, session):
+        repository.record_turn(uuid.uuid4(), "Q", "A")
+
+        assert session.add.call_args[0][0].owner_id is None
+
+    @pytest.mark.parametrize("call", [
+        lambda repo, owner: repo.get_history(uuid.uuid4(), limit=5, owner_id=owner),
+        lambda repo, owner: repo.get_all_turns(uuid.uuid4(), owner_id=owner),
+    ])
+    def test_turn_reads_are_restricted_to_the_owner(self, repository, session, call):
+        session.execute.return_value.scalars.return_value.all.return_value = []
+
+        call(repository, "user-7")
+        assert "session_turns.owner_id = 'user-7'" in self._where(session)
+
+        call(repository, None)
+        assert "owner_id" not in self._where(session)
+
+    def test_list_sessions_counts_only_the_owners_turns(self, repository, session):
+        session.execute.return_value.all.return_value = []
+
+        repository.list_sessions(limit=20, owner_id="user-7")
+
+        sql = self._where(session)
+        # Filtered before grouping, so a conversation's title and turn count are the owner's own
+        assert sql.index("session_turns.owner_id = 'user-7'") < sql.index("GROUP BY")
+
+    def test_list_sessions_without_an_owner_is_unrestricted(self, repository, session):
+        session.execute.return_value.all.return_value = []
+
+        repository.list_sessions(limit=20)
+
+        assert "owner_id" not in self._where(session)
+
+    def test_delete_session_only_removes_the_owners_turns(self, repository, session):
+        session.execute.return_value.rowcount = 0
+
+        assert repository.delete_session(uuid.uuid4(), owner_id="user-7") == 0
+        assert "session_turns.owner_id = 'user-7'" in self._where(session)
+
+    def test_delete_session_without_an_owner_is_unrestricted(self, repository, session):
+        session.execute.return_value.rowcount = 2
+
+        assert repository.delete_session(uuid.uuid4()) == 2
+        assert "owner_id" not in self._where(session)

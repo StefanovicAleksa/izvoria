@@ -6,7 +6,9 @@ Onyx is an on-premise appliance. This is **not** how a client runs it; it's how 
 browser ──https──► Gateway VPS (~$5/mo, always on)       Caddy TLS → Starlette (deploy/gateway)
                      /             landing page, login, language, Start / Stop, uploads
                      /api/upload   streams files to the agent
+                     /appliance    the desktop (noVNC) with a Sources panel beside it
                      /desktop/*    HTTP + WebSocket proxy to noVNC
+                     /api/sources  cited sources, streamed from the agent (SSE feed + Range-capable files)
                      idle monitor  stops the GPU box when nobody's there and nothing runs
                               │ Vast REST API (the key never leaves the VPS)
                               ▼
@@ -25,6 +27,62 @@ browser ──https──► Gateway VPS (~$5/mo, always on)       Caddy TLS →
 3. The agent (`deploy/instance/agent/session.py`) launches the desktop app with `APPLIANCE_LANGUAGE=<lang>` and `POSTGRES_DB=onyx` in its environment. Real environment variables override `.env.prod` in pydantic-settings. One database holds every language, so the tester can ingest Serbian and English into the same appliance and ask about either in either language. `OnyxEngine.start()` runs the Alembic migrations itself.
 4. **Open appliance** loads `/desktop/vnc.html`. The gateway proxies noVNC's static files and the VNC WebSocket, and appends the websockify token itself. The token routes and authenticates in websockify's `TokenFile` plugin, and it never reaches the browser.
 5. Uploads go to `/workspace/uploads/<lang>/<YYYYMMDD-HHMMSS>/` on the box, named for the language picked on the page. Filenames are sanitised, and only the scanner's `ALLOWED_EXTENSIONS` are accepted; a test keeps the two lists in step. The page shows the folder to pick in the **Ingest** view and the language to set there ("Language of these files"). The Ingest view's picker is what the batch actually uses.
+
+## Sources in your browser
+
+Clicking **Open source** on a citation (Chat, Search or Report) opens it in the tester's own browser, in the
+**Sources** panel beside the desktop on `/appliance`. On the box's own desktop it would play without sound (noVNC
+carries none), at VNC frame rate, and couldn't be saved or printed.
+
+```
+desktop app ─POST 127.0.0.1:8090/offers (launch token)─► agent: checks the path is in the vault, files it under a random id
+browser /appliance ◄─SSE /api/sources/stream─ gateway ◄─long-poll GET /offers─ agent
+<video src=/api/sources/{id}/excerpt>  ─Range─► gateway (streams) ─Range─► agent FileResponse
+```
+
+**What each source becomes.**
+
+| Source | In the panel |
+|---|---|
+| Video clip | Plays from its start (a clip is the cited span) |
+| Whole recording (audio-only pipeline, or a video without a clip) | **Cited passage**: the span ±5 s, cut to a small AAC/H.264 file. **Whole recording** streams the original at the cited time and can seek anywhere |
+| PDF | The browser's own viewer at the cited page (`#page=N`), so it can be printed |
+| TXT / Markdown | The text with the cited lines highlighted, decoded and line-counted as the appliance did (files up to 5 MB) |
+| DOCX / EPUB / RTF / HTML / CSV | The verbatim excerpt and its location. Browsers can't render these safely, so it's download only |
+| Image | Shown inline |
+
+Everything has **Download original**, named `Onyx Doc 3 - p. 7 - Article 7.pdf`. A recording that has an
+excerpt also has **Download cited passage**.
+
+**Formats the browser can't play.** A clip is a stream copy, so it keeps the recording's codec. If that codec is
+HEVC, or the source is WMA/AMR/ALAC, ffmpeg makes an H.264/AAC MP4 or an AAC M4A. TIFF/BMP images become PNG. Each
+conversion runs once, at `nice 10`, one at a time, into `/workspace/source-cache`. That cache is capped at 5 GB
+(oldest first) and is safe to delete. Converting a long video takes minutes; the panel says "Preparing…" while it
+runs. The cited passage itself is always quick.
+
+**Security.**
+- **Browser:** the signed session cookie on every route, the feed included. The browser sends only an offer id
+  (22 URL-safe characters) and a variant name (`media`, `excerpt`, `text`, `original`). Nothing it sends becomes a
+  path.
+- **The app:** it never sees `AGENT_SECRET`. The agent gives each launch its own token through the app's
+  environment, and keeps it in its state file next to the pid. `POST /offers` accepts that token only, from
+  loopback only, and is the only thing the token can do.
+- **The agent:** an offered path must resolve (symlinks included) to a regular file inside the vault (`onyx_data/`,
+  or `ONYX_STORAGE_ROOT`) with an ingestible suffix. That check runs again when the file is served. Offers live in
+  memory, at most 100, for 12 h.
+- **What's served:** a fixed suffix→type table (never sniffed), `nosniff`, `Cache-Control: private, no-store`, and
+  `Content-Security-Policy: sandbox`. A PDF shown inline is the one exception to the sandbox, because Chrome refuses
+  to show a PDF under it. HTML is never served inline. The panel sets client text with `textContent` only.
+- **No direct link to the box.** Vast's mapped ports are plain HTTP, so a direct link would be blocked as mixed
+  content on the HTTPS page and would carry client material unencrypted. Files stream through the gateway, chunk by
+  chunk; a playback counts as activity for the idle monitor. Caddy doesn't gzip `/api/sources/*`, which would break
+  seeking and buffer the feed.
+
+**Bandwidth.** Vast bills egress whichever way the bytes leave the box. The cited passage, a few hundred KB, is
+what plays first; the whole recording is fetched only when asked for, in `Range` pieces as the tester seeks.
+
+**On-premise nothing changes.** Without the two environment variables, the app opens sources in the desktop's
+own player as before.
 
 **Switching language happens inside the app** (the sidebar's "Answer in"). `POST /session` returns a running app as it is, whatever language it started in, and never relaunches it. A relaunch would lose a running job, and it's no longer needed.
 
@@ -55,7 +113,7 @@ ssh -p <ssh-port> root@<ssh-host> bash /workspace/onyx_v3/deploy/instance/onstar
 
 `provision.sh` sets up the box:
 
-- Python 3.11 (deadsnakes), PostgreSQL 15 + pgvector (PGDG), XFCE + TigerVNC + noVNC, `mpv` (the app opens sources in the desktop's player), and fonts.
+- Python 3.11 (deadsnakes), PostgreSQL 15 + pgvector (PGDG), XFCE + TigerVNC + noVNC, `ffmpeg` (also what makes sources browser-playable), `mpv`, and fonts.
 - The appliance venv, with the CUDA build of llama-cpp-python.
 - The agent's own venv.
 - `/workspace/secrets.env`, and the `onyx` database (`create_databases.sh`).
@@ -115,3 +173,13 @@ deploy/.venv/bin/pytest deploy/tests
 ```
 
 **Local end-to-end run, no rental.** Run the agent, and the gateway with `FAKE_VAST_HOST=127.0.0.1 GATEWAY_HTTPS_ONLY=0`, on this machine. The gateway then treats localhost as the instance, with ports 8090/6080 unmapped. With a real Xvnc + websockify on :6080, this exercises the whole path; the start and stop calls only flip a flag.
+
+For sources, point the agent at the vault and a scratch state file. **Start appliance** then launches the app with the offer variables set (it runs `--env production`, so `.env.prod` must name a local database):
+
+```bash
+AGENT_SECRET=<40 chars> ONYX_ROOT=$PWD ONYX_STORAGE_ROOT=$PWD/onyx_data SOURCE_CACHE_ROOT=/tmp/onyx-cache \
+  AGENT_STATE_FILE=/tmp/onyx-agent.json deploy/.venv/bin/uvicorn deploy.instance.agent.app:create_app --factory --port 8090
+```
+
+Open `/appliance` and click citations of each kind. `curl` without the cookie should get 401 on
+`/api/sources/...`, and a `Range: bytes=0-99` request should get 206.

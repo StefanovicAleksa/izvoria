@@ -1,0 +1,21 @@
+[Unit]
+Description=Onyx hosted gateway (firms, sign-in, the GPU box)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=onyx
+WorkingDirectory=/opt/onyx_v3
+EnvironmentFile=/etc/onyx-web-gateway.env
+ExecStart=/opt/onyx-web-gateway/bin/uvicorn web_deploy.gateway.app:create_production_app --factory --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips 127.0.0.1
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/onyx-web
+StateDirectory=onyx-web
+
+[Install]
+WantedBy=multi-user.target

@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional
-from sqlalchemy import DateTime, Integer, Text, Index, text
+from sqlalchemy import DateTime, Integer, String, Text, Index, text
 from sqlalchemy.dialects.postgresql import ARRAY, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -32,6 +32,9 @@ class SessionTurnModel(Base):
     )
 
     first_doc_number: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
+
+    # The user who asked, on the hosted multi-user API; NULL on the appliance, where history is shared.
+    owner_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc))
 

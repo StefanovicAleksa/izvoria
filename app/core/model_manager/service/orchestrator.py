@@ -28,15 +28,33 @@ class ModelManagerOrchestrator:
     used on a tie). Every other model is unloaded
     on release, as before. Without `keep_warm_types` nothing is ever IDLE and the pool is the single slot it always
     was: every acquire evicts the other residents, and a waiting acquire waits for an empty GPU.
+
+    Two further kinds of type exist for the hosted, multi-user API (both empty on the appliance):
+    - `pinned_types` are loaded once (`warm_up`) and then never released, evicted or unloaded, until
+      `shutdown_all`. Concurrent requests share them safely because nothing can free them mid-use.
+    - `external_types` are served by another process (llama-server): `acquire_model` hands out one client per
+      (type, path) without budgeting VRAM for it, and releasing it does nothing.
+    With `strict_resident`, acquiring any other type raises ResidencyError: with requests running concurrently, a
+    load or release outside those two kinds could free a model another request is using (release_model is not a
+    refcount), so a concurrent engine must never reach that lifecycle.
     """
     VRAM_SAFETY_BUFFER_MB = 500.0
     WAIT_POLL_INTERVAL_SEC = 0.1
     # Above this many IDLE models the cheapest-eviction search gives way to evicting them oldest first
     MAX_EVICTION_CANDIDATES = 10
 
-    def __init__(self, vram_monitor: IVramMonitor, keep_warm_types: Optional[Iterable[ModelType]] = None):
+    def __init__(self, vram_monitor: IVramMonitor, keep_warm_types: Optional[Iterable[ModelType]] = None,
+                 pinned_types: Optional[Iterable[ModelType]] = None,
+                 external_types: Optional[Iterable[ModelType]] = None,
+                 strict_resident: bool = False):
         self._monitor = vram_monitor
         self._keep_warm_types = frozenset(keep_warm_types or ())
+        self._pinned_types = frozenset(pinned_types or ())
+        self._external_types = frozenset(external_types or ())
+        overlap = self._pinned_types & self._external_types
+        if overlap:
+            raise ValueError(f"Model types cannot be both pinned and external: {sorted(t.value for t in overlap)}")
+        self._strict_resident = strict_resident
         # Models released by their holder but kept resident, with when they went idle (for LRU eviction).
         # A resident model not in here is ACTIVE: somebody holds it, and it is never evicted by a waiting acquire.
         self._idle_since: Dict[uuid.UUID, float] = {}
@@ -87,9 +105,18 @@ class ModelManagerOrchestrator:
                     return
             time.sleep(self.WAIT_POLL_INTERVAL_SEC)
 
+    def _is_permanent(self, model_type: ModelType) -> bool:
+        """Pinned or external: never released, evicted or unloaded short of `shutdown_all`."""
+        return model_type in self._pinned_types or model_type in self._external_types
+
     def _held_ids(self) -> list:
-        """Resident models somebody holds (ACTIVE). Callers must hold `self._lock`."""
-        return [mid for mid in self._active_models if mid not in self._idle_since]
+        """
+        Resident models somebody holds (ACTIVE). Pinned and external models are not counted: they are held by
+        nobody in particular and never released, so a waiting acquire must not wait for them.
+        Callers must hold `self._lock`.
+        """
+        return [mid for mid, model in self._active_models.items()
+                if mid not in self._idle_since and not self._is_permanent(model.manifest.model_type)]
 
     def _could_fit_beside_held(self, manifest: ModelManifest) -> bool:
         """A cheap check, without flushing: free VRAM plus what evicting every IDLE model would return."""
@@ -107,7 +134,16 @@ class ModelManagerOrchestrator:
         `wait_for_clear=False` (ingestion and batch APIs) evicts every other resident, ACTIVE or not: a batch phase
         owns the GPU. `wait_for_clear=True` (live APIs, every preload) never evicts an ACTIVE model; it evicts IDLE
         ones (the fewest megabytes that make room), and waits for ACTIVE ones to be released if that is not enough room.
+        Pinned and external models are never evicted by either.
         """
+        if manifest.model_type in self._external_types:
+            return self._acquire_external(manifest, loader)
+        if self._strict_resident and manifest.model_type not in self._pinned_types:
+            raise exc.ResidencyError(
+                f"{manifest.model_type.value} is neither pinned nor external, so it can't be loaded while requests "
+                f"run concurrently. Add it to MODEL_PINNED_TYPES or MODEL_EXTERNAL_TYPES."
+            )
+
         while True:
             # 1. Idempotency Check
             with self._lock:
@@ -134,6 +170,49 @@ class ModelManagerOrchestrator:
                     return resident
 
             time.sleep(self.WAIT_POLL_INTERVAL_SEC)
+
+    def _acquire_external(self, manifest: ModelManifest, loader: IModelLoader) -> LoadedModel:
+        """One client per (type, path), created on first use. Nothing is budgeted: the VRAM is another process's."""
+        with self._lock:
+            resident = self._find_resident(manifest)
+            if resident:
+                return self._hand_out(resident)
+            try:
+                logger.info(f"Connecting {manifest.model_type.value} to its external server")
+                loaded_model = loader.load(manifest)
+            except Exception as e:
+                raise map_model_manager_error(e) from e
+            self._active_models[loaded_model.id] = loaded_model
+            self._active_loaders[loaded_model.id] = loader
+            self._handouts[loaded_model.id] = 1
+            return loaded_model
+
+    def warm_up(self, manifest: ModelManifest, loader: IModelLoader) -> LoadedModel:
+        """
+        Loads a pinned (or connects an external) model ahead of the first request, so no request ever waits on a load.
+
+        A pinned model is admitted against its declared `required_vram_mb`, not its on-disk size: it loads once, at
+        startup, beside an external server that already holds its share of the card, and on-disk size misjudges it
+        badly (models/bge-m3 is 4.3 GB on disk, 1.1 GB loaded; that estimate refused the embedder next to
+        llama-server on a 12 GB card with 4.6 GB free). `<FEATURE>_VRAM_REQUIREMENT_MB` is the declared upper bound.
+        """
+        if not self._is_permanent(manifest.model_type):
+            raise ValueError(f"{manifest.model_type.value} is not pinned or external; warm_up would leak it")
+        if manifest.model_type in self._external_types:
+            return self._acquire_external(manifest, loader)
+        with self._lock:
+            resident = self._find_resident(manifest)
+            if resident:
+                return self._hand_out(resident)
+            self._monitor.flush_memory()
+            status = self._monitor.get_vram_status()
+            needed = manifest.required_vram_mb + self.VRAM_SAFETY_BUFFER_MB
+            if status.free_vram_mb < needed:
+                raise exc.OutOfVramError(
+                    f"Insufficient VRAM to pin {manifest.model_type.value}.\n"
+                    f"Needs: {needed:.1f}MB | Free: {status.free_vram_mb:.1f}MB"
+                )
+            return self._load(manifest, loader, free_before_mb=status.free_vram_mb)
 
     def _admit(self, manifest: ModelManifest, loader: IModelLoader, wait_for_clear: bool) -> Optional[LoadedModel]:
         """
@@ -162,10 +241,12 @@ class ModelManagerOrchestrator:
         Evicts what this load may evict and returns (VRAM status after a deep flush, whether models stay resident).
         Only IDLE models are evicted, and only as many megabytes as the load needs. Callers must hold `self._lock`.
         """
-        # Swap logic: a batch acquire releases every current resident
-        if evict_held and self._active_models:
+        # Swap logic: a batch acquire releases every current resident (pinned and external ones stay)
+        evictable = [mid for mid, model in self._active_models.items()
+                     if not self._is_permanent(model.manifest.model_type)]
+        if evict_held and evictable:
             logger.info("Swapping models. Releasing current residents...")
-            for mid in list(self._active_models.keys()):
+            for mid in evictable:
                 self._unload_resident(mid, flush=False)
 
         # PRE-EMPTIVE DEEP FLUSH
@@ -286,7 +367,7 @@ class ModelManagerOrchestrator:
         first and this becomes a no-op, or this frees first and the acquire loads a fresh copy.
         """
         with self._lock:
-            if loaded_model.id not in self._active_models:
+            if loaded_model.id not in self._active_models or self._is_permanent(loaded_model.manifest.model_type):
                 return
 
             handouts = self._handouts.get(loaded_model.id, 0)
@@ -305,10 +386,12 @@ class ModelManagerOrchestrator:
     def release_model(self, loaded_model: LoadedModel, loader: IModelLoader, flush: bool = True) -> None:
         """
         The holder is done with the model. A keep-warm type goes IDLE (stays resident, evictable); anything else is
-        unloaded. Releasing a model that is already IDLE or gone is a no-op.
+        unloaded. Releasing a model that is already IDLE or gone, or a pinned or external one, is a no-op.
         """
         with self._lock:
             if loaded_model.id not in self._active_models or loaded_model.id in self._idle_since:
+                return
+            if self._is_permanent(loaded_model.manifest.model_type):
                 return
 
             if loaded_model.manifest.model_type in self._keep_warm_types:
@@ -353,14 +436,36 @@ class ModelManagerOrchestrator:
                 raise map_model_manager_error(e) from e
 
     def release_all(self, loaders_map: Dict[uuid.UUID, IModelLoader]) -> None:
+        """
+        Truly unloads every resident model, IDLE ones included: this is what frees the GPU for ingestion. Pinned
+        and external models stay, and with nothing else resident the CUDA cache is left alone, so a pinned model's
+        reserved activation memory is not handed to another process between requests.
+        """
+        with self._lock:
+            unloaded = False
+            for model_id, model in list(self._active_models.items()):
+                if self._is_permanent(model.manifest.model_type):
+                    continue
+                self._unload_resident(model_id, flush=False, fallback_loader=loaders_map.get(model_id))
+                unloaded = True
+
+            if unloaded or not (self._pinned_types or self._external_types):
+                self._monitor.flush_memory()
+                self._monitor.reset_peak_stats()
+            logger.info("Emergency release_all completed. VRAM is clear.")
+
+    def shutdown_all(self, loaders_map: Dict[uuid.UUID, IModelLoader]) -> None:
+        """Unloads everything, pinned and external models included. Only for process shutdown."""
         with self._lock:
             for model_id in list(self._active_models.keys()):
-                # Truly unloads, IDLE models included: this is what frees the GPU for ingestion and shutdown
                 self._unload_resident(model_id, flush=False, fallback_loader=loaders_map.get(model_id))
-
             self._monitor.flush_memory()
             self._monitor.reset_peak_stats()
-            logger.info("Emergency release_all completed. VRAM is clear.")
+
+    def resident_types(self) -> list:
+        """The types currently resident, for health reporting."""
+        with self._lock:
+            return [model.manifest.model_type for model in self._active_models.values()]
 
     def _get_actual_size_mb(self, model_path: str, fallback_mb: float) -> float:
         try:

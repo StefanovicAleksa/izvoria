@@ -1,0 +1,11 @@
+# The GPU box's web API, installed on top of the appliance's own requirements.txt in the box's venv:
+#   venv/bin/pip install -r requirements.txt -r web_deploy/api/requirements.txt
+# Never added to requirements.txt itself: the on-premise appliance has no server.
+starlette>=0.41,<1
+uvicorn[standard]>=0.32
+# YouTube links on the Ingest page (web only): yt-dlp downloads the videos before ingestion. [default] brings
+# yt-dlp-ejs, the solver for YouTube's player challenge, which needs a JavaScript runtime: deno, from PyPI, so no
+# system package is involved. Pinned only from below: YouTube breaks old clients within months, so keep it current
+# with `venv/bin/pip install -U "yt-dlp[default]"`.
+yt-dlp[default]>=2026.8.19
+deno>=2.5

@@ -41,7 +41,9 @@ class IdleMonitor:
             self.touch()
 
     @contextlib.contextmanager
-    def upload_in_flight(self):
+    def transfer_in_flight(self):
+        """An upload, or a cited source streaming to the browser: a deposition played with the desktop tab closed
+        is someone using the appliance."""
         self._uploads += 1
         self.touch()
         try:

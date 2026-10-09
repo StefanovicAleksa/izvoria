@@ -569,3 +569,164 @@ class TestTelemetryAttribution:
         orchestrator.record_telemetry()
 
         assert owned == [True]
+
+
+PINNED = [ModelType.RAG_EMBEDDING, ModelType.RAG_RERANKING]
+EXTERNAL = [ModelType.QA_GENERATION, ModelType.RETRIEVAL_SCRUBBER]
+
+
+class TestPinnedAndExternalResidency:
+    """The hosted API's models: pinned ones are loaded once and never freed; external ones live in llama-server."""
+
+    @pytest.fixture
+    def gpu(self):
+        return _FakeGpu(total_mb=24000.0)
+
+    @pytest.fixture
+    def orchestrator(self, gpu):
+        orchestrator = ModelManagerOrchestrator(gpu, pinned_types=PINNED, external_types=EXTERNAL,
+                                                strict_resident=True)
+        orchestrator.WAIT_POLL_INTERVAL_SEC = 0.01
+        return orchestrator
+
+    def test_a_type_cannot_be_both_pinned_and_external(self, gpu):
+        with pytest.raises(ValueError, match="rag_embedding"):
+            ModelManagerOrchestrator(gpu, pinned_types=[ModelType.RAG_EMBEDDING],
+                                     external_types=[ModelType.RAG_EMBEDDING])
+
+    def test_a_pinned_model_survives_release_release_all_and_a_batch_acquire(self, gpu):
+        orchestrator = ModelManagerOrchestrator(gpu, pinned_types=PINNED)
+        loader = gpu.loader(1090.0)
+        embedder = orchestrator.warm_up(_manifest(ModelType.RAG_EMBEDDING, 1090.0), loader)
+
+        orchestrator.release_model(embedder, loader)
+        orchestrator.release_preload(embedder, loader)
+        orchestrator.release_all({})
+        batch_loader = gpu.loader(3500.0)
+        orchestrator.acquire_model(_manifest(ModelType.TRANSCRIPTION, 3500.0), batch_loader)
+
+        loader.unload.assert_not_called()
+        assert orchestrator.acquire_model(_manifest(ModelType.RAG_EMBEDDING, 1090.0), loader) is embedder
+        loader.load.assert_called_once()
+
+    def test_an_external_model_is_connected_once_without_budgeting_or_flushing(self, orchestrator, gpu):
+        gpu.used["somebody-else"] = 23900.0  # the card is full; llama-server's VRAM is not ours to budget
+        loader = MagicMock()
+        loader.load.side_effect = lambda m: LoadedModel(manifest=m, model_instance="client")
+        manifest = _manifest(ModelType.QA_GENERATION, 10000.0)
+
+        first = orchestrator.acquire_model(manifest, loader, wait_for_clear=True)
+        second = orchestrator.acquire_model(manifest, loader, wait_for_clear=True)
+        orchestrator.release_model(first, loader)
+        orchestrator.release_all({})
+
+        assert second is first
+        loader.load.assert_called_once_with(manifest)
+        loader.unload.assert_not_called()
+        gpu.flush_memory.assert_not_called()
+
+    def test_strict_mode_refuses_a_type_that_is_neither_pinned_nor_external(self, orchestrator, gpu):
+        loader = gpu.loader(5000.0)
+        with pytest.raises(exc.ResidencyError, match="vision"):
+            orchestrator.acquire_model(_manifest(ModelType.VISION, 5000.0), loader, wait_for_clear=True)
+        loader.load.assert_not_called()
+
+    def test_warm_up_refuses_a_type_that_would_leak(self, orchestrator, gpu):
+        with pytest.raises(ValueError, match="vad"):
+            orchestrator.warm_up(_manifest(ModelType.VAD, 100.0), gpu.loader(100.0))
+
+    def test_a_waiting_acquire_does_not_wait_for_pinned_models(self, gpu):
+        """Single-slot pool plus pinned models: a live acquire must not park behind a model nobody releases."""
+        orchestrator = ModelManagerOrchestrator(gpu, pinned_types=PINNED)
+        orchestrator.WAIT_POLL_INTERVAL_SEC = 0.01
+        orchestrator.warm_up(_manifest(ModelType.RAG_EMBEDDING, 1090.0), gpu.loader(1090.0))
+
+        with ThreadPoolExecutor(1) as pool:
+            future = pool.submit(orchestrator.acquire_model, _manifest(ModelType.QA_REASONER, 7800.0),
+                                 gpu.loader(7800.0), True)
+            assert future.result(timeout=2).manifest.model_type is ModelType.QA_REASONER
+
+    def test_concurrent_acquires_share_one_instance_and_never_unload(self, orchestrator, gpu):
+        loader = gpu.loader(1090.0)
+        manifest = _manifest(ModelType.RAG_EMBEDDING, 1090.0)
+        orchestrator.warm_up(manifest, loader)
+
+        def use():
+            model = orchestrator.acquire_model(manifest, loader, wait_for_clear=True)
+            orchestrator.release_model(model, loader)
+            return model
+
+        with ThreadPoolExecutor(8) as pool:
+            models = list(pool.map(lambda _: use(), range(64)))
+
+        assert len({m.id for m in models}) == 1
+        loader.unload.assert_not_called()
+
+    def test_shutdown_all_frees_pinned_models(self, orchestrator, gpu):
+        loader = gpu.loader(1090.0)
+        embedder = orchestrator.warm_up(_manifest(ModelType.RAG_EMBEDDING, 1090.0), loader)
+
+        orchestrator.shutdown_all({})
+
+        loader.unload.assert_called_once_with(embedder)
+        assert orchestrator.resident_types() == []
+
+    def test_release_all_leaves_the_cuda_cache_alone_when_only_permanent_models_are_resident(self, orchestrator, gpu):
+        orchestrator.warm_up(_manifest(ModelType.RAG_EMBEDDING, 1090.0), gpu.loader(1090.0))
+        gpu.flush_memory.reset_mock()
+
+        orchestrator.release_all({})
+
+        gpu.flush_memory.assert_not_called()
+
+
+    def test_resident_types_lists_what_is_loaded(self, orchestrator, gpu):
+        orchestrator.warm_up(_manifest(ModelType.RAG_EMBEDDING, 1090.0), gpu.loader(1090.0))
+        client = MagicMock()
+        client.load.side_effect = lambda m: LoadedModel(manifest=m, model_instance="client")
+        orchestrator.acquire_model(_manifest(ModelType.QA_GENERATION, 1.0), client)
+
+        assert sorted(t.value for t in orchestrator.resident_types()) == ["qa_generation", "rag_embedding"]
+
+    def test_a_failed_external_connect_registers_nothing_and_is_retried(self, orchestrator):
+        loader = MagicMock()
+        loader.load.side_effect = [RuntimeError("llama-server down"),
+                                   LoadedModel(manifest=_manifest(ModelType.QA_GENERATION, 1.0), model_instance="c")]
+        manifest = _manifest(ModelType.QA_GENERATION, 1.0)
+
+        with pytest.raises(exc.ModelManagerError):
+            orchestrator.acquire_model(manifest, loader, wait_for_clear=True)
+        assert orchestrator.resident_types() == []
+
+        assert orchestrator.acquire_model(manifest, loader, wait_for_clear=True).model_instance == "c"
+
+    def test_warming_an_external_type_connects_it(self, orchestrator):
+        loader = MagicMock()
+        loader.load.side_effect = lambda m: LoadedModel(manifest=m, model_instance="client")
+        manifest = _manifest(ModelType.RETRIEVAL_SCRUBBER, 1.0)
+
+        warmed = orchestrator.warm_up(manifest, loader)
+
+        assert orchestrator.acquire_model(manifest, loader, wait_for_clear=True) is warmed
+        loader.load.assert_called_once_with(manifest)
+
+
+class TestWarmUpAdmission:
+    def test_a_pinned_model_is_admitted_by_its_declared_requirement_not_its_disk_size(self, tmp_path):
+        """bge-m3: 4.3 GB on disk, 1.1 GB loaded. Beside llama-server, the disk estimate refused it."""
+        weights = tmp_path / "bge-m3"
+        weights.mkdir()
+        (weights / "big.bin").write_bytes(b"\0" * (3 * 1024 ** 2))  # 3 MB on disk
+        gpu = _FakeGpu(total_mb=2.0 + 0.5 + ModelManagerOrchestrator.VRAM_SAFETY_BUFFER_MB)
+        orchestrator = ModelManagerOrchestrator(gpu, pinned_types=[ModelType.RAG_EMBEDDING])
+        manifest = ModelManifest(model_type=ModelType.RAG_EMBEDDING, model_path=str(weights), required_vram_mb=2.0)
+
+        model = orchestrator.warm_up(manifest, gpu.loader(1.0))
+
+        assert model.manifest is manifest
+
+    def test_a_pinned_model_that_cannot_fit_fails_at_startup(self):
+        gpu = _FakeGpu(total_mb=1000.0)
+        orchestrator = ModelManagerOrchestrator(gpu, pinned_types=[ModelType.RAG_EMBEDDING])
+        with pytest.raises(exc.OutOfVramError, match="pin rag_embedding"):
+            orchestrator.warm_up(_manifest(ModelType.RAG_EMBEDDING, 2500.0), gpu.loader(1090.0))

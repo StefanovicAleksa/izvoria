@@ -135,6 +135,11 @@ class ReportStrings(_Frozen):
     scrubber: str
     scrubber_enabled: str
     scrubber_disabled: str
+    # Under the title when the report has one: what was asked, word for word
+    requested: str
+    # The exported PDF's own text: the label over the title, and the footer's page count
+    document_label: str
+    page_of: str
     mode_names: Dict[str, str]
     # Singular and plural of the counted nouns, for templates that agree with a count ("1 source", "2 sources").
     nouns: Dict[str, Tuple[str, str]] = Field(default_factory=dict)

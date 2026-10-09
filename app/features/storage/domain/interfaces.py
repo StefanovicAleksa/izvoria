@@ -33,6 +33,11 @@ class IStorageRepository(ABC):
         pass
 
     @abstractmethod
+    def update_file(self, file: File) -> File:
+        """Rewrites a file record's location, size and type (a vaulted file replaced by another)."""
+        pass
+
+    @abstractmethod
     def get_by_hash(self, content_hash: str) -> Optional[Source]:
         """Fetches a Source by its content hash for deduplication."""
         pass

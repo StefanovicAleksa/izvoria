@@ -146,6 +146,9 @@ rounds_single = "> Iskanje v enem krogu (način: {mode})."
 scrubber = "> Filter pridobivanja: {state}."
 scrubber_enabled = "vklopljen"
 scrubber_disabled = "izklopljen"
+requested = "> Zahteva: {topic}"
+document_label = "Raziskovalno poročilo"
+page_of = "Stran {page} od {pages}"
 
 [report.mode_names]
 deep = "poglobljeni"

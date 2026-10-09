@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Onyx</title>
+    <script>
+      // The remembered light/dark choice, applied before anything paints (theme.tsx keeps it from here on)
+      try {
+        var mode = localStorage.getItem("onyx.theme");
+        if (mode === "light" || mode === "dark") document.documentElement.setAttribute("data-theme", mode);
+      } catch (e) {}
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

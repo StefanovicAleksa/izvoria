@@ -133,6 +133,18 @@ class TestScopePlan:
             topic="t", plan=plan, corpus=corpus, session_id=session_id, language=settings.APPLIANCE_LANGUAGE
         )
 
+    def test_records_the_requests_answer_language_not_the_appliances(self, api, adapter, repository,
+                                                                      appliance_language):
+        """The hosted API scopes each request to the language its user picked; the report is written in that one."""
+        from app.core.language.service.language_api import language_scope
+        appliance_language("en")
+        adapter.scope.return_value = ResearchPlan(report_id=uuid.uuid4(), topic="t")
+
+        with language_scope("sr"):
+            api.scope_plan("t", CorpusDigest(indexed_source_count=1, indexed_chunk_count=1))
+
+        assert repository.create_report.call_args.kwargs["language"] == "sr"
+
 
 class TestOptimizeOutline:
     def test_an_empty_bank_marks_every_section_uncovered_without_loading_a_model(
@@ -563,3 +575,109 @@ class TestRenderAndFinalize:
 
         assert path is None
         file_store.write_markdown.assert_not_called()
+
+
+class TestOwner:
+    """Hosted API: a report belongs to the user who scoped it. Without an owner the calls are the appliance's."""
+
+    def test_set_owner_reaches_the_repository(self, api, repository):
+        report_id = uuid.uuid4()
+
+        api.set_owner(report_id, "user-7")
+
+        repository.set_owner.assert_called_once_with(report_id, "user-7")
+
+    def test_set_owner_failure_is_a_typed_report_error(self, api, repository):
+        from app.features.deep_research_report.exceptions.base import DeepResearchReportError
+        repository.set_owner.side_effect = RuntimeError("connection reset")
+
+        with pytest.raises(DeepResearchReportError):
+            api.set_owner(uuid.uuid4(), "user-7")
+
+    def test_get_report_passes_the_owner(self, api, repository):
+        report_id = uuid.uuid4()
+
+        api.get_report(report_id, owner_id="user-7")
+
+        repository.get_report.assert_called_once_with(report_id, owner_id="user-7")
+
+    def test_get_report_without_an_owner_calls_as_before(self, api, repository):
+        report_id = uuid.uuid4()
+
+        api.get_report(report_id)
+
+        repository.get_report.assert_called_once_with(report_id)
+
+    def test_list_reports_passes_the_owner(self, api, repository):
+        session_id = uuid.uuid4()
+
+        api.list_reports(session_id, 20, owner_id="user-7")
+
+        repository.list_reports.assert_called_once_with(session_id, 20, owner_id="user-7")
+
+    def test_list_reports_without_an_owner_calls_as_before(self, api, repository):
+        api.list_reports(None, 20)
+
+        repository.list_reports.assert_called_once_with(None, 20)
+
+
+class TestTitles:
+    def _report(self, report_id, title="", markdown_path=None) -> Report:
+        return Report(
+            id=report_id, topic="create a report on custody", status=ReportStatus.COMPLETED,
+            plan=ResearchPlan(report_id=report_id, topic="create a report on custody", title=title),
+            sections=[ReportSection(key="s1", title="A", order_index=0, status=SectionStatus.WRITTEN,
+                                    markdown_body="Sealed [Doc 1].", cited_doc_numbers=[1])],
+            evidence=[_evidence(_chunk(), 1)], markdown_path=markdown_path,
+        )
+
+    def test_approving_tidies_an_edited_title(self, api, repository):
+        report_id = uuid.uuid4()
+        plan = ResearchPlan(report_id=report_id, topic="t", title="  # Chain of Custody.  ")
+
+        api.approve_plan(report_id, plan)
+
+        assert repository.replace_plan.call_args.args[1].title == "Chain of Custody"
+
+    def test_renaming_an_unwritten_report_touches_no_file(self, api, repository, file_store):
+        report_id = uuid.uuid4()
+        repository.get_report.side_effect = [self._report(report_id), self._report(report_id, "Chain of Custody")]
+
+        renamed = api.rename_report(report_id, '"Chain of Custody."')
+
+        repository.rename_report.assert_called_once_with(report_id, "Chain of Custody")
+        file_store.write_markdown.assert_not_called()
+        assert renamed.display_title == "Chain of Custody"
+
+    def test_renaming_a_written_report_renders_its_file_again_with_the_new_title(
+            self, api, repository, file_store, monkeypatch
+    ):
+        report_id = uuid.uuid4()
+        old_path = "/reports/2026/09/30/report.md"
+        repository.get_report.side_effect = [
+            self._report(report_id, markdown_path=old_path),
+            self._report(report_id, "Chain of Custody", markdown_path=old_path),
+        ]
+        removed = []
+        monkeypatch.setattr("app.features.deep_research_report.service.report_api._remove_replaced",
+                            lambda old, new: removed.append((old, new)))
+
+        renamed = api.rename_report(report_id, "Chain of Custody")
+
+        assert file_store.write_markdown.call_args.args[1].startswith("# Chain of Custody\n")
+        repository.set_markdown_path.assert_called_once_with(report_id, "/reports/2026/09/21/report.md")
+        assert removed == [(old_path, "/reports/2026/09/21/report.md")]
+        assert renamed.markdown_path == "/reports/2026/09/21/report.md"
+
+    def test_renaming_a_missing_report_returns_none(self, api, repository):
+        repository.get_report.return_value = None
+
+        assert api.rename_report(uuid.uuid4(), "x") is None
+        repository.rename_report.assert_not_called()
+
+    def test_a_rename_failure_is_a_typed_report_error(self, api, repository):
+        from app.features.deep_research_report.exceptions.base import DeepResearchReportError
+        repository.get_report.side_effect = RuntimeError("connection reset")
+
+        with pytest.raises(DeepResearchReportError):
+            api.rename_report(uuid.uuid4(), "x")

@@ -1,0 +1,10 @@
+# Everything web_deploy/tests needs, in a venv of its own (the appliance venv is air-gapped and has no web stack):
+#   python3.11 -m venv web_deploy/.venv && web_deploy/.venv/bin/pip install -r web_deploy/requirements-dev.txt
+-r gateway/requirements.txt
+# The box API's own web dependencies; on the box it also needs the appliance's requirements.txt
+-r api/requirements.txt
+# The ingestion queue (SQLite stands in for Postgres in unit tests) and the reused deploy/ media code
+sqlalchemy>=2.0
+charset-normalizer>=3.3
+pytest>=8
+pytest-asyncio>=0.24

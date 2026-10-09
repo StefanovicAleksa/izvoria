@@ -98,3 +98,78 @@ class TestSearchHistoryRepository:
         session.execute.side_effect = db_exc.DataError("bad uuid")
         with pytest.raises(SearchHistoryDataError):
             repository.delete(uuid.uuid4())
+
+
+def _sql(statement) -> str:
+    return str(statement.compile(compile_kwargs={"literal_binds": True}))
+
+
+class TestSearchHistoryOwner:
+    """The hosted API scopes history to the signed-in user; the appliance (owner None) keeps it shared."""
+
+    @pytest.fixture
+    def session(self):
+        return MagicMock()
+
+    @pytest.fixture
+    def repository(self, session):
+        db_manager = Mock()
+        db_manager.session.return_value.__enter__ = Mock(return_value=session)
+        db_manager.session.return_value.__exit__ = Mock(return_value=False)
+        return SearchHistoryRepository(db_manager)
+
+    def test_record_stores_the_owner(self, repository, session):
+        repository.record("q", SearchHistoryMode.STANDARD, 5, [], [], 1, owner_id="user-7")
+
+        assert session.add.call_args[0][0].owner_id == "user-7"
+
+    def test_record_without_an_owner_stores_none(self, repository, session):
+        repository.record("q", SearchHistoryMode.STANDARD, 5, [], [], 1)
+
+        assert session.add.call_args[0][0].owner_id is None
+
+    def test_list_is_restricted_to_the_owner(self, repository, session):
+        session.execute.return_value.all.return_value = []
+
+        repository.list(limit=50, owner_id="user-7")
+
+        assert "search_history.owner_id = 'user-7'" in _sql(session.execute.call_args[0][0])
+
+    def test_list_without_an_owner_is_unrestricted(self, repository, session):
+        session.execute.return_value.all.return_value = []
+
+        repository.list(limit=50)
+
+        assert "owner_id" not in _sql(session.execute.call_args[0][0])
+
+    def test_get_hides_another_users_search(self, repository, session):
+        session.get.return_value = TestSearchHistoryRepository._model(owner_id="user-1")
+
+        assert repository.get(uuid.uuid4(), owner_id="user-7") is None
+
+    def test_get_returns_the_owners_own_search(self, repository, session):
+        model = TestSearchHistoryRepository._model(owner_id="user-7")
+        session.get.return_value = model
+
+        assert repository.get(model.id, owner_id="user-7").id == model.id
+
+    def test_get_without_an_owner_returns_anyones(self, repository, session):
+        model = TestSearchHistoryRepository._model(owner_id="user-1")
+        session.get.return_value = model
+
+        assert repository.get(model.id).id == model.id
+
+    def test_delete_only_removes_the_owners_search(self, repository, session):
+        session.execute.return_value.rowcount = 0
+        record_id = uuid.uuid4()
+
+        assert repository.delete(record_id, owner_id="user-7") is False
+
+        sql = _sql(session.execute.call_args[0][0])
+        assert "search_history.owner_id = 'user-7'" in sql and str(record_id).replace("-", "") in sql.replace("-", "")
+
+    def test_delete_without_an_owner_is_unrestricted(self, repository, session):
+        session.execute.return_value.rowcount = 1
+
+        assert repository.delete(uuid.uuid4()) is True
+        assert "owner_id" not in _sql(session.execute.call_args[0][0])

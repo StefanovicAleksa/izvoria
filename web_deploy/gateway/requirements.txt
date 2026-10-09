@@ -1,0 +1,5 @@
+# Gateway VPS only (Hetzner), in its own venv. Never add these to the appliance's requirements.txt: it ships
+# air-gapped. Passwords use the standard library's scrypt, so there is no native dependency here.
+starlette>=0.41,<1
+uvicorn[standard]>=0.32
+httpx>=0.28

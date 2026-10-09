@@ -30,6 +30,7 @@ material should be merged.
 
 Respond with ONLY a JSON object:
 {{
+  "title": "<the report's title: 3-10 words naming its subject, as on a cover page; not a restatement of the request, no trailing period>",
   "scope_note": "<2-3 sentences: what this report will and will not cover, given the archive>",
   "sections": [
     {{"key": "s1", "title": "<section heading>", "brief": "<1-3 sentences on what this section must cover>"}}

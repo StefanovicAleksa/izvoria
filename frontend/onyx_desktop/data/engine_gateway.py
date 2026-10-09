@@ -376,7 +376,7 @@ class OnyxEngineGateway(IEngineGateway):
             return [
                 ReportRef(report_id=r.id, topic=r.topic, status=ReportRunStatus(r.status.value),
                           created_at=r.created_at, completed_at=r.completed_at,
-                          section_count=r.section_count, evidence_count=r.evidence_count)
+                          section_count=r.section_count, evidence_count=r.evidence_count, title=r.title)
                 for r in engine.list_reports(limit=200)
             ]
         except Exception as exc:
@@ -415,6 +415,7 @@ class OnyxEngineGateway(IEngineGateway):
         return ReportPlanDraft(
             report_id=report_id,
             topic=plan.topic,
+            title=plan.title,
             scope_note=plan.scope_note,
             sections=tuple(
                 ReportOutlineDraft(
@@ -460,7 +461,8 @@ class OnyxEngineGateway(IEngineGateway):
                         order_index=len(questions),
                     ))
 
-        return stored_plan.model_copy(update={"sections": sections, "sub_questions": questions})
+        return stored_plan.model_copy(update={"sections": sections, "sub_questions": questions,
+                                              "title": draft.title.strip()})
 
     def _map_report(self, report: Any) -> ReportDocument:
         """
@@ -496,6 +498,7 @@ class OnyxEngineGateway(IEngineGateway):
                         self._is_image(entry),
                     ),
                     location=self._location(entry),
+                    **self._anchor(entry),
                 ))
         except Exception as exc:
             # A report whose citations cannot be hydrated is still worth reading.
@@ -504,6 +507,7 @@ class OnyxEngineGateway(IEngineGateway):
         return ReportDocument(
             report_id=report.id,
             topic=report.topic,
+            title=report.title,
             markdown=markdown,
             status=ReportRunStatus(report.status.value),
             mode=ReportMode(report.mode.value),
@@ -664,6 +668,7 @@ class OnyxEngineGateway(IEngineGateway):
                 media_kind=self._media_kind(citation.physical_path, citation.extracted_file_id,
                                             self._is_document(citation), self._is_image(citation)),
                 location=self._location(citation),
+                **self._anchor(citation),
             ))
         return tuple(evidence)
 
@@ -685,6 +690,7 @@ class OnyxEngineGateway(IEngineGateway):
             media_kind=self._media_kind(path, chunk.extracted_file_id, self._is_document(chunk),
                                         self._is_image(chunk)),
             location=self._location(chunk),
+            **self._anchor(chunk),
         )
 
     def _map_chunk(self, number: int, chunk: Any) -> Evidence:
@@ -701,6 +707,7 @@ class OnyxEngineGateway(IEngineGateway):
             media_kind=self._media_kind(path, chunk.extracted_file_id, self._is_document(chunk),
                                         self._is_image(chunk)),
             location=self._location(chunk),
+            **self._anchor(chunk),
             # A hydration read is unranked: relevance is hard-coded 0.0 and rerank is None
             # upstream, so leaving both unset keeps meaningless numbers off the card.
         )
@@ -738,6 +745,15 @@ class OnyxEngineGateway(IEngineGateway):
     @classmethod
     def _is_image(cls, item: Any) -> bool:
         return cls._anchor_value(item) == "image"
+
+    @classmethod
+    def _anchor(cls, item: Any) -> dict:
+        """The raw anchor behind a location, so a source can be opened at its page or lines, not just named."""
+        return {
+            "anchor_kind": cls._anchor_value(item) or "time",
+            "page_start": getattr(item, "page_start", None),
+            "page_end": getattr(item, "page_end", None),
+        }
 
     def _location(self, item: Any) -> str:
         """A document excerpt's "p. 7 · Article 7" label; empty for a recording, shown by its time range."""

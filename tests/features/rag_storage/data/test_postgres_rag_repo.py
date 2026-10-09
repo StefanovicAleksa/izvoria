@@ -116,3 +116,28 @@ class TestPostgresRagRepository:
 
         saved = session_mock.bulk_save_objects.call_args[0][0]
         assert [model.fts_config for model in saved] == [fts_config, fts_config]
+
+
+class TestInjectedDatabase:
+    """The hosted API gives each firm's index its own database; without one, the appliance's own."""
+
+    @patch("app.features.rag_storage.data.postgres_rag_repo.db_manager")
+    def test_a_given_database_is_used_instead_of_the_appliances(self, appliance_db):
+        firm_db = MagicMock()
+        session = _session(firm_db)
+        session.execute.return_value.rowcount = 2
+        source_id = uuid.uuid4()
+
+        PostgresRagRepository(firm_db).delete_by_source_id(source_id)
+
+        session.execute.assert_called_once()
+        appliance_db.session.assert_not_called()
+
+    @patch("app.features.rag_storage.data.postgres_rag_repo.db_manager")
+    def test_without_a_database_the_appliances_is_used(self, appliance_db):
+        session = _session(appliance_db)
+        session.execute.return_value.rowcount = 0
+
+        PostgresRagRepository().delete_by_source_id(uuid.uuid4())
+
+        session.execute.assert_called_once()

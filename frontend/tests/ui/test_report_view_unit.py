@@ -2,6 +2,8 @@
 
 import uuid
 
+from dataclasses import replace
+
 import pytest
 
 pytest.importorskip("PySide6")
@@ -107,6 +109,31 @@ class TestPlanApproval:
         # The key must survive a rename: the engine re-attaches evidence by key across revisions.
         assert plan.sections[0].key == "s1"
         assert mode in (ReportMode.DEEP, ReportMode.EXHAUSTIVE)
+
+    def test_the_proposed_title_can_be_edited_before_approval(self, view):
+        started = []
+        view.reportRequested.connect(lambda plan, mode: started.append(plan))
+        view.show_plan(replace(_plan(), title="Chain of Custody"))
+
+        assert view._outline._title.text() == "Chain of Custody"
+        view._outline._title.setText("  Evidence   Handling ")
+        view._outline._on_start()
+
+        assert started[0].title == "Evidence Handling"
+        assert started[0].topic == "chain of custody"
+
+    def test_history_lists_reports_by_title_and_untitled_ones_by_request(self, view):
+        from onyx_desktop.domain.entities import ReportRef
+        shown = []
+        view._history.set_entries = lambda entries: shown.extend(e.title for e in entries)
+
+        view.set_reports([
+            ReportRef(report_id=REPORT_ID, topic="create a report on custody", status=ReportRunStatus.COMPLETED,
+                      title="Chain of Custody"),
+            ReportRef(report_id=uuid.uuid4(), topic="an old request", status=ReportRunStatus.COMPLETED),
+        ])
+
+        assert shown == ["Chain of Custody", "an old request"]
 
     def test_dropping_a_section_removes_it_from_the_approved_plan(self, view):
         started = []
