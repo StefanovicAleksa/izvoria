@@ -83,6 +83,7 @@ Thumbs.db
 !/models_download.sh
 !/update_nvidia_driver.sh
 !/deploy/**/*.sh
+!/web_deploy/**/*.sh
 
 *.txt
 !requirements.txt

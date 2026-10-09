@@ -1,0 +1,74 @@
+diff --git a/tools/server/server-context.cpp b/tools/server/server-context.cpp
+index 809be94cd..4e16c9ec9 100644
+--- a/tools/server/server-context.cpp
++++ b/tools/server/server-context.cpp
+@@ -3256,7 +3256,42 @@ private:
+         if (params_base.cont_batching || batch.size() == 0) {
+             bool add_ok = true; // false means the batch is full, skip remaining slots
+ 
+-            iterate(slots, [&](server_slot & slot) {
++            // [onyx] shortest remaining prompt first: in slot order, one long prompt fills every batch until it is
++            // read, and a short question in a later slot waits all that time. Ordered by what is left to read, a
++            // short prompt is read in the next batch and the long one keeps whatever room remains. Stable, so equal
++            // prompts keep slot order; every check below is unchanged.
++            std::vector<server_slot *> slots_by_prompt_left;
++            slots_by_prompt_left.reserve(slots.size());
++            for (auto & slot : slots) {
++                slots_by_prompt_left.push_back(&slot);
++            }
++            const auto prompt_left = [](const server_slot * s) -> int64_t {
++                if (!s->is_processing() || !s->task ||
++                    (s->state != SLOT_STATE_PROCESSING_PROMPT && s->state != SLOT_STATE_STARTED)) {
++                    return INT64_MAX;
++                }
++                return (int64_t) s->task->n_tokens() - (int64_t) s->prompt.n_tokens();
++            };
++            std::stable_sort(slots_by_prompt_left.begin(), slots_by_prompt_left.end(),
++                             [&](const server_slot * a, const server_slot * b) { return prompt_left(a) < prompt_left(b); });
++
++            // [onyx] while anyone is writing an answer (their next tokens are already in this batch), a LONG prompt
++            // waits: every step must finish the prompt tokens it carries before any answer moves on, so a chunk of
++            // someone's 100K-token report in each step slows every chat's answer to a few tokens a second. Short
++            // prompts (a new chat, up to ONYX_SHORT_PROMPT_TOKENS still to read) are read at full speed as before;
++            // a longer one gets at most ONYX_LONG_PROMPT_TRICKLE tokens a step until the answers are written, then
++            // full batches again. Both unset (the default): unchanged behaviour.
++            static const int32_t n_short_prompt = [] {
++                const char * value = std::getenv("ONYX_SHORT_PROMPT_TOKENS");
++                return value ? std::max(0, std::atoi(value)) : 0;
++            }();
++            static const int32_t n_long_trickle = [] {
++                const char * value = std::getenv("ONYX_LONG_PROMPT_TRICKLE");
++                return value ? std::max(0, std::atoi(value)) : 0;
++            }();
++            const bool answers_in_batch = batch.size() > 0;
++
++            iterate(slots_by_prompt_left, [&](server_slot & slot) {
+                 if (!add_ok || batch.size() >= n_batch) {
+                     return; // batch is full, skip remaining slots
+                 }
+@@ -3265,6 +3300,13 @@ private:
+                     return;
+                 }
+ 
++                // [onyx] a long prompt yields to the answers being written (see above); with no trickle it skips this
++                // step entirely, before anything below runs for it (no state change, no checkpoint, not batched)
++                const bool yields = n_short_prompt > 0 && answers_in_batch && prompt_left(&slot) > n_short_prompt;
++                if (yields && n_long_trickle == 0) {
++                    return;
++                }
++
+                 // check if we can batch this slot with the previous one
+                 if (slot_batched && !slot_batched->can_batch_with(slot)) {
+                     return;
+@@ -3705,7 +3747,10 @@ private:
+                     const int32_t n_decision_first = slot.task->type == SERVER_TASK_TYPE_DECISION ? slot.task->decision.pos_first() : -1;
+ 
+                     // add prompt tokens for processing in the current batch
+-                    while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < n_batch) {
++                    // [onyx] see above: a long prompt yields to the answers being written
++                    const int32_t n_slot_limit = yields ? std::min<int32_t>(n_batch, batch.size() + n_long_trickle) : n_batch;
++
++                    while (slot.prompt.n_tokens() < slot.task->n_tokens() && batch.size() < n_slot_limit) {
+                         // get next token to process
+                         llama_token cur_tok = input_tokens[slot.prompt.n_tokens()];
+                         if (cur_tok == LLAMA_TOKEN_NULL) {
