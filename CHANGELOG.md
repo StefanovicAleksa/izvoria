@@ -4,6 +4,117 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Web: off-box backups, and a pinned llama.cpp
+
+Every firm's database and vault lived only on the rented GPU box's disk, and `llama-server` was built from llama.cpp's `master`.
+
+- **Backups** (`web_deploy/backup/`, restic to a Hetzner Storage Box over SFTP, encrypted with `RESTIC_PASSWORD`):
+  - **GPU box:** a supervisord `backup` program dumps every firm database and `onyx_control` (`pg_dump -Fc`), then snapshots the dumps, every firm's `vault/` and `reports/`, and `/workspace/web` (settings, TLS key). It runs every 24 h and as soon as an ingestion job has finished, once the queue is empty, then prunes to 7 daily, 4 weekly and 6 monthly. Uploads are left out.
+  - **Idle stop:** while a backup is due or running, `/health` reports `busy`, so the gateway doesn't stop the box before new material is off it. A failed run waits an hour before the next try.
+  - **Gateway:** a daily systemd timer copies the gateway's SQLite database with SQLite's online backup API and snapshots it to the same repository as its own series.
+  - **Restore:** `python -m web_deploy.backup.restore --snapshot latest --yes` on a newly provisioned box. Checked end to end against Postgres 15 + pgvector and restic.
+  - `provision.sh` and `install_gateway.sh` install restic, make each machine's SSH key, and print what to add to the Storage Box.
+- **llama.cpp pinned** to `b11396` (`2e7c58c`), the release the dev-card spike and the local web version were validated on (`build_llama_server.sh`). The JSON-grammar workaround depends on that server's behaviour.
+
+## Web storage: one compact file per recording
+
+The web version stored every video about 2.4 times: measured on one local firm, 6.04 GB of originals took 14.36 GB in the vault (6.35 GB of per-chunk clips, 1.89 GB of 16 kHz WAVs), and the upload folder kept a further copy of every upload for good. Three settings, all off on the appliance and on in `api.env` / `local.env`, plus an upload clean-up:
+
+- **`VIDEO_CLIPS_ENABLED=false`.** The media pipeline cuts no per-chunk clips. A citation points at the recording with its start and end, and the source page cuts the excerpt when it is opened (the path audio sources always took).
+- **`KEEP_EXTRACTED_AUDIO=false`.** A recording's WAV is deleted once it is indexed. `AudioExtractorAPI` now re-extracts when a cached extraction's file is missing, instead of handing later stages a path that isn't there.
+- **`COMPACT_MEDIA_ORIGINALS=true`** (new feature `app/features/media_compaction`). Once a recording is indexed, its original is replaced by a 720p H.264/AAC MP4 (`+faststart`), or an AAC m4a for audio (`StorageAPI.replace_file`). Ingestion still reads the full-quality upload. A copy is refused unless its length matches the original's (chunk timestamps index into it) and it is at least 20% smaller; a file a browser already plays at a modest bitrate (YouTube downloads) is left alone. The source's `content_hash` stays the upload's, so the same upload still dedups.
+- **`StorageCompactionPhase`** runs these last in the media and audio pipelines, only for sources that were indexed, and never fails a batch. The report carries `storage_bytes_saved`, shown on the web Ingest page.
+- **Uploads.** The ingestion supervisor deletes a batch's upload folder once its job is done, failed or cancelled, but not when a stop re-queues it. An hourly sweep removes folders no job will read that nothing has touched for a day.
+- **Backfill:** `python -m web_deploy.provision.compact_storage --all [--dry-run]` (`OnyxEngine.compact_storage`) does the same to what was ingested before.
+
+## Web ingestion from folders and from YouTube
+
+The web app's Ingest page only took files picked one by one.
+
+- **Folders.** Pick a folder or drop one, for every kind of file. Files of other kinds are left out and counted. A file in a subfolder is named after its path inside the folder (`Unit 3 - Part I.mp4`), so equal names can't collide.
+- **YouTube** (video batches, web only):
+  - **Links:** videos, Shorts, youtu.be links and playlists are checked first with yt-dlp's flat extraction. The user sees every video and its length, drops any, and is told why a link added nothing.
+  - **Queue:** the batch carries a `.youtube.json` manifest, and the job a new `origin` column. Existing queue databases gain it in place.
+  - **Download:** the supervisor downloads before asking for the GPU (`ingest_worker/fetch_links.py`, a child process): up to 720p H.264 + AAC MP4, one video at a time, named after the video's title. It resumes after a stop, removes stream fragments the video pipeline would take for videos, and lists failures in the batch's report.
+  - **Progress:** the page shows a "Downloading videos" step.
+  - **Dependencies:** `yt-dlp[default]` and `deno` (its JavaScript runtime) in `web_deploy/api/requirements.txt`.
+
+## Report titles, and a typeset PDF export
+
+A report was named by its request ("create a report on microeconomics specifically role of…"), and the first PDF export (Qt's `QTextDocument` straight from the Markdown) printed the writer's LaTeX as source, with a six-line title, no running header and a cramped references table.
+
+- **Titles.** The scoping prompt asks for a `title` beside the scope note, tidied by `clean_title`. Migration 0006 adds `research_reports.title` (nullable: older reports show their request until renamed). The title is editable in the outline step (web and desktop) and renamable afterwards (web; `rename_research_report` re-renders the saved file). `topic` stays the request and still feeds every prompt; the Markdown keeps it on record as a "Request:" line.
+- **`app/features/report_export`** lays the PDF out with fpdf2:
+  - a title block and a running header;
+  - "Page n of N";
+  - a bookmark per section;
+  - `[Doc N]` tags that link to their reference;
+  - typeset formulas (ziamath);
+  - the summary and "not covered" as panels;
+  - references grouped by source, with the head of each cited excerpt.
+  Fonts are bundled. The Qt renderer and its child process are gone, and the web API exports in a worker thread.
+- **One math rule** (`math_text`): `$$`, `\[`, `\(` always, `$…$` only under pandoc's rule, so prices are never math. The web Report page renders formulas with KaTeX (bundled, offline) from the same rule.
+- **Local web stack:** `RAG_RERANKER_VRAM_REQUIREMENT_MB=1400` in `web_deploy/local/local.env`. The pin check wanted 2.0 GB free beside llama-server and BGE-M3 while the desktop session held 1.95 GB; the reranker uses about 1.6 GB under load.
+- **Ingest progress in the web app** shows the desktop's steps (`views/ingestStages.ts`, a copy of `progress_stages.py`) from per-job counts the worker now records. The queue's times come back as UTC from SQLite.
+
+## Hosted web app: firm sign-in, firm administrators, access and help requests, the desktop's look
+
+The hosted web app (`web_deploy/`) had one sign-in form and a subdomain per firm. Only the owner could create accounts, nobody could ask for access or help from the site, and it looked nothing like the desktop app.
+
+- **One address, two steps.** A firm signs in with its sign-in name and a password its people share, which gives the browser a short-lived firm pass (`onyx_firm`, or 30 days if remembered). Then each person signs in with their own account, within that firm only. The owner's console is the firm `admin`. Subdomain routing, `FIRM_ROUTING`, `slug_from_host` and Caddy's on-demand TLS are gone: one DNS record, one certificate. `PUBLIC_URL` replaces `BASE_DOMAIN`.
+- **Firm administrators** (role `admin`) manage their own firm's accounts and its shared password from the Accounts page (`/firm/api/*`). They can't reach another firm or an owner, and can't lock themselves or the firm out.
+- **Request Onyx for your firm** and **Help & support** are public pages. A request asks for the firm profile the glossary is built from (`docs/glossary_authoring/firm_profile_template.md`), and is emailed in the template's order, ready for the glossary creator prompt. Both kinds are stored (`inbound_requests`, listed in the owner's console) and emailed over SMTP (`gateway/mailer.py`, off a background thread). They are protected by a honeypot, a minimum fill time, per-address and daily caps, and body limits.
+- **The desktop's look.** `theme.py`'s palette became CSS tokens (dark by default, light toggle). The web app gained the ink sidebar with the appliance status card, serif headings, outlined `[Doc N]` chips, and three panes with Source review on the right in place of the modal. Fonts are self-hosted. Every new string has a Serbian translation, and a test fails when one is missing.
+- **`admin_cli`**: `set-firm-password` (`--generate`), `create-firm --password/--generate`, `list-requests`, `mark-request`. Existing gateway databases migrate at startup, but their firms have no firm password until one is set: see "Upgrading a deployment from subdomains" in `docs/web_deploy.md`.
+- **Fix:** the chat view crashed in current Chromium. Its effect returned `scrollIntoView(...)`, which now returns a Promise, and React took that for a cleanup function.
+
+## Claude-authored glossaries, and a measurement of what a glossary is worth
+
+Glossaries drive the sub-domain router, Whisper's hotwords and domain phonetic correction, but they were hand-written, small and English-only.
+
+- **Authoring** (`docs/glossary_authoring/`). A firm profile template, and a Claude prompt that turns it into one glossary per served language. The prompt asks for mis-hearable terms (proper nouns, acronyms, Latin, loanwords, rare compounds) over volume, and sends uncertain spellings to a `review` list, because a misspelled term is written into transcripts. Each term is marked shared (identical spelling in every language) or localized. Serbian terms carry their inflected `forms`, ready for inflection-aware matching. The extra fields (`description`, `term_details`, `review`) are ignored by the loaders, so the files are drop-in.
+- **`scripts/validate_glossary.py`** checks the files (labels match across languages, shared terms are spelled identically, Serbian is in Latin script, each anchor belongs to one sub-domain, every term has details). With `--from-claude answer.json --write` it splits Claude's answer into `data/glossaries/<lang>/<industry>.json`, merging per-sub-domain batches. It reports `FOMC` as an anchor of two sub-domains in today's `prop_trading_macro.json`.
+- **`scripts/eval/glossary_ablation.py`** transcribes ingested sources four ways: raw, with hotwords, hotwords + phonetic correction, and raw + phonetic correction. It reports WER, the **term error rate**, and the **ceiling** (share of word errors on glossary terms, the most correction could recover). It also counts the terms each correction pass fixed and broke. Not yet run. The language benchmark's numbers are measured with `APPLIANCE_INDUSTRY=GENERAL`, i.e. without any glossary.
+
+## Hosted, multi-firm web version (`web_deploy/`)
+
+This is the version demos are shown on and that users use. It runs on a Hetzner gateway plus a rented 24 GB GPU box, which starts on demand.
+
+- **Firms.** Each firm has its own subdomain, users, database and vault. The owner creates firms and users from `admin.<domain>` or `admin_cli`.
+- **Concurrency.** Several users chat, search and run reports at the same time. Ingestion waits in a queue.
+- **Language.** The answer language is chosen per question.
+
+Changes in `app/`, all behind settings whose defaults leave the appliance unchanged:
+
+- **`llama-server` backend.** `LLM_BACKEND=llama_server` swaps the Qwen chat adapters' in-process `Llama` for `LlamaServerChatModel`, an OpenAI-compatible client with KV-cache admission (`KvTokenBudget`). One copy of Qwen3.5-9B then serves every role and firm from parallel slots. The retrieval scrubber now goes through the same `build_llama`/`chat_completion` helpers, so it can be the resident 9B and judge chunks in parallel (`RETRIEVAL_SCRUBBER_CONCURRENCY`).
+- **Residency.** The orchestrator gains pinned types (loaded once, never freed), external types (llama-server clients) and `strict_resident`. Concurrent requests never meet the refcount-free `release_model`. `HeadroomVramMonitor` keeps ingestion off the live models' share of the card.
+- **Engine concurrency.** `ENGINE_CONCURRENT_LIVE` makes `OnyxEngine` count live calls instead of gating them, and run up to `REPORT_MAX_CONCURRENT` reports beside them. Phases keep their preload per thread (`PreloadSlot`). The embedder and reranker serialise their tokenizer calls.
+- **Per firm.** `DatabaseManager(url=…)`, injected into the two repos that imported the global. `FileManager(base_path)` gives each firm its own vault. `OnyxBootstrapper.build_model_kit()` plus `build(database=, vault_dir=, reports_dir=, kit=)` gives one engine per firm over shared models.
+- **Per user.** Migration 0005 adds `owner_id` to `session_turns`, `search_history` and `research_reports`, and history reads and deletes filter by it.
+- **Per question.** `language_scope()` / `active_language()` give a ContextVar answer language that concurrent requests don't share.
+
+**On dev hardware.** `web_deploy/local/run_local.py` runs the same stack on the 12 GB dev GPU for personal testing:
+- this machine is the box (`BOX_MODE=local`);
+- one LAN address serves every firm, which is typed at sign-in (`FIRM_ROUTING=login`);
+- ingestion takes the whole card (`GPU_SHARING=exclusive`): the API drains, frees its models and lets the worker stop `llama-server` until the queue is empty.
+
+`llama-server` is now built statically.
+
+`web_deploy/` holds the gateway, the box API (`engine_host.py` is the only `app.*` importer), the ingestion queue and worker, the React frontend, provisioning and tests. See `docs/web_deploy.md`, including the M0 spike to run before relying on it.
+
+## Warm models for chat and report mode
+
+Every chat turn used to load and free four models: BGE-M3, the reranker, the Qwen2.5-7B scrubber and Qwen3.5-9B. A follow-up turn loaded a fifth, because the query rewrite opened the same Qwen3.5 file under its own `n_ctx`. The orchestrator was a single slot: every acquire evicted everything else.
+
+- **The orchestrator is a budgeted, warm pool.** A model is ACTIVE while held. When a type in `MODEL_KEEP_WARM_TYPES` (embedder, reranker, `QA_GENERATION`, `REPORT_AUTHORING`) is released, it goes IDLE: still in VRAM, handed out again for free, and evicted only when a later load needs the room. The orchestrator then evicts the IDLE set that frees the fewest megabytes (least recently used on a tie), so a 1 GB reranker evicts the 1 GB embedder, not the 7.8 GB report model. Plain LRU did exactly that in the first warm report test.
+  - A waiting acquire (live APIs, every preload) never evicts an ACTIVE model. It loads beside the models in use when it fits, so a preload overlaps the current stage's compute.
+  - A batch acquire (ingestion) still evicts everything, and ingestion now starts with `release_all()`.
+  - `MODEL_KEEP_WARM=False` restores the single slot.
+- **Budgeting uses what a load actually took** (free VRAM before and after, which includes llama.cpp's KV cache). On-disk size was wrong both ways: `models/bge-m3` is 4.3 GB on disk and 1.1 GB loaded. On the 12 GB dev card, BGE-M3 (1090 MB), the reranker (1088 MB) and Qwen3.5-9B at 128K (7788 MB) stay resident together with ~1.1 GB free. The backpack is learned only while exactly one model is in use, and the telemetry thread now reads torch's counters under the orchestrator's lock. Read outside it, a sample could land mid-eviction (a model freed, the peak not yet reset) and record the freed model's size as a spike. That charged 1084 MB (BGE-M3's size) to the embedder and to llama.cpp's Qwen, which allocates nothing through torch, and made the reranker and the answer model evict each other every turn. Measured: no model needs transient memory to load, and reranking 40 long chunks takes 143 MB.
+- **The scrubber loads only when it has something to judge.** When every chunk scores at or above `RETRIEVAL_SCRUBBER_TRUST_RERANK_SCORE`, no model is loaded, and the live pipelines no longer preload it. On a warm card its load evicts the answer model.
+- **The follow-up rewrite runs on the answer model** (`ReasoningAPI(rewrite_manifest=, rewrite_loader=)`), loaded by the QA adapter so it keeps its 128K settings. The Reasoned-Answer loop keeps its own `QA_REASONER` model: it runs beside the answer phase, and sharing one instance there would let one phase's release free it under the other.
+- **Report mode:** scoping leaves the report model warm, so plan → write loads it once instead of twice, and gather rounds reuse the embedder and reranker. `test_deep_research_report_pipeline_integration.py` checks both pool shapes.
+
 ## One appliance, every language (English and Serbian)
 
 A client's material is often mixed: some recordings in English, some in Serbian. An appliance served exactly one language, and it was written into the schema. `fts_document` was generated with that language's stemmer, and starting in another language failed with `IndexLanguageMismatchError`. Now one database holds every language that has a pack.

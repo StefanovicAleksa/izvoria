@@ -9,6 +9,7 @@ import re
 from typing import Any
 
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
+from app.core.model_manager.utils.llama_cpp_chat import build_llama, chat_completion, strip_reasoning
 from app.features.retrieval_hallucination_scrubber.domain.interfaces import IRetrievalScrubberAdapter
 from app.features.retrieval_hallucination_scrubber.domain.entities import ScrubAudit
 from app.features.retrieval_hallucination_scrubber.data.prompts import (
@@ -21,20 +22,18 @@ from app.features.retrieval_hallucination_scrubber.utils.error_mapper import map
 
 class QwenRetrievalScrubberAdapter(IRetrievalScrubberAdapter):
     """
-    Adapter for executing Qwen 2.5 3B via llama.cpp.
-    Utilizes regex fallback parsing to ensure stability over strict grammar constraints.
+    Adapter for executing the scrubber's instruct GGUF via llama.cpp: Qwen2.5-7B in-process on the appliance, or the
+    shared Qwen3.5-9B behind llama-server when hosted (LLM_BACKEND=llama_server), where several chunks are judged
+    in parallel slots. Utilizes regex fallback parsing to ensure stability over strict grammar constraints.
     """
 
-    @staticmethod
-    def _get_llama_model(model_path: str) -> Any:
-        from llama_cpp import Llama
-        return Llama(
-            model_path=model_path,
-            n_gpu_layers=-1,
-            n_ctx=4096,
-            flash_attn=True,
-            verbose=False
-        )
+    N_CTX = 4096
+    # f16 is what llama.cpp allocates when no KV type is given, which is what this adapter always used
+    KV_CACHE_TYPE = "f16"
+
+    @classmethod
+    def _get_llama_model(cls, model_path: str) -> Any:
+        return build_llama(model_path, cls.N_CTX, cls.KV_CACHE_TYPE)
 
     def load(self, manifest: ModelManifest) -> LoadedModel:
         try:
@@ -77,14 +76,16 @@ class QwenRetrievalScrubberAdapter(IRetrievalScrubberAdapter):
                 {"role": "user", "content": user_content}
             ]
 
-            response = llm.create_chat_completion(
-                messages=messages,
+            response = chat_completion(
+                llm,
+                messages,
+                enable_thinking=False,  # a verdict, not a reasoned answer; Qwen2.5's template ignores the flag
                 response_format={"type": "json_object"},
                 temperature=0.0,  # Zero temperature for maximum determinism
                 max_tokens=150
             )
 
-            raw_content = response["choices"][0]["message"]["content"]
+            raw_content = strip_reasoning(response["choices"][0]["message"].get("content") or "")
 
             # Robust JSON extraction to prevent parsing errors
             json_match = re.search(r'\{.*}', raw_content, re.DOTALL)

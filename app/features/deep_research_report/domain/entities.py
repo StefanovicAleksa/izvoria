@@ -137,13 +137,20 @@ class OutlineAssignment(BaseModel):
 class ResearchPlan(BaseModel):
     """The object the user approves, and may edit before approving."""
     report_id: uuid.UUID
+    # The user's request as typed: the research question every prompt is given. Never shown as the report's name.
     topic: str
+    # A short name for the report, proposed by the scoping model and editable at approval; "" before one exists
+    title: str = ""
     scope_note: str = ""
     sections: List[OutlineSection] = Field(default_factory=list)
     sub_questions: List[SubQuestion] = Field(default_factory=list)
     revision: int = 1
 
     model_config = ConfigDict(frozen=True)
+
+    @property
+    def display_title(self) -> str:
+        return self.title or self.topic
 
     def sub_questions_for(self, section_key: str) -> List[SubQuestion]:
         return [q for q in self.sub_questions if q.section_key == section_key]
@@ -214,6 +221,7 @@ class ReportSummary(BaseModel):
     id: uuid.UUID
     topic: str
     status: ReportStatus
+    title: str = ""
     session_id: Optional[uuid.UUID] = None
     section_count: int = 0
     evidence_count: int = 0
@@ -222,6 +230,10 @@ class ReportSummary(BaseModel):
     completed_at: Optional[datetime] = None
 
     model_config = ConfigDict(frozen=True)
+
+    @property
+    def display_title(self) -> str:
+        return self.title or self.topic
 
 
 class Report(BaseModel):
@@ -258,6 +270,16 @@ class Report(BaseModel):
     completed_at: Optional[datetime] = None
 
     model_config = ConfigDict(frozen=True)
+
+    @property
+    def title(self) -> str:
+        """The report's name, kept on its plan (where it is edited at approval)."""
+        return self.plan.title
+
+    @property
+    def display_title(self) -> str:
+        """What a report is called everywhere it is shown: its title, or the request for one from before titles."""
+        return self.plan.display_title
 
     @property
     def evidence_by_doc_number(self) -> Dict[int, EvidenceEntry]:

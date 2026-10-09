@@ -69,3 +69,29 @@ def test_session_translates_sqlalchemy_error(mock_db_manager):
             pass  # The error happens at the end (during commit)
 
     mock_session.rollback.assert_called_once()
+
+class TestDatabaseSelection:
+    """Without arguments the appliance's database; the hosted API passes a firm's URL and a smaller pool."""
+
+    @pytest.fixture
+    def create_engine(self, mocker):
+        return mocker.patch("app.core.database.data.engine.create_engine")
+
+    def test_defaults_to_the_appliance_database_and_pool(self, create_engine):
+        from app.core.config import settings
+
+        DatabaseManager()
+
+        create_engine.assert_called_once_with(settings.DATABASE_URL, pool_pre_ping=True,
+                                              pool_size=settings.DB_POOL_SIZE, max_overflow=settings.DB_MAX_OVERFLOW)
+
+    def test_a_firm_database_with_its_own_pool(self, create_engine):
+        DatabaseManager(url="postgresql://u:p@db:5432/onyx_firm_legal_demo", pool_size=3, max_overflow=1)
+
+        create_engine.assert_called_once_with("postgresql://u:p@db:5432/onyx_firm_legal_demo", pool_pre_ping=True,
+                                              pool_size=3, max_overflow=1)
+
+    def test_a_zero_overflow_is_kept_not_replaced_by_the_default(self, create_engine):
+        DatabaseManager(url="postgresql://x", pool_size=2, max_overflow=0)
+
+        assert create_engine.call_args.kwargs["max_overflow"] == 0

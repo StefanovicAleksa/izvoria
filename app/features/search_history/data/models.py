@@ -2,9 +2,9 @@
 
 import uuid
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
-from sqlalchemy import DateTime, Float, Index, Integer, Text, text
+from sqlalchemy import DateTime, Float, Index, Integer, String, Text, text
 from sqlalchemy.dialects.postgresql import ARRAY, DOUBLE_PRECISION, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -33,6 +33,8 @@ class SearchHistoryModel(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, default=lambda: datetime.now(timezone.utc)
     )
+    # The user who searched, on the hosted multi-user API; NULL on the appliance, where history is shared.
+    owner_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True, index=True)
 
     __table_args__ = (
         Index("idx_search_history_created_at", "created_at"),

@@ -12,6 +12,12 @@ __pycache__/
 /env.bak/
 /venv.bak/
 /deploy/.venv/
+/web_deploy/.venv/
+/web_deploy/frontend/node_modules/
+/web_deploy/gateway/static/
+/web_deploy/local/local.env
+# Production secrets (api.env for the GPU box, gateway.env for the VPS): never committed or synced
+/web_deploy/provision/prod/
 
 # --- Environment Variables & Secrets ---
 .env

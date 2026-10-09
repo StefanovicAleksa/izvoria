@@ -28,6 +28,11 @@ def _to_record(model: SearchHistoryModel) -> SearchRecord:
     )
 
 
+def _owned(stmt, owner_id: Optional[str]):
+    """Restricts a statement to one user's searches (the hosted API); None leaves it unrestricted (the appliance)."""
+    return stmt if owner_id is None else stmt.where(SearchHistoryModel.owner_id == owner_id)
+
+
 class SearchHistoryRepository(ISearchHistoryRepository):
     def __init__(self, db_manager: IDatabaseManager):
         self._db = db_manager
@@ -40,6 +45,7 @@ class SearchHistoryRepository(ISearchHistoryRepository):
         chunk_ids: List[uuid.UUID],
         scores: List[float],
         execution_time_ms: float,
+        owner_id: Optional[str] = None,
     ) -> SearchRecord:
         try:
             with self._db.session() as session:
@@ -52,6 +58,7 @@ class SearchHistoryRepository(ISearchHistoryRepository):
                     scores=[float(s) for s in scores],
                     execution_time_ms=float(execution_time_ms),
                     created_at=datetime.now(timezone.utc),
+                    owner_id=owner_id,
                 )
                 record = _to_record(model)  # validates before anything is written
                 session.add(model)
@@ -59,17 +66,17 @@ class SearchHistoryRepository(ISearchHistoryRepository):
         except db_exc.DatabaseError as e:
             raise map_search_history_error(e)
 
-    def list(self, limit: int) -> List[SearchRecordSummary]:
+    def list(self, limit: int, owner_id: Optional[str] = None) -> List[SearchRecordSummary]:
         try:
             with self._db.session() as session:
                 stmt = (
-                    select(
+                    _owned(select(
                         SearchHistoryModel.id,
                         SearchHistoryModel.query,
                         SearchHistoryModel.mode,
                         func.cardinality(SearchHistoryModel.chunk_ids).label("hit_count"),
                         SearchHistoryModel.created_at,
-                    )
+                    ), owner_id)
                     .order_by(SearchHistoryModel.created_at.desc())
                     .limit(limit)
                 )
@@ -83,18 +90,21 @@ class SearchHistoryRepository(ISearchHistoryRepository):
         except db_exc.DatabaseError as e:
             raise map_search_history_error(e)
 
-    def get(self, record_id: uuid.UUID) -> Optional[SearchRecord]:
+    def get(self, record_id: uuid.UUID, owner_id: Optional[str] = None) -> Optional[SearchRecord]:
         try:
             with self._db.session() as session:
                 model = session.get(SearchHistoryModel, record_id)
-                return _to_record(model) if model is not None else None
+                if model is None or (owner_id is not None and model.owner_id != owner_id):
+                    return None
+                return _to_record(model)
         except db_exc.DatabaseError as e:
             raise map_search_history_error(e)
 
-    def delete(self, record_id: uuid.UUID) -> bool:
+    def delete(self, record_id: uuid.UUID, owner_id: Optional[str] = None) -> bool:
         try:
             with self._db.session() as session:
-                result = session.execute(delete(SearchHistoryModel).where(SearchHistoryModel.id == record_id))
+                result = session.execute(
+                    _owned(delete(SearchHistoryModel), owner_id).where(SearchHistoryModel.id == record_id))
                 return bool(result.rowcount)
         except db_exc.DatabaseError as e:
             raise map_search_history_error(e)

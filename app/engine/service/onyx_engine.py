@@ -6,22 +6,28 @@ import threading
 import time
 import uuid
 import gc
+from contextlib import contextmanager
 from typing import Dict, List, Optional, Tuple
 
 
 from app.core.config import settings
+from app.core.language.service.language_api import active_language
+from app.core.database.domain.interfaces import IDatabaseManager
 from app.core.database.service.manager import db_manager
 from app.core.database.service.migrations import upgrade_to_head
 from app.core.model_manager.service.async_model_service import AsyncModelService
 
 from app.engine.domain.interfaces import IOnyxEngine
 from app.engine.domain.enums import EngineState
-from app.engine.domain.entities import IngestionReport
+from app.engine.domain.entities import IngestionReport, StorageCompactionReport
+from app.engine.exceptions.base import EngineError
 from app.engine.exceptions.lifecycle import EngineOfflineError, EngineBusyError
 from app.engine.utils.error_mapper import map_engine_error
 from app.engine.utils.conversation_history import build_conversation_history, history_chunks_newest_first
 
 from app.features.storage.service.storage_api import StorageAPI
+from app.features.clip_extractor.service.extractor_api import ClipExtractorAPI
+from app.features.media_compaction.domain.entities import CompactionStatus
 from app.features.storage.domain.entities import Source, SourceType
 from app.features.rag_retrieval.domain.entities import RetrievedChunk, SearchQuery, SearchResult
 from app.features.rag_retrieval.service.retrieval_api import RetrievalAPI
@@ -43,6 +49,7 @@ from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaP
 from app.orchestration.service.pipelines.batch_audio_pipeline import BatchAudioPipeline
 from app.orchestration.service.pipelines.batch_document_pipeline import BatchDocumentPipeline
 from app.orchestration.service.pipelines.batch_image_pipeline import BatchImagePipeline
+from app.orchestration.service.phases.storage_compaction_phase import StorageCompactionPhase
 from app.orchestration.service.pipelines.live_retrieval_pipeline import LiveRetrievalPipeline
 from app.orchestration.service.pipelines.live_verified_retrieval_pipeline import LiveVerifiedRetrievalPipeline
 from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
@@ -76,8 +83,21 @@ class OnyxEngine(IOnyxEngine):
             report_api: Optional[ReportAuthoringAPI] = None,
             document_pipeline: Optional[BatchDocumentPipeline] = None,
             image_pipeline: Optional[BatchImagePipeline] = None,
-            search_history_api: Optional[SearchHistoryAPI] = None
+            search_history_api: Optional[SearchHistoryAPI] = None,
+            database: Optional[IDatabaseManager] = None,
+            owns_model_service: bool = True,
+            concurrent_live: Optional[bool] = None,
+            report_max_concurrent: Optional[int] = None,
+            clip_extractor_api: Optional[ClipExtractorAPI] = None,
+            storage_compaction_phase: Optional[StorageCompactionPhase] = None
     ):
+        """
+        `database` is the firm's database on the hosted API (default: the appliance's). `owns_model_service=False`
+        means the models are shared with other engines (one per firm) and outlive this one: stopping it frees
+        none of them. `concurrent_live` (default ENGINE_CONCURRENT_LIVE) lets live calls and up to
+        `report_max_concurrent` reports run at once instead of each report holding the engine exclusively; it
+        needs a model service whose live models are pinned or external, which the orchestrator enforces.
+        """
         self._async_service = async_model_service
         self._media_pipeline = media_pipeline
         self._audio_pipeline = audio_pipeline
@@ -93,6 +113,15 @@ class OnyxEngine(IOnyxEngine):
         self._document_pipeline = document_pipeline
         self._image_pipeline = image_pipeline
         self._search_history_api = search_history_api
+        self._database = database
+        self._owns_model_service = owns_model_service
+        self._clip_extractor_api = clip_extractor_api
+        self._storage_compaction_phase = storage_compaction_phase
+        self._concurrent = settings.ENGINE_CONCURRENT_LIVE if concurrent_live is None else concurrent_live
+        self._report_cap = max(1, report_max_concurrent if report_max_concurrent is not None
+                               else settings.REPORT_MAX_CONCURRENT)
+        # Live calls in progress, for require_idle and the hosted API's health (idle shutdown)
+        self._inflight = 0
 
         self._state = EngineState.OFFLINE
         self._state_lock = threading.RLock()
@@ -114,7 +143,7 @@ class OnyxEngine(IOnyxEngine):
 
             try:
                 # Creates a fresh database, or brings an existing one to this build's schema without touching its data
-                upgrade_to_head(db_manager.get_engine())
+                upgrade_to_head(self._db.get_engine())
 
                 self._force_aggressive_garbage_collection()
 
@@ -137,15 +166,20 @@ class OnyxEngine(IOnyxEngine):
                 # Waits out any preload still loading, then frees every resident model. A model a live call left
                 # resident (release_after=False) would otherwise stay in VRAM past this engine, and a rebuilt
                 # engine's new orchestrator could neither see nor evict it.
-                self._async_service.shutdown()
-                self._async_service.release_all()
-                db_manager.dispose()
+                if self._owns_model_service:
+                    self._async_service.shutdown()
+                    self._async_service.release_all()
+                self._db.dispose()
 
                 self._state = EngineState.OFFLINE
                 logger.info("Onyx Engine is securely OFFLINE.")
             except Exception as e:
                 self._state = EngineState.ERROR
                 raise map_engine_error(e, context="Stopping Engine")
+
+    @property
+    def _db(self) -> IDatabaseManager:
+        return self._database or db_manager
 
     def get_state(self) -> EngineState:
         with self._state_lock:
@@ -154,7 +188,7 @@ class OnyxEngine(IOnyxEngine):
     @property
     def active_language(self) -> str:
         """The language the next ingestion batch is indexed in and answers are written in."""
-        return settings.APPLIANCE_LANGUAGE
+        return active_language()
 
     def require_idle(self) -> None:
         """Raises EngineBusyError unless no job holds the engine: the only time its language may change."""
@@ -163,6 +197,25 @@ class OnyxEngine(IOnyxEngine):
                 raise EngineBusyError(
                     f"The appliance is {self._state.value}. Switch languages once it has finished."
                 )
+            if self._inflight or self._research_cancels:
+                raise EngineBusyError("A question or report is still being answered. Try again once it has finished.")
+
+    def busy_snapshot(self) -> Dict[str, int]:
+        """What this engine is doing right now: live calls and research reports in progress."""
+        with self._state_lock:
+            return {"inflight": self._inflight, "reports_running": len(self._research_cancels)}
+
+    @contextmanager
+    def _live_call(self):
+        """Admits a live call (search, chat, reasoned chat, report scoping) and counts it while it runs."""
+        self._enforce_online_state()
+        with self._state_lock:
+            self._inflight += 1
+        try:
+            yield
+        finally:
+            with self._state_lock:
+                self._inflight -= 1
 
     # ==========================================
     # VRAM ORCHESTRATION GUARDS
@@ -170,6 +223,11 @@ class OnyxEngine(IOnyxEngine):
 
     def _prepare_for_ingestion(self) -> None:
         """Locks the engine for batch processing."""
+        if self._concurrent:
+            raise EngineBusyError(
+                "This engine serves live questions to several users at once; ingestion runs in the ingestion "
+                "worker, one batch at a time."
+            )
         with self._state_lock:
             if self._state == EngineState.OFFLINE:
                 raise EngineOfflineError("Cannot ingest media: Engine is offline.")
@@ -183,6 +241,8 @@ class OnyxEngine(IOnyxEngine):
 
         logger.info("Locking Engine for batch ingestion...")
         try:
+            # Chat and report models stay warm between calls; ingestion starts from an empty GPU
+            self._async_service.release_all()
             self._force_aggressive_garbage_collection()
         except Exception as e:
             with self._state_lock:
@@ -201,10 +261,13 @@ class OnyxEngine(IOnyxEngine):
             with self._state_lock:
                 self._state = EngineState.ONLINE
 
-    @staticmethod
-    def _force_aggressive_garbage_collection() -> None:
+    def _force_aggressive_garbage_collection(self) -> None:
         """Forces the destruction of stale memory objects holding heavy weights."""
         gc.collect()
+        if self._concurrent:
+            # The pinned models keep their activation memory reserved between requests; emptying the CUDA
+            # cache would hand it to the ingestion worker and the next request's spike would not fit
+            return
         try:
             import torch
             if torch.cuda.is_available():
@@ -289,31 +352,32 @@ class OnyxEngine(IOnyxEngine):
     # LIVE INFERENCE DELEGATION
     # ==========================================
 
-    def search_standard(self, query: SearchQuery) -> SearchResult:
-        self._enforce_online_state()
-        try:
-            search_id = uuid.uuid4()
-            result = self._live_pipeline.execute_search(search_id, query)
-            self._resolve_physical_paths(result)
-        except Exception as e:
-            self._release_models_after_failure()
-            raise map_engine_error(e, context=f"Standard Search [{query.prompt}]")
-        self._record_search(query, SearchHistoryMode.STANDARD, result)
-        return result
+    def search_standard(self, query: SearchQuery, owner_id: Optional[str] = None) -> SearchResult:
+        with self._live_call():
+            try:
+                search_id = uuid.uuid4()
+                result = self._live_pipeline.execute_search(search_id, query)
+                self._resolve_physical_paths(result)
+            except Exception as e:
+                self._release_models_after_failure()
+                raise map_engine_error(e, context=f"Standard Search [{query.prompt}]")
+            self._record_search(query, SearchHistoryMode.STANDARD, result, owner_id)
+            return result
 
-    def search_verified(self, query: SearchQuery) -> SearchResult:
-        self._enforce_online_state()
-        try:
-            search_id = uuid.uuid4()
-            result = self._live_verified_pipeline.execute_verified_search(search_id, query)
-            self._resolve_physical_paths(result)
-        except Exception as e:
-            self._release_models_after_failure()
-            raise map_engine_error(e, context=f"Verified Search [{query.prompt}]")
-        self._record_search(query, SearchHistoryMode.VERIFIED, result)
-        return result
+    def search_verified(self, query: SearchQuery, owner_id: Optional[str] = None) -> SearchResult:
+        with self._live_call():
+            try:
+                search_id = uuid.uuid4()
+                result = self._live_verified_pipeline.execute_verified_search(search_id, query)
+                self._resolve_physical_paths(result)
+            except Exception as e:
+                self._release_models_after_failure()
+                raise map_engine_error(e, context=f"Verified Search [{query.prompt}]")
+            self._record_search(query, SearchHistoryMode.VERIFIED, result, owner_id)
+            return result
 
-    def _record_search(self, query: SearchQuery, mode: SearchHistoryMode, result: SearchResult) -> None:
+    def _record_search(self, query: SearchQuery, mode: SearchHistoryMode, result: SearchResult,
+                       owner_id: Optional[str] = None) -> None:
         """
         Keeps the hits exactly as shown (for verified search, what survived the scrubber). History is a
         convenience: a failure to record it is logged and never costs the user the search they just ran.
@@ -328,16 +392,22 @@ class OnyxEngine(IOnyxEngine):
                 chunk_ids=[chunk.chunk_id for chunk in result.results],
                 scores=[chunk.relevance_score for chunk in result.results],
                 execution_time_ms=float(result.execution_time_ms),
+                owner_id=owner_id,
             )
         except Exception as e:
             logger.warning(f"Could not record the search '{query.prompt}' in history: {e}")
 
-    def chat(self, query: SearchQuery, session_id: Optional[uuid.UUID] = None) -> QAResponse:
+    def chat(self, query: SearchQuery, session_id: Optional[uuid.UUID] = None,
+             owner_id: Optional[str] = None) -> QAResponse:
         """
         Without a session_id, a standalone question. With one, a turn of that conversation: the answer model sees
         the earlier turns (chat and Reasoned Answer alike) and their evidence, and this turn is recorded.
+        `owner_id` (the hosted API) scopes the conversation to the user asking.
         """
-        self._enforce_online_state()
+        with self._live_call():
+            return self._chat(query, session_id, owner_id)
+
+    def _chat(self, query: SearchQuery, session_id: Optional[uuid.UUID], owner_id: Optional[str]) -> QAResponse:
         if session_id is not None:
             self._require_conversation_support()
 
@@ -348,7 +418,7 @@ class OnyxEngine(IOnyxEngine):
                 self._resolve_citation_paths(result)
                 return result
 
-            turns = self._session_memory_api.get_history(session_id)
+            turns = self._session_memory_api.get_history(session_id, owner_id=owner_id)
             history = self._load_history(turns)
             chat_result = self._live_qa_pipeline.execute_conversation_chat(
                 search_id, query, history, self._session_memory_api.format_prior_context(turns)
@@ -358,7 +428,8 @@ class OnyxEngine(IOnyxEngine):
                 mode=SessionTurnMode.CHAT,
                 standalone_query=chat_result.standalone_query,
                 evidence_chunk_ids=chat_result.new_chunk_ids,
-                first_doc_number=history.next_doc_number
+                first_doc_number=history.next_doc_number,
+                owner_id=owner_id
             )
             self._resolve_citation_paths(chat_result.qa_response)
             return chat_result.qa_response
@@ -366,15 +437,20 @@ class OnyxEngine(IOnyxEngine):
             self._release_models_after_failure()
             raise map_engine_error(e, context=f"Chat QA Generation [{query.prompt}]")
 
-    def chat_reasoned(self, session_id: uuid.UUID, query: SearchQuery) -> ReasonedChatResponse:
-        self._enforce_online_state()
+    def chat_reasoned(self, session_id: uuid.UUID, query: SearchQuery,
+                      owner_id: Optional[str] = None) -> ReasonedChatResponse:
+        with self._live_call():
+            return self._chat_reasoned(session_id, query, owner_id)
+
+    def _chat_reasoned(self, session_id: uuid.UUID, query: SearchQuery,
+                       owner_id: Optional[str]) -> ReasonedChatResponse:
         if self._live_reasoning_pipeline is None:
             raise EngineOfflineError("Reasoned Answer is not wired into this engine instance.")
         self._require_conversation_support()
 
         try:
             search_id = uuid.uuid4()
-            turns = self._session_memory_api.get_history(session_id)
+            turns = self._session_memory_api.get_history(session_id, owner_id=owner_id)
             history = self._load_history(turns)
             result = self._live_reasoning_pipeline.execute_reasoning(
                 search_id, query,
@@ -395,7 +471,8 @@ class OnyxEngine(IOnyxEngine):
                 mode=SessionTurnMode.REASONING,
                 standalone_query=result.standalone_query,
                 evidence_chunk_ids=[c for c in result.evidence_chunk_ids if c not in shown],
-                first_doc_number=history.next_doc_number
+                first_doc_number=history.next_doc_number,
+                owner_id=owner_id
             )
 
             return result
@@ -414,6 +491,21 @@ class OnyxEngine(IOnyxEngine):
         Mirrors `_prepare_for_ingestion`: a report holds the GPU for tens of minutes, so live calls are
         rejected with a clear reason rather than silently queueing behind it or fighting it for VRAM.
         """
+        if self._concurrent:
+            # Reports run beside live calls and each other, up to the cap; the models are shared, never swapped
+            with self._state_lock:
+                if self._state == EngineState.OFFLINE:
+                    raise EngineOfflineError("Cannot run a research report: Engine is offline.")
+                if report_id in self._research_cancels:
+                    raise EngineBusyError("This report is already running.")
+                if len(self._research_cancels) >= self._report_cap:
+                    raise EngineBusyError(
+                        f"{self._report_cap} research report(s) are already running. Try again when one finishes."
+                    )
+                token = CancellationToken()
+                self._research_cancels[report_id] = token
+            return token
+
         with self._state_lock:
             if self._state == EngineState.OFFLINE:
                 raise EngineOfflineError("Cannot run a research report: Engine is offline.")
@@ -435,6 +527,10 @@ class OnyxEngine(IOnyxEngine):
 
     def _cleanup_after_research(self, report_id: uuid.UUID) -> None:
         """Unlocks the engine and drops the run's token, whatever happened."""
+        if self._concurrent:
+            with self._state_lock:
+                self._research_cancels.pop(report_id, None)
+            return
         try:
             logger.info("Research report finished. Purging pipeline artifacts from VRAM...")
             self._async_service.release_all()
@@ -454,7 +550,8 @@ class OnyxEngine(IOnyxEngine):
             self,
             topic: str,
             session_id: Optional[uuid.UUID] = None,
-            source_id_filter: Optional[uuid.UUID] = None
+            source_id_filter: Optional[uuid.UUID] = None,
+            owner_id: Optional[str] = None
     ) -> ResearchPlanProposal:
         """
         Scopes a report: searches the corpus once, proposes an outline, and stops for approval.
@@ -462,11 +559,18 @@ class OnyxEngine(IOnyxEngine):
         Short enough to run as an ordinary live call (about a minute, two model loads). The long run is a
         separate call on purpose -- a misread topic is cheap to fix here and expensive to fix later.
         """
-        self._enforce_online_state()
+        with self._live_call():
+            return self._propose_research_plan(topic, session_id, source_id_filter, owner_id)
+
+    def _propose_research_plan(self, topic: str, session_id: Optional[uuid.UUID],
+                               source_id_filter: Optional[uuid.UUID],
+                               owner_id: Optional[str]) -> ResearchPlanProposal:
         self._require_research_support()
 
         try:
             report = self._research_report_pipeline.propose_plan(topic, session_id, source_id_filter)
+            if owner_id is not None:
+                self._report_api.set_owner(report.id, owner_id)
             expected_job_count, estimated_minutes = self.plan_cost(report.plan)
             return ResearchPlanProposal(
                 report_id=report.id,
@@ -573,19 +677,34 @@ class OnyxEngine(IOnyxEngine):
         token.cancel()
         return True
 
-    def get_report(self, report_id: uuid.UUID) -> Optional[Report]:
-        """A stored report, whatever its state. No model, no engine lock."""
+    def get_report(self, report_id: uuid.UUID, owner_id: Optional[str] = None) -> Optional[Report]:
+        """A stored report, whatever its state (None if it is `owner_id`'s to see). No model, no engine lock."""
         self._require_research_support()
         try:
-            return self._report_api.get_report(report_id)
+            return self._report_api.get_report(report_id, owner_id=owner_id)
         except Exception as e:
             raise map_engine_error(e, context=f"Loading research report [{report_id}]")
 
-    def list_reports(self, session_id: Optional[uuid.UUID] = None, limit: int = 50) -> List[ReportSummary]:
-        """Stored reports, newest first, optionally scoped to one conversation."""
+    def rename_research_report(self, report_id: uuid.UUID, title: str,
+                               owner_id: Optional[str] = None) -> Optional[Report]:
+        """
+        Gives a report a new title; "" shows it by its request again. Database and the report's file only, so it is
+        allowed while ingestion or a report holds the GPU. None if there is no such report (or not `owner_id`'s).
+        """
         self._require_research_support()
         try:
-            return self._report_api.list_reports(session_id, limit)
+            if owner_id is not None and self._report_api.get_report(report_id, owner_id=owner_id) is None:
+                return None
+            return self._report_api.rename_report(report_id, title)
+        except Exception as e:
+            raise map_engine_error(e, context=f"Renaming research report [{report_id}]")
+
+    def list_reports(self, session_id: Optional[uuid.UUID] = None, limit: int = 50,
+                     owner_id: Optional[str] = None) -> List[ReportSummary]:
+        """Stored reports, newest first, optionally scoped to one conversation (and to one user's, hosted)."""
+        self._require_research_support()
+        try:
+            return self._report_api.list_reports(session_id, limit, owner_id=owner_id)
         except Exception as e:
             raise map_engine_error(e, context="Listing research reports")
 
@@ -629,6 +748,53 @@ class OnyxEngine(IOnyxEngine):
                 logger.warning(f"Failed to resolve physical path for chunk {chunk.chunk_id}: {e}")
         return chunks
 
+    def compact_storage(self, dry_run: bool = False) -> StorageCompactionReport:
+        """
+        Brings what is already indexed in line with the storage settings, as ingestion now leaves new recordings:
+        their clips go (VIDEO_CLIPS_ENABLED=False), their WAVs go (KEEP_EXTRACTED_AUDIO=False) and their originals
+        become compact copies (COMPACT_MEDIA_ORIGINALS). Holds the engine like an ingestion, so it never runs
+        beside one. `dry_run` measures what would be freed and changes nothing.
+        """
+        if self._storage_compaction_phase is None or self._clip_extractor_api is None or self._retrieval_api is None:
+            raise EngineError("Storage compaction is not wired into this engine.")
+        self._prepare_for_ingestion()
+        totals: Dict[str, int] = {}
+        errors: Dict[str, str] = {}
+        checked = 0
+
+        def add(key: str, value: int) -> None:
+            totals[key] = totals.get(key, 0) + value
+
+        try:
+            for indexed in self._retrieval_api.list_indexed_sources():
+                checked += 1
+                try:
+                    if not settings.VIDEO_CLIPS_ENABLED:
+                        add("clips", self._clip_extractor_api.discard_clips(indexed.source_id, dry_run=dry_run))
+                    summary = self._storage_compaction_phase.compact_source(indexed.source_id, dry_run=dry_run)
+                    add("audio", summary.get("audio_bytes_freed", 0))
+                    status = summary.get("original")
+                    if status == CompactionStatus.REPLACED.value:
+                        add("replaced", 1)
+                        add("original_saved", summary.get("original_bytes_saved", 0))
+                    elif status == CompactionStatus.PENDING.value:
+                        add("pending", 1)
+                        add("pending_bytes", summary.get("original_bytes", 0))
+                except Exception as e:
+                    logger.error(f"Compacting {indexed.name} failed: {e}")
+                    errors[indexed.name] = str(e)
+        except Exception as e:
+            raise map_engine_error(e, context="Compacting storage")
+        finally:
+            self._cleanup_after_ingestion()
+
+        return StorageCompactionReport(
+            dry_run=dry_run, sources_checked=checked, clip_bytes=totals.get("clips", 0),
+            audio_bytes=totals.get("audio", 0), originals_replaced=totals.get("replaced", 0),
+            original_bytes_saved=totals.get("original_saved", 0), originals_to_compact=totals.get("pending", 0),
+            original_bytes_to_compact=totals.get("pending_bytes", 0), errors=errors,
+        )
+
     def list_sources(self) -> List[Source]:
         """Everything ingested into the vault, newest first, each with its file row attached."""
         if self._state == EngineState.OFFLINE:
@@ -640,56 +806,56 @@ class OnyxEngine(IOnyxEngine):
 
     # ---------- history (database only: no model, no engine lock, allowed mid-ingestion) ----------
 
-    def list_conversations(self, limit: int = 200) -> List[SessionSummary]:
+    def list_conversations(self, limit: int = 200, owner_id: Optional[str] = None) -> List[SessionSummary]:
         """Chat conversations, most recently active first."""
         self._require_started()
         self._require_session_memory()
         try:
-            return self._session_memory_api.list_sessions(limit)
+            return self._session_memory_api.list_sessions(limit, owner_id=owner_id)
         except Exception as e:
             raise map_engine_error(e, context="Listing conversations")
 
-    def get_conversation(self, session_id: uuid.UUID) -> List[SessionTurn]:
+    def get_conversation(self, session_id: uuid.UUID, owner_id: Optional[str] = None) -> List[SessionTurn]:
         """Every turn of a conversation, oldest first, with the evidence ids each turn showed first."""
         self._require_started()
         self._require_session_memory()
         try:
-            return self._session_memory_api.get_all_turns(session_id)
+            return self._session_memory_api.get_all_turns(session_id, owner_id=owner_id)
         except Exception as e:
             raise map_engine_error(e, context=f"Loading conversation [{session_id}]")
 
-    def delete_conversation(self, session_id: uuid.UUID) -> int:
+    def delete_conversation(self, session_id: uuid.UUID, owner_id: Optional[str] = None) -> int:
         """Forgets a conversation's turns. Reports started from it are kept."""
         self._require_started()
         self._require_session_memory()
         try:
-            return self._session_memory_api.delete_session(session_id)
+            return self._session_memory_api.delete_session(session_id, owner_id=owner_id)
         except Exception as e:
             raise map_engine_error(e, context=f"Deleting conversation [{session_id}]")
 
-    def list_searches(self, limit: int = 200) -> List[SearchRecordSummary]:
+    def list_searches(self, limit: int = 200, owner_id: Optional[str] = None) -> List[SearchRecordSummary]:
         """Past standard and verified searches, newest first."""
         self._require_started()
         self._require_search_history()
         try:
-            return self._search_history_api.list(limit)
+            return self._search_history_api.list(limit, owner_id=owner_id)
         except Exception as e:
             raise map_engine_error(e, context="Listing past searches")
 
-    def get_search(self, record_id: uuid.UUID) -> Optional[SearchRecord]:
+    def get_search(self, record_id: uuid.UUID, owner_id: Optional[str] = None) -> Optional[SearchRecord]:
         """A past search with its ranked chunk ids; hydrate them with get_chunks."""
         self._require_started()
         self._require_search_history()
         try:
-            return self._search_history_api.get(record_id)
+            return self._search_history_api.get(record_id, owner_id=owner_id)
         except Exception as e:
             raise map_engine_error(e, context=f"Loading past search [{record_id}]")
 
-    def delete_search(self, record_id: uuid.UUID) -> bool:
+    def delete_search(self, record_id: uuid.UUID, owner_id: Optional[str] = None) -> bool:
         self._require_started()
         self._require_search_history()
         try:
-            return self._search_history_api.delete(record_id)
+            return self._search_history_api.delete(record_id, owner_id=owner_id)
         except Exception as e:
             raise map_engine_error(e, context=f"Deleting past search [{record_id}]")
 
@@ -714,6 +880,9 @@ class OnyxEngine(IOnyxEngine):
 
     def _release_models_after_failure(self) -> None:
         """A failed live call must not leave a model resident for the next request to wait on."""
+        if self._concurrent:
+            # Every live model is pinned or external; releasing "all" would only race the other requests
+            return
         try:
             self._async_service.release_all()
         except Exception as e:
@@ -723,6 +892,8 @@ class OnyxEngine(IOnyxEngine):
         with self._state_lock:
             if self._state == EngineState.OFFLINE:
                 raise EngineOfflineError("Engine is offline.")
+            if self._concurrent:
+                return
             if self._state == EngineState.INGESTING:
                 raise EngineBusyError("Hardware is locked for batch ingestion. Inference paused.")
             if self._state == EngineState.RESEARCHING:
@@ -785,6 +956,11 @@ class OnyxEngine(IOnyxEngine):
                 if getattr(item, "success", False):
                     metrics_dict["clips"] += getattr(item, "extracted_clips_count", 0)
 
+        if PipelinePhase.STORAGE_COMPACTION in pipeline_results:
+            for item in pipeline_results[PipelinePhase.STORAGE_COMPACTION].items:
+                if getattr(item, "success", False):
+                    metrics_dict["storage_saved"] = metrics_dict.get("storage_saved", 0) + item.bytes_saved
+
         if PipelinePhase.DOCUMENT_CONVERSION in pipeline_results:
             for item in pipeline_results[PipelinePhase.DOCUMENT_CONVERSION].items:
                 if not getattr(item, "success", False):
@@ -828,6 +1004,10 @@ class OnyxEngine(IOnyxEngine):
                     )
 
         for phase, result in pipeline_results.items():
+            # A recording whose compaction failed is still indexed, with its files kept as they were (and logged):
+            # nothing a person reading "files that were not added" should be told about
+            if phase is PipelinePhase.STORAGE_COMPACTION:
+                continue
             if result.status in [PhaseStatus.FAILED, PhaseStatus.PARTIAL_SUCCESS]:
                 for idx, err_str in enumerate(result.errors):
                     error_dict[f"{phase.value}_error_{idx}"] = err_str
@@ -845,5 +1025,6 @@ class OnyxEngine(IOnyxEngine):
             images_described=metrics.get("images", 0),
             images_text_unverified=metrics.get("images_unverified", 0),
             image_text_items_dropped=metrics.get("image_items_dropped", 0),
-            image_ocr_lines_withheld=metrics.get("image_ocr_withheld", 0)
+            image_ocr_lines_withheld=metrics.get("image_ocr_withheld", 0),
+            storage_bytes_saved=metrics.get("storage_saved", 0)
         )

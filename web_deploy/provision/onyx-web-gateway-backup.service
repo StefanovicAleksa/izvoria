@@ -1,0 +1,15 @@
+[Unit]
+Description=Onyx web gateway: back up the gateway database (installed by install_gateway.sh)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=onyx
+Group=onyx
+WorkingDirectory=/opt/onyx_v3
+EnvironmentFile=/etc/onyx-web-gateway.env
+Environment=PYTHONPATH=/opt/onyx_v3
+# restic's cache; the onyx system user has no home of its own
+Environment=HOME=/var/lib/onyx-web
+ExecStart=/opt/onyx-web-gateway/bin/python -m web_deploy.backup.gateway

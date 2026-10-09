@@ -1,3 +1,6 @@
+import threading
+import time
+
 import pytest
 from unittest.mock import MagicMock, call, patch
 from sqlalchemy.exc import OperationalError, ProgrammingError
@@ -86,6 +89,42 @@ class TestUpgradeToHead:
 
         with pytest.raises(exc.DBUnreachableError):
             upgrade_to_head(engine)
+
+    def test_concurrent_upgrades_take_turns(self, command):
+        """
+        Alembic keeps the running migration's context in module globals, so two firms' engines starting at once
+        must not migrate at the same time: one firm's revisions would run on the other's connection.
+        """
+        state = {"active": 0, "most": 0}
+        lock = threading.Lock()
+
+        def slow_upgrade(config, revision):
+            with lock:
+                state["active"] += 1
+                state["most"] = max(state["most"], state["active"])
+            time.sleep(0.05)
+            with lock:
+                state["active"] -= 1
+
+        command.upgrade.side_effect = slow_upgrade
+        with patch(f"{MODULE}.inspect", return_value=_inspector()):
+            threads = [threading.Thread(target=upgrade_to_head, args=(MagicMock(),)) for _ in range(4)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(timeout=5)
+
+        assert command.upgrade.call_count == 4
+        assert state["most"] == 1
+
+    def test_a_failed_upgrade_lets_the_next_one_run(self, engine, command):
+        command.upgrade.side_effect = [RuntimeError("revision failed"), None]
+        with patch(f"{MODULE}.inspect", return_value=_inspector()):
+            with pytest.raises(exc.DBMigrationError):
+                upgrade_to_head(engine)
+            upgrade_to_head(engine)
+
+        assert command.upgrade.call_count == 2
 
 
 class TestPreAlembicCatchUp:

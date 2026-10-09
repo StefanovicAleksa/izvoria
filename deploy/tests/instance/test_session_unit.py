@@ -50,6 +50,12 @@ class TestLaunch:
             "QT_QPA_PLATFORM": "xcb",
         }
 
+    def test_env_hands_the_app_the_offer_endpoint_and_its_token(self, settings):
+        env = launch_env(settings, "en", {}, offer_token="tok")
+        assert env["ONYX_SOURCE_OFFER_URL"] == "http://127.0.0.1:8090/offers"
+        assert env["ONYX_SOURCE_OFFER_TOKEN"] == "tok"
+        assert "AGENT_SECRET" not in env
+
     def test_env_rejects_a_language_without_a_pack(self, settings):
         with pytest.raises(UnknownLanguage):
             launch_env(settings, "de", {})
@@ -68,7 +74,35 @@ class TestEnsure:
         assert kwargs["start_new_session"] is True
         assert kwargs["stdout"].name == str(settings.log_dir / "app.log")
         assert kwargs["stderr"] is subprocess.STDOUT
-        assert json.loads(settings.state_file.read_text()) == {"pid": 4242, "language": "sr"}
+        state = json.loads(settings.state_file.read_text())
+        assert {k: state[k] for k in ("pid", "language")} == {"pid": 4242, "language": "sr"}
+        # The app got the same per-launch token the agent will check, and the agent secret stays with the agent
+        assert len(state["offer_token"]) >= 40
+        assert kwargs["env"]["ONYX_SOURCE_OFFER_TOKEN"] == state["offer_token"]
+        assert settings.state_file.stat().st_mode & 0o077 == 0
+
+    def test_a_new_launch_gets_a_new_token(self, settings, popen):
+        with patch("deploy.instance.agent.session._is_alive", return_value=False):
+            AppSession(settings, popen=popen).ensure("sr")
+            first = json.loads(settings.state_file.read_text())["offer_token"]
+            AppSession(settings, popen=popen).ensure("sr")
+        assert json.loads(settings.state_file.read_text())["offer_token"] != first
+
+    def test_offer_token_is_read_back_for_the_running_app(self, settings, popen):
+        with patch("deploy.instance.agent.session._is_alive", return_value=True):
+            session = AppSession(settings, popen=popen)
+            session.ensure("sr")
+            assert session.offer_token() == json.loads(settings.state_file.read_text())["offer_token"]
+
+    def test_no_app_means_no_token(self, settings, popen):
+        write_state(settings, 99, "sr")
+        with patch("deploy.instance.agent.session._is_alive", return_value=False):
+            assert AppSession(settings, popen=popen).offer_token() is None
+
+    def test_an_app_from_before_offers_has_no_token(self, settings, popen):
+        write_state(settings, 99, "sr")
+        with patch("deploy.instance.agent.session._is_alive", return_value=True):
+            assert AppSession(settings, popen=popen).offer_token() is None
 
     @pytest.mark.parametrize("language", ["en", "sr"])
     def test_a_running_app_is_kept_whatever_language_is_asked_for(self, settings, popen, language):

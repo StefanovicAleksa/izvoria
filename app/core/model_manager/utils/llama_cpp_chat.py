@@ -3,6 +3,8 @@
 import re
 from typing import Any, Dict, List
 
+from app.core.model_manager.domain.interfaces import IChatModel
+
 # llama.cpp ggml_type ids accepted for the KV cache (llama_cpp.GGML_TYPE_*)
 _KV_CACHE_TYPES: Dict[str, int] = {"f16": 1, "q4_0": 2, "q8_0": 8}
 
@@ -24,7 +26,18 @@ def build_llama(model_path: str, n_ctx: int, kv_cache_type: str) -> Any:
     """
     A fully GPU-offloaded llama.cpp model. A quantized value cache needs flash attention, which is always on;
     the hybrid Qwen3.5 models keep a KV cache in only a quarter of their layers, so long contexts stay small.
+
+    With LLM_BACKEND=llama_server the model is instead a client of the local llama-server, which already holds
+    the weights (and its own KV cache type): `n_ctx` then caps what this role sends, not what is allocated.
     """
+    from app.core.config import settings
+    if settings.LLM_BACKEND == "llama_server":
+        from app.core.model_manager.data.llama_server_chat_model import LlamaServerChatModel
+        return LlamaServerChatModel(settings.LLM_SERVER_URL, n_ctx, settings.LLM_SERVER_TIMEOUT_S,
+                                    kv_tokens=settings.LLM_SERVER_KV_TOKENS)
+    if settings.LLM_BACKEND != "llama_cpp":
+        raise ValueError(f"Unsupported LLM_BACKEND {settings.LLM_BACKEND!r}; expected 'llama_cpp' or 'llama_server'")
+
     from llama_cpp import Llama
     type_id = kv_cache_type_id(kv_cache_type)
     return Llama(
@@ -45,7 +58,11 @@ def chat_completion(llm: Any, messages: List[Dict[str, str]], enable_thinking: b
     Llama.create_chat_completion has a fixed signature and drops template variables, but the chat handler it
     delegates to forwards extra keyword arguments to the Jinja template, so the handler is called directly.
     Sampling defaults match create_chat_completion's (the handler's own repeat_penalty default differs).
+    A llama-server client (any IChatModel) passes the flag to the server's template itself.
     """
+    if isinstance(llm, IChatModel):
+        return llm.chat(messages, enable_thinking=enable_thinking, **kwargs)
+
     from llama_cpp import llama_chat_format
     handler = (
         llm.chat_handler

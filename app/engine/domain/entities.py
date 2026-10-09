@@ -35,4 +35,27 @@ class IngestionReport(BaseModel):
     image_ocr_lines_withheld: int = 0
     image_text_items_dropped: int = 0
 
+    # Freed by dropping indexed recordings' WAVs and swapping their originals for compact copies
+    storage_bytes_saved: int = 0
+
     model_config = ConfigDict(frozen=True)
+
+
+class StorageCompactionReport(BaseModel):
+    """What `OnyxEngine.compact_storage` freed (or, as a dry run, would free) across the indexed recordings."""
+    dry_run: bool = False
+    sources_checked: int = 0
+    clip_bytes: int = 0
+    audio_bytes: int = 0
+    originals_replaced: int = 0
+    original_bytes_saved: int = 0
+    # Dry run only: originals that would be re-encoded, and their current size (the saving is known only after)
+    originals_to_compact: int = 0
+    original_bytes_to_compact: int = 0
+    errors: Dict[str, str] = Field(default_factory=dict)
+
+    model_config = ConfigDict(frozen=True)
+
+    @property
+    def bytes_saved(self) -> int:
+        return self.clip_bytes + self.audio_bytes + self.original_bytes_saved

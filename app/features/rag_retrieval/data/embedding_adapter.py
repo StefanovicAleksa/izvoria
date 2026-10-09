@@ -4,6 +4,7 @@
 import os
 import gc
 import logging
+import threading
 from typing import List, Any
 import torch
 
@@ -15,6 +16,12 @@ from app.features.rag_retrieval.utils.error_mapper import map_retrieval_error
 logger = logging.getLogger(__name__)
 
 class HuggingFacePromptAdapter(IPromptEmbeddingAdapter):
+
+    def __init__(self):
+        # One encode at a time. The model is shared by every request once it is resident, and the HF fast
+        # tokenizer it calls is not thread-safe ("Already borrowed"); an encode takes milliseconds, so concurrent
+        # requests (the hosted API) lose nothing by queueing here. Uncontended on the single-user appliance.
+        self._inference_lock = threading.Lock()
 
     @staticmethod
     def _get_embedding_model(model_path: str) -> Any:
@@ -77,11 +84,12 @@ class HuggingFacePromptAdapter(IPromptEmbeddingAdapter):
 
         try:
             embedder: Any = model.model_instance
-            embeddings = embedder.encode(
-                list(texts),
-                show_progress_bar=False,
-                normalize_embeddings=True
-            )
+            with self._inference_lock:
+                embeddings = embedder.encode(
+                    list(texts),
+                    show_progress_bar=False,
+                    normalize_embeddings=True
+                )
             return [vector.tolist() for vector in embeddings]
         except Exception as e:
             raise map_retrieval_error(e, context="Executing batched prompt vectorization") from e
@@ -96,11 +104,12 @@ class HuggingFacePromptAdapter(IPromptEmbeddingAdapter):
         try:
             embedder: Any = model.model_instance
             # Encode a single string, returning a flat list of floats
-            embedding = embedder.encode(
-                text,
-                show_progress_bar=False,
-                normalize_embeddings=True
-            )
+            with self._inference_lock:
+                embedding = embedder.encode(
+                    text,
+                    show_progress_bar=False,
+                    normalize_embeddings=True
+                )
             return embedding.tolist()
         except Exception as e:
             raise map_retrieval_error(e, context="Executing prompt vectorization") from e

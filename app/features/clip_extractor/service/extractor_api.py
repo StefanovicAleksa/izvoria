@@ -111,6 +111,20 @@ class ClipExtractorAPI:
             self._discard_vaulted_clips(new_video_clips)
             raise map_clip_extractor_error(e, context=f"ClipExtractorAPI for Source {source_id}") from e
 
+    def discard_clips(self, source_id: uuid.UUID, dry_run: bool = False) -> int:
+        """
+        Deletes every clip of a source, returning the bytes freed. A citation of one of its chunks then points at
+        the original recording (with its start and end) instead of a clip.
+        """
+        freed = 0
+        for clip in self._repo.get_by_source_id(source_id):
+            record = self._storage.get_file(clip.extracted_file_id)
+            freed += record.file_size_bytes if record else 0
+            if not dry_run:
+                # Deleting the file record cascades the video_clips row away
+                self._storage.delete_raw_file(clip.extracted_file_id)
+        return freed
+
     def _discard_vaulted_clips(self, clips: List[VideoClip]) -> None:
         for clip in clips:
             try:

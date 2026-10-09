@@ -175,3 +175,70 @@ class TestImageSource:
         panel.show_evidence(make_evidence(tmp_path, media_kind=MediaKind.CLIP))
 
         assert panel._thumbnail.isVisible() is False
+
+
+class TestHostedBox:
+    """
+    On the hosted demo box the agent launches the app with the offer variables set, and a source goes to the
+    tester's browser instead of a player on the box's desktop, which they could only watch without sound.
+    """
+
+    @pytest.fixture
+    def hosted(self, monkeypatch):
+        monkeypatch.setenv("ONYX_SOURCE_OFFER_URL", "http://127.0.0.1:8090/offers")
+        monkeypatch.setenv("ONYX_SOURCE_OFFER_TOKEN", "tok")
+
+    def test_opening_sends_the_source_to_the_browser_not_the_desktop(self, panel, tmp_path, hosted):
+        evidence = make_evidence(tmp_path, media_kind=MediaKind.FULL_SOURCE)
+        panel.show_evidence(evidence)
+
+        with patch("onyx_desktop.ui.system_open.QDesktopServices.openUrl") as opened, \
+                patch("onyx_desktop.ui.system_open.SourceOfferClient.offer", return_value=None) as offered:
+            panel._on_open()
+
+        opened.assert_not_called()
+        offered.assert_called_once_with(evidence)
+        assert panel._sent.isVisible() is True
+        assert panel._problem.isVisible() is False
+
+    def test_a_failed_offer_is_reported(self, panel, tmp_path, hosted):
+        panel.show_evidence(make_evidence(tmp_path))
+        failures = []
+        panel.openFailed.connect(failures.append)
+
+        with patch("onyx_desktop.ui.system_open.SourceOfferClient.offer",
+                   return_value="the appliance's file service isn't answering"):
+            panel._on_open()
+
+        assert failures == ["the appliance's file service isn't answering"]
+        assert panel._sent.isVisible() is False
+
+    def test_a_missing_file_is_still_caught_before_anything_is_sent(self, panel, tmp_path, hosted):
+        panel.show_evidence(make_evidence(tmp_path, exists=False))
+        with patch("onyx_desktop.ui.system_open.SourceOfferClient.offer") as offered:
+            panel._on_open()
+        offered.assert_not_called()
+        assert panel._problem.isVisible() is True
+
+    def test_a_whole_recording_says_the_browser_starts_at_the_passage(self, panel, tmp_path, hosted):
+        panel.show_evidence(make_evidence(tmp_path, media_kind=MediaKind.FULL_SOURCE))
+        assert "in your browser" in panel._kind_note.text()
+        assert "33:21–34:53" in panel._kind_note.text()
+
+    def test_the_sent_note_clears_for_the_next_citation(self, panel, tmp_path, hosted):
+        panel.show_evidence(make_evidence(tmp_path))
+        with patch("onyx_desktop.ui.system_open.SourceOfferClient.offer", return_value=None):
+            panel._on_open()
+        panel.show_evidence(make_evidence(tmp_path))
+        assert panel._sent.isVisible() is False
+
+    def test_on_premise_nothing_is_sent(self, panel, tmp_path, monkeypatch):
+        monkeypatch.delenv("ONYX_SOURCE_OFFER_URL", raising=False)
+        monkeypatch.delenv("ONYX_SOURCE_OFFER_TOKEN", raising=False)
+        panel.show_evidence(make_evidence(tmp_path))
+        with patch("onyx_desktop.ui.system_open.QDesktopServices.openUrl", return_value=True) as opened, \
+                patch("onyx_desktop.ui.system_open.SourceOfferClient.offer") as offered:
+            panel._on_open()
+        opened.assert_called_once()
+        offered.assert_not_called()
+        assert panel._sent.isVisible() is False

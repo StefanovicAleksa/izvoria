@@ -212,8 +212,10 @@ def print_research_plan(proposal):
     """The outline the user is being asked to approve, with what it will cost."""
     plan = proposal.plan
     print("\n" + "=" * 78)
-    print(f"PROPOSED RESEARCH PLAN — {plan.topic}")
+    print(f"PROPOSED RESEARCH PLAN — {plan.display_title}")
     print("=" * 78)
+    if plan.title:
+        print(f"\nRequest: {plan.topic}")
     if plan.scope_note:
         print(f"\nScope: {plan.scope_note}")
     print(f"\nCorpus: {proposal.corpus.indexed_source_count} indexed recording(s), "
@@ -328,7 +330,7 @@ def run_research_report(engine, session_id):
         return
 
     print("\n" + "=" * 78)
-    print(f"REPORT COMPLETE — {report.topic}")
+    print(f"REPORT COMPLETE — {report.display_title}")
     print("=" * 78)
     print(f"  Sections written : {len(report.written_sections)}")
     print(f"  Not covered      : {len(report.uncovered_sections)}")

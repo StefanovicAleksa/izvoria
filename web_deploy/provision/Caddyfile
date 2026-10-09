@@ -1,0 +1,20 @@
+# /etc/caddy/Caddyfile on the gateway VPS. install_gateway.sh replaces onyx.example.com with your domain.
+#
+# DNS: one A record for onyx.example.com pointing at the VPS. Every firm signs in at this one address (the owner's
+# console too, as the firm "admin"); Caddy gets and renews its certificate automatically.
+onyx.example.com {
+	# Never compress cited sources or event streams: gzip breaks Range requests and buffers SSE
+	@compressible not path /api/sources/* /api/runs/*
+	encode @compressible gzip
+	reverse_proxy 127.0.0.1:8000 {
+		# Uploads are multi-gigabyte videos and a report's event stream stays open for tens of minutes
+		flush_interval -1
+		transport http {
+			read_timeout 0
+			write_timeout 0
+		}
+	}
+	request_body {
+		max_size 20GB
+	}
+}

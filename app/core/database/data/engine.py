@@ -1,3 +1,5 @@
+from typing import Optional
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from app.core.config import settings
@@ -8,7 +10,16 @@ class Base(DeclarativeBase):
     pass
 
 class SQLAlchemyEngine:
-    def __init__(self):
+    """
+    One connection pool. Without arguments it is the appliance's own database (settings.DATABASE_URL); the hosted
+    API passes a firm's database URL and a smaller pool, since it keeps one engine per firm.
+    """
+
+    def __init__(self, url: Optional[str] = None, pool_size: Optional[int] = None,
+                 max_overflow: Optional[int] = None):
+        self._url = url
+        self._pool_size = pool_size
+        self._max_overflow = max_overflow
         self._engine = None
         self._session_maker = None
         self._initialize()
@@ -16,11 +27,11 @@ class SQLAlchemyEngine:
     def _initialize(self):
         try:
             self._engine = create_engine(
-                settings.DATABASE_URL,
+                self._url or settings.DATABASE_URL,
                 # POOLING CONFIGURATION
                 pool_pre_ping=True,              # Auto-detect disconnects
-                pool_size=settings.DB_POOL_SIZE, # Keep 20 connections open
-                max_overflow=settings.DB_MAX_OVERFLOW # Allow 10 more if busy
+                pool_size=self._pool_size if self._pool_size is not None else settings.DB_POOL_SIZE,
+                max_overflow=self._max_overflow if self._max_overflow is not None else settings.DB_MAX_OVERFLOW
             )
             self._session_maker = sessionmaker(
                 bind=self._engine,

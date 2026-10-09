@@ -19,6 +19,7 @@ from app.core.model_manager.domain.entities import ModelManifest
 from app.core.model_manager.service.async_model_service import AsyncModelService
 from app.core.model_manager.utils.background_worker import BackgroundModelWorker
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
+from app.core.model_manager.domain.enums import ModelType
 from app.features.deep_research_report.data.postgres_report_repo import PostgresReportRepository
 from app.features.deep_research_report.data.report_file_store import ReportFileStore
 from app.features.deep_research_report.data.report_llm_adapter import LlamaCppReportAdapter
@@ -191,8 +192,13 @@ class TestDeepResearchReportPipelineIntegration:
     """
 
     @pytest.fixture
-    def harness(self, db_manager, reports_dir):
-        orchestrator = ModelManagerOrchestrator(PyTorchVramMonitor())
+    def keep_warm(self):
+        """The single-slot pool; a test parametrizes this to run the same harness with models kept warm."""
+        return None
+
+    @pytest.fixture
+    def harness(self, db_manager, reports_dir, keep_warm):
+        orchestrator = ModelManagerOrchestrator(PyTorchVramMonitor(), keep_warm_types=keep_warm)
         async_service = AsyncModelService(BackgroundModelWorker(orchestrator))
         job_manager = JobManager(JobRepository(db_manager))
 
@@ -293,6 +299,26 @@ class TestDeepResearchReportPipelineIntegration:
             f"outline optimisation, every section AND the executive summary"
         )
         assert report_loader.unload_count == report_loader.load_count, "a model was left resident"
+
+    @pytest.mark.parametrize("keep_warm", [[ModelType.RAG_EMBEDDING, ModelType.RAG_RERANKING,
+                                            ModelType.REPORT_AUTHORING]])
+    def test_kept_warm_the_report_model_is_loaded_once_for_plan_and_write(
+            self, harness, seeded_corpus, small_run, reports_dir
+    ):
+        """
+        With the bootstrapper's warm pool, scoping leaves the model resident beside the embedder and reranker, so
+        the whole plan -> write run loads the 5.7 GB file once. More than one means something evicted it.
+        """
+        pipeline, report_loader, _ = harness
+
+        proposal = pipeline.propose_plan("chain of custody for the evidence bag")
+        pipeline.execute_report(proposal.id, proposal.plan)
+
+        assert report_loader.load_count == 1, (
+            f"the report model was loaded {report_loader.load_count} times; kept warm, scoping's load must "
+            f"carry through outline optimisation, every section and the summary"
+        )
+        assert report_loader.unload_count == 0, "a warm model was unloaded mid-run"
 
     def test_a_long_mixed_workload_does_not_leak_the_torchcodec_guard(
             self, harness, seeded_corpus, small_run, reports_dir

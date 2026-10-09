@@ -2,21 +2,28 @@
 # Path: app/engine/service/bootstrap.py
 
 import logging
+import os
 import typing
-from typing import Callable, Optional
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, List, Optional
 
 from app.core.config import settings
 from app.core.language.service.language_api import get_language_pack
+from app.core.database.domain.interfaces import IDatabaseManager
 from app.core.database.service.manager import db_manager
 from app.core.jobs.data.repositories import JobRepository
 from app.core.jobs.service.manager import JobManager
+from app.core.model_manager.data.headroom_vram_monitor import HeadroomVramMonitor
 from app.core.model_manager.data.vram_monitor import PyTorchVramMonitor
+from app.core.model_manager.domain.interfaces import IVramMonitor
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.utils.background_worker import BackgroundModelWorker
 from app.core.model_manager.service.async_model_service import AsyncModelService
 from app.core.model_manager.domain.entities import ModelManifest
 from app.core.model_manager.domain.enums import ModelType
 
+from app.features.storage.data.file_manager import FileManager
 from app.features.storage.data.repositories import StorageRepository
 from app.features.storage.service.storage_api import StorageAPI
 from app.features.scanner.service.scanner import FileScanner
@@ -98,6 +105,9 @@ from app.features.clip_extractor.data.ffmpeg_video_adapter import FFmpegVideoAda
 from app.features.clip_extractor.data.repositories import VideoClipRepository
 from app.features.clip_extractor.service.extractor_api import ClipExtractorAPI
 
+from app.features.media_compaction.data.ffmpeg_transcoder import FFmpegTranscoder
+from app.features.media_compaction.service.compaction_api import CompactionAPI
+
 from app.features.rag_storage.data.postgres_rag_repo import PostgresRagRepository
 from app.features.rag_storage.data.hf_embedder import HuggingFaceEmbeddingAdapter
 from app.features.rag_storage.service.storage_api import RAGStorageService
@@ -147,6 +157,7 @@ from app.orchestration.service.phases.visual_hallucination_correction_phase impo
 from app.orchestration.service.phases.visual_context_synthesis_phase import VisualContextSynthesisPhase
 from app.orchestration.service.phases.context_unification_phase import ContextUnificationPhase
 from app.orchestration.service.phases.clip_extraction_phase import ClipExtractionPhase
+from app.orchestration.service.phases.storage_compaction_phase import StorageCompactionPhase
 from app.orchestration.service.phases.rag_indexing_phase import RagIndexingPhase
 from app.orchestration.service.phases.rag_retrieval_phase import RagRetrievalPhase
 from app.orchestration.service.phases.rag_reranking_phase import RagRerankingPhase
@@ -171,6 +182,66 @@ from app.engine.domain.interfaces import IOnyxEngine
 from app.engine.service.onyx_engine import OnyxEngine
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class ModelKit:
+    """
+    Everything that holds or reaches a GPU model: one orchestrator per process and the live path's adapters.
+
+    The appliance builds one per engine. The hosted API builds ONE and hands it to every firm's engine, so all
+    firms share the same resident models (and the same llama-server) while each keeps its own database.
+    """
+    orchestrator: ModelManagerOrchestrator
+    worker: BackgroundModelWorker
+    async_service: AsyncModelService
+    prompt_adapter: HuggingFacePromptAdapter
+    reranker_adapter: CrossEncoderRerankerAdapter
+    scrubber_adapter: QwenRetrievalScrubberAdapter
+    qa_adapter: LlamaCppGenerationAdapter
+    reasoner_adapter: QwenReasonerAdapter
+    report_adapter: LlamaCppReportAdapter
+    hf_embedder: HuggingFaceEmbeddingAdapter
+
+    def warm_up(self) -> List[ModelType]:
+        """
+        Loads every pinned model and connects every external one now, so no request ever waits on a load and a
+        missing weights file or a llama-server that is down fails at startup rather than on someone's question.
+        Returns the types made resident.
+        """
+        pinned = {ModelType(t) for t in settings.MODEL_PINNED_TYPES}
+        external = {ModelType(t) for t in settings.MODEL_EXTERNAL_TYPES}
+        roles = [
+            (ModelType.RAG_EMBEDDING, settings.RAG_EMBEDDING_MODEL_PATH,
+             settings.RAG_EMBEDDING_VRAM_REQUIREMENT_MB, self.prompt_adapter),
+            (ModelType.RAG_RERANKING, settings.RAG_RERANKER_MODEL_PATH,
+             settings.RAG_RERANKER_VRAM_REQUIREMENT_MB, self.reranker_adapter),
+            (ModelType.QA_GENERATION, settings.QA_GENERATION_MODEL_PATH,
+             settings.QA_GENERATION_VRAM_REQUIREMENT_MB, self.qa_adapter),
+            (ModelType.QA_REASONER, settings.QA_REASONER_MODEL_PATH,
+             settings.QA_REASONER_VRAM_REQUIREMENT_MB, self.reasoner_adapter),
+            (ModelType.REPORT_AUTHORING, settings.REPORT_AUTHORING_MODEL_PATH,
+             settings.REPORT_AUTHORING_VRAM_REQUIREMENT_MB, self.report_adapter),
+            (ModelType.RETRIEVAL_SCRUBBER, settings.RETRIEVAL_SCRUBBER_MODEL_PATH,
+             settings.RETRIEVAL_SCRUBBER_VRAM_REQUIREMENT_MB, self.scrubber_adapter),
+        ]
+        warmed = []
+        for model_type, path, vram_mb, loader in roles:
+            if model_type not in pinned and model_type not in external:
+                continue
+            if model_type is ModelType.RAG_RERANKING and not os.path.exists(path):
+                # The reranker is optional everywhere: without weights, search keeps RRF order
+                logger.warning(f"No reranker weights at {path}; search keeps RRF order.")
+                continue
+            manifest = ModelManifest(model_type=model_type, model_path=path, required_vram_mb=vram_mb)
+            self.orchestrator.warm_up(manifest, loader)
+            warmed.append(model_type)
+        return warmed
+
+    def shutdown(self) -> None:
+        """Frees every model, pinned ones included. Only when the process that owns the kit exits."""
+        self.async_service.shutdown()
+        self.orchestrator.shutdown_all({})
 
 
 class OnyxBootstrapper:
@@ -206,49 +277,89 @@ class OnyxBootstrapper:
         return rebuilt
 
     @classmethod
-    def build(cls, progress_listener: Optional[Callable] = None) -> IOnyxEngine:
+    def build_model_kit(cls) -> ModelKit:
+        """
+        The process's one orchestrator and the live models' adapters. Pinned, external and strict residency come
+        from settings: all empty/off on the appliance, so this is the keep-warm pool exactly as before.
+        """
+        vram_monitor: IVramMonitor = PyTorchVramMonitor()
+        if settings.VRAM_HEADROOM_MB > 0:
+            vram_monitor = HeadroomVramMonitor(vram_monitor, settings.VRAM_HEADROOM_MB)
+        keep_warm = [ModelType(t) for t in settings.MODEL_KEEP_WARM_TYPES] if settings.MODEL_KEEP_WARM else []
+        orchestrator = ModelManagerOrchestrator(
+            vram_monitor,
+            keep_warm_types=keep_warm,
+            pinned_types=[ModelType(t) for t in settings.MODEL_PINNED_TYPES],
+            external_types=[ModelType(t) for t in settings.MODEL_EXTERNAL_TYPES],
+            strict_resident=settings.ENGINE_CONCURRENT_LIVE,
+        )
+        worker = BackgroundModelWorker(orchestrator)
+        return ModelKit(
+            orchestrator=orchestrator,
+            worker=worker,
+            async_service=AsyncModelService(worker),
+            prompt_adapter=HuggingFacePromptAdapter(),
+            reranker_adapter=CrossEncoderRerankerAdapter(),
+            scrubber_adapter=QwenRetrievalScrubberAdapter(),
+            qa_adapter=LlamaCppGenerationAdapter(),
+            reasoner_adapter=QwenReasonerAdapter(),
+            report_adapter=LlamaCppReportAdapter(),
+            hf_embedder=HuggingFaceEmbeddingAdapter(),
+        )
+
+    @classmethod
+    def build(cls, progress_listener: Optional[Callable] = None, *,
+              database: Optional[IDatabaseManager] = None,
+              vault_dir: Optional[Path] = None,
+              reports_dir: Optional[Path] = None,
+              kit: Optional[ModelKit] = None) -> IOnyxEngine:
         """
         `progress_listener(phase, state, source_id, detail)` is handed to the JobManager, which
         every Phase routes its per-file work through. A long-running caller (the desktop app)
         uses it to show batch ingestion progress, since the pipelines report nothing until they
         return. None keeps the CLI's behaviour exactly as it was.
+
+        Without the keyword arguments this is the appliance's engine, exactly as before. The hosted API builds
+        one engine per firm: the firm's `database`, `vault_dir` and `reports_dir`, and the process's shared `kit`,
+        whose models outlive any one firm's engine.
         """
         logger.info("Initializing dependency injection container...")
+        db = database or db_manager
+        owns_model_service = kit is None
+        kit = kit or cls.build_model_kit()
 
         # --- Core Infrastructure ---
-        job_repo = JobRepository(db_manager)
+        job_repo = JobRepository(db)
         job_manager = JobManager(job_repo, progress_listener=progress_listener)
 
-        vram_monitor = PyTorchVramMonitor()
-        orchestrator = ModelManagerOrchestrator(vram_monitor)
-        bg_worker = BackgroundModelWorker(orchestrator)
-        async_service = AsyncModelService(bg_worker)
+        orchestrator = kit.orchestrator
+        async_service = kit.async_service
 
         # --- Features: Storage & I/O ---
-        storage_repo = StorageRepository(db_manager)
-        storage_api = StorageAPI(storage_repo)
+        storage_repo = StorageRepository(db)
+        storage_api = StorageAPI(storage_repo, file_manager=FileManager(vault_dir) if vault_dir else None)
         scanner = FileScanner()
 
         # --- Features: Pre-Processing ---
-        audio_repo = AudioExtractionRepository(db_manager)
+        audio_repo = AudioExtractionRepository(db)
         ffmpeg_audio_adapter = AudioFFmpegAdapter(timeout_seconds=300)
         audio_extractor = AudioExtractorAPI(ffmpeg_adapter=ffmpeg_audio_adapter, repository=audio_repo,
                                             storage_api=storage_api)
 
         # --- Features: Audio Intelligence ---
-        vad_repo = VadRepository(db_manager)
+        vad_repo = VadRepository(db)
         real_vad_adapter = NeMoVadAdapter()
         vad_api = VadAPI(vad_repo, orchestrator, real_vad_adapter)
         vad_manifest = ModelManifest(model_type=ModelType.VAD, model_path=settings.VAD_MODEL_PATH,
                                      required_vram_mb=settings.VAD_VRAM_REQUIREMENT_MB)
 
-        domain_repo = DomainAdaptationRepository(db_manager)
+        domain_repo = DomainAdaptationRepository(db)
         domain_adaptation_api = DomainAdaptationAPI(
             repository=domain_repo, orchestrator=orchestrator,
             scout_adapter=ScoutWhisperAdapter(), llama_adapter=LlamaAdapter(), smart_sampler=SmartSampler()
         )
 
-        transcript_repo = TranscriptRepository(db_manager)
+        transcript_repo = TranscriptRepository(db)
         real_transcribe_adapter = FasterWhisperAdapter()
         transcription_api = TranscriptionAPI(transcript_repo, vad_repo, orchestrator, real_transcribe_adapter)
         transcribe_manifest = ModelManifest(model_type=ModelType.TRANSCRIPTION, model_path=settings.WHISPER_MODEL_PATH,
@@ -256,14 +367,14 @@ class OnyxBootstrapper:
 
         correction_api = CorrectionAPI(transcript_repository=transcript_repo, vad_repository=vad_repo)
 
-        diarize_repo = DiarizationRepository(db_manager)
+        diarize_repo = DiarizationRepository(db)
         real_diarize_adapter = NeMoDiarizationAdapter()
         diarization_api = DiarizationAPI(diarize_repo, vad_repo, transcription_api, storage_api, orchestrator,
                                          real_diarize_adapter)
         diarize_manifest = ModelManifest(model_type=ModelType.DIARIZATION, model_path=settings.DIARIZATION_MODEL_PATH,
                                          required_vram_mb=settings.DIARIZATION_VRAM_REQUIREMENT_MB)
 
-        sentence_repo = PostgresSentenceRepository(db_manager)
+        sentence_repo = PostgresSentenceRepository(db)
         # The fullstop classifier only knows en/de/fr/it; other languages keep the punctuation Whisper wrote
         real_punctuation_adapter = (
             PunctuationAdapter() if get_language_pack().punctuation.source == "model" else WhisperPunctuationAdapter()
@@ -274,7 +385,7 @@ class OnyxBootstrapper:
                                              required_vram_mb=getattr(settings, "PUNCTUATION_VRAM_REQUIREMENT_MB",
                                                                       500.0))
 
-        phonetic_repo = DomainPhoneticRepository(db_manager)
+        phonetic_repo = DomainPhoneticRepository(db)
         real_phonetic_adapter = QwenDomainAdapter()
         phonetic_correction_api = DomainPhoneticCorrectionAPI(repository=phonetic_repo, orchestrator=orchestrator,
                                                               patch_adapter=real_phonetic_adapter)
@@ -282,7 +393,7 @@ class OnyxBootstrapper:
                                           model_path=settings.DOMAIN_PHONETIC_CORRECTION_MODEL_PATH,
                                           required_vram_mb=settings.DOMAIN_PHONETIC_CORRECTION_VRAM_REQUIREMENT_MB)
 
-        contextual_repo = ContextualRepository(db_manager)
+        contextual_repo = ContextualRepository(db)
         real_slm_adapter = SLMContextAdapter()
         contextualizer_api = ContextualizerAPI(repository=contextual_repo, orchestrator=orchestrator,
                                                slm_adapter=real_slm_adapter)
@@ -293,7 +404,7 @@ class OnyxBootstrapper:
         ocr_rec_model = get_language_pack().documents.ocr_rec_model
         ocr_engine = (RapidOcrEngine(str(settings.BASE_DIR / settings.DOC_OCR_MODEL_DIR), ocr_rec_model)
                       if ocr_rec_model else None)
-        converted_document_repo = ConvertedDocumentRepository(db_manager)
+        converted_document_repo = ConvertedDocumentRepository(db)
         conversion_api = DocumentConversionAPI(
             repository=converted_document_repo, storage_api=storage_api, pdf_reader=PdfiumReader(),
             markdown_converter=MarkItDownConverter(), ocr_engine=ocr_engine,
@@ -307,7 +418,7 @@ class OnyxBootstrapper:
         visual_cue_api = VisualCueDetectionAPI(orchestrator=orchestrator, adapter=cue_detector_adapter,
                                                repository=contextual_repo)
 
-        frame_repo = FrameExtractionRepository(db_manager)
+        frame_repo = FrameExtractionRepository(db)
         ffmpeg_ext_adapter = FrameFFmpegAdapter()
         # noinspection PyTypeChecker
         frame_extraction_api = FrameExtractionAPI(
@@ -315,19 +426,19 @@ class OnyxBootstrapper:
             storage_api=storage_api, quality_filter=QualityFilter(), deduplicator=FrameDeduplicator()
         )
 
-        visual_analysis_repo = VisualAnalysisRepository(db_manager)
+        visual_analysis_repo = VisualAnalysisRepository(db)
         vlm_adapter = QwenVLMAdapter()
         visual_analysis_api = VisualAnalysisAPI(repository=visual_analysis_repo, vlm_adapter=vlm_adapter,
                                                 storage_api=storage_api)
 
-        visual_hallucination_repo = VisualHallucinationRepository(db_manager)
+        visual_hallucination_repo = VisualHallucinationRepository(db)
         visual_hallucination_adapter = QwenHallucinationAdapter()
         visual_hallucination_api = VisualHallucinationCorrectionAPI(
             repository=visual_hallucination_repo, adapter=visual_hallucination_adapter,
             contextual_repo=contextual_repo, visual_analysis_repo=visual_analysis_repo, orchestrator=orchestrator
         )
 
-        visual_synthesis_repo = VisualSynthesisRepository(db_manager)
+        visual_synthesis_repo = VisualSynthesisRepository(db)
         visual_synthesis_adapter = VisualSLMAdapter()
         visual_synthesis_api = VisualSynthesisAPI(
             repository=visual_synthesis_repo, orchestrator=orchestrator,
@@ -336,38 +447,40 @@ class OnyxBootstrapper:
         )
 
         # --- Features: Unification & Delivery ---
-        context_unification_repo = ContextUnificationRepository(db_manager)
+        context_unification_repo = ContextUnificationRepository(db)
         unification_api = UnificationAPI(repository=context_unification_repo)
 
-        clip_repo = VideoClipRepository(db_manager)
+        clip_repo = VideoClipRepository(db)
         ffmpeg_video_adapter = ClipFFmpegAdapter(timeout_seconds=60)
         clip_extractor_api = ClipExtractorAPI(ffmpeg_adapter=ffmpeg_video_adapter, repository=clip_repo,
                                               storage_api=storage_api)
+        compaction_api = CompactionAPI(transcoder=FFmpegTranscoder(), storage_api=storage_api)
 
-        rag_repo = PostgresRagRepository()
-        hf_embedder = HuggingFaceEmbeddingAdapter()
+        rag_repo = PostgresRagRepository(db)
+        hf_embedder = kit.hf_embedder
         rag_storage_service = RAGStorageService(rag_repo=rag_repo, orchestrator=orchestrator, embedder=hf_embedder)
 
         # --- Feature: Live Inference (RAG & Scrubber & QA Generation) ---
-        search_repo = PostgresSearchRepository()
-        prompt_adapter = HuggingFacePromptAdapter()
+        search_repo = PostgresSearchRepository(db)
+        prompt_adapter = kit.prompt_adapter
         retrieval_api = RetrievalAPI(orchestrator=orchestrator, embedding_adapter=prompt_adapter,
                                      search_repo=search_repo)
 
-        reranker_adapter = CrossEncoderRerankerAdapter()
+        reranker_adapter = kit.reranker_adapter
         rerank_api = RerankAPI(orchestrator=orchestrator, adapter=reranker_adapter)
 
-        scrubber_adapter = QwenRetrievalScrubberAdapter()
+        scrubber_adapter = kit.scrubber_adapter
         scrubber_api = RetrievalScrubberAPI(adapter=scrubber_adapter, orchestrator=orchestrator)
 
-        qa_adapter = LlamaCppGenerationAdapter()
+        qa_adapter = kit.qa_adapter
         qa_api = QAGenerationAPI(adapter=qa_adapter, orchestrator=orchestrator)
 
         # --- Feature: Reasoned Answer (Reasoner + Session Memory) ---
-        reasoner_adapter = QwenReasonerAdapter()
-        reasoning_api = ReasoningAPI(adapter=reasoner_adapter, orchestrator=orchestrator)
+        reasoner_adapter = kit.reasoner_adapter
+        reasoning_api = ReasoningAPI(adapter=reasoner_adapter, orchestrator=orchestrator,
+                                     rewrite_manifest=qa_api.manifest, rewrite_loader=qa_adapter)
 
-        session_memory_repo = SessionMemoryRepository(db_manager)
+        session_memory_repo = SessionMemoryRepository(db)
         session_memory_api = SessionMemoryAPI(session_memory_repo)
 
         # --- Feature: Deep Research Report ---
@@ -375,9 +488,9 @@ class OnyxBootstrapper:
         # That is what lets outline optimisation and every section write share a single residency of the
         # ~5.7 GB GGUF instead of reloading it between the planner and the writer roles. Constructing a
         # second adapter here would silently multiply a run's model-loading time.
-        report_adapter = LlamaCppReportAdapter()
-        report_repo = PostgresReportRepository(db_manager)
-        report_file_store = ReportFileStore()
+        report_adapter = kit.report_adapter
+        report_repo = PostgresReportRepository(db)
+        report_file_store = ReportFileStore(base_dir=reports_dir)
         report_api = ReportAuthoringAPI(
             adapter=report_adapter,
             orchestrator=orchestrator,
@@ -429,6 +542,8 @@ class OnyxBootstrapper:
                                                             visual_synthesis_repo=visual_synthesis_repo)
         clip_extraction_phase = ClipExtractionPhase(job_manager=job_manager, extractor_api=clip_extractor_api,
                                                     unified_repo=context_unification_repo)
+        storage_compaction_phase = StorageCompactionPhase(job_manager=job_manager, audio_extractor_api=audio_extractor,
+                                                          compaction_api=compaction_api)
         rag_indexing_phase = RagIndexingPhase(job_manager=job_manager, rag_storage_service=rag_storage_service,
                                               unified_repo=context_unification_repo, async_model_service=async_service,
                                               loader=hf_embedder)
@@ -454,7 +569,7 @@ class OnyxBootstrapper:
             visual_hallucination_correction_phase=visual_hallucination_correction_phase,
             visual_context_synthesis_phase=visual_context_synthesis_phase,
             context_unification_phase=context_unification_phase, clip_extraction_phase=clip_extraction_phase,
-            rag_indexing_phase=rag_indexing_phase
+            rag_indexing_phase=rag_indexing_phase, storage_compaction_phase=storage_compaction_phase
         )
 
         document_conversion_phase = DocumentConversionPhase(job_manager=job_manager, conversion_api=conversion_api)
@@ -471,7 +586,7 @@ class OnyxBootstrapper:
         # --- Images: the same VLM adapter instance as visual analysis (one loader per model), and the document
         # feature's OCR to check the text the VLM reads ---
         image_description_api = ImageDescriptionAPI(
-            repository=ImageDescriptionRepository(db_manager), storage_api=storage_api,
+            repository=ImageDescriptionRepository(db), storage_api=storage_api,
             visual_api=visual_analysis_api, conversion_api=conversion_api
         )
         image_description_phase = ImageDescriptionPhase(
@@ -490,7 +605,7 @@ class OnyxBootstrapper:
             hallucination_correction_phase=hallucination_correction_phase, diarize_phase=diarize_phase,
             sentence_reconstruction_phase=sentence_phase, domain_phonetic_correction_phase=domain_phonetic_phase,
             contextual_retrieval_phase=contextual_phase, context_unification_phase=context_unification_phase,
-            rag_indexing_phase=rag_indexing_phase
+            rag_indexing_phase=rag_indexing_phase, storage_compaction_phase=storage_compaction_phase
         )
 
         live_pipeline = LiveRetrievalPipeline(retrieval_phase=rag_retrieval_phase, reranking_phase=rag_reranking_phase)
@@ -538,7 +653,11 @@ class OnyxBootstrapper:
             report_api=report_api,
             document_pipeline=document_pipeline,
             image_pipeline=image_pipeline,
-            search_history_api=SearchHistoryAPI(SearchHistoryRepository(db_manager)),
+            search_history_api=SearchHistoryAPI(SearchHistoryRepository(db)),
+            database=db,
+            owns_model_service=owns_model_service,
+            clip_extractor_api=clip_extractor_api,
+            storage_compaction_phase=storage_compaction_phase,
         )
 
         logger.info("Onyx Bootstrapper successfully constructed the Engine container.")

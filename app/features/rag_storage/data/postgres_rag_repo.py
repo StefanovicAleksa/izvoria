@@ -2,11 +2,12 @@
 # Path: app/features/rag_storage/data/postgres_rag_repo.py
 
 import logging
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 from sqlalchemy import delete
 
 from app.core.config import settings
+from app.core.database.domain.interfaces import IDatabaseManager
 from app.core.database.service.manager import db_manager
 from app.features.rag_storage.domain.interfaces import IRagRepository
 from app.features.context_unification.domain.entities import UnifiedChunk
@@ -22,6 +23,14 @@ class PostgresRagRepository(IRagRepository):
     Leverages PostgreSQL for both pgvector (Dense) and TSVECTOR FTS (Sparse) indexing.
     """
 
+    def __init__(self, database: Optional[IDatabaseManager] = None):
+        """`database` is a firm's database on the hosted API; without it, the appliance's own (`db_manager`)."""
+        self._database = database
+
+    @property
+    def _db(self) -> IDatabaseManager:
+        return self._database or db_manager
+
     def replace_rag_chunks(
             self,
             source_id: UUID,
@@ -33,7 +42,7 @@ class PostgresRagRepository(IRagRepository):
 
         try:
             # One session == one transaction: the delete only commits if the insert succeeds.
-            with db_manager.session() as session:
+            with self._db.session() as session:
                 deleted = session.execute(delete(VectorChunkModel).where(VectorChunkModel.source_id == source_id))
                 if deleted.rowcount:
                     logger.info(f"Replacing {deleted.rowcount} existing RAG chunks for source {source_id}.")
@@ -76,7 +85,7 @@ class PostgresRagRepository(IRagRepository):
 
     def delete_by_source_id(self, source_id: UUID) -> None:
         try:
-            with db_manager.session() as session:
+            with self._db.session() as session:
                 # This single delete now removes the vectors AND the full-text search index
                 stmt = delete(VectorChunkModel).where(VectorChunkModel.source_id == source_id)
                 result = session.execute(stmt)

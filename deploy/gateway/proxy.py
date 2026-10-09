@@ -7,10 +7,10 @@ authenticates by it, so the GPU box's public port is useless without it.
 
 import asyncio
 import logging
-from typing import Optional
+from typing import Callable, ContextManager, Optional
 
 import httpx
-from starlette.responses import Response
+from starlette.responses import Response, StreamingResponse
 from starlette.websockets import WebSocket, WebSocketDisconnect
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
@@ -19,6 +19,30 @@ logger = logging.getLogger(__name__)
 
 _HOP_HEADERS = {"connection", "keep-alive", "transfer-encoding", "te", "trailer", "upgrade",
                 "proxy-authorization", "proxy-authenticate", "content-encoding", "content-length"}
+
+
+# What a cited file's response may carry to the browser. Anything else the agent sends stays on the VPS.
+_SOURCE_HEADERS = ("content-type", "content-length", "content-range", "accept-ranges", "content-disposition",
+                   "content-security-policy", "x-content-type-options", "cache-control")
+
+
+def stream_source(upstream: httpx.Response, around: Callable[[], ContextManager]) -> StreamingResponse:
+    """
+    Relays one offered file, chunk by chunk, so a two-hour recording never sits in this small VPS's memory, with
+    the agent's status kept (206 for a Range request, which is what lets the browser seek). `around` is held for as
+    long as bytes flow, so the idle monitor counts a playback as use.
+    """
+    headers = {name: upstream.headers[name] for name in _SOURCE_HEADERS if name in upstream.headers}
+
+    async def body():
+        try:
+            with around():
+                async for chunk in upstream.aiter_raw():
+                    yield chunk
+        finally:
+            await upstream.aclose()
+
+    return StreamingResponse(body(), status_code=upstream.status_code, headers=headers)
 
 
 def websockify_url(address: str, token: str) -> str:

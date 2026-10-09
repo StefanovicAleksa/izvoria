@@ -66,6 +66,8 @@ _STAGE_OF_JOB: Dict[str, Stage] = {
     "context_unification": INDEXING,
     "clip_extraction": INDEXING,
     "rag_indexing": INDEXING,
+    # Off on the appliance; the hosted web version's last step
+    "storage_compaction": INDEXING,
 }
 
 # The number of per-file jobs in each step, so a step's bar can move while it runs: with N files a step of K

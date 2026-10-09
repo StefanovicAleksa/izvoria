@@ -8,6 +8,7 @@ from sqlalchemy import text
 
 from app.core.anchors.domain.enums import AnchorKind
 from app.core.config import settings
+from app.core.database.domain.interfaces import IDatabaseManager
 from app.core.database.service.manager import db_manager
 from app.features.rag_retrieval.domain.interfaces import IRetrievalRepository
 from app.features.rag_retrieval.domain.entities import IndexedSource, RetrievedChunk
@@ -200,9 +201,17 @@ def _anchor_fields(row) -> dict:
 
 class PostgresSearchRepository(IRetrievalRepository):
 
+    def __init__(self, database: Optional[IDatabaseManager] = None):
+        """`database` is a firm's database on the hosted API; without it, the appliance's own (`db_manager`)."""
+        self._database = database
+
+    @property
+    def _db(self) -> IDatabaseManager:
+        return self._database or db_manager
+
     def list_indexed_sources(self, min_chunks: int = 1) -> List[IndexedSource]:
         try:
-            with db_manager.session() as session:
+            with self._db.session() as session:
                 rows = session.execute(_INDEXED_SOURCES_SQL, {"min_chunks": min_chunks}).mappings().all()
 
                 return [
@@ -232,7 +241,7 @@ class PostgresSearchRepository(IRetrievalRepository):
         vector_str = f"[{','.join(map(str, query_vector))}]"
 
         try:
-            with db_manager.session() as session:
+            with self._db.session() as session:
                 rows = session.execute(
                     _SWEEP_SOURCES_SQL,
                     {"query_vector": vector_str, "ann_depth": ann_depth, "max_sources": max_sources}
@@ -248,7 +257,7 @@ class PostgresSearchRepository(IRetrievalRepository):
             return []
 
         try:
-            with db_manager.session() as session:
+            with self._db.session() as session:
                 rows = session.execute(
                     _CHUNKS_BY_ID_SQL, {"chunk_ids": [str(chunk_id) for chunk_id in chunk_ids]}
                 ).mappings().all()
@@ -278,7 +287,7 @@ class PostgresSearchRepository(IRetrievalRepository):
             return []
 
         try:
-            with db_manager.session() as session:
+            with self._db.session() as session:
                 rows = session.execute(
                     _NEIGHBORS_SQL, {"chunk_ids": [str(chunk_id) for chunk_id in chunk_ids]}
                 ).mappings().all()
@@ -315,7 +324,7 @@ class PostgresSearchRepository(IRetrievalRepository):
         fts_configs, query_texts = sparse_query_texts(query_text)
 
         try:
-            with db_manager.session() as session:
+            with self._db.session() as session:
                 result = session.execute(
                     _HYBRID_SEARCH_SQL,
                     {

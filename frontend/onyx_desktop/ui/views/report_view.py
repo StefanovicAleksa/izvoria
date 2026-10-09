@@ -283,7 +283,7 @@ class ReportView(QWidget):
         self._history.set_entries([
             HistoryEntry(
                 key=ref.report_id,
-                title=ref.topic,
+                title=ref.display_title,
                 badge=tr(_STATUS_LABELS.get(ref.status, ref.status.value)),
                 subtitle=when(ref.completed_at or ref.created_at),
             )
@@ -303,7 +303,7 @@ class ReportView(QWidget):
         self._steps_done = 0
         self._progress.setRange(0, remaining + 1)  # one job per section left, plus the summary
         self._progress.setValue(0)
-        tl.text(self._running_topic, "Resuming: {topic}", topic=ref.topic if ref else "")
+        tl.text(self._running_topic, "Resuming: {topic}", topic=ref.display_title if ref else "")
         tl.text(self._phase, "Finishing the remaining sections…")
         self._stop.setEnabled(True)
         tl.text(self._stop, "Stop")
@@ -344,7 +344,7 @@ class ReportView(QWidget):
         self._steps_done = 0
         self._progress.setRange(0, max(1, plan.expected_job_count))
         self._progress.setValue(0)
-        tl.text(self._running_topic, "Researching: {topic}", topic=plan.topic)
+        tl.text(self._running_topic, "Researching: {topic}", topic=plan.title or plan.topic)
         tl.text(self._phase, "Starting…")
         self._stop.setEnabled(True)
         tl.text(self._stop, "Stop")

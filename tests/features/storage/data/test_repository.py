@@ -9,7 +9,8 @@ from app.core.database import exceptions as db_exc
 from app.features.storage.data.repositories import StorageRepository
 from app.features.storage.domain.entities import Source, SourceType, File
 from app.features.storage.exceptions.base import StorageError
-from app.features.storage.exceptions.not_found import SourceNotFound
+from app.features.storage.exceptions.not_found import SourceNotFound, FileNotFound
+from app.features.storage.data.models import FileModel
 
 
 class TestStorageRepository:
@@ -249,3 +250,30 @@ class TestStorageRepository:
 
         assert repository.delete_file(uuid.uuid4()) is None
         session.delete.assert_not_called()
+
+    def test_update_file_rewrites_location_size_and_type(self, repository, mock_db_manager):
+        session = mock_db_manager.session.return_value.__enter__.return_value
+        file_id = uuid.uuid4()
+        model = MagicMock()
+        model.id = file_id
+        model.file_name = "lecture.mkv"
+        model.file_metadata = {}
+        model.is_processed = True
+        model.created_at = datetime.now(timezone.utc)
+        session.get.return_value = model
+        updated = File(id=file_id, file_path="/vault/new.mp4", file_name="lecture.mkv", file_size_bytes=7,
+                       mime_type="video/mp4")
+
+        result = repository.update_file(updated)
+
+        session.get.assert_called_once_with(FileModel, file_id)
+        assert (model.file_path, model.file_size_bytes, model.mime_type) == ("/vault/new.mp4", 7, "video/mp4")
+        assert result.file_path == "/vault/new.mp4"
+        assert result.file_name == "lecture.mkv"
+
+    def test_update_file_on_a_missing_record_raises(self, repository, mock_db_manager):
+        session = mock_db_manager.session.return_value.__enter__.return_value
+        session.get.return_value = None
+
+        with pytest.raises(FileNotFound):
+            repository.update_file(File(file_path="/vault/x.mp4", file_name="x.mp4", file_size_bytes=1))

@@ -228,6 +228,44 @@ class TestStorageAPI:
         assert api.delete_raw_file(uuid.uuid4()) is False
         fm_mock.delete.assert_not_called()
 
+    def test_replace_file_moves_the_new_bytes_in_and_deletes_the_old(self, api):
+        repo_mock = cast(Mock, api.repository)
+        fm_mock = cast(Mock, api.file_manager)
+        file_id = uuid.uuid4()
+        record = File(id=file_id, file_path="/mock/vault/old.mkv", file_name="lecture.mkv", file_size_bytes=900,
+                      mime_type="video/x-matroska")
+        repo_mock.get_file_by_id.return_value = record
+        repo_mock.update_file.side_effect = lambda f: f
+        fm_mock.generate_path.return_value = Path("/mock/vault/new.mp4")
+        fm_mock.store_file.return_value = 300
+
+        result = api.replace_file(file_id, "/mock/vault/.compact.mp4")
+
+        fm_mock.generate_path.assert_called_once_with(".mp4")
+        fm_mock.store_file.assert_called_once_with(Path("/mock/vault/.compact.mp4"), Path("/mock/vault/new.mp4"),
+                                                   move=True)
+        assert (result.id, result.file_path, result.file_size_bytes, result.mime_type, result.file_name) == (
+            file_id, "/mock/vault/new.mp4", 300, "video/mp4", "lecture.mkv")
+        fm_mock.delete.assert_called_once_with("/mock/vault/old.mkv")
+
+    def test_replace_file_keeps_the_old_bytes_when_the_record_cannot_be_updated(self, api):
+        repo_mock = cast(Mock, api.repository)
+        fm_mock = cast(Mock, api.file_manager)
+        repo_mock.get_file_by_id.return_value = File(file_path="/mock/vault/old.mkv", file_name="a.mkv",
+                                                     file_size_bytes=9)
+        repo_mock.update_file.side_effect = StorageError("DB down")
+
+        with pytest.raises(StorageError, match="DB down"):
+            api.replace_file(uuid.uuid4(), "/tmp/new.mp4")
+
+        fm_mock.delete.assert_called_once_with(Path("/mock/vault/video.mp4"))
+
+    def test_replace_file_of_a_missing_record_raises(self, api):
+        cast(Mock, api.repository).get_file_by_id.return_value = None
+
+        with pytest.raises(FileNotFound):
+            api.replace_file(uuid.uuid4(), "/tmp/new.mp4")
+
 
 class TestSourceLanguage:
     @pytest.fixture
@@ -293,3 +331,20 @@ class TestSourceLanguage:
         api.clear_language(source_id)
 
         api.repository.set_language.assert_called_once_with(source_id, None)
+
+
+class TestStorageApiVault:
+    def test_a_given_file_manager_is_used(self):
+        file_manager = Mock()
+
+        with patch("app.features.storage.service.storage_api.FileManager") as default_file_manager:
+            api = StorageAPI(Mock(), file_manager=file_manager)
+
+        assert api.file_manager is file_manager
+        default_file_manager.assert_not_called()
+
+    def test_without_one_the_default_vault_is_used(self):
+        with patch("app.features.storage.service.storage_api.FileManager") as default_file_manager:
+            api = StorageAPI(Mock())
+
+        assert api.file_manager is default_file_manager.return_value

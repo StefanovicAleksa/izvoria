@@ -34,7 +34,11 @@ class AudioExtractorAPI:
         # Instantly bypass FFmpeg if we already extracted audio for this source
         existing_extraction = self._repo.get_latest_by_source_id(video_source_id)
         if existing_extraction:
-            return existing_extraction
+            if self._audio_on_disk(existing_extraction):
+                return existing_extraction
+            # Its WAV was discarded after indexing (KEEP_EXTRACTED_AUDIO=False) or lost: deleting the file record
+            # cascades the extraction away, and the source's audio is extracted again below.
+            self._storage.delete_raw_file(existing_extraction.extracted_file_id)
         # ------------------------------
 
         # 1. Fetch and validate the original source from Storage
@@ -92,3 +96,24 @@ class AudioExtractorAPI:
             raise AudioExtractorError(f"No extracted audio recorded for Source {source_id}. Run audio extraction first.")
 
         return str(self._storage.get_file_path(extraction.extracted_file_id))
+
+    def discard_extracted_audio(self, source_id: uuid.UUID, dry_run: bool = False) -> int:
+        """
+        Deletes a source's WAV once nothing needs it (its source is indexed), returning the bytes freed. The
+        extraction row goes with the file record, so a later run extracts the audio again from the original.
+        """
+        extraction = self._repo.get_latest_by_source_id(source_id)
+        if not extraction:
+            return 0
+        record = self._storage.get_file(extraction.extracted_file_id)
+        freed = record.file_size_bytes if record else 0
+        if not dry_run:
+            self._storage.delete_raw_file(extraction.extracted_file_id)
+        return freed
+
+    def _audio_on_disk(self, extraction: AudioExtraction) -> bool:
+        try:
+            self._storage.get_file_path(extraction.extracted_file_id)
+            return True
+        except Exception:
+            return False

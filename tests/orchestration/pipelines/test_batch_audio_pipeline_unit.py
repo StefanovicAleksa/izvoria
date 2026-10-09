@@ -33,7 +33,10 @@ PHASE_NAMES = [
 class TestBatchAudioPipelineUnit:
     @pytest.fixture
     def phases(self):
-        return {name: Mock() for name in PHASE_NAMES}
+        phases = {name: Mock() for name in PHASE_NAMES}
+        phases["storage_compaction"] = Mock()
+        phases["storage_compaction"].enabled.return_value = False  # the appliance's defaults
+        return phases
 
     @pytest.fixture
     def pipeline(self, phases):
@@ -50,14 +53,15 @@ class TestBatchAudioPipelineUnit:
             domain_phonetic_correction_phase=phases["phonetic"],
             contextual_retrieval_phase=phases["contextual"],
             context_unification_phase=phases["context_unification"],
-            rag_indexing_phase=phases["rag_indexing"]
+            rag_indexing_phase=phases["rag_indexing"],
+            storage_compaction_phase=phases["storage_compaction"]
         )
 
     @staticmethod
     def _result(phase: PipelinePhase, item) -> PhaseBatchResult:
         return PhaseBatchResult(phase=phase, status=PhaseStatus.COMPLETED, successful_count=1, items=[item])
 
-    def test_pipeline_normalizes_audio_before_vad_and_filters_non_audio(self, pipeline, phases):
+    def _configure_full_run(self, phases):
         source_id = uuid.uuid4()
         extracted_file_id = uuid.uuid4()
 
@@ -95,6 +99,10 @@ class TestBatchAudioPipelineUnit:
         phases["rag_indexing"].execute.return_value = self._result(
             PipelinePhase.RAG_INDEXING,
             RagIndexingJobResult(source_id=source_id, success=True, dense_vectors_saved=5, sparse_vectors_saved=5))
+        return source_id, extraction_item, vad_item
+
+    def test_pipeline_normalizes_audio_before_vad_and_filters_non_audio(self, pipeline, phases):
+        source_id, extraction_item, vad_item = self._configure_full_run(phases)
 
         results = pipeline.process_directory("/dummy/path")
 
@@ -128,3 +136,24 @@ class TestBatchAudioPipelineUnit:
         assert PipelinePhase.VAD not in results
         phases["vad"].execute.assert_not_called()
         phases["vad"].discard_preload.assert_called_once_with()
+
+    def test_storage_compaction_runs_last_on_what_was_indexed(self, pipeline, phases):
+        source_id, _, _ = self._configure_full_run(phases)
+        phases["storage_compaction"].enabled.return_value = True
+        compacted = PhaseBatchResult(phase=PipelinePhase.STORAGE_COMPACTION, status=PhaseStatus.COMPLETED)
+        phases["storage_compaction"].execute.return_value = compacted
+
+        results = pipeline.process_directory("/dummy/path")
+
+        indexed = phases["rag_indexing"].execute.return_value.items
+        phases["storage_compaction"].execute.assert_called_once_with(indexed)
+        assert indexed[0].source_id == source_id
+        assert results[PipelinePhase.STORAGE_COMPACTION] is compacted
+
+    def test_storage_compaction_is_skipped_when_disabled(self, pipeline, phases):
+        self._configure_full_run(phases)
+
+        results = pipeline.process_directory("/dummy/path")
+
+        phases["storage_compaction"].execute.assert_not_called()
+        assert PipelinePhase.STORAGE_COMPACTION not in results

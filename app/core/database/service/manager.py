@@ -1,5 +1,5 @@
 from contextlib import contextmanager
-from typing import Generator
+from typing import Generator, Optional
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import SQLAlchemyError
@@ -10,8 +10,10 @@ from app.core.database.utils.error_mapper import map_database_error
 from app.core.database import exceptions as exc
 
 class DatabaseManager(IDatabaseManager):
-    def __init__(self):
-        self._engine_wrapper = SQLAlchemyEngine()
+    def __init__(self, url: Optional[str] = None, pool_size: Optional[int] = None,
+                 max_overflow: Optional[int] = None):
+        """Without arguments, the appliance's database (the `db_manager` singleton below); else another one."""
+        self._engine_wrapper = SQLAlchemyEngine(url=url, pool_size=pool_size, max_overflow=max_overflow)
         self._session_factory = self._engine_wrapper.get_session_maker()
 
     @contextmanager

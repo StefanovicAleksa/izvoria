@@ -53,3 +53,63 @@ class TestSupportedLanguagePacks:
         assert [(p.code, p.native_name) for p in packs] == [
             ("en", "English"), ("sr", "Srpski")
         ]
+
+
+class TestLanguageScope:
+    """The hosted API's per-request answer language: a context-local override of the appliance's language."""
+
+    def test_without_a_scope_the_appliance_language_is_active(self, appliance_language):
+        from app.core.language.service.language_api import active_language
+        appliance_language("en")
+
+        assert active_language() == "en"
+
+    def test_a_scope_overrides_the_language_and_the_pack_and_is_undone_after(self, appliance_language):
+        from app.core.language.service.language_api import active_language, get_language_pack, language_scope
+        appliance_language("en")
+
+        with language_scope("sr"):
+            assert active_language() == "sr"
+            assert get_language_pack().code == "sr"
+
+        assert active_language() == "en"
+        assert get_language_pack().code == "en"
+
+    def test_scopes_nest(self, appliance_language):
+        from app.core.language.service.language_api import active_language, language_scope
+        appliance_language("en")
+
+        with language_scope("sr"):
+            with language_scope("en"):
+                assert active_language() == "en"
+            assert active_language() == "sr"
+
+    def test_an_unsupported_language_is_refused(self):
+        import pytest
+        from app.core.language.service.language_api import language_scope
+
+        with pytest.raises(ValueError, match="'sl' is not a supported language"):
+            with language_scope("sl"):
+                pass
+
+    def test_another_thread_does_not_see_the_override(self, appliance_language):
+        import threading
+        from app.core.language.service.language_api import active_language, language_scope
+        appliance_language("en")
+        seen = []
+
+        with language_scope("sr"):
+            thread = threading.Thread(target=lambda: seen.append(active_language()))
+            thread.start()
+            thread.join()
+
+        assert seen == ["en"]
+
+    def test_submit_in_context_carries_the_override_to_a_pool(self, appliance_language):
+        from concurrent.futures import ThreadPoolExecutor
+        from app.core.language.service.language_api import active_language, language_scope, submit_in_context
+        appliance_language("en")
+
+        with ThreadPoolExecutor(1) as pool, language_scope("sr"):
+            assert submit_in_context(pool, active_language).result() == "sr"
+            assert pool.submit(active_language).result() == "en"

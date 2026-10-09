@@ -63,9 +63,9 @@ class TestIdleMonitor:
         controller.stop.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_never_stops_during_an_upload(self):
+    async def test_never_stops_during_an_upload_or_a_playback(self):
         controller, clock, monitor = make()
-        with monitor.upload_in_flight():
+        with monitor.transfer_in_flight():
             clock.now += 10 * IDLE
             assert await monitor.check() is False
 

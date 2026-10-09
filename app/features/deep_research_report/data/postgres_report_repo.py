@@ -53,6 +53,7 @@ class PostgresReportRepository(IReportRepository):
                     id=plan.report_id,
                     session_id=session_id,
                     topic=topic,
+                    title=plan.title or None,
                     status=ReportStatus.AWAITING_APPROVAL.value,
                     scope_note=plan.scope_note,
                     plan_revision=plan.revision,
@@ -83,6 +84,7 @@ class PostgresReportRepository(IReportRepository):
 
                 self._write_plan_rows(session, plan)
                 report.plan_revision = plan.revision
+                report.title = plan.title or None
                 report.scope_note = plan.scope_note
                 report.status = ReportStatus.GATHERING.value
                 session.flush()
@@ -218,27 +220,54 @@ class PostgresReportRepository(IReportRepository):
         except db_exc.DatabaseError as e:
             raise map_report_error(e, context=f"Setting status of report {report_id}") from e
 
+    def rename_report(self, report_id: uuid.UUID, title: str) -> None:
+        try:
+            with self._db.session() as session:
+                self._require(session, report_id).title = title or None
+
+        except db_exc.DatabaseError as e:
+            raise map_report_error(e, context=f"Renaming report {report_id}") from e
+
+    def set_markdown_path(self, report_id: uuid.UUID, markdown_path: str) -> None:
+        try:
+            with self._db.session() as session:
+                self._require(session, report_id).markdown_path = markdown_path
+
+        except db_exc.DatabaseError as e:
+            raise map_report_error(e, context=f"Recording the file of report {report_id}") from e
+
     # ==========================================
     # READS
     # ==========================================
 
-    def get_report(self, report_id: uuid.UUID) -> Optional[Report]:
+    def set_owner(self, report_id: uuid.UUID, owner_id: str) -> None:
+        try:
+            with self._db.session() as session:
+                self._require(session, report_id).owner_id = owner_id
+
+        except db_exc.DatabaseError as e:
+            raise map_report_error(e, context=f"Setting the owner of report {report_id}") from e
+
+    def get_report(self, report_id: uuid.UUID, owner_id: Optional[str] = None) -> Optional[Report]:
         try:
             with self._db.session() as session:
                 report = session.get(ResearchReportModel, report_id)
-                if report is None:
+                if report is None or (owner_id is not None and report.owner_id != owner_id):
                     return None
                 return self._to_report(session, report)
 
         except db_exc.DatabaseError as e:
             raise map_report_error(e, context=f"Loading report {report_id}") from e
 
-    def list_reports(self, session_id: Optional[uuid.UUID] = None, limit: int = 50) -> List[ReportSummary]:
+    def list_reports(self, session_id: Optional[uuid.UUID] = None, limit: int = 50,
+                     owner_id: Optional[str] = None) -> List[ReportSummary]:
         try:
             with self._db.session() as session:
                 stmt = select(ResearchReportModel).order_by(ResearchReportModel.created_at.desc()).limit(limit)
                 if session_id is not None:
                     stmt = stmt.where(ResearchReportModel.session_id == session_id)
+                if owner_id is not None:
+                    stmt = stmt.where(ResearchReportModel.owner_id == owner_id)
 
                 reports = session.execute(stmt).scalars().all()
                 if not reports:
@@ -260,6 +289,7 @@ class PostgresReportRepository(IReportRepository):
                     ReportSummary(
                         id=r.id,
                         topic=r.topic,
+                        title=r.title or "",
                         status=ReportStatus(r.status),
                         session_id=r.session_id,
                         section_count=section_counts.get(r.id, 0),
@@ -346,6 +376,7 @@ class PostgresReportRepository(IReportRepository):
         plan = ResearchPlan(
             report_id=report.id,
             topic=report.topic,
+            title=report.title or "",
             scope_note=report.scope_note or "",
             sections=outline,
             sub_questions=sub_questions,

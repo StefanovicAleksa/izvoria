@@ -3,11 +3,12 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
 class FileManager:
-    def __init__(self):
-        env_path = os.getenv("ONYX_STORAGE_PATH", "onyx_data")
+    def __init__(self, base_path: Optional[Union[str, Path]] = None):
+        """`base_path` is a firm's vault on the hosted API; without it, ONYX_STORAGE_PATH as always."""
+        env_path = base_path or os.getenv("ONYX_STORAGE_PATH", "onyx_data")
 
         # Resolve to absolute path
         self.base_path = Path(env_path).resolve()

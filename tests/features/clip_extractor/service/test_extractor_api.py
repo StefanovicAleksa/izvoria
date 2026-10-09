@@ -135,3 +135,45 @@ class TestClipExtractorAPI:
 
         mock_storage.delete_raw_file.assert_called_once_with(vaulted_file.id)
         mock_repo.create_bulk.assert_not_called()
+
+
+class TestDiscardClips:
+    @pytest.fixture
+    def mock_repo(self):
+        return Mock()
+
+    @pytest.fixture
+    def mock_storage(self):
+        return Mock()
+
+    @pytest.fixture
+    def api(self, mock_repo, mock_storage):
+        return ClipExtractorAPI(Mock(), mock_repo, mock_storage)
+
+    def _clips(self, source_id, n):
+        return [VideoClip(id=uuid.uuid4(), source_id=source_id, chunk_id=uuid.uuid4(), start_sec=0.0,
+                          end_sec=1.0, extracted_file_id=uuid.uuid4()) for _ in range(n)]
+
+    def test_every_clip_of_the_source_is_deleted_and_counted(self, api, mock_repo, mock_storage):
+        source_id = uuid.uuid4()
+        clips = self._clips(source_id, 2)
+        mock_repo.get_by_source_id.return_value = clips
+        mock_storage.get_file.side_effect = [MagicMock(file_size_bytes=100), MagicMock(file_size_bytes=50)]
+
+        assert api.discard_clips(source_id) == 150
+
+        mock_repo.get_by_source_id.assert_called_once_with(source_id)
+        assert [c.args[0] for c in mock_storage.delete_raw_file.call_args_list] == [
+            clips[0].extracted_file_id, clips[1].extracted_file_id]
+
+    def test_a_dry_run_only_measures(self, api, mock_repo, mock_storage):
+        mock_repo.get_by_source_id.return_value = self._clips(uuid.uuid4(), 1)
+        mock_storage.get_file.return_value = MagicMock(file_size_bytes=7)
+
+        assert api.discard_clips(uuid.uuid4(), dry_run=True) == 7
+        mock_storage.delete_raw_file.assert_not_called()
+
+    def test_a_source_without_clips_frees_nothing(self, api, mock_repo, mock_storage):
+        mock_repo.get_by_source_id.return_value = []
+
+        assert api.discard_clips(uuid.uuid4()) == 0

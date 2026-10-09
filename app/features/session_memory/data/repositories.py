@@ -48,6 +48,11 @@ def _to_turn(model: SessionTurnModel) -> SessionTurn:
     return SessionTurn.model_validate(model)
 
 
+def _owned(stmt, owner_id: Optional[str]):
+    """Restricts a statement to one user's turns (the hosted API); None leaves it unrestricted (the appliance)."""
+    return stmt if owner_id is None else stmt.where(SessionTurnModel.owner_id == owner_id)
+
+
 class SessionMemoryRepository(ISessionMemoryRepository):
     def __init__(self, db_manager: IDatabaseManager):
         self._db = db_manager
@@ -60,7 +65,8 @@ class SessionMemoryRepository(ISessionMemoryRepository):
         mode: SessionTurnMode = SessionTurnMode.CHAT,
         standalone_query: Optional[str] = None,
         evidence_chunk_ids: Optional[List[uuid.UUID]] = None,
-        first_doc_number: int = 1
+        first_doc_number: int = 1,
+        owner_id: Optional[str] = None
     ) -> SessionTurn:
         try:
             with self._db.session() as session:
@@ -73,6 +79,7 @@ class SessionMemoryRepository(ISessionMemoryRepository):
                     standalone_query=standalone_query,
                     evidence_chunk_ids=list(evidence_chunk_ids or []),
                     first_doc_number=first_doc_number,
+                    owner_id=owner_id,
                     created_at=datetime.now(timezone.utc)
                 )
                 session.add(turn_model)
@@ -85,11 +92,11 @@ class SessionMemoryRepository(ISessionMemoryRepository):
         turns = self.get_history(session_id, limit=1)
         return turns[0] if turns else None
 
-    def get_history(self, session_id: uuid.UUID, limit: int) -> List[SessionTurn]:
+    def get_history(self, session_id: uuid.UUID, limit: int, owner_id: Optional[str] = None) -> List[SessionTurn]:
         try:
             with self._db.session() as session:
                 stmt = (
-                    select(SessionTurnModel)
+                    _owned(select(SessionTurnModel), owner_id)
                     .where(SessionTurnModel.session_id == session_id)
                     .order_by(SessionTurnModel.created_at.desc())
                     .limit(limit)
@@ -100,11 +107,11 @@ class SessionMemoryRepository(ISessionMemoryRepository):
         except db_exc.DatabaseError as e:
             raise map_session_memory_error(e)
 
-    def get_all_turns(self, session_id: uuid.UUID) -> List[SessionTurn]:
+    def get_all_turns(self, session_id: uuid.UUID, owner_id: Optional[str] = None) -> List[SessionTurn]:
         try:
             with self._db.session() as session:
                 stmt = (
-                    select(SessionTurnModel)
+                    _owned(select(SessionTurnModel), owner_id)
                     .where(SessionTurnModel.session_id == session_id)
                     .order_by(SessionTurnModel.created_at.asc())
                 )
@@ -113,7 +120,7 @@ class SessionMemoryRepository(ISessionMemoryRepository):
         except db_exc.DatabaseError as e:
             raise map_session_memory_error(e)
 
-    def list_sessions(self, limit: int) -> List[SessionSummary]:
+    def list_sessions(self, limit: int, owner_id: Optional[str] = None) -> List[SessionSummary]:
         try:
             with self._db.session() as session:
                 first_question = func.array_agg(
@@ -122,13 +129,13 @@ class SessionMemoryRepository(ISessionMemoryRepository):
                 )[1]
                 last_at = func.max(SessionTurnModel.created_at)
                 stmt = (
-                    select(
+                    _owned(select(
                         SessionTurnModel.session_id,
                         first_question.label("title"),
                         func.min(SessionTurnModel.created_at).label("started_at"),
                         last_at.label("last_at"),
                         func.count().label("turn_count"),
-                    )
+                    ), owner_id)
                     .group_by(SessionTurnModel.session_id)
                     .order_by(last_at.desc())
                     .limit(limit)
@@ -147,10 +154,11 @@ class SessionMemoryRepository(ISessionMemoryRepository):
         except db_exc.DatabaseError as e:
             raise map_session_memory_error(e)
 
-    def delete_session(self, session_id: uuid.UUID) -> int:
+    def delete_session(self, session_id: uuid.UUID, owner_id: Optional[str] = None) -> int:
         try:
             with self._db.session() as session:
-                result = session.execute(delete(SessionTurnModel).where(SessionTurnModel.session_id == session_id))
+                result = session.execute(
+                    _owned(delete(SessionTurnModel), owner_id).where(SessionTurnModel.session_id == session_id))
                 return int(result.rowcount or 0)
 
         except db_exc.DatabaseError as e:

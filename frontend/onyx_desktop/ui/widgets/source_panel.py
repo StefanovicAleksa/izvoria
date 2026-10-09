@@ -13,6 +13,9 @@ respects whatever player the client already uses.
 The consequence to be honest about: a system player cannot be told to start at a timestamp. When
 the source is a whole recording rather than an extracted clip, the cited span is therefore shown
 prominently and is copyable, so it can be scrubbed to.
+
+On the hosted demo box the file goes to the tester's browser instead (`system_open`), which can: the
+cited passage plays first and the whole recording opens at the cited moment, so the notes say so.
 """
 
 import logging
@@ -34,7 +37,7 @@ from PySide6.QtWidgets import (
 from onyx_desktop.domain.entities import Evidence
 from onyx_desktop.domain.enums import MediaKind
 from onyx_desktop.ui import translate as tl
-from onyx_desktop.ui.system_open import open_source
+from onyx_desktop.ui.system_open import delivers_to_browser, open_source
 from onyx_desktop.ui.widgets.image_thumbnail import set_thumbnail
 from onyx_desktop.utils.formatting import location, speaker_summary, timespan
 
@@ -132,6 +135,13 @@ class SourcePanel(QWidget):
         self._path.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         card_layout.addWidget(self._path)
 
+        # On the hosted box, where the source went: the browser beside this desktop, not a window on it
+        self._sent = tl.label("Opened in the Sources panel beside the appliance, in your browser.")
+        self._sent.setWordWrap(True)
+        self._sent.setProperty("role", "subtle")
+        self._sent.setVisible(False)
+        card_layout.addWidget(self._sent)
+
         self._problem = QLabel("")
         self._problem.setWordWrap(True)
         self._problem.setProperty("role", "banner-warning")
@@ -147,6 +157,7 @@ class SourcePanel(QWidget):
         self._placeholder.setVisible(False)
         self._card.setVisible(True)
         self._problem.setVisible(False)
+        self._sent.setVisible(False)
 
         self._chip.setText(evidence.doc_label)
         self._span.setText(location(evidence))
@@ -167,6 +178,7 @@ class SourcePanel(QWidget):
             set_thumbnail(self._thumbnail, None)
 
         span = timespan(evidence.start_sec, evidence.end_sec)
+        in_browser = delivers_to_browser()
         if evidence.media_kind is MediaKind.IMAGE:
             tl.text(self._kind_note, "This opens the image itself. The excerpt above is an automatic description "
                                      "of it; check it against the picture.")
@@ -174,8 +186,13 @@ class SourcePanel(QWidget):
             self._open.setEnabled(True)
             tl.tooltip(self._open, tl.plain(""))
         elif evidence.media_kind is MediaKind.DOCUMENT:
-            tl.text(self._kind_note, "This opens the whole document. The excerpt above is at {location}.",
-                    location=location(evidence))
+            if in_browser:
+                tl.text(self._kind_note, "This opens the whole document in your browser, at {location} where "
+                                         "the browser can show it, with a download of the file.",
+                        location=location(evidence))
+            else:
+                tl.text(self._kind_note, "This opens the whole document. The excerpt above is at {location}.",
+                        location=location(evidence))
             tl.text(self._open, "Open document")
             self._open.setEnabled(True)
             tl.tooltip(self._open, "Turn to the page shown above")
@@ -185,7 +202,11 @@ class SourcePanel(QWidget):
             self._open.setEnabled(True)
             tl.tooltip(self._open, tl.plain(""))
         elif evidence.media_kind is MediaKind.FULL_SOURCE:
-            tl.text(self._kind_note, "This opens the whole recording. Skip to {time} to hear it.", time=span)
+            if in_browser:
+                tl.text(self._kind_note, "This plays {time} in your browser, with the whole recording a click "
+                                         "away.", time=span)
+            else:
+                tl.text(self._kind_note, "This opens the whole recording. Skip to {time} to hear it.", time=span)
             tl.text(self._open, "Open full recording")
             self._open.setEnabled(True)
             tl.tooltip(self._open, "Skip to the time shown above")
@@ -220,6 +241,9 @@ class SourcePanel(QWidget):
         problem = open_source(self._evidence)
         if problem is not None:
             self._fail(problem)
+        elif delivers_to_browser():
+            self._problem.setVisible(False)
+            self._sent.setVisible(True)
 
     def _fail(self, message: str) -> None:
         self._problem.setText(message)

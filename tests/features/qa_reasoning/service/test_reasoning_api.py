@@ -120,3 +120,57 @@ class TestReasoningAPI:
         with pytest.raises(ReasonerOOMError):
             api.rewrite_query("Q", "prior")
         mock_orchestrator.release_model.assert_called_once()
+
+
+class TestRewriteOnTheAnswerModel:
+    """The follow-up rewrite borrows the (usually warm) answer model instead of loading the reasoner's copy."""
+
+    @pytest.fixture
+    def qa_manifest(self):
+        from app.core.model_manager.domain.entities import ModelManifest
+        from app.core.model_manager.domain.enums import ModelType
+        return ModelManifest(model_type=ModelType.QA_GENERATION, model_path="models/qwen.gguf", required_vram_mb=1.0)
+
+    def test_rewrite_acquires_and_releases_the_given_model_with_its_own_loader(self, qa_manifest):
+        adapter, orchestrator, qa_loader = MagicMock(), MagicMock(), MagicMock()
+        adapter.rewrite_query.return_value = "standalone"
+        api = ReasoningAPI(adapter=adapter, orchestrator=orchestrator,
+                           rewrite_manifest=qa_manifest, rewrite_loader=qa_loader)
+
+        assert api.rewrite_query("Why?", "prior") == "standalone"
+
+        loaded = orchestrator.acquire_model.return_value
+        orchestrator.acquire_model.assert_called_once_with(qa_manifest, qa_loader, wait_for_clear=True)
+        adapter.rewrite_query.assert_called_once_with(loaded, "Why?", "prior")
+        orchestrator.release_model.assert_called_once_with(loaded, qa_loader, flush=True)
+
+    def test_the_reasoning_loop_keeps_the_reasoner_model(self, qa_manifest):
+        from app.core.model_manager.domain.enums import ModelType
+        adapter, orchestrator = MagicMock(), MagicMock()
+        adapter.get_evidence_token_budget.return_value = 5000
+        adapter.count_tokens.side_effect = lambda model, text: len(text.split())
+        api = ReasoningAPI(adapter=adapter, orchestrator=orchestrator,
+                           rewrite_manifest=qa_manifest, rewrite_loader=MagicMock())
+
+        adapter.reason.return_value = ReasonerDecision(
+            decision=ReasonerDecisionType.ANSWER_READY, chain_of_thought="x", interim_analysis="y"
+        )
+
+        api.reason("Q", [], [])
+
+        manifest, loader = orchestrator.acquire_model.call_args.args
+        assert manifest.model_type is ModelType.QA_REASONER and loader is adapter
+
+    def test_without_a_rewrite_model_the_rewrite_uses_the_reasoner(self):
+        from app.core.model_manager.domain.enums import ModelType
+        adapter, orchestrator = MagicMock(), MagicMock()
+        api = ReasoningAPI(adapter=adapter, orchestrator=orchestrator)
+
+        api.rewrite_query("Why?", "prior")
+
+        manifest, loader = orchestrator.acquire_model.call_args.args
+        assert manifest.model_type is ModelType.QA_REASONER and loader is adapter
+
+    def test_manifest_and_loader_come_together(self, qa_manifest):
+        with pytest.raises(ValueError):
+            ReasoningAPI(adapter=MagicMock(), orchestrator=MagicMock(), rewrite_manifest=qa_manifest)

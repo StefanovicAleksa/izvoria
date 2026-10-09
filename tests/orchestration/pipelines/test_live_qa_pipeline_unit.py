@@ -65,6 +65,45 @@ class TestLiveQAPipelineUnit:
         )
         return rerank_job, search_result
 
+    def test_answer_model_is_preloaded_only_after_scrubbing(self, pipeline, mock_retrieval_phase,
+                                                            mock_reranking_phase, mock_scrubber_phase,
+                                                            mock_qa_phase, raw_chunk):
+        """
+        The scrubber is acquired synchronously and only when it has work; an answer model already taken by an
+        unresolved preload could be neither evicted nor fitted beside, so the scrub would wait forever.
+        """
+        search_id = uuid.uuid4()
+        self._stub_until_scrubber(search_id, raw_chunk, mock_retrieval_phase, mock_reranking_phase,
+                                  mock_scrubber_phase)
+        order = []
+        mock_scrubber_phase.execute.side_effect = (
+            lambda *a, _r=mock_scrubber_phase.execute.return_value, **k: order.append("scrub") or _r
+        )
+        mock_qa_phase.preload_model.side_effect = lambda: order.append("qa preload")
+        mock_qa_phase.execute.side_effect = RuntimeError("stop here")
+
+        with pytest.raises(Exception):
+            pipeline.execute_chat(search_id, SearchQuery(prompt="Who entered the bank?", limit=6))
+
+        assert order == ["scrub", "qa preload"]
+
+    def test_answer_model_is_not_preloaded_when_nothing_survives(self, pipeline, mock_retrieval_phase,
+                                                                 mock_reranking_phase, mock_scrubber_phase,
+                                                                 mock_qa_phase, raw_chunk):
+        search_id = uuid.uuid4()
+        self._stub_until_scrubber(search_id, raw_chunk, mock_retrieval_phase, mock_reranking_phase,
+                                  mock_scrubber_phase)
+        mock_scrubber_phase.execute.return_value = PhaseBatchResult(
+            phase=PipelinePhase.RETRIEVAL_SCRUBBING, status=PhaseStatus.COMPLETED, successful_count=1,
+            items=[(RetrievalScrubbingJobResult(search_id=search_id, success=True, surviving_chunks_count=0), [])]
+        )
+        mock_qa_phase.execute.side_effect = RuntimeError("stop here")
+
+        with pytest.raises(Exception):
+            pipeline.execute_chat(search_id, SearchQuery(prompt="Who entered the bank?", limit=6))
+
+        mock_qa_phase.preload_model.assert_not_called()
+
     def test_execute_chat_happy_path(self, pipeline, mock_retrieval_phase, mock_reranking_phase,
                                      mock_scrubber_phase, mock_qa_phase, raw_chunk):
         search_id = uuid.uuid4()
@@ -85,9 +124,12 @@ class TestLiveQAPipelineUnit:
         result = pipeline.execute_chat(search_id, query)
 
         for phase in (mock_retrieval_phase, mock_reranking_phase, mock_scrubber_phase, mock_qa_phase):
-            phase.preload_model.assert_called_once_with()
             phase.execute.assert_called_once()
             phase.discard_preload.assert_called_once_with()
+        for phase in (mock_retrieval_phase, mock_reranking_phase, mock_qa_phase):
+            phase.preload_model.assert_called_once_with()
+        # The scrubber loads lazily, only for chunks below the rerank trust score; a preload would evict warm QA
+        mock_scrubber_phase.preload_model.assert_not_called()
 
         assert mock_reranking_phase.execute.call_args.kwargs == {"top_n": 6}
         mock_scrubber_phase.execute.assert_called_once_with([(rerank_job, reranked_result)])

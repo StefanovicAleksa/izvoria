@@ -5,7 +5,7 @@ description: How Onyx loads, uses, releases, preloads and reloads GPU models thr
 
 # Onyx model lifecycle: load, use, release, reload
 
-Onyx runs a dozen GPU models on a 12 GB card, so **no model may assume it stays in VRAM**. Every model is loaded just in time, used, and released, and every load and release goes through `app/core/model_manager/`. This skill describes how that machinery actually behaves (verified against the code) and the patterns each layer must follow. The best reference implementation is the reranker:
+Onyx runs a dozen GPU models on a 12 GB card, so **no model may assume it stays in VRAM**. Every model is loaded just in time, used, and released (a few keep-warm types stay resident after release, but can be evicted whenever a load needs the room), and every load and release goes through `app/core/model_manager/`. This skill describes how that machinery actually behaves (verified against the code) and the patterns each layer must follow. The best reference implementation is the reranker:
 
 | Layer | Reference file |
 |---|---|
@@ -38,22 +38,28 @@ Read the matching reference file before writing the new one, and copy its shape.
 
 ### `acquire_model(manifest, loader, wait_for_clear=False)`
 1. **Residency check.** If a model with the same **`(model_type, model_path)`** is resident, it is returned as-is and nothing is loaded. The same weights file under a different `ModelType` is *not* shared: adapters load identical GGUFs with different settings (e.g. `n_ctx`).
-   - This is a **shared instance, not a refcounted handle**. `release_model` frees on the first call, however many callers were handed the model — which is deliberate: `release_after=False` means a holder's acquires intentionally outnumber its releases, so freeing on a balanced count would leak. The orchestrator counts hand-outs per model id only so `release_preload` can tell an abandoned preload from one somebody has since taken.
-2. **Optional wait** (`wait_for_clear=True`). The call polls until no model is resident, or its own model is. There is **no time limit**: the resident model belongs to a phase that is still working, and a batch phase takes as long as its input needs. (A 120 s limit, added in `3bfde2d` and removed again, failed a 74-minute ingestion whose visual analysis took 174 s.)
-3. **Swap.** Every other resident model is released. This makes the pool effectively single-slot: acquiring model B evicts model A.
+   - An IDLE (kept-warm) model becomes ACTIVE again.
+   - This is a **shared instance, not a refcounted handle**. `release_model` ends the holding on the first call (frees it, or makes a keep-warm type IDLE), however many callers were handed the model — which is deliberate: `release_after=False` means a holder's acquires intentionally outnumber its releases, so freeing on a balanced count would leak. The orchestrator counts hand-outs per model id only so `release_preload` can tell an abandoned preload from one somebody has since taken.
+2. **Optional wait** (`wait_for_clear=True`). The call polls until no model is held (ACTIVE), or its own model is resident, or (with keep-warm types) it would fit beside the held models once IDLE ones are evicted. There is **no time limit**: the resident model belongs to a phase that is still working, and a batch phase takes as long as its input needs. (A 120 s limit, added in `3bfde2d` and removed again, failed a 74-minute ingestion whose visual analysis took 174 s.)
+3. **Make room.**
+   - `wait_for_clear=False` (batch): every other resident is truly unloaded, ACTIVE or IDLE. Ingestion owns the GPU.
+   - `wait_for_clear=True` (live/preload): IDLE models are unloaded, choosing the set that frees the fewest megabytes while making room (least recently used on a tie): a 1 GB load evicts the 1 GB embedder, not the 7.8 GB answer model. An ACTIVE model is never evicted; if the room still isn't there, the call goes back to waiting.
 4. **Deep flush** of CUDA memory.
-5. **Admission control.** `required = on-disk size of model_path + learned backpack + 500 MB`, checked against free VRAM; if it doesn't fit, `OutOfVramError` is raised.
-   - `required_vram_mb` / `<FEATURE>_VRAM_REQUIREMENT_MB` is **only used when `model_path` doesn't exist**.
-   - The "backpack" is the peak activation memory beyond the weights. A telemetry thread samples it every 0.5 s and keeps the largest value per model path.
+5. **Admission control**, checked against free VRAM; if it doesn't fit, `OutOfVramError` is raised.
+   - Alone on the GPU: `on-disk size of model_path + learned backpack + 500 MB`. Here `required_vram_mb` / `<FEATURE>_VRAM_REQUIREMENT_MB` is **only used when `model_path` doesn't exist**.
+   - Beside other residents: `footprint + largest backpack among it and the residents + 500 MB`. The footprint is what an earlier load of the same `(model_type, model_path)` actually took (free VRAM before minus after, so llama.cpp's KV cache counts), else `max(on-disk size, required_vram_mb)`. So set `<FEATURE>_VRAM_REQUIREMENT_MB` to a real upper bound for anything kept warm.
+   - The "backpack" is the peak activation memory beyond the weights. A telemetry thread samples it every 0.5 s and keeps the largest value per model path. It is read under the orchestrator lock and recorded only while exactly one model is ACTIVE.
    - The backpack lives **in memory only** and starts at 0 in every new process. The first load of a model with large activations can therefore pass admission and still OOM during inference. Keep batch sizes configurable in `config.py`.
-6. **`loader.load(manifest)`**, then the model is registered. A load exception flushes memory and is mapped to a `ModelManagerError`.
+6. **`loader.load(manifest)`**, then the model is registered as ACTIVE and its footprint recorded. A load exception flushes memory and is mapped to a `ModelManagerError`.
 
 ### `release_model(loaded_model, loader, flush=True)`
-- If the model isn't registered (already released), this is a **no-op**, so a double release is safe.
-- Otherwise it calls `loader.unload()`, deregisters the model and flushes.
+- If the model isn't registered (already released) or is already IDLE, this is a **no-op**, so a double release is safe.
+- A type in the orchestrator's `keep_warm_types` (bootstrap: `MODEL_KEEP_WARM_TYPES` = embedder, reranker, `QA_GENERATION`, `REPORT_AUTHORING`) goes **IDLE**: it stays loaded and is evicted only for room.
+- Anything else: `loader.unload()`, deregister, flush.
+- `MODEL_KEEP_WARM=False` (or an orchestrator built without `keep_warm_types`, as most integration tests do) gives the old single-slot pool.
 
 ### `release_all`
-Evicts everything. `OnyxEngine` calls it (through `AsyncModelService.release_all`) after every ingestion and after any failed live call.
+Truly unloads everything, IDLE models included. `OnyxEngine` calls it (through `AsyncModelService.release_all`) when ingestion starts and ends, after a report, after any failed live call, and on `stop()`.
 
 ### "Reload"
 There is no reload API.
@@ -63,8 +69,8 @@ There is no reload API.
 
 ### Preloads (background loads)
 - `trigger_preload(manifest, loader)` submits `acquire_model(..., wait_for_clear=True)` to the **single** worker thread and returns a `Future`.
-- A preload triggered while another model is resident **waits**; it never evicts a model that is in use. It loads once the current phase unloads.
-- Several preloads queue up and load one after another, each waiting for the previous model to be released.
+- A preload triggered while another model is in use **never evicts it**. Single-slot, it waits until the current phase releases. With keep-warm types it loads straight away if it fits beside the held models (evicting IDLE ones), so it overlaps the current stage's compute.
+- Several preloads queue up and load one after another on the one worker thread.
 - `resolve_preload(future)` blocks until the load finishes and returns the `LoadedModel`, or raises the mapped `ModelManagerError`.
 - `trigger_unload(...)` is **synchronous** and bypasses the worker. Never unload through the worker queue (`BackgroundModelWorker.unload_model`): it would sit behind a parked preload and deadlock.
 - `discard_preload(future, loader)`: a queued preload is cancelled; a running or finished one has its model released as soon as it loads. This is what stops a halted pipeline from leaving a model loaded with nobody to release it.
@@ -223,7 +229,9 @@ Rules:
   - embedder preload → context unification.
 - **Preloading ahead of a GPU phase is also safe.** A preload triggered while the current phase's model is loaded waits until that phase unloads, however long it runs, and never evicts it (e.g. `visual_hallucination_correction_phase.preload_model()` runs before `visual_analysis_phase.execute(...)`).
 - **Release a halted branch's preloads before the next preload.** If a phase fails or has nothing to do, the preloads already triggered for the phases after it still load, and nothing releases them until `finally`. Any later preload would wait behind them for the rest of the run, so call `_discard_pending_preloads()` before it (`batch_media_pipeline.py` does this right before the embedder preload).
-- **Live pipelines preload every phase up front** (`preload_models()`). The worker then loads them one at a time, as each earlier phase unloads.
+- **Live pipelines preload their phases up front** (`preload_models()`), and the worker loads them one at a time.
+  - **Exception:** never leave a preload outstanding across a *synchronous, conditional* acquire. A model loaded by an unresolved preload is held (ACTIVE), so a later synchronous `wait_for_clear=True` acquire that doesn't fit beside it waits forever.
+  - Example: the scrubber is acquired lazily, only when a chunk is below the rerank trust score. So `LiveQAPipeline` preloads the answer model only after scrubbing, and `test_answer_model_is_preloaded_only_after_scrubbing` pins that order.
 - **Discard in `finally`.** Every GPU phase must be listed in the pipeline's `_discard_pending_preloads()`, which is called in `finally`. It covers every early return and exception, so no preload outlives the run. A new GPU phase that isn't in this list leaks its model whenever the pipeline stops before reaching it.
 
 ## 7. Engine, config and wiring
@@ -241,7 +249,9 @@ Rules:
 
 - Calling `loader.load()` / `loader.unload()` directly instead of going through the orchestrator.
 - Keeping `LoadedModel` or `model_instance` on `self` between calls.
-- Expecting two models to be loaded at once. Acquiring the second evicts the first.
+- Expecting a model to still be loaded after its release. A keep-warm model usually is, but any later load may evict it; always re-acquire.
+- Adding a type to `MODEL_KEEP_WARM_TYPES` without measuring that the warm set still fits the card (a warm set that doesn't fit just thrashes).
+- Preloading a model that is often not needed (the scrubber): on a warm card the preload evicts a warm model for nothing. Acquire lazily in the API instead.
 - Reusing another feature's `ModelType` for shared weights.
 - Acquiring without a `finally` release, or setting `release_after=False` with no owner that releases later.
 - A Phase that doesn't clear `_preload_future`, lacks `discard_preload()`, or isn't registered in the pipeline's `_discard_pending_preloads()`.

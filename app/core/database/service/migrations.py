@@ -1,6 +1,7 @@
 # Path: app/core/database/service/migrations.py
 
 import logging
+import threading
 from pathlib import Path
 
 from alembic import command
@@ -20,6 +21,10 @@ MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "data" / "migrations"
 BASELINE_REVISION = "0001"
 # Present in every database any Onyx build has created, and the first table a baseline creates
 _SENTINEL_TABLE = "sources"
+# Alembic installs the running migration's context into module globals (`alembic.context`, `alembic.op`), so two
+# upgrades at once in one process can run one database's revisions on the other's connection. The hosted API starts
+# one engine per firm, and two firms' first requests may arrive together: their migrations take turns.
+_UPGRADE_LOCK = threading.Lock()
 
 
 def _config(connection: Connection) -> Config:
@@ -45,7 +50,7 @@ def upgrade_to_head(engine: Engine) -> None:
     appliance full of ingested data is kept, not reset.
     """
     try:
-        with engine.begin() as connection:
+        with _UPGRADE_LOCK, engine.begin() as connection:
             config = _config(connection)
             if _is_pre_alembic(connection):
                 # The tables it has get their missing columns first; then the baseline creates only what is still

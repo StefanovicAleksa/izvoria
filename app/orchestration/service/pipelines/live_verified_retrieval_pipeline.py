@@ -39,7 +39,8 @@ class LiveVerifiedRetrievalPipeline:
         """Public method to safely trigger the preloads for its sub-phases."""
         self._retrieval_phase.preload_model()
         self._reranking_phase.preload_model()
-        self._scrubber_phase.preload_model()
+        # No scrubber preload: the scrubber API loads its model only when a chunk scores below the rerank trust
+        # threshold, and a preload would load it on every call regardless
 
     def _discard_pending_preloads(self) -> None:
         """

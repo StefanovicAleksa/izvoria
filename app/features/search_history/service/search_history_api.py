@@ -28,26 +28,30 @@ class SearchHistoryAPI:
         chunk_ids: List[uuid.UUID],
         scores: List[float],
         execution_time_ms: float,
+        owner_id: Optional[str] = None,
     ) -> SearchRecord:
         try:
-            return self._repo.record(query, mode, result_limit, list(chunk_ids), list(scores), execution_time_ms)
+            return self._repo.record(query, mode, result_limit, list(chunk_ids), list(scores), execution_time_ms,
+                                     owner_id=owner_id)
         except Exception as e:
             raise map_search_history_error(e)
 
-    def list(self, limit: int = DEFAULT_LIST_LIMIT) -> List[SearchRecordSummary]:
+    def list(self, limit: int = DEFAULT_LIST_LIMIT, owner_id: Optional[str] = None) -> List[SearchRecordSummary]:
+        """Newest first. With `owner_id` (the hosted API) only that user's searches."""
         try:
-            return self._repo.list(limit)
+            return self._repo.list(limit, owner_id=owner_id)
         except Exception as e:
             raise map_search_history_error(e)
 
-    def get(self, record_id: uuid.UUID) -> Optional[SearchRecord]:
+    def get(self, record_id: uuid.UUID, owner_id: Optional[str] = None) -> Optional[SearchRecord]:
+        """None when it does not exist, or belongs to someone other than `owner_id`."""
         try:
-            return self._repo.get(record_id)
+            return self._repo.get(record_id, owner_id=owner_id)
         except Exception as e:
             raise map_search_history_error(e)
 
-    def delete(self, record_id: uuid.UUID) -> bool:
+    def delete(self, record_id: uuid.UUID, owner_id: Optional[str] = None) -> bool:
         try:
-            return self._repo.delete(record_id)
+            return self._repo.delete(record_id, owner_id=owner_id)
         except Exception as e:
             raise map_search_history_error(e)

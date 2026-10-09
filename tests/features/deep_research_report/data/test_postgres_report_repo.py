@@ -52,6 +52,7 @@ def _report_row(report_id=REPORT_ID, **overrides) -> MagicMock:
     row.id = report_id
     row.session_id = None
     row.topic = "Chain of custody"
+    row.title = None
     row.status = ReportStatus.AWAITING_APPROVAL.value
     row.scope_note = "Covers handling."
     row.plan_revision = 1
@@ -161,6 +162,55 @@ class TestPostgresReportRepository:
 
         assert report.status == ReportStatus.GATHERING.value
         assert report.plan_revision == 2
+
+    def test_create_report_stores_the_proposed_title(self, repository, session):
+        repository.create_report("t", _plan().model_copy(update={"title": "Evidence Handling"}), _corpus())
+
+        assert self._added(session, "research_reports")[0].title == "Evidence Handling"
+
+    def test_create_report_without_a_title_stores_null(self, repository, session):
+        repository.create_report("t", _plan(), _corpus())
+
+        assert self._added(session, "research_reports")[0].title is None
+
+    def test_replace_plan_stores_the_edited_title(self, repository, session):
+        report = _report_row(title="Old")
+        session.get.return_value = report
+
+        repository.replace_plan(REPORT_ID, _plan().model_copy(update={"title": "Evidence Handling"}))
+
+        assert report.title == "Evidence Handling"
+
+    def test_a_stored_title_reaches_the_plan_and_the_report(self, repository, session):
+        session.get.return_value = _report_row(title="Evidence Handling")
+
+        report = repository.get_report(REPORT_ID)
+
+        assert (report.plan.title, report.title, report.display_title) == ("Evidence Handling",) * 3
+
+    def test_a_report_from_before_titles_is_shown_by_its_request(self, repository, session):
+        session.get.return_value = _report_row(title=None)
+
+        report = repository.get_report(REPORT_ID)
+
+        assert (report.title, report.display_title) == ("", "Chain of custody")
+
+    def test_rename_report_sets_and_clears_the_title(self, repository, session):
+        report = _report_row(title="Old")
+        session.get.return_value = report
+
+        repository.rename_report(REPORT_ID, "New Title")
+        assert report.title == "New Title"
+        repository.rename_report(REPORT_ID, "")
+        assert report.title is None
+
+    def test_set_markdown_path_points_at_the_rerendered_file(self, repository, session):
+        report = _report_row(markdown_path="/r/2026/09/30/a.md")
+        session.get.return_value = report
+
+        repository.set_markdown_path(REPORT_ID, "/r/2026/10/07/a.md")
+
+        assert report.markdown_path == "/r/2026/10/07/a.md"
 
     def test_replace_plan_on_a_missing_report_raises(self, repository, session):
         session.get.return_value = None
@@ -282,6 +332,58 @@ class TestPostgresReportRepository:
         session.execute.return_value.scalars.return_value.all.return_value = []
 
         assert repository.list_reports() == []
+
+    # ==========================================
+    # OWNER (hosted API: a report is its user's)
+    # ==========================================
+
+    def test_set_owner_records_the_user_on_the_report(self, repository, session):
+        report = _report_row(owner_id=None)
+        session.get.return_value = report
+
+        repository.set_owner(REPORT_ID, "user-7")
+
+        assert report.owner_id == "user-7"
+
+    def test_set_owner_on_a_missing_report_raises(self, repository, session):
+        session.get.return_value = None
+
+        with pytest.raises(ReportNotFoundError):
+            repository.set_owner(REPORT_ID, "user-7")
+
+    def test_get_report_hides_another_users_report(self, repository, session):
+        session.get.return_value = _report_row(owner_id="user-1")
+
+        assert repository.get_report(REPORT_ID, owner_id="user-7") is None
+
+    def test_get_report_returns_the_owners_own_report(self, repository, session):
+        session.get.return_value = _report_row(owner_id="user-7")
+
+        assert repository.get_report(REPORT_ID, owner_id="user-7").id == REPORT_ID
+
+    def test_get_report_without_an_owner_returns_anyones(self, repository, session):
+        session.get.return_value = _report_row(owner_id="user-1")
+
+        assert repository.get_report(REPORT_ID).id == REPORT_ID
+
+    def test_an_appliance_report_is_nobodys_on_the_hosted_api(self, repository, session):
+        session.get.return_value = _report_row(owner_id=None)
+
+        assert repository.get_report(REPORT_ID, owner_id="user-7") is None
+
+    @pytest.mark.parametrize("owner, expected", [("user-7", "research_reports.owner_id = 'user-7'"), (None, None)])
+    def test_list_reports_is_restricted_to_the_owner_when_given(self, repository, session, owner, expected):
+        session.execute.return_value.scalars.return_value.all.return_value = []
+
+        repository.list_reports(owner_id=owner)
+
+        statement = session.execute.call_args[0][0]
+        sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
+        where = sql[sql.index("FROM"):]
+        if expected:
+            assert expected in where
+        else:
+            assert "owner_id" not in where
 
     # ==========================================
     # ERROR MAPPING

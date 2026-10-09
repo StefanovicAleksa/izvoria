@@ -4,6 +4,7 @@ import logging
 import concurrent.futures
 from typing import Any, List, Optional, Tuple
 
+from app.orchestration.utils.preload_slot import PreloadSlot
 from app.core.jobs.service.manager import JobManager
 from app.core.jobs.domain.entities import JobRequest
 from app.core.jobs.domain.enums import JobType
@@ -23,6 +24,9 @@ logger = logging.getLogger(__name__)
 
 
 class RagRerankingPhase:
+    # One per request thread: concurrent requests share this Phase (see PreloadSlot)
+    _preload_future = PreloadSlot()
+
     def __init__(
             self,
             job_manager: JobManager,

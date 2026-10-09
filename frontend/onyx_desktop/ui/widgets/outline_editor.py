@@ -101,6 +101,18 @@ class OutlineEditor(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(10)
 
+        layout.addWidget(tl.label("Report title", role="strong"))
+        # Proposed by the scoping model; what the report, its file and the history list are called
+        self._title = QLineEdit()
+        self._title.setObjectName("ReportTitle")
+        self._title.setMaxLength(120)
+        layout.addWidget(self._title)
+
+        self._request = QLabel()
+        self._request.setWordWrap(True)
+        self._request.setProperty("role", "subtle")
+        layout.addWidget(self._request)
+
         self._scope = QLabel()
         self._scope.setWordWrap(True)
         self._scope.setProperty("role", "subtle")
@@ -147,6 +159,10 @@ class OutlineEditor(QWidget):
         self._clear_cards()
         self._warning.setVisible(False)
 
+        self._title.setText(plan.title)
+        tl.placeholder(self._title, tl.plain(plan.topic))
+        tl.text(self._request, "Request: {topic}", topic=plan.topic)
+
         # The scope note is written by the engine, in the report's language: shown as it is
         tl.text(self._scope, tl.plain(plan.scope_note) if plan.scope_note
                 else "The appliance proposed this outline from your material.")
@@ -192,6 +208,7 @@ class OutlineEditor(QWidget):
             ReportPlanDraft(
                 report_id=self._plan.report_id,
                 topic=self._plan.topic,
+                title=" ".join(self._title.text().split()),
                 scope_note=self._plan.scope_note,
                 sections=tuple(sections),
                 indexed_source_count=self._plan.indexed_source_count,

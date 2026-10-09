@@ -174,6 +174,14 @@ class ClipExtractionJobResult(BaseModel):
     error_message: Optional[str] = None
     model_config = ConfigDict(frozen=True)
 
+class StorageCompactionJobResult(BaseModel):
+    source_id: uuid.UUID
+    success: bool
+    # The WAV dropped plus what replacing the original with its compact copy saved
+    bytes_saved: int = 0
+    error_message: Optional[str] = None
+    model_config = ConfigDict(frozen=True)
+
 class RagIndexingJobResult(BaseModel):
     source_id: uuid.UUID
     success: bool

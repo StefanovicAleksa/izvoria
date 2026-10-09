@@ -72,3 +72,53 @@ class TestHuggingFacePromptAdapter:
 
         assert result == [0.1, 0.2, 0.3]
         mock_instance.encode.assert_called_once()
+
+class TestConcurrentEncoding:
+    """One resident embedder serves every concurrent request; its fast tokenizer must never run on two threads."""
+
+    @staticmethod
+    def _overlap_tracking_model():
+        import threading
+        import time
+        import numpy as np
+        state = {"active": 0, "most": 0}
+        lock = threading.Lock()
+
+        def encode(texts, **_):
+            with lock:
+                state["active"] += 1
+                state["most"] = max(state["most"], state["active"])
+            time.sleep(0.02)
+            with lock:
+                state["active"] -= 1
+            return np.zeros((len(texts), 2)) if isinstance(texts, list) else np.zeros(2)
+
+        manifest = ModelManifest(model_type=ModelType.RAG_EMBEDDING, model_path="/m", required_vram_mb=1.0)
+        encoder = MagicMock()
+        encoder.encode.side_effect = encode
+        return LoadedModel(manifest=manifest, model_instance=encoder), state
+
+    def test_encodes_from_several_threads_take_turns(self):
+        import threading
+        adapter = HuggingFacePromptAdapter()
+        model, state = self._overlap_tracking_model()
+        calls = [lambda: adapter.embed_prompts(model, ["a", "b"]), lambda: adapter.embed_prompt(model, "c")] * 3
+
+        threads = [threading.Thread(target=call) for call in calls]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
+
+        assert model.model_instance.encode.call_count == 6
+        assert state["most"] == 1
+
+    def test_a_failed_encode_releases_the_lock(self):
+        adapter = HuggingFacePromptAdapter()
+        model, _ = self._overlap_tracking_model()
+        model.model_instance.encode.side_effect = [RuntimeError("CUDA error"), MagicMock(tolist=lambda: [0.0])]
+
+        with pytest.raises(Exception):
+            adapter.embed_prompt(model, "a")
+
+        assert adapter.embed_prompt(model, "b") == [0.0]

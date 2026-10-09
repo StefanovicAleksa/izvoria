@@ -49,3 +49,18 @@ class TestFileManager:
             with patch("shutil.copy2", side_effect=OSError("Disk full")):
                 with pytest.raises(OSError, match="Storage operation failed"):
                     file_manager.store_file("dummy_src", Path("dest"), move=False)
+
+class TestVaultLocation:
+    def test_a_given_base_path_is_the_vault(self, tmp_path, monkeypatch):
+        """The hosted API gives each firm its own vault, whatever ONYX_STORAGE_PATH says."""
+        monkeypatch.setenv("ONYX_STORAGE_PATH", str(tmp_path / "appliance"))
+
+        fm = FileManager(tmp_path / "tenants" / "legal-demo" / "vault")
+
+        assert fm.base_path == (tmp_path / "tenants" / "legal-demo" / "vault").resolve()
+        assert str(fm.generate_path(".pdf")).startswith(str(fm.base_path))
+
+    def test_without_one_the_vault_is_onyx_storage_path(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("ONYX_STORAGE_PATH", str(tmp_path / "appliance"))
+
+        assert FileManager().base_path == (tmp_path / "appliance").resolve()

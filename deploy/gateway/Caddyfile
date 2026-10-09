@@ -1,7 +1,9 @@
 # /etc/caddy/Caddyfile on the gateway VPS. Replace demo.example.com with your domain (an A record pointing at the
 # VPS must exist first); Caddy fetches and renews the Let's Encrypt certificate itself.
 demo.example.com {
-	encode gzip
+	# Never compress cited sources: gzip breaks Range requests (seeking a recording) and buffers the SSE feed.
+	@compressible not path /api/sources/*
+	encode @compressible gzip
 	reverse_proxy 127.0.0.1:8000 {
 		# Uploads are multi-gigabyte videos: stream them through instead of buffering on this small VPS.
 		flush_interval -1

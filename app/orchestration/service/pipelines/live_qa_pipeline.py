@@ -47,11 +47,14 @@ class LiveQAPipeline:
         self._reasoner_phase = reasoner_phase
 
     def preload_models(self) -> None:
-        """Trigger async loads for all models in the RAG + Chat sequence to warm the VRAM caches."""
+        """
+        Trigger async loads for the retrieval models. The answer model is preloaded once scrubbing is done
+        (`_retrieve_scrubbed`), not here: the scrubber is acquired synchronously and only when a chunk scores below
+        the rerank trust threshold, and an answer model loaded by an unresolved preload is held, so the scrubber
+        could neither evict it nor fit beside it and would wait forever.
+        """
         self._retrieval_phase.preload_model()
         self._reranking_phase.preload_model()
-        self._scrubber_phase.preload_model()
-        self._qa_generation_phase.preload_model()
 
     def _discard_pending_preloads(self) -> None:
         """
@@ -119,6 +122,10 @@ class LiveQAPipeline:
 
         if surviving is None:
             raise WorkflowStateError("Pipeline halted: No chunks survived the SLM scrubber.")
+
+        if surviving:
+            # Loads (or, warm, just takes) the answer model while the neighbours are read from the database
+            self._qa_generation_phase.preload_model()
 
         # Transcript on either side of the best survivors, for answers that cross a chunk boundary
         return self._retrieval_phase.expand_neighbors(surviving)

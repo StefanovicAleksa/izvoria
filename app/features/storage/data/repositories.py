@@ -10,7 +10,7 @@ from app.features.storage.domain.interfaces import IStorageRepository
 from app.features.storage.domain.entities import Source, File
 from app.features.storage.data.models import SourceModel, FileModel
 from app.features.storage.utils.error_mapper import map_storage_error
-from app.features.storage.exceptions.not_found import SourceNotFound
+from app.features.storage.exceptions.not_found import SourceNotFound, FileNotFound
 
 class StorageRepository(IStorageRepository):
     def __init__(self, db_manager: IDatabaseManager):
@@ -97,6 +97,19 @@ class StorageRepository(IStorageRepository):
                 deleted = File.model_validate(model)
                 session.delete(model)
                 return deleted
+        except db_exc.DatabaseError as e:
+            raise map_storage_error(e)
+
+    def update_file(self, file: File) -> File:
+        try:
+            with self._db.session() as session:
+                model = session.get(FileModel, file.id)
+                if not model:
+                    raise FileNotFound(f"File with ID {file.id} not found.")
+                model.file_path = file.file_path
+                model.file_size_bytes = file.file_size_bytes
+                model.mime_type = file.mime_type
+                return File.model_validate(model)
         except db_exc.DatabaseError as e:
             raise map_storage_error(e)
 

@@ -4,8 +4,9 @@
 import uuid
 import logging
 import concurrent.futures
-from typing import Dict, List
+from typing import Dict, List, Optional
 
+from app.core.config import settings
 from app.features.storage.domain.entities import SourceType
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import (
@@ -24,6 +25,7 @@ from app.orchestration.domain.entities import (
     VisualAnalysisJobResult,
     VisualHallucinationCorrectionJobResult,
     ContextUnificationJobResult,
+    RagIndexingJobResult,
 )
 from app.orchestration.exceptions.workflow import WorkflowStateError, WorkflowExecutionError
 
@@ -46,6 +48,7 @@ from app.orchestration.service.phases.visual_context_synthesis_phase import Visu
 from app.orchestration.service.phases.context_unification_phase import ContextUnificationPhase
 from app.orchestration.service.phases.clip_extraction_phase import ClipExtractionPhase
 from app.orchestration.service.phases.rag_indexing_phase import RagIndexingPhase
+from app.orchestration.service.phases.storage_compaction_phase import StorageCompactionPhase
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +74,8 @@ class BatchMediaPipeline:
             visual_context_synthesis_phase: VisualContextSynthesisPhase,
             context_unification_phase: ContextUnificationPhase,
             clip_extraction_phase: ClipExtractionPhase,
-            rag_indexing_phase: RagIndexingPhase
+            rag_indexing_phase: RagIndexingPhase,
+            storage_compaction_phase: Optional[StorageCompactionPhase] = None
     ):
         self._scan_phase = scan_phase
         self._ingest_phase = ingest_phase
@@ -92,6 +96,7 @@ class BatchMediaPipeline:
         self._context_unification_phase = context_unification_phase
         self._clip_extraction_phase = clip_extraction_phase
         self._rag_indexing_phase = rag_indexing_phase
+        self._storage_compaction_phase = storage_compaction_phase
 
     def _discard_pending_preloads(self) -> None:
         """
@@ -296,24 +301,36 @@ class BatchMediaPipeline:
             if not successful_unification_items:
                 return pipeline_results
 
+            if settings.VIDEO_CLIPS_ENABLED:
+                # ==========================================
+                # PHASE 15.5 & 16: PARALLEL EXECUTION (CPU + GPU)
+                # ==========================================
+                logger.info("Dispatching Phase 15.5 (Clip Extraction) and Phase 16 (Hybrid RAG Indexing) concurrently...")
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                    # Dispatch the GPU-bound Vector Embedding
+                    future_rag = executor.submit(self._rag_indexing_phase.execute, successful_unification_items)
+
+                    # Dispatch the CPU-bound FFmpeg Slicing
+                    future_clip = executor.submit(self._clip_extraction_phase.execute, successful_unification_items)
+
+                    # Wait for both branches to complete
+                    rag_indexing_result = future_rag.result()
+                    clip_extraction_result = future_clip.result()
+
+                pipeline_results[PipelinePhase.RAG_INDEXING] = rag_indexing_result
+                pipeline_results[PipelinePhase.CLIP_EXTRACTION] = clip_extraction_result
+            else:
+                # No per-chunk clips (the hosted web version): a citation is cut from the original when opened
+                rag_indexing_result = self._rag_indexing_phase.execute(successful_unification_items)
+                pipeline_results[PipelinePhase.RAG_INDEXING] = rag_indexing_result
+
             # ==========================================
-            # PHASE 15.5 & 16: PARALLEL EXECUTION (CPU + GPU)
+            # LAST: STORAGE COMPACTION (CPU BOUND), after the clips have been cut from the original
             # ==========================================
-            logger.info("Dispatching Phase 15.5 (Clip Extraction) and Phase 16 (Hybrid RAG Indexing) concurrently...")
-
-            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-                # Dispatch the GPU-bound Vector Embedding
-                future_rag = executor.submit(self._rag_indexing_phase.execute, successful_unification_items)
-
-                # Dispatch the CPU-bound FFmpeg Slicing
-                future_clip = executor.submit(self._clip_extraction_phase.execute, successful_unification_items)
-
-                # Wait for both branches to complete
-                rag_indexing_result = future_rag.result()
-                clip_extraction_result = future_clip.result()
-
-            pipeline_results[PipelinePhase.RAG_INDEXING] = rag_indexing_result
-            pipeline_results[PipelinePhase.CLIP_EXTRACTION] = clip_extraction_result
+            if self._storage_compaction_phase is not None and self._storage_compaction_phase.enabled():
+                pipeline_results[PipelinePhase.STORAGE_COMPACTION] = self._storage_compaction_phase.execute(
+                    [item for item in rag_indexing_result.items if isinstance(item, RagIndexingJobResult)])
 
             logger.info(f"========== Pipeline Completed for Batch [{target_directory}] ==========")
             return pipeline_results

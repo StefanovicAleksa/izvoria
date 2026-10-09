@@ -59,6 +59,25 @@ class AgentClient:
         path = f"/upload/{language}/{batch}/{quote(filename, safe='')}"
         return (await self._call("PUT", address, path, content=body)).json()
 
+    async def offers(self, address: str, after: int, wait: float) -> dict:
+        """Sources the desktop app offered after `after`, long-polling up to `wait` seconds for a new one."""
+        return (await self._call("GET", address, "/offers", params={"after": after, "wait": wait},
+                                 timeout=wait + 10.0)).json()
+
+    async def open_source(self, address: str, offer_id: str, variant: str, range_header: Optional[str]) -> httpx.Response:
+        """
+        The agent's response for one offered file, unread: the caller streams it to the browser and closes it. An
+        error status is returned too, not raised, so the browser sees the agent's own reason.
+        """
+        request = self._client.build_request(
+            "GET", f"http://{address}/offers/{quote(offer_id, safe='')}/{quote(variant, safe='')}",
+            headers={"range": range_header} if range_header else {},
+        )
+        try:
+            return await self._client.send(request, stream=True)
+        except httpx.HTTPError as exc:
+            raise AgentUnavailable(f"The appliance box isn't answering yet ({exc.__class__.__name__}).") from exc
+
     async def aclose(self) -> None:
         await self._client.aclose()
 
