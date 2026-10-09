@@ -113,6 +113,40 @@ class TestLlamaServerChatModel:
 
         assert module._budgets["http://127.0.0.1:8081"].in_use == 0
 
+    def test_a_request_the_shared_cache_cannot_hold_yet_waits_instead_of_reaching_the_server(self):
+        # llama-server fails requests that overflow its shared cache ("Context size has been exceeded") instead of
+        # queueing them (measured, docs/web_deploy.md "M0 spike"): the budget is the only thing that makes them wait
+        entered, release_first = threading.Event(), threading.Event()
+        completions = []
+
+        class SlowServer(FakeServer):
+            def __call__(self, request, timeout):
+                if request.full_url.endswith("/v1/chat/completions"):
+                    completions.append(time.monotonic())
+                    if len(completions) == 1:
+                        entered.set()
+                        release_first.wait(5)
+                return super().__call__(request, timeout)
+
+        server = SlowServer(n_ctx=1000)
+        client = make_client(server, kv_tokens=1000)
+        first = threading.Thread(target=client.chat, args=([{"role": "user", "content": "a " * 400}],),
+                                 kwargs={"enable_thinking": False, "max_tokens": 200})
+        second = threading.Thread(target=client.chat, args=([{"role": "user", "content": "b " * 400}],),
+                                  kwargs={"enable_thinking": False, "max_tokens": 200})
+        first.start()
+        assert entered.wait(5)
+        second.start()
+        time.sleep(0.2)
+
+        assert len(completions) == 1  # 600 + 600 tokens > 1000: the second is held back, not sent
+
+        release_first.set()
+        first.join(5)
+        second.join(5)
+        assert len(completions) == 2
+        assert module._budgets["http://127.0.0.1:8081"].in_use == 0
+
     def test_http_error_becomes_a_llama_server_error(self):
         def failing(request, timeout):
             if request.full_url.endswith("/props"):

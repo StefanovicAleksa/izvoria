@@ -138,15 +138,76 @@ If the live side measures over 13.5 GB:
 
 ## M0 spike: run this before anything else (rented 3090)
 
-1. Build `llama-server` (`web_deploy/provision/build_llama_server.sh`). Start it the way `llama_server.sh` does: `--parallel 4 --kv-unified -c 196608 -ctk q8_0 -ctv q8_0 -fa on --jinja --reasoning-format none`.
-2. Confirm Qwen3.5's hybrid layers load with parallel slots, and that `/props` reports the slot `n_ctx`.
-3. Measure VRAM (`nvidia-smi`) at 1, 2, 4 and 6 slots and at 128K, 160K, 192K and 256K total. Pick `LLM_SERVER_PARALLEL` and `LLM_SERVER_KV_TOKENS`.
-4. Send four requests at once, one of them ~120K tokens. Watch what happens when the KV cache runs out: an error, or a retry. This decides how strict `KvTokenBudget` must be.
-5. Measure per-request and aggregate tokens/s, against the in-process baseline.
-6. Run `scripts/eval/rag_eval.py` with the 9B as scrubber: `LLM_BACKEND=llama_server RETRIEVAL_SCRUBBER_MODEL_PATH=models/Qwen3.5-9B-Q4_K_M.gguf RETRIEVAL_SCRUBBER_CONCURRENCY=3`. Compare keep/drop decisions and latency with the 7B. The target is 8 chunks in under 8 × 2.4 s.
-7. Record the numbers here. `build_llama_server.sh` is pinned to `b11396` (`2e7c58c`), the release the dev-card run below validated; if the 3090 needs another release, re-run these checks on it and change the pin.
+It needs **only a rented GPU box**: no Hetzner VPS, no domain, no accounts. The test signs its own requests to the box's API with `WEB_API_SECRET`, exactly as the gateway would. It is one command, `web_deploy/spike` (`python -m web_deploy.spike`), in three stages:
 
-**If parallel slots plus unified KV fail on Qwen3.5, stop: the fallback (`--parallel 2` without `--kv-unified`) caps a request's context below 128K, and that needs a decision.**
+| Stage | What it answers | Needs |
+|---|---|---|
+| `sweep` | llama-server's VRAM at each slot count and shared KV size (default grid: 1–6 slots, 128K–256K tokens); whether `--kv-unified` lets one slot use the whole cache; **which `LLM_SERVER_PARALLEL` / `LLM_SERVER_KV_TOKENS` to use** (most slots, then the biggest cache, that keeps 128K per request and the live side under 13.5 GB) | the 9B GGUF |
+| `stress` | at that size: the JSON grammar through the app's own client; throughput one after another vs at once; a ~120K-token request beside three short chats; more long requests than the cache holds, sent straight to the server and again through `KvTokenBudget` | the 9B GGUF |
+| `shared` | **the production layout itself**: the box running as provisioned, a facts document ingested, then a video ingested on the ingestion half while three users keep chatting on the live half; VRAM peak, failed chats, whether the answers stay right | every model |
+
+`all` runs the three in order: it stops the supervisord programs for the first two, writes the sweep's pick into `api.env` (the original is kept as `api.env.before-spike`), and starts them again for the third. The result is `/workspace/spike/report.md` (verdicts first, then the numbers) and `results.json`.
+
+**Steps:**
+1. Rent the box on Vast: one RTX 3090, the `*-cudnn-devel-ubuntu22.04` image, about 120 GB of disk, port 8095 exposed. Prefer a host with fast download and upload: the models travel from your machine.
+2. Copy the code and models, then provision (as in "Setting it up"; `provision.sh` is happy with the example settings, or with `prod/api.env` copied in first):
+   ```bash
+   web_deploy/provision/sync_to_box.sh root@<ip> <port>            # all models (51 GB) for the full test
+   web_deploy/provision/sync_to_box.sh root@<ip> <port> --live     # or just the live models (12 GB): sweep + stress only
+   ssh -p <port> root@<ip> 'bash /workspace/onyx_v3/web_deploy/provision/provision.sh && bash /workspace/onyx_v3/web_deploy/provision/onstart.sh'
+   ```
+3. Put a real recording on the box for the shared test (5–20 minutes of speech with slides is a fair test; without one it uses the 15-second test clip):
+   ```bash
+   scp -P <port> lecture.mp4 root@<ip>:/workspace/samples/
+   ```
+4. Run it (about 1–1.5 h for `all`; `tmux` keeps it going if the SSH session drops):
+   ```bash
+   cd /workspace/onyx_v3 && set -a && . /workspace/web/api.env && set +a
+   venv/bin/python -m web_deploy.spike all --video /workspace/samples/lecture.mp4
+   ```
+5. Copy the report home (`scp -P <port> root@<ip>:/workspace/spike/report.md .`), record the numbers here, put the chosen `LLM_SERVER_PARALLEL` / `LLM_SERVER_KV_TOKENS` into `prod/api.env`, then **destroy the instance** (a stopped one still bills its disk).
+
+**Cost:** a 3090 rents for roughly $0.15–0.40 an hour, so the whole test is a few dollars; the slowest part is usually uploading the models.
+
+**Reading it.** Every verdict line should say PASS. The ones that need a decision:
+- *No layout with 128K per request fits:* the fallback (`--parallel 2` without `--kv-unified`) caps a request's context below 128K, and that needs a decision.
+- *A video doesn't ingest beside chat, or chats fail during it:* the 24 GB split doesn't hold. Lower `LLM_SERVER_KV_TOKENS` (not a request's 128K) and re-run `shared`, or set `GPU_SHARING=exclusive` (ingestion pauses chat, as on the dev card).
+- *The JSON grammar fails:* the pinned llama.cpp release behaves differently on this machine; don't move the pin without re-running this.
+
+The retrieval scrubber's quality on the 9B (`scripts/eval/rag_eval.py`) is not part of it: it needs the labelled dev corpus, and the dev-card run below already compared its verdicts.
+
+**A trial on the 12 GB dev card (2026-10-09)** ran all three stages at smaller sizes (`sweep --grid 2:65536,4:65536,4:98304`, `stress --kv 65536 --long-tokens 40000`, `shared` against `run_local` with `--api-url http://127.0.0.1:8095`). It found:
+- **llama-server rejects an over-full cache; it doesn't queue.** Two 40K-token requests sent at once into a 64K cache both failed ("Context size has been exceeded"). Through the app's client, `KvTokenBudget` made the second wait, and both were answered. So the budget is load-bearing: never call llama-server around it.
+  - Checked around it, all through the app's client in a 64K cache: two 52K requests one after the other, and one 28K request followed by two more at once, all answered. The server frees an idle slot's cached prompt when a new request needs the room, so `cache_prompt` doesn't defeat the budget. A 64K prompt allowed a 3K reply ends that reply where the cache is full (`finish_reason: length`), not with an error.
+  - `test_a_request_the_shared_cache_cannot_hold_yet_waits_instead_of_reaching_the_server` fails if a request ever goes around the budget.
+- Short chats beside a 40K-token request waited about 37 s. Fixed by the scheduler patch below.
+- Four answers ran 48 tokens/s one after another and 113 tokens/s at once.
+
+### llama-server patch: answers before long prompts
+
+llama-server is built with Onyx's own patch, `web_deploy/provision/llama_patches/0001-server-answers-before-long-prompts.patch`, which `build_llama_server.sh` applies to the pinned release.
+
+**The problem.** In every step llama-server first adds one token for each answer being written, then fills the batch with prompts still being read. A step finishes only when everything in it is done. While someone's long prompt (a report section, a long conversation) is being read, each answer token waits for a 2K-token chunk of it: answers dropped from ~50 to ~5 tokens a second, and chats asked beside a 40K-token request took 43 s instead of 5.
+
+**The patch** (only `update_slots()`'s prompt loop in `tools/server/server-context.cpp`):
+- Prompts still to be read are taken shortest-remaining-first (stable), instead of in slot order.
+- While any answer is being written, a prompt with more than `ONYX_SHORT_PROMPT_TOKENS` left to read waits, and reads at most `ONYX_LONG_PROMPT_TRICKLE` tokens a step. With no trickle it skips the step before anything else runs for it: no state change, no checkpoint. Shorter prompts are still read in full batches, so a new chat starts at once. Once no answer is being written, long prompts read in full batches again.
+- Both variables unset (or 0): llama-server's own behaviour, apart from the order.
+
+**Measured on the dev card** (40K-token request, then three chats over ~4K tokens of evidence 2 s later):
+
+| | Chats | The long request |
+|---|---|---|
+| unpatched | 43 s | 41 s |
+| patched, unset | 42 s | 40 s |
+| `ONYX_SHORT_PROMPT_TOKENS=8192`, no trickle | **13 s** | 44.5 s |
+| same, 64-token trickle | 21 s | 46.5 s |
+
+So the settings are `ONYX_SHORT_PROMPT_TOKENS=16384` and `ONYX_LONG_PROMPT_TRICKLE=0`, in `api.env` / `local.env`. A long request is held back only while answers are being written: in a firm that chats constantly, a report section waits its turn.
+
+**Checked:** llama.cpp's own server tests (`tools/server/tests`: completion, chat, streaming, context shift, slot save, KV, infill, tokenize, embeddings, rerank, speculative) give the same result on the patched build, unset and with the rule forced on every prompt, as on the unpatched one. The spike's stress stage re-measures the rule on the 3090.
+
+**Moving the pin** means re-applying the patch (`build_llama_server.sh` refuses one that doesn't apply) and re-running the spike's stress stage.
 
 ### What a partial run on the 12 GB dev card showed (2026-10-04, llama.cpp `2e7c58c`)
 

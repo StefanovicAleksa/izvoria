@@ -4,6 +4,31 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## llama-server writes answers before reading long prompts
+
+While someone's long prompt was being read (a report section, a long conversation), every chat's answer crawled. Each step had to finish a 2K-token chunk of that prompt before any answer moved on: chats asked beside a 40K-token request took 43 s instead of 5.
+
+- **`web_deploy/provision/llama_patches/0001-server-answers-before-long-prompts.patch`**, applied by `build_llama_server.sh` to the pinned release (47 lines in `update_slots()`'s prompt loop):
+  - Pending prompts are read shortest-first.
+  - While any answer is being written, a prompt with more than `ONYX_SHORT_PROMPT_TOKENS` (16384) left to read waits.
+  - Unset, the server behaves as before.
+- **Measured on the dev card:** chats beside a long request 43 s -> 13 s; the long request 42 s -> 45 s.
+- **Checked against llama.cpp's own server tests** (190 tests): unpatched, patched unset and patched with the rule forced on every prompt all give the same result.
+- The spike's stress stage measures it, rule off against on.
+- **The web deployment scripts were never on GitHub:** `.gitignore` ignores `*.sh`, and only `deploy/` had an exception. `!/web_deploy/**/*.sh` adds `provision.sh`, `install_gateway.sh`, `build_llama_server.sh`, `llama_server.sh`, `onstart.sh` and `sync_to_box.sh`.
+
+## The M0 spike as one command, on a rented GPU alone
+
+The spike in `docs/web_deploy.md` was a checklist of manual measurements, and its decisive question (does ingestion fit beside live chat on one 24 GB card?) had no test at all.
+
+- **`python -m web_deploy.spike all`** (`web_deploy/spike/`), run on the rented box after `provision.sh`. It needs no VPS, domain or accounts: it signs its own requests to the box's API.
+  - `sweep` measures llama-server's VRAM per slot count and shared cache size, and picks `LLM_SERVER_PARALLEL` / `LLM_SERVER_KV_TOKENS`.
+  - `stress` checks the JSON grammar through the app's client, throughput, a ~120K-token request beside short chats, and an over-full cache both straight to the server and through `KvTokenBudget`.
+  - `shared` runs the production layout: a video ingested while three users chat, with VRAM watched and answers checked against a planted fact.
+  - The output is a report with verdicts first (`/workspace/spike/report.md`).
+- **`sync_to_box.sh --live`** copies only the live models (12 GB instead of 51 GB) for a sweep-and-stress run.
+- **Found in a trial on the dev card:** llama-server fails requests that overflow the shared cache rather than queueing them. `KvTokenBudget` is what turns that into waiting.
+
 ## Web: off-box backups, and a pinned llama.cpp
 
 Every firm's database and vault lived only on the rented GPU box's disk, and `llama-server` was built from llama.cpp's `master`.
