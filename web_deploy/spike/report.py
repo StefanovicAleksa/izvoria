@@ -131,7 +131,10 @@ def render(results: dict) -> str:
                 f"times {alone.get('seconds')} s, peak VRAM {_gb(alone.get('peak_vram_mb'))}, "
                 f"notice period right: {alone.get('notice_period_right')}.",
                 f"- **Video ingestion** (`{shared.get('video')}`): {video.get('status')} in {video.get('minutes')} "
-                f"min. {('Error: ' + str(video.get('error'))) if video.get('error') else ''}",
+                f"min, {(video.get('report') or {}).get('succeeded', 0)} file(s) indexed, "
+                f"{(video.get('report') or {}).get('vectors_created', 0)} chunks. "
+                f"{('Error: ' + str(video.get('error'))) if video.get('error') else ''}"
+                f"{('Errors: ' + '; '.join(str(v)[:200] for v in (video.get('report') or {}).get('errors', {}).values())) if (video.get('report') or {}).get('errors') else ''}",
                 f"- **Chat during ingestion:** {during.get('ok')} answered, {during.get('failed')} failed, median "
                 f"{during.get('median_s')} s, notice period right {during.get('notice_period_right')}. "
                 f"{'Errors: ' + '; '.join(during.get('errors', [])) if during.get('errors') else ''}",
@@ -139,8 +142,14 @@ def render(results: dict) -> str:
                 f"{_gb(shared.get('vram_total_mb'))}.",
                 "",
             ]
-            verdicts.append(_verdict(video.get("status") == "done", "a video ingests while users chat",
-                                     "the video ingestion failed beside live chat (out of VRAM?)"))
+            video_report = video.get("report") or {}
+            indexed = video.get("status") == "done" and video_report.get("succeeded", 0) > 0 \
+                and not video_report.get("errors")
+            verdicts.append(_verdict(indexed, "a video ingests while users chat",
+                                     "the video was not indexed beside live chat: "
+                                     + "; ".join(str(v)[:160] for v in (video_report.get("errors") or {}).values())
+                                     if video_report.get("errors") else
+                                     "the video was not indexed beside live chat (out of VRAM?)"))
             verdicts.append(_verdict(during.get("failed") == 0 and during.get("ok", 0) > 0,
                                      "every chat during ingestion was answered",
                                      "chats failed during ingestion"))

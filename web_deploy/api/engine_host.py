@@ -170,7 +170,7 @@ class EngineHost(IEngineHost):
         root = self.firm_dir(firm)
         for sub in ("vault", "reports", "uploads"):
             (root / sub).mkdir(parents=True, exist_ok=True)
-        url = (f"postgresql://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
+        url = (f"postgresql+psycopg2://{settings.POSTGRES_USER}:{settings.POSTGRES_PASSWORD}"
                f"@{settings.POSTGRES_SERVER}:{settings.POSTGRES_PORT}/{name}")
         database = self._app["DatabaseManager"](url=url, pool_size=self._settings.firm_pool_size,
                                                 max_overflow=self._settings.firm_pool_overflow)

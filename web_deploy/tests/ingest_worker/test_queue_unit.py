@@ -86,3 +86,22 @@ class TestOrigin:
 
         assert upgraded.get("j1").origin is JobOrigin.UPLOAD
         IngestQueue.connect(url)  # a second start finds the column and leaves it alone
+
+
+class TestConnectNamesTheDriver:
+    def test_a_bare_postgresql_url_uses_psycopg2_not_sqlalchemys_newer_default(self, monkeypatch):
+        # SQLAlchemy 2.1 made psycopg (3) the default for postgresql://; the box installs psycopg2
+        from web_deploy.ingest_worker import queue as module
+        seen = {}
+
+        def fake_create_engine(url, **kwargs):
+            seen["url"] = url
+            raise RuntimeError("stop here")
+
+        monkeypatch.setattr(module, "create_engine", fake_create_engine)
+        try:
+            IngestQueue.connect("postgresql://onyx:pw@127.0.0.1:5432/onyx_control")
+        except RuntimeError:
+            pass
+
+        assert seen["url"] == "postgresql+psycopg2://onyx:pw@127.0.0.1:5432/onyx_control"

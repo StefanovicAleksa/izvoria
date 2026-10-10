@@ -55,7 +55,9 @@ class Settings(BaseSettings):
 
     @property
     def DATABASE_URL(self) -> str:
-        return f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+        # The driver is named: SQLAlchemy 2.1 made psycopg (3) the default for a bare postgresql://, and the
+        # appliance installs psycopg2. A fresh install picks up 2.1, so without it nothing connects.
+        return f"postgresql+psycopg2://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}@{self.POSTGRES_SERVER}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
 
     # ==========================================
     # STORAGE ISOLATION

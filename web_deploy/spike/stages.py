@@ -179,8 +179,10 @@ def stress(env: Dict[str, str], sampler: VramSampler, parallel: int, kv_tokens: 
 
         # 4. More long requests than the shared cache holds: refused, queued, or broken?
         count = kv_tokens // long_tokens + 1
+        # Each a different text: identical prompts share their cached prefix and never fill the cache
+        prompts = [f"Copy {i}. " + prompt.replace("Section", f"S{i}-Section") for i in range(count)]
         with sampler:
-            results = _at_once([lambda: server.chat(prompt, max_tokens=24) for _ in range(count)])
+            results = _at_once([lambda p=p: server.chat(p, max_tokens=24) for p in prompts])
         healthy = True
         try:
             server.props()
@@ -192,16 +194,16 @@ def stress(env: Dict[str, str], sampler: VramSampler, parallel: int, kv_tokens: 
                                       "peak_vram_mb": sampler.peak}
 
         # 5. The same burst through the app's own client: KvTokenBudget should make the excess wait, not fail
-        def through_client() -> Completion:
+        def through_client(text: str) -> Completion:
             started = time.monotonic()
             try:
-                client.chat([{"role": "user", "content": prompt}], enable_thinking=False, max_tokens=24)
+                client.chat([{"role": "user", "content": text}], enable_thinking=False, max_tokens=24)
                 return Completion(ok=True, seconds=time.monotonic() - started)
             except Exception as exc:
                 return Completion(ok=False, seconds=time.monotonic() - started,
                                   error=f"{type(exc).__name__}: {exc}"[:300])
 
-        results = _at_once([through_client for _ in range(count)])
+        results = _at_once([lambda p=p: through_client("Again. " + p) for p in prompts])
         report["cache_exhaustion_via_client"] = {**_summary(results), "requests": count}
     except Exception as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"

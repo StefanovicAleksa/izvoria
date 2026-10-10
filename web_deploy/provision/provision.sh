@@ -12,14 +12,19 @@ WEB=/workspace/web
 ENV_FILE="${WEB}/api.env"
 PGDATA=/workspace/pgdata
 export DEBIAN_FRONTEND=noninteractive
+# Keep a config file the image already changed (Vast's base image ships its own supervisord.conf) instead of
+# stopping at dpkg's "keep or replace?" question, which aborts the install when nobody can answer it
+APT_KEEP_CONF=(-o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold)
 cd "${ROOT}"
+# Finish anything an earlier, interrupted run left half-configured
+dpkg --force-confdef --force-confold --configure -a || true
 
 echo "== System packages"
 apt-get update
-apt-get install -y --no-install-recommends software-properties-common
+apt-get install -y "${APT_KEEP_CONF[@]}" --no-install-recommends software-properties-common
 add-apt-repository -y ppa:deadsnakes/ppa
 apt-get update
-apt-get install -y --no-install-recommends ca-certificates curl gnupg lsb-release rsync ffmpeg git \
+apt-get install -y "${APT_KEEP_CONF[@]}" --no-install-recommends ca-certificates curl gnupg lsb-release rsync ffmpeg git \
     build-essential cmake python3.11 python3.11-venv python3.11-dev supervisor openssl restic openssh-client tmux
 
 echo "== PostgreSQL 15 + pgvector"
@@ -30,7 +35,7 @@ if [ ! -f /etc/apt/sources.list.d/pgdg.list ]; then
         > /etc/apt/sources.list.d/pgdg.list
     apt-get update
 fi
-apt-get install -y --no-install-recommends postgresql-15 postgresql-15-pgvector
+apt-get install -y "${APT_KEEP_CONF[@]}" --no-install-recommends postgresql-15 postgresql-15-pgvector
 pg_dropcluster --stop 15 main 2>/dev/null || true
 
 echo "== Secrets and settings"
@@ -82,6 +87,20 @@ echo "== Appliance venv, with the web API on top"
 venv/bin/pip install --upgrade pip
 venv/bin/pip install -r requirements.txt -r web_deploy/api/requirements.txt
 venv/bin/pip install --no-deps -r requirements-nodeps.txt
+# PyTorch and its companions as CUDA 12.6 builds, the same versions pip just chose. PyPI's default builds target the
+# newest CUDA (13.x) and refuse a host whose driver tops out lower ("driver too old"), and torchcodec's CUDA-13 build
+# can't even load beside a 12.x torch. 12.6 runs on any host whose driver supports CUDA 12.6 or newer (Vast's
+# "Max CUDA" column), which is nearly every rented GPU.
+TORCH_CUDA="${TORCH_CUDA:-cu126}"
+read -r TORCH_V TORCHAUDIO_V TORCHVISION_V TORCHCODEC_V < <(venv/bin/python - <<'PY'
+import importlib.metadata as m
+print(*(m.version(p).split("+")[0] for p in ("torch", "torchaudio", "torchvision", "torchcodec")))
+PY
+)
+venv/bin/pip install --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}" \
+    "torch==${TORCH_V}+${TORCH_CUDA}" "torchaudio==${TORCHAUDIO_V}+${TORCH_CUDA}" "torchvision==${TORCHVISION_V}+${TORCH_CUDA}"
+venv/bin/pip install --no-deps --index-url "https://download.pytorch.org/whl/${TORCH_CUDA}" "torchcodec==${TORCHCODEC_V}+${TORCH_CUDA}"
+venv/bin/python -c "import torch; from torchcodec.decoders import AudioDecoder; assert torch.cuda.is_available(), 'torch sees no GPU'; print('torch', torch.__version__, 'on', torch.cuda.get_device_name(0))"
 NVCC_VERSION="$(nvcc --version | grep -oP 'release \K[0-9.]+')"
 if [ "$(cat venv/.llama_cpp_cuda_marker 2>/dev/null)" != "${NVCC_VERSION}" ]; then
     # Ingestion still runs its small GGUFs in-process

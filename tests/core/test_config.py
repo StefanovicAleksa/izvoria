@@ -170,3 +170,10 @@ class TestRememberedLanguage:
         (tmp_path / "development" / "active_language").write_text("de")
 
         assert Settings(DATA_DIR=str(tmp_path), ENV="development", REMEMBER_LANGUAGE=True).APPLIANCE_LANGUAGE == "en"
+
+
+class TestDatabaseUrl:
+    def test_names_the_psycopg2_driver(self):
+        # SQLAlchemy 2.1 made psycopg (3) the default for a bare postgresql://, which the appliance doesn't install
+        from app.core.config import settings
+        assert settings.DATABASE_URL.startswith("postgresql+psycopg2://")
