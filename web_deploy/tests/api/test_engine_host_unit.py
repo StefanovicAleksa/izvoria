@@ -45,7 +45,7 @@ class TestFirmEngines:
         root = settings.tenants_root / "legal-demo"
         host.ensure_database.assert_called_once_with("onyx_firm_legal_demo")
         host._app["DatabaseManager"].assert_called_once_with(
-            url="postgresql://onyx:pw@db:5432/onyx_firm_legal_demo", pool_size=2, max_overflow=1)
+            url="postgresql+psycopg2://onyx:pw@db:5432/onyx_firm_legal_demo", pool_size=2, max_overflow=1)
         host._app["OnyxBootstrapper"].build.assert_called_once_with(
             progress_listener=host._progress_listener, database=host._app["DatabaseManager"].return_value,
             vault_dir=root / "vault", reports_dir=root / "reports", kit=host._kit)

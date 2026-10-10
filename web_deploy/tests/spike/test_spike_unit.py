@@ -112,7 +112,8 @@ class TestRender:
                        "cache_exhaustion_via_client": {"ok": 2, "failed": 0, "requests": 2}},
             "shared": {"vram_total_mb": 24576, "video": "/v.mp4",
                        "chat_alone": {"ok": 3, "failed": 0, "notice_period_right": True},
-                       "video_job": {"status": "done", "minutes": 9.5},
+                       "video_job": {"status": "done", "minutes": 9.5,
+                                     "report": {"succeeded": 1, "vectors_created": 40, "errors": {}}},
                        "chat_during_ingestion": {"ok": 30, "failed": 0, "peak_vram_mb": 22000,
                                                  "notice_period_right": "10 of 10"}},
         }
@@ -157,3 +158,17 @@ class TestRenderPriority:
         }}
 
         assert "FAIL: the scheduler patch did not speed chats up" in render(results)
+
+
+class TestRenderVideoVerdict:
+    def test_a_finished_job_that_indexed_nothing_is_a_failure(self):
+        results = {"shared": {"vram_total_mb": 24576, "video": "/v.mp4", "chat_alone": {"ok": 3, "failed": 0},
+                              "video_job": {"status": "done", "minutes": 0.3, "report": {
+                                  "succeeded": 0, "vectors_created": 0,
+                                  "errors": {"vad_error_0": "Could not load libtorchcodec_image.so"}}},
+                              "chat_during_ingestion": {"ok": 12, "failed": 0}}}
+
+        text = render(results)
+
+        assert "FAIL: the video was not indexed beside live chat: Could not load libtorchcodec_image.so" in text
+        assert "0 file(s) indexed" in text

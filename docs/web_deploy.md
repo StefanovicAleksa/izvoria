@@ -183,6 +183,29 @@ The retrieval scrubber's quality on the 9B (`scripts/eval/rag_eval.py`) is not p
 - Short chats beside a 40K-token request waited about 37 s. Fixed by the scheduler patch below.
 - Four answers ran 48 tokens/s one after another and 113 tokens/s at once.
 
+### The 3090 run (2026-10-10): passed
+
+`python -m web_deploy.spike all` on a rented RTX 3090 (Vast, Hungary, driver CUDA 12.7, Ubuntu 24.04), with a 16-minute lecture (speech + slides). Every verdict passed.
+
+| | Measured |
+|---|---|
+| llama-server VRAM | 8.1 GB (1–4 slots, 128K) … 9.8 GB (6 slots, 192K) … 11.2 GB (6 slots, 256K) |
+| **Chosen layout** | **`LLM_SERVER_PARALLEL=6`, `LLM_SERVER_KV_TOKENS=196608`**: live side ~12.8 GB, every request keeps 128K |
+| Throughput | 97 tok/s one at a time, 213 tok/s four at once |
+| A 120K-token request beside three chats | all answered; the chats in 3.6 s |
+| Chats beside a long request, scheduler patch off → on | 61.6 s → 6.5 s; the long request 62.1 → 62.3 s |
+| **Ingestion beside live chat** | the lecture indexed in 4.1 min while 3 users chatted: **147 of 147 chats answered** (median 1.6 s, slowest 4.8 s), 49 of 49 correct; **peak VRAM 20.2 GB of 24** (Qwen2-VL 7.9 GB beside the live side's 12.3 GB) |
+
+Four things a fresh box got wrong, now fixed (each would break every new deploy):
+- **SQLAlchemy 2.1** (unpinned) made psycopg 3 the default driver for `postgresql://`: every database URL now names `postgresql+psycopg2`.
+- **dpkg's config question** stopped `provision.sh` on Vast's base image, which ships its own `supervisord.conf`: apt now keeps existing config files.
+- **PyPI's PyTorch targets CUDA 13**, and the host's driver stopped at 12.7, so the API refused to start; torchcodec's CUDA-13 build couldn't even load. `provision.sh` reinstalls torch, torchaudio, torchvision and torchcodec as the same versions' CUDA 12.6 builds and checks the GPU. Rent hosts whose "Max CUDA" is 12.6 or more.
+- The report counted a finished ingestion job that indexed nothing as a pass; it now needs an indexed file. Not a deploy bug, but it hid the torchcodec failure for one run.
+
+Not measured here: the over-full cache. Its two long requests shared one cached prompt, so the cache never filled; the stress stage now sends different prompts. The dev card's run below shows what overflowing does, and `KvTokenBudget`'s test guards it.
+
+**Getting models onto a rented box.** Uploading 51 GB from a home connection (~2 MB/s up) takes ~7 hours. Instead, the box downloaded the 12 models that exist on Hugging Face (37 GB, every file checked against the local copy's hash) in 8 minutes; only the locally quantized Qwen2-VL (6.3 GB) and the small NeMo/OCR files were uploaded. Gemma 4 E4B is only needed for Serbian.
+
 ### llama-server patch: answers before long prompts
 
 llama-server is built with Onyx's own patch, `web_deploy/provision/llama_patches/0001-server-answers-before-long-prompts.patch`, which `build_llama_server.sh` applies to the pinned release.

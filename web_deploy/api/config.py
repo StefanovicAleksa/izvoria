@@ -41,7 +41,7 @@ class ApiSettings:
             tenants_root=Path(os.environ.get("TENANTS_ROOT", "/workspace/tenants")),
             media_cache_root=Path(os.environ.get("SOURCE_CACHE_ROOT", "/workspace/source-cache")),
             control_database_url=os.environ.get(
-                "CONTROL_DATABASE_URL", f"postgresql://{user}:{password}@{server}:{port}/onyx_control"),
+                "CONTROL_DATABASE_URL", f"postgresql+psycopg2://{user}:{password}@{server}:{port}/onyx_control"),
             admin_database=os.environ.get("POSTGRES_ADMIN_DB", "postgres"),
             live_workers=int(os.environ.get("WEB_LIVE_WORKERS", "8")),
             report_workers=int(os.environ.get("REPORT_MAX_CONCURRENT", "2")),

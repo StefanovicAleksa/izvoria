@@ -4,6 +4,16 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## The 3090 test passed; four fresh-box bugs fixed
+
+The M0 spike ran on a rented RTX 3090 and every verdict passed. While a 16-minute lecture was ingested, three simulated users chatted: 147 of 147 chats were answered (median 1.6 s), and VRAM peaked at 20.2 GB of 24. The chosen layout is 6 slots and 196,608 KV tokens (`api.env.example`). The scheduler patch made chats beside a long request answer in 6.5 s instead of 61.6 s. Numbers in `docs/web_deploy.md`, "The 3090 run".
+
+A fresh box exposed four bugs that every new deploy would have hit:
+- **SQLAlchemy 2.1** defaults `postgresql://` to psycopg 3, which isn't installed. `DATABASE_URL`, the control database URL and each firm's URL now name `postgresql+psycopg2`, and `IngestQueue.connect` normalizes a bare URL.
+- **`provision.sh` stopped at dpkg's "keep your supervisord.conf?" question** on Vast's base image. apt now keeps existing config files, and an interrupted install is finished first.
+- **PyPI's PyTorch build needs CUDA 13 drivers.** `provision.sh` reinstalls torch, torchaudio, torchvision and torchcodec as the same versions' CUDA 12.6 builds (`TORCH_CUDA`), then checks that torch sees the GPU and torchcodec loads.
+- **The spike's report passed a video job that indexed nothing**, and its over-full-cache check used one prompt twice, so the cache never filled. It now requires an indexed file and sends different prompts.
+
 ## llama-server writes answers before reading long prompts
 
 While someone's long prompt was being read (a report section, a long conversation), every chat's answer crawled. Each step had to finish a 2K-token chunk of that prompt before any answer moved on: chats asked beside a 40K-token request took 43 s instead of 5.

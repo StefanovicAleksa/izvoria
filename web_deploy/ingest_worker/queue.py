@@ -138,6 +138,10 @@ class IngestQueue:
 
     @classmethod
     def connect(cls, url: str) -> "IngestQueue":
+        # A bare postgresql:// (e.g. CONTROL_DATABASE_URL set by hand) means psycopg 3 under SQLAlchemy 2.1+, which
+        # isn't installed: name the driver the box has
+        if url.startswith("postgresql://"):
+            url = "postgresql+psycopg2://" + url[len("postgresql://"):]
         if url.startswith("sqlite"):
             # Unit tests: one shared in-memory database across threads
             from sqlalchemy.pool import StaticPool
