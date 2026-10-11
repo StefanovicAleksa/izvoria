@@ -52,7 +52,7 @@ class SceneDetectorAPI:
         """
         try:
             # 1. Secure Temporary Directory Context
-            with tempfile.TemporaryDirectory(prefix="onyx_scenes_") as tmpdir:
+            with tempfile.TemporaryDirectory(prefix="izvoria_scenes_") as tmpdir:
                 tmp_path = Path(tmpdir)
 
                 # 2. CPU-Bound Extraction (Fast-Seeking via FFmpeg Adapter)

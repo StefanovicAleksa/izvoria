@@ -1,7 +1,7 @@
 # Path: scripts/eval/language_benchmark/prepare.py
 
 """
-Turns downloaded material into the files Onyx ingests.
+Turns downloaded material into the files Izvoria ingests.
 
 Reference utterances are 5-20 s each; ingesting each one alone would never exercise what a real recording does
 (VAD over long audio, batched decoding, the hallucination filter, sentence reconstruction across utterances). So

@@ -16,7 +16,7 @@ What the session did:
 - 9 new files in `app/`, `tests/` and `docs/`.
 - 98 files in `web_deploy/`, excluding `node_modules`, `.venv` and the built app.
 
-**Not touched:** your uncommitted work from before the session (`deploy/**`, the source-offer files in `frontend/onyx_desktop/**` and `frontend/tests/**`, `docs/deploy.md`, `docs/frontend.md`). `web_deploy/` *imports* four `deploy/` modules but doesn't modify them (see 3.10).
+**Not touched:** your uncommitted work from before the session (`deploy/**`, the source-offer files in `frontend/izvoria_desktop/**` and `frontend/tests/**`, `docs/deploy.md`, `docs/frontend.md`). `web_deploy/` *imports* four `deploy/` modules but doesn't modify them (see 3.10).
 
 `CLAUDE.md` already had uncommitted edits of yours before the session. My additions are the four paragraphs listed in 6.1, so its diff mixes both.
 
@@ -134,7 +134,7 @@ What the session did:
 - **Embedder and reranker:** each adapter takes a `threading.Lock` around `encode` / `predict`. The HF fast tokenizer is not thread-safe ("Already borrowed"). The lock is uncontended on the desktop. Files: `rag_retrieval/data/embedding_adapter.py`, `rag_reranking/data/cross_encoder_adapter.py`.
 - **Checked:** no live or report pipeline, phase, feature API or `JobManager` stores per-run state on itself, beyond the preload future above.
 
-### 2.5 Engine concurrency (`app/engine/service/onyx_engine.py`)
+### 2.5 Engine concurrency (`app/engine/service/izvoria_engine.py`)
 
 **New constructor arguments:** `database`, `owns_model_service` (default `True`), `concurrent_live` (default from settings), `report_max_concurrent`.
 
@@ -183,7 +183,7 @@ What the session did:
   - `language_scope(code)`, a context manager over a `ContextVar`;
   - `submit_in_context(executor, fn, ...)`, which carries the override into thread pools.
 - `get_language_pack()` now follows `active_language()`.
-- `settings.APPLIANCE_LANGUAGE` reads on the live path were replaced in `report_api.py` (the report's stored language) and `onyx_engine.active_language`. `storage_api.py` and `ingest_phase.py` still read settings, which is intentional: ingestion runs one job per child process.
+- `settings.APPLIANCE_LANGUAGE` reads on the live path were replaced in `report_api.py` (the report's stored language) and `izvoria_engine.active_language`. `storage_api.py` and `ingest_phase.py` still read settings, which is intentional: ingestion runs one job per child process.
 - The appliance never sets an override, so nothing changes there.
 
 ### 2.9 Parallel scrubbing (`retrieval_hallucination_scrubber/service/scrubber_api.py`)
@@ -216,7 +216,7 @@ It sits outside the feature-first layout, like `deploy/`, with its own venvs. No
   - `LiveGate`, the pause/resume admission counter for local mode.
 - **`engine_host.py`** is the only module that imports `app.*`:
   - At startup it builds one `ModelKit` and warms it, after waiting up to 10 minutes for llama-server's health.
-  - It creates each firm's database (`firm_db.ensure_firm_database`), vault, reports and uploads directories, and `OnyxEngine` on first use, with a small connection pool per firm (3 + 3).
+  - It creates each firm's database (`firm_db.ensure_firm_database`), vault, reports and uploads directories, and `IzvoriaEngine` on first use, with a small connection pool per firm (3 + 3).
   - It implements `pause()` and `resume()` (local mode).
 - **`app.py`** routes:
   - chat and reasoned chat, search, evidence;

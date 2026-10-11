@@ -75,13 +75,13 @@ class _VramSampler:
 def ingest(dirs: LanguageDirs) -> dict:
     import soundfile as sf
     from app.core.config import settings
-    from app.engine.service.bootstrap import OnyxBootstrapper
+    from app.engine.service.bootstrap import IzvoriaBootstrapper
 
     media = sorted(dirs.media.glob("*.wav"))
     audio_minutes = sum(sf.info(str(path)).duration for path in media) / 60
     already = set(_sources_by_file()) if _database_has_sources() else set()
 
-    engine = OnyxBootstrapper.build()
+    engine = IzvoriaBootstrapper.build()
     engine.start()
     started = time.perf_counter()
     try:

@@ -6,13 +6,13 @@ from unittest.mock import patch
 
 import pytest
 
-from onyx_desktop.data.report_writer import default_filename, save_markdown
-from onyx_desktop.domain.entities import ReportDocument
-from onyx_desktop.domain.enums import ReportRunStatus
+from izvoria_desktop.data.report_writer import default_filename, save_markdown
+from izvoria_desktop.domain.entities import ReportDocument
+from izvoria_desktop.domain.enums import ReportRunStatus
 
 REPORT_ID = uuid.UUID("55555555-5555-5555-5555-555555555555")
 
-_LINKED = "# Topic\n\nSealed [Doc 1](onyx://doc/1) and stored [Doc 3](onyx://doc/3).\n"
+_LINKED = "# Topic\n\nSealed [Doc 1](izvoria://doc/1) and stored [Doc 3](izvoria://doc/3).\n"
 
 
 def _document(markdown_path=None, markdown=_LINKED) -> ReportDocument:
@@ -46,7 +46,7 @@ class TestSaveMarkdown:
 
     def test_the_fallback_strips_the_internal_link_scheme(self, tmp_path):
         """
-        `onyx://doc/N` only means something inside this app. A saved report has to be readable on its
+        `izvoria://doc/N` only means something inside this app. A saved report has to be readable on its
         own -- that is the entire point of the references table.
         """
         destination = tmp_path / "saved.md"
@@ -54,7 +54,7 @@ class TestSaveMarkdown:
         save_markdown(_document(), str(destination))
 
         written = destination.read_text(encoding="utf-8")
-        assert "onyx://" not in written
+        assert "izvoria://" not in written
         assert "[Doc 1]" in written and "[Doc 3]" in written
 
     def test_returns_an_explanation_instead_of_raising(self, tmp_path):
@@ -120,7 +120,7 @@ class TestDefaultSavePath:
         """
         from pathlib import Path
 
-        from onyx_desktop.data.report_writer import default_save_path
+        from izvoria_desktop.data.report_writer import default_save_path
 
         document = ReportDocument(
             report_id=REPORT_ID, topic="Chain of custody", markdown="",

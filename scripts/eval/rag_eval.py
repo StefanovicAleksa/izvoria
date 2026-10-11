@@ -5,7 +5,7 @@ Scores retrieval and cited answering against scripts/eval/rag_labels.json (quest
 Stages:
 - retrieval: real RetrievalAPI -> RerankAPI -> RetrievalScrubberAPI, no answer model. Reports hit@k/MRR after RRF and
   rerank, how often a relevant chunk survives the scrubber, and how much survives for unanswerable questions.
-- answer: the real engine (OnyxBootstrapper) end to end, `chat` or `reasoned`. Reports answer rate,
+- answer: the real engine (IzvoriaBootstrapper) end to end, `chat` or `reasoned`. Reports answer rate,
   refusal correctness, whether a citation points at a relevant chunk, and uncited answers.
 
 Relevant chunks are listed by chunk_id prefix, so the labels only fit the dev DB they were written against.
@@ -171,9 +171,9 @@ def run_retrieval(labels: dict, only: Optional[set], top_n: int, cache: Optional
 
 
 def run_answer(labels: dict, only: Optional[set], mode: str, top_n: int) -> dict:
-    from app.engine.service.bootstrap import OnyxBootstrapper
+    from app.engine.service.bootstrap import IzvoriaBootstrapper
 
-    engine = OnyxBootstrapper.build()
+    engine = IzvoriaBootstrapper.build()
     engine.start()
 
     answerable = _selected(labels["answerable"], only)

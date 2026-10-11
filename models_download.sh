@@ -9,7 +9,7 @@ cd "$(dirname "$0")"
 
 echo "Starting offline model provisioning for the QA generation / Deep Research reasoner LLM..."
 
-# Prefer the project venv so the model lands in the same environment Onyx runs in
+# Prefer the project venv so the model lands in the same environment Izvoria runs in
 PYTHON="venv/bin/python"
 [ -x "$PYTHON" ] || PYTHON="python3"
 HF="venv/bin/hf"

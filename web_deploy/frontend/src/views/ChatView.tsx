@@ -126,7 +126,7 @@ export function ChatView() {
               <div key={i} className="turn-user">{m.text}</div>
             ) : (
               <div key={i} className="turn-assistant">
-                <div className="speaker">Onyx</div>
+                <div className="speaker">Izvoria</div>
                 {m.error ? (
                   <p className="banner danger">{m.error}</p>
                 ) : (

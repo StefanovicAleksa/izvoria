@@ -27,7 +27,7 @@ class WikidataSparqlClient(IWikidataAdapter):
         self.languages = list(languages or get_language_pack().glossary.wikidata_languages)
         self.label_languages = [lang for lang in self.languages if lang != "la"] or self.languages
         # Wikidata strictly enforces User-Agents to prevent server abuse.
-        self.user_agent = "OnyxGlossaryMiner/1.0 (Enterprise RAG Appliance DevTool; Contact: dev@onyx.local)"
+        self.user_agent = "IzvoriaGlossaryMiner/1.0 (Enterprise RAG Appliance DevTool; Contact: dev@onyx.local)"
 
         self.client = SPARQLWrapper(self.endpoint_url, agent=self.user_agent)
         self.client.setReturnFormat(JSON)

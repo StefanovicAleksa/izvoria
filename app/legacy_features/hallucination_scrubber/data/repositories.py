@@ -40,7 +40,7 @@ class HallucinationRepository(IHallucinationRepository):
             )
 
             with self._db.session() as session:
-                # Onyx standard: we merge to handle re-processing/upserts cleanly
+                # Izvoria standard: we merge to handle re-processing/upserts cleanly
                 session.merge(db_model)
 
             return transcript

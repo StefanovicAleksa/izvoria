@@ -12,13 +12,13 @@
 | `chunk_ids uuid[]`, `scores float8[]` | the hits as shown, in rank order, with the score each had. For a verified search these are the hits that survived the scrubber |
 | `execution_time_ms`, `created_at` | |
 
-**`chunk_ids` is not a foreign key**, following the same rule as `research_report_evidence.chunk_id`. Re-ingesting a file cascades its chunks away, and the record of what was searched for has to outlive that. A reader hydrates the ids with `OnyxEngine.get_chunks` and simply gets fewer back. The desktop app counts the gap ("1 hit is no longer in the index") rather than hiding it.
+**`chunk_ids` is not a foreign key**, following the same rule as `research_report_evidence.chunk_id`. Re-ingesting a file cascades its chunks away, and the record of what was searched for has to outlive that. A reader hydrates the ids with `IzvoriaEngine.get_chunks` and simply gets fewer back. The desktop app counts the gap ("1 hit is no longer in the index") rather than hiding it.
 
 `SearchRecord` refuses a row whose scores don't line up with its chunks (`SearchHistoryDataError`).
 
 ## Where it is written
 
-`OnyxEngine.search_standard` / `search_verified` call `SearchHistoryAPI.record` after the search succeeds, outside the search's `try`. A failed search records nothing. A failure to record is logged and never costs the user the search they just ran: history is a convenience, the search is the job.
+`IzvoriaEngine.search_standard` / `search_verified` call `SearchHistoryAPI.record` after the search succeeds, outside the search's `try`. A failed search records nothing. A failure to record is logged and never costs the user the search they just ran: history is a convenience, the search is the job.
 
 ## Reading it back (engine facade)
 
@@ -35,7 +35,7 @@ These are database reads that take no engine lock and load no model. They need o
 
 ## Reopening a conversation
 
-The desktop gateway rebuilds `[Doc N]` from the turns alone (`OnyxEngineGateway.load_conversation`). The numbers are conversation-wide: turn *k*'s new evidence is numbered `first_doc_number`, `first_doc_number + 1`, … So one number → chunk map resolves every tag in every answer, including a follow-up that cites an earlier turn's excerpt.
+The desktop gateway rebuilds `[Doc N]` from the turns alone (`IzvoriaEngineGateway.load_conversation`). The numbers are conversation-wide: turn *k*'s new evidence is numbered `first_doc_number`, `first_doc_number + 1`, … So one number → chunk map resolves every tag in every answer, including a follow-up that cites an earlier turn's excerpt.
 
 - A chat answer is stored with its tags. They are normalised (`[Doc 1, 3]` → `[Doc 1][Doc 3]`), and its cards are exactly what it cites.
 - A Reasoned Answer is stored without tags (its own numbering would collide), so its cards are the evidence it showed first.

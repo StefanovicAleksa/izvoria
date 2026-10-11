@@ -36,11 +36,11 @@ export function HelpSupport({ me }: { me: Me | null }) {
   };
 
   const footer = signedIn ? (
-    <span><Link to="/">{t("Back to Onyx")}</Link></span>
+    <span><Link to="/">{t("Back to Izvoria")}</Link></span>
   ) : (
     <>
       <span><Link to="/signin">{t("Back to sign in")}</Link></span>
-      <span>{t("Is your firm not using Onyx yet?")} <Link to="/request-access">{t("Request access for your firm")}</Link></span>
+      <span>{t("Is your firm not using Izvoria yet?")} <Link to="/request-access">{t("Request access for your firm")}</Link></span>
     </>
   );
 

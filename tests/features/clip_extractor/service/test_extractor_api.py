@@ -74,7 +74,7 @@ class TestClipExtractorAPI:
         mock_storage.get_source.return_value = mock_source
 
         # FFmpeg returns a fake path
-        mock_ffmpeg.extract_clip.return_value = Path("/tmp/onyx_clip.mp4")
+        mock_ffmpeg.extract_clip.return_value = Path("/tmp/izvoria_clip.mp4")
 
         # Storage returns a vaulted file
         vaulted_file = MagicMock()

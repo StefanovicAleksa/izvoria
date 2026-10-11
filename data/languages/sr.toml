@@ -142,7 +142,7 @@ no_sources_cited = "_Nijedan izvor nije citiran._"
 unresolved_reference = "_nerazrešeno_"
 no_speakers = "—"
 # Serbian nouns take three forms after a number, so the templates name counts instead of agreeing with them
-generated = "> Izveštaj je generisao Onyx {generated}. Citirani odlomci: {cited}; izvori: {sources}."
+generated = "> Izveštaj je generisala Izvoria {generated}. Citirani odlomci: {cited}; izvori: {sources}."
 coverage_partial = "> Obuhvat: pregledano {swept} od {indexed} indeksiranih izvora."
 coverage_all = "> Obuhvat: pregledani su svi indeksirani izvori ({indexed})."
 rounds_many = "> Broj krugova pretrage: {rounds} ({mode} režim); kasniji krugovi su ponovo tražili dokaze za odeljke koje prvi prolaz nije mogao da podrži."

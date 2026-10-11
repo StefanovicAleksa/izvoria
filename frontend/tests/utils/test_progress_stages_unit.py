@@ -3,8 +3,8 @@
 
 import pytest
 
-from onyx_desktop.domain.enums import IngestMode
-from onyx_desktop.utils.progress_stages import (
+from izvoria_desktop.domain.enums import IngestMode
+from izvoria_desktop.utils.progress_stages import (
     JOBS_PER_STAGE,
     STAGES_BY_MODE,
     report_step,

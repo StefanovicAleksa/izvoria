@@ -5,7 +5,7 @@ import logging
 from typing import List, Optional, Dict, Any
 
 from app.tools.glossary_miner.domain.interfaces import IWikidataAdapter, IGlossaryStorageAdapter
-from app.tools.glossary_miner.domain.entities import OnyxGlossaryManifest, SubDomainGlossary
+from app.tools.glossary_miner.domain.entities import IzvoriaGlossaryManifest, SubDomainGlossary
 from app.tools.glossary_miner.utils.term_cleaner import clean_and_extract_terms
 from app.tools.glossary_miner.exceptions import DataProcessingError
 
@@ -35,7 +35,7 @@ class GlossaryMinerAPI:
             limit: int = 5000
     ) -> str:
         """
-        Executes the full pipeline to generate an aggregated Onyx-ready JSON glossary.
+        Executes the full pipeline to generate an aggregated Izvoria-ready JSON glossary.
 
         Args:
             file_name: The desired output file name (e.g., 'finance.json').
@@ -81,7 +81,7 @@ class GlossaryMinerAPI:
             raise DataProcessingError(f"Failed to extract any valid sub-domains for {file_name}.")
 
         # 4. PACKAGE
-        manifest = OnyxGlossaryManifest(
+        manifest = IzvoriaGlossaryManifest(
             base_terms=base_terms,
             sub_domains=sub_domains_payload
         )
@@ -101,7 +101,7 @@ class GlossaryMinerAPI:
             limit: int = 5000
     ) -> str:
         """
-        Legacy Method: Executes the full pipeline to generate an Onyx-ready JSON glossary for a single subdomain.
+        Legacy Method: Executes the full pipeline to generate an Izvoria-ready JSON glossary for a single subdomain.
         """
         logger.info(f"Starting extraction for Sub-Domain: {sub_domain_name} (Q-ID: {wikidata_parent_id})")
 
@@ -121,7 +121,7 @@ class GlossaryMinerAPI:
             terms=cleaned_terms
         )
 
-        manifest = OnyxGlossaryManifest(
+        manifest = IzvoriaGlossaryManifest(
             base_terms=[],
             sub_domains={
                 sub_domain_name.upper(): sub_domain_glossary

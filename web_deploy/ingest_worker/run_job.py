@@ -82,7 +82,7 @@ def run(job_id: str, queue: IngestQueue) -> int:
         return 2
 
     from app.core.config import settings
-    from app.engine.service.bootstrap import OnyxBootstrapper
+    from app.engine.service.bootstrap import IzvoriaBootstrapper
     from web_deploy.api.firm_db import ensure_firm_database
 
     engine = None
@@ -91,7 +91,7 @@ def run(job_id: str, queue: IngestQueue) -> int:
         ensure_firm_database(settings.POSTGRES_DB, settings.POSTGRES_SERVER, settings.POSTGRES_PORT,
                              settings.POSTGRES_USER, settings.POSTGRES_PASSWORD,
                              os.environ.get("POSTGRES_ADMIN_DB", "postgres"))
-        engine = OnyxBootstrapper.build(progress_listener=ProgressWriter(queue, job_id))
+        engine = IzvoriaBootstrapper.build(progress_listener=ProgressWriter(queue, job_id))
         engine.start()
         ingest = {
             IngestMode.VIDEO: engine.ingest_videos,

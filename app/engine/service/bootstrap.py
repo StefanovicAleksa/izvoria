@@ -178,8 +178,8 @@ from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
 from app.orchestration.service.pipelines.live_reasoning_pipeline import LiveReasoningPipeline
 from app.orchestration.service.pipelines.deep_research_report_pipeline import DeepResearchReportPipeline
 
-from app.engine.domain.interfaces import IOnyxEngine
-from app.engine.service.onyx_engine import OnyxEngine
+from app.engine.domain.interfaces import IIzvoriaEngine
+from app.engine.service.izvoria_engine import IzvoriaEngine
 
 logger = logging.getLogger(__name__)
 
@@ -244,16 +244,16 @@ class ModelKit:
         self.orchestrator.shutdown_all({})
 
 
-class OnyxBootstrapper:
+class IzvoriaBootstrapper:
     """
-    Dependency Injection Container for the Onyx Appliance.
+    Dependency Injection Container for the Izvoria Appliance.
     Initializes all core services, repositories, APIs, phases, and pipelines,
-    and injects them into the final OnyxEngine facade.
+    and injects them into the final IzvoriaEngine facade.
     """
 
     @classmethod
-    def switch_language(cls, engine: Optional[IOnyxEngine], code: str,
-                        progress_listener: Optional[Callable] = None) -> IOnyxEngine:
+    def switch_language(cls, engine: Optional[IIzvoriaEngine], code: str,
+                        progress_listener: Optional[Callable] = None) -> IIzvoriaEngine:
         """
         Makes `code` the active language and returns a started engine built for it. Model paths are baked into
         the manifests at build time (a language's pack may swap the small models), so the engine is rebuilt
@@ -312,7 +312,7 @@ class OnyxBootstrapper:
               database: Optional[IDatabaseManager] = None,
               vault_dir: Optional[Path] = None,
               reports_dir: Optional[Path] = None,
-              kit: Optional[ModelKit] = None) -> IOnyxEngine:
+              kit: Optional[ModelKit] = None) -> IIzvoriaEngine:
         """
         `progress_listener(phase, state, source_id, detail)` is handed to the JobManager, which
         every Phase routes its per-file work through. A long-running caller (the desktop app)
@@ -638,7 +638,7 @@ class OnyxBootstrapper:
         )
 
         # --- Final Engine Assembly ---
-        engine = OnyxEngine(
+        engine = IzvoriaEngine(
             async_model_service=async_service,
             media_pipeline=media_pipeline,
             audio_pipeline=audio_pipeline,
@@ -660,5 +660,5 @@ class OnyxBootstrapper:
             storage_compaction_phase=storage_compaction_phase,
         )
 
-        logger.info("Onyx Bootstrapper successfully constructed the Engine container.")
+        logger.info("Izvoria Bootstrapper successfully constructed the Engine container.")
         return engine

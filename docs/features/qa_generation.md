@@ -16,7 +16,7 @@ Input: `user_query: str`, `retrieved_chunks: List[RetrievedChunk]`. Output: a ge
 
 ## Where it fits
 
-The final stage of `LiveQAPipeline`, after `rag_retrieval`, `rag_reranking` and `retrieval_hallucination_scrubber`. Exposed at the top level as `OnyxEngine.chat()`, which hydrates each citation's `physical_path` exactly as search hydrates result chunks: the extracted clip if there is one, otherwise the ingested source file.
+The final stage of `LiveQAPipeline`, after `rag_retrieval`, `rag_reranking` and `retrieval_hallucination_scrubber`. Exposed at the top level as `IzvoriaEngine.chat()`, which hydrates each citation's `physical_path` exactly as search hydrates result chunks: the extracted clip if there is one, otherwise the ingested source file.
 
 ## Gotchas / design notes
 

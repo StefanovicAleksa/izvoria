@@ -53,6 +53,6 @@ describe("Help & support", () => {
     expect(await screen.findByText("Message sent")).toBeInTheDocument();
     expect(calls[0].body).toMatchObject({ email: "a@firm.com", firm: "legal-demo", subject: "Upload fails",
                                           message: "It stops at 40%.", website: "" });
-    expect(screen.getByRole("link", { name: "Back to Onyx" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Back to Izvoria" })).toBeInTheDocument();
   });
 });

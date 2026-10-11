@@ -275,7 +275,7 @@ def reports(query: str, data: str, codes: List[str]) -> dict:
     import psycopg2
     from app.core.config import settings
     from app.core.language.service.language_api import get_language_pack
-    from app.engine.service.bootstrap import OnyxBootstrapper
+    from app.engine.service.bootstrap import IzvoriaBootstrapper
 
     translations = _translations()
     distinctive = distinctive_stopwords({c: get_language_pack(c).text.stopwords for c in codes})
@@ -286,7 +286,7 @@ def reports(query: str, data: str, codes: List[str]) -> dict:
         source_language = {row[0]: row[1] for row in cursor.fetchall()}
     db.close()
 
-    engine = OnyxBootstrapper.build()
+    engine = IzvoriaBootstrapper.build()
     engine.start()
     try:
         topic = translations[data]["topic"][query]

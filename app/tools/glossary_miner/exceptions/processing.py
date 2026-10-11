@@ -12,5 +12,5 @@ class TermExtractionError(DataProcessingError):
     pass
 
 class ManifestFormattingError(DataProcessingError):
-    """Raised when the cleaned Python dictionary fails to validate against the OnyxGlossaryManifest Pydantic schema."""
+    """Raised when the cleaned Python dictionary fails to validate against the IzvoriaGlossaryManifest Pydantic schema."""
     pass

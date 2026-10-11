@@ -4,7 +4,7 @@
 
 ## What it does
 
-Recursively walks a filesystem directory to discover ingestible media/document files. Since Onyx is on-prem/offline, this is how new client files (dropped into a watched folder) get discovered in the first place.
+Recursively walks a filesystem directory to discover ingestible media/document files. Since Izvoria is on-prem/offline, this is how new client files (dropped into a watched folder) get discovered in the first place.
 
 ## How it does it
 
@@ -20,6 +20,6 @@ Phase 1 (`ScanPhase`) of every batch pipeline (media, audio, document, image) �
 
 ## Gotchas / design notes
 
-**Onyx's own output is never scanned** (`is_onyx_output`). The vault stores frames, clips, extracted audio and copies of every ingested file under `<storage root>/YYYY/MM/DD` (`ONYX_STORAGE_PATH`, default `onyx_data`), and finished reports under `REPORTS_DIR`. A scan that reached them would re-ingest video frames as images, clips as videos and — worst — the model-written reports (`.md`) as source documents, citing Onyx's own prose as evidence. Those directories are pruned from the walk, and a scan rooted inside one yields nothing. Everything else under the storage root (the language benchmark's `benchmarks/<code>/media`) is still scanned.
+**Izvoria's own output is never scanned** (`is_onyx_output`). The vault stores frames, clips, extracted audio and copies of every ingested file under `<storage root>/YYYY/MM/DD` (`ONYX_STORAGE_PATH`, default `onyx_data`), and finished reports under `REPORTS_DIR`. A scan that reached them would re-ingest video frames as images, clips as videos and — worst — the model-written reports (`.md`) as source documents, citing Izvoria's own prose as evidence. Those directories are pruned from the walk, and a scan rooted inside one yields nothing. Everything else under the storage root (the language benchmark's `benchmarks/<code>/media`) is still scanned.
 
 Deliberate two-tier error strategy: directory access errors abort the whole scan, but individual unreadable files are silently skipped — so a scan can return a partial file list without any warning surfaced to the caller.

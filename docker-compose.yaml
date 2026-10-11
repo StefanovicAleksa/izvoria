@@ -7,7 +7,7 @@ services:
     restart: unless-stopped
     environment:
       - POSTGRES_USER=aleksa
-      - POSTGRES_PASSWORD=Onyx16
+      - POSTGRES_PASSWORD=Izvoria16
       - POSTGRES_DB=onyx_dev_db
     ports:
       - "5432:5432"

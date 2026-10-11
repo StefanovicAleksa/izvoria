@@ -20,7 +20,7 @@ The stable contract for anything downstream: `IRetrievalRepository.execute_hybri
 
 ## Where it fits
 
-The first stage of all three live pipelines — `LiveRetrievalPipeline` (standard search), `LiveVerifiedRetrievalPipeline` and `LiveQAPipeline` (verified search / chat) — always followed by `rag_reranking`. Exposed at the top level as `OnyxEngine.search_standard()`.
+The first stage of all three live pipelines — `LiveRetrievalPipeline` (standard search), `LiveVerifiedRetrievalPipeline` and `LiveQAPipeline` (verified search / chat) — always followed by `rag_reranking`. Exposed at the top level as `IzvoriaEngine.search_standard()`.
 
 ## Gotchas / design notes
 

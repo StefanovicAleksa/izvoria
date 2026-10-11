@@ -97,7 +97,7 @@ class FrameExtractionAPI:
                 return existing_record
 
             # 2. Secure Temporary Directory Context (frames that are not vaulted are removed with it)
-            with tempfile.TemporaryDirectory(prefix=f"onyx_chunk_{chunk.chunk_id}_") as tmpdir:
+            with tempfile.TemporaryDirectory(prefix=f"izvoria_chunk_{chunk.chunk_id}_") as tmpdir:
                 tmp_path = Path(tmpdir)
 
                 # 3. Step 1: Single-pass extraction of the chunk's interval (1 FPS)

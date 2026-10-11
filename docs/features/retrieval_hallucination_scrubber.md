@@ -27,7 +27,7 @@ Input: the user's query text + `List[RetrievedChunk]` from `rag_retrieval`. Outp
 
 ## Where it fits
 
-Runs after `rag_retrieval` → `rag_reranking` in `LiveVerifiedRetrievalPipeline` (exposed as `OnyxEngine.search_verified()`) and in `LiveQAPipeline` (before `qa_generation`, exposed as `OnyxEngine.chat()`). Combined with `rag_retrieval`, this is what "verified search" means in this codebase — there is no separate `verified_search` feature directory; it's this scrubber wired in sequence after standard retrieval.
+Runs after `rag_retrieval` → `rag_reranking` in `LiveVerifiedRetrievalPipeline` (exposed as `IzvoriaEngine.search_verified()`) and in `LiveQAPipeline` (before `qa_generation`, exposed as `IzvoriaEngine.chat()`). Combined with `rag_retrieval`, this is what "verified search" means in this codebase — there is no separate `verified_search` feature directory; it's this scrubber wired in sequence after standard retrieval.
 
 ## Gotchas / design notes
 

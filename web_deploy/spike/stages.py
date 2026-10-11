@@ -254,7 +254,7 @@ def answers_before_long(env: Dict[str, str], parallel: int, kv_tokens: int, work
 
 FACT_FILE = "spike_facts.txt"
 ROUND_SECONDS = 5.0
-FACTS = """Onyx spike test contract between Arden Logistics and Bellweather Freight.
+FACTS = """Izvoria spike test contract between Arden Logistics and Bellweather Freight.
 
 Clause 4. Notice period. Either party may end this agreement by giving forty-seven (47) days' written notice.
 Clause 9. Penalty. A late delivery costs the carrier 3.5 percent of the shipment's invoiced value per day.

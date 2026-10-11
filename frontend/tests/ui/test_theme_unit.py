@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from onyx_desktop.ui import theme
+from izvoria_desktop.ui import theme
 
 
 @pytest.fixture(autouse=True)

@@ -42,7 +42,7 @@ class TestMessages:
                                     subject="Help\r\nBcc: victim@example.com")
         message = build_message(SETTINGS, request)
         assert message["Bcc"] is None
-        assert message["Subject"] == "Onyx support: Help Bcc: victim@example.com"
+        assert message["Subject"] == "Izvoria support: Help Bcc: victim@example.com"
         assert message["To"] == "sales@onyx.test"  # no SUPPORT_TO: the sign-up address takes help too
 
 
@@ -114,5 +114,5 @@ class TestEncoding:
         assert b"=?utf-8?" in raw  # an RFC 2047 encoded word, not raw UTF-8 in a header
         from email import message_from_bytes, policy
         parsed = message_from_bytes(raw, policy=policy.default)
-        assert parsed["Subject"] == "Onyx access request: Petrović & Partneri — Beograd"
+        assert parsed["Subject"] == "Izvoria access request: Petrović & Partneri — Beograd"
         assert "Miloš Šćekić" in parsed.get_content()

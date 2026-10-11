@@ -1,5 +1,5 @@
 [Unit]
-Description=Onyx demo gateway
+Description=Izvoria demo gateway
 After=network-online.target
 Wants=network-online.target
 

@@ -10,7 +10,7 @@ Every chunk records where it sits in its source, which is what a citation points
 
 **`position`** is the chunk's reading order within its source (the index it was written at). Neighbour lookup (`_NEIGHBORS_SQL`), reading order (`order_for_reading`) and neighbour sorting use it, never `start_sec`, which is meaningless for documents. In-memory chunks without a position (cached eval candidates) fall back to time order.
 
-The columns arrive on an existing database through `VECTOR_CHUNKS_UPGRADE_DDL` / `RESEARCH_REPORT_UPGRADE_DDL`, run by `OnyxEngine.start()`: rows from an earlier build become `time` anchors and get `position` backfilled in `start_sec` order. No re-ingest.
+The columns arrive on an existing database through `VECTOR_CHUNKS_UPGRADE_DDL` / `RESEARCH_REPORT_UPGRADE_DDL`, run by `IzvoriaEngine.start()`: rows from an earlier build become `time` anchors and get `position` backfilled in `start_sec` order. No re-ingest.
 
 ## Formatting
 

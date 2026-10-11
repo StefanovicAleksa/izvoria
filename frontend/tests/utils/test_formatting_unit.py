@@ -5,7 +5,7 @@ import uuid
 
 import pytest
 
-from onyx_desktop.utils.formatting import (
+from izvoria_desktop.utils.formatting import (
     duration,
     elide,
     score,
@@ -115,8 +115,8 @@ class TestElide:
 
 class TestLocation:
     def test_a_document_excerpt_shows_its_page(self):
-        from onyx_desktop.domain.entities import Evidence
-        from onyx_desktop.utils.formatting import location
+        from izvoria_desktop.domain.entities import Evidence
+        from izvoria_desktop.utils.formatting import location
 
         evidence = Evidence(doc_number=1, chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), start_sec=0.0,
                             end_sec=0.0, location="p. 7 · Article 7")
@@ -124,8 +124,8 @@ class TestLocation:
         assert location(evidence) == "p. 7 · Article 7"
 
     def test_a_recording_excerpt_shows_its_time_range(self):
-        from onyx_desktop.domain.entities import Evidence
-        from onyx_desktop.utils.formatting import location
+        from izvoria_desktop.domain.entities import Evidence
+        from izvoria_desktop.utils.formatting import location
 
         evidence = Evidence(doc_number=1, chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), start_sec=72, end_sec=108)
 

@@ -228,7 +228,7 @@ class FakeHost(IEngineHost):
         return f"p. {page_start}" if page_start else ""
 
     def render_report(self, report):
-        return f"# {report.topic}\n\nFinding [Doc 1](onyx://doc/1)."
+        return f"# {report.topic}\n\nFinding [Doc 1](izvoria://doc/1)."
 
     def display_math(self, markdown):
         return markdown.replace("$E$", "$$E$$")

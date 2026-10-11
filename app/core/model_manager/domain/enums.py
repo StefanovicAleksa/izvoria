@@ -6,7 +6,7 @@ from enum import Enum
 
 class ModelType(str, Enum):
     """
-    The functional role of the model within the Onyx pipeline.
+    The functional role of the model within the Izvoria pipeline.
     The Domain layer does not care about the specific architecture (e.g., NeMo vs Silero),
     only what the model is supposed to do.
     """

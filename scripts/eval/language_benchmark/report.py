@@ -115,7 +115,7 @@ def write_report(codes: List[str]) -> Path:
     target = BENCH_ROOT / "results" / stamp
     target.mkdir(parents=True, exist_ok=True)
 
-    lines = [f"# Onyx language benchmark — {datetime.now():%Y-%m-%d %H:%M}", "",
+    lines = [f"# Izvoria language benchmark — {datetime.now():%Y-%m-%d %H:%M}", "",
              f"Accuracy target: {ACCURACY_TARGET:.0%} words right (WER ≤ {1 - ACCURACY_TARGET:.0%}).", ""]
     combined: Dict[str, dict] = {}
     for code in codes:

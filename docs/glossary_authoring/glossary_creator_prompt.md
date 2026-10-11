@@ -1,7 +1,7 @@
 # Glossary creator prompt
 
 A prompt for Claude that turns a filled-in firm profile (`firm_profile_template.md`) into the per-language
-glossaries Onyx reads at ingestion (`data/glossaries/<lang>/<industry>.json`).
+glossaries Izvoria reads at ingestion (`data/glossaries/<lang>/<industry>.json`).
 
 **How to use it**
 
@@ -36,7 +36,7 @@ glossaries Onyx reads at ingestion (`data/glossaries/<lang>/<industry>.json`).
 ```text
 ==================== BEGIN PROMPT ====================
 
-You are building speech-recognition glossaries for Onyx, an on-premise AI appliance that transcribes a firm's
+You are building speech-recognition glossaries for Izvoria, an on-premise AI appliance that transcribes a firm's
 recordings with Whisper and then answers questions only from those transcripts, with a citation for every claim.
 The firm's lawyers, doctors or analysts rely on those answers. A transcript error on a key term (a drug, a
 statute, a counterparty, an instrument) becomes a wrong or unfindable answer. Your glossaries are the main tool

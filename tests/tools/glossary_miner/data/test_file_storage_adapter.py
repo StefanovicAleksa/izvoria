@@ -5,7 +5,7 @@ import pytest
 from unittest.mock import patch, mock_open
 
 from app.tools.glossary_miner.data.file_storage_adapter import LocalFileStorageAdapter
-from app.tools.glossary_miner.domain.entities import OnyxGlossaryManifest
+from app.tools.glossary_miner.domain.entities import IzvoriaGlossaryManifest
 from app.tools.glossary_miner.exceptions import DataProcessingError
 
 
@@ -15,7 +15,7 @@ class TestLocalFileStorageAdapter:
     @patch("builtins.open", new_callable=mock_open)
     def test_save_manifest_success(self, mock_file_open, mock_mkdir):
         adapter = LocalFileStorageAdapter(base_dir="/fake/dir")
-        manifest = OnyxGlossaryManifest()
+        manifest = IzvoriaGlossaryManifest()
 
         result = adapter.save_manifest("test_glossary.json", manifest)
 
@@ -32,7 +32,7 @@ class TestLocalFileStorageAdapter:
     @patch("builtins.open", side_effect=PermissionError("Access Denied"))
     def test_save_manifest_io_error(self, mock_file_open, mock_mkdir):
         adapter = LocalFileStorageAdapter(base_dir="/fake/dir")
-        manifest = OnyxGlossaryManifest()
+        manifest = IzvoriaGlossaryManifest()
 
         with pytest.raises(DataProcessingError, match="Failed to write glossary manifest"):
             adapter.save_manifest("test.json", manifest)

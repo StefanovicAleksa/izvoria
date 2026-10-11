@@ -81,10 +81,10 @@ class TestClassify:
 
 class TestDownloadName:
     @pytest.mark.parametrize("label, location, suffix, expected", [
-        ("[Doc 3]", "p. 7 · Article 7 Termination", ".PDF", "Onyx Doc 3 - p. 7 - Article 7 Termination.pdf"),
-        ("[Doc 12]", "00:12:31–00:14:02", ".mp4", "Onyx Doc 12 - 00.12.31-00.14.02.mp4"),
-        ("[Doc 1]", "../../etc/passwd", ".txt", "Onyx Doc 1 - .._.._etc_passwd.txt"),
-        ("", "", ".wav", "Onyx source.wav"),
+        ("[Doc 3]", "p. 7 · Article 7 Termination", ".PDF", "Izvoria Doc 3 - p. 7 - Article 7 Termination.pdf"),
+        ("[Doc 12]", "00:12:31–00:14:02", ".mp4", "Izvoria Doc 12 - 00.12.31-00.14.02.mp4"),
+        ("[Doc 1]", "../../etc/passwd", ".txt", "Izvoria Doc 1 - .._.._etc_passwd.txt"),
+        ("", "", ".wav", "Izvoria source.wav"),
     ])
     def test_readable_and_safe(self, label, location, suffix, expected):
         assert download_name(label, location, suffix) == expected

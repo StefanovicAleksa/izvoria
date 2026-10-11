@@ -1,4 +1,4 @@
-# Onyx documentation
+# Izvoria documentation
 
 Per-feature technical documentation — what each module does and how it does it (real class names, algorithms, thresholds, gotchas). For architecture, conventions, and how to add a new feature, see the root [`CLAUDE.md`](../CLAUDE.md). For build history, see the root [`CHANGELOG.md`](../CHANGELOG.md).
 
@@ -36,7 +36,7 @@ The batch ingestion pipeline (`BatchMediaPipeline` for video, `BatchAudioPipelin
 - Chat → rag_retrieval → retrieval_hallucination_scrubber → [qa_generation](features/qa_generation.md)
 - History → [search_history](features/search_history.md) (past searches, and how conversations are listed and reopened)
 
-See [orchestration.md](orchestration.md) for the full Phase/Pipeline inventory and [engine.md](engine.md) for how `OnyxEngine` exposes all of this.
+See [orchestration.md](orchestration.md) for the full Phase/Pipeline inventory and [engine.md](engine.md) for how `IzvoriaEngine` exposes all of this.
 
 ## Core infrastructure
 
@@ -48,9 +48,9 @@ See [orchestration.md](orchestration.md) for the full Phase/Pipeline inventory a
 
 ## Composition layer
 
-- [engine.md](engine.md) — `OnyxBootstrapper` (DI root) and `OnyxEngine` (top-level facade)
+- [engine.md](engine.md) — `IzvoriaBootstrapper` (DI root) and `IzvoriaEngine` (top-level facade)
 - [orchestration.md](orchestration.md) — Phase and Pipeline inventory
-- [frontend.md](frontend.md) — the PySide6 desktop app (`frontend/`), which drives `OnyxEngine` in-process
+- [frontend.md](frontend.md) — the PySide6 desktop app (`frontend/`), which drives `IzvoriaEngine` in-process
 - [deploy.md](deploy.md) — hosted demo: gateway VPS + on-demand Vast.ai GPU box streaming the desktop app over noVNC
 
 ## Features (`app/features/`)

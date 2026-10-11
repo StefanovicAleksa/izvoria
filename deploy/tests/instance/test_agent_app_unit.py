@@ -197,8 +197,8 @@ class TestServeOffer:
         assert response.status_code == 200
         assert response.headers["content-security-policy"] == "sandbox"
         assert response.headers["content-disposition"] == (
-            "attachment; filename=\"Onyx Doc 4 - Uvod - _lan 2.html\"; "
-            "filename*=UTF-8''Onyx%20Doc%204%20-%20Uvod%20-%20%C4%8Clan%202.html")
+            "attachment; filename=\"Izvoria Doc 4 - Uvod - _lan 2.html\"; "
+            "filename*=UTF-8''Izvoria%20Doc%204%20-%20Uvod%20-%20%C4%8Clan%202.html")
 
     def test_html_is_never_served_inline(self, client, settings):
         offer_id = offer(client, vault_file(settings, "a.html"), media_kind="document")

@@ -69,7 +69,7 @@ class IEngineHost(ABC):
 
     @abstractmethod
     def engine(self, firm: str) -> Any:
-        """The firm's started OnyxEngine, created (database, migrations, vault) on first use."""
+        """The firm's started IzvoriaEngine, created (database, migrations, vault) on first use."""
 
     @abstractmethod
     def firm_dir(self, firm: str) -> Path:
@@ -102,7 +102,7 @@ class IEngineHost(ABC):
 
     @abstractmethod
     def render_report(self, report: Any) -> str:
-        """The report as Markdown with clickable `[Doc N](onyx://doc/N)` citations."""
+        """The report as Markdown with clickable `[Doc N](izvoria://doc/N)` citations."""
 
     @abstractmethod
     def display_math(self, markdown: str) -> str:

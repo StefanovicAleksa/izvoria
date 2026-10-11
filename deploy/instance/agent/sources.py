@@ -115,12 +115,12 @@ def classify(path: Path) -> Tuple[SourceKind, str]:
 
 
 def download_name(doc_label: str, location: str, suffix: str) -> str:
-    """`Onyx Doc 3 - p. 7 - Article 7 Termination.pdf`: what the tester saves, recognisable without the app."""
+    """`Izvoria Doc 3 - p. 7 - Article 7 Termination.pdf`: what the tester saves, recognisable without the app."""
     label = " - ".join(part for part in (doc_label.strip("[] "), location) if part)
     label = label.replace(":", ".").replace("–", "-").replace("·", "-")
     label = re.sub(r"[^\w.,()\- ]", "_", label, flags=re.UNICODE)
     label = re.sub(r"\s+", " ", label).strip(" .")[:150]
-    return f"Onyx {label}{suffix.lower()}" if label else f"Onyx source{suffix.lower()}"
+    return f"Izvoria {label}{suffix.lower()}" if label else f"Izvoria source{suffix.lower()}"
 
 
 @dataclass(frozen=True)

@@ -1,6 +1,6 @@
 # Frontend (`frontend/`)
 
-The desktop application. PySide6 (Qt6) widgets driving `OnyxEngine` in-process on a background
+The desktop application. PySide6 (Qt6) widgets driving `IzvoriaEngine` in-process on a background
 thread. See `frontend/README.md` for how to run it and its known limits; this document covers how
 it fits the rest of the system.
 
@@ -14,13 +14,13 @@ open the recording if you want to hear them.
 
 ## Where it attaches
 
-Only at `OnyxEngine`. The app never imports a feature API, a Phase or a pipeline directly, and the
-composition root stays `OnyxBootstrapper.build()`.
+Only at `IzvoriaEngine`. The app never imports a feature API, a Phase or a pipeline directly, and the
+composition root stays `IzvoriaBootstrapper.build()`.
 
 ```
-frontend/onyx_desktop/data/engine_gateway.py   ← the only module importing app.*
+frontend/izvoria_desktop/data/engine_gateway.py   ← the only module importing app.*
         │
-        └── OnyxBootstrapper.build(progress_listener=…) → IOnyxEngine
+        └── IzvoriaBootstrapper.build(progress_listener=…) → IIzvoriaEngine
                  start / stop / get_state
                  search_standard / search_verified
                  chat / chat_reasoned / research reports
@@ -40,7 +40,7 @@ the source reaches the tester's browser with sound, at its page or lines, with a
 nothing changes. See "Sources in your browser" in `docs/deploy.md`.
 
 Everything above the gateway speaks in frozen dataclasses from
-`frontend/onyx_desktop/domain/entities.py`. No pydantic entity and no `app.*` type crosses onto the
+`frontend/izvoria_desktop/domain/entities.py`. No pydantic entity and no `app.*` type crosses onto the
 GUI thread, which is what lets the entire UI run and be tested against a stub gateway with no GPU,
 database or model weights present.
 
@@ -48,14 +48,14 @@ database or model weights present.
 
 Two small, additive changes, both defaulted so the CLI is unaffected:
 
-- **`OnyxEngine.get_chunks(chunk_ids)` / `list_sources()`** (`app/engine/service/onyx_engine.py`,
-  declared on `IOnyxEngine`). A `QACitation` carries ids, timestamps and a resolved path but **no
+- **`IzvoriaEngine.get_chunks(chunk_ids)` / `list_sources()`** (`app/engine/service/izvoria_engine.py`,
+  declared on `IIzvoriaEngine`). A `QACitation` carries ids, timestamps and a resolved path but **no
   text**, so rendering the cited excerpt beside its clip requires reading the chunks back.
   `get_chunks` is a plain indexed read — no model, no VRAM — and, unlike `RetrievalAPI.get_chunks`,
   the facade resolves physical paths onto the results the same way a search result gets them.
 - **`JobManager(repository, progress_listener=None)`** (`app/core/jobs/service/manager.py`), fired
   at start/finish/fail of every job, and passed through by
-  `OnyxBootstrapper.build(progress_listener=…)`. Every Phase already wraps its per-file work in
+  `IzvoriaBootstrapper.build(progress_listener=…)`. Every Phase already wraps its per-file work in
   `run_job`, so this single hook observes every file of every phase in every pipeline. It is the
   only way a long-running caller can see batch progress, because the pipelines report nothing until
   `process_directory` returns. A listener that raises is logged and ignored — observation must never
@@ -87,12 +87,12 @@ Chat, Search and Report each have a history pane on the left (`ui/widgets/histor
 - **Report** (no delete: reports are deliverables):
   - finished → opens;
   - outline never approved → back to the editable approval step;
-  - stopped, failed, or interrupted mid-run (still listed as gathering/writing when the app went away) with an evidence bank → the written sections plus **Resume** (`OnyxEngine.resume_research_report`), which writes only the missing sections and gathers nothing, so written citations keep their numbers;
+  - stopped, failed, or interrupted mid-run (still listed as gathering/writing when the app went away) with an evidence bank → the written sections plus **Resume** (`IzvoriaEngine.resume_research_report`), which writes only the missing sections and gathers nothing, so written citations keep their numbers;
   - stopped before any evidence → says so and prefills the topic.
 
   The pane won't navigate away from a running report.
 
-**Reads bypass the worker.** `EngineBridge` runs history calls on a second `QThread` (`service/history_reader.py`, thread `onyx-history`). An ingestion or report holds the worker for hours, and picking up an old conversation must not wait behind it. It's safe because `HistoryReader` refuses any gateway method but the database-only history ones (`HISTORY_CALLS`). These reads never touch `busyChanged` or the status bar, and deletes re-list their pane themselves. Resume is the opposite: a GPU job on the worker that takes `RESEARCHING` like any report run.
+**Reads bypass the worker.** `EngineBridge` runs history calls on a second `QThread` (`service/history_reader.py`, thread `izvoria-history`). An ingestion or report holds the worker for hours, and picking up an old conversation must not wait behind it. It's safe because `HistoryReader` refuses any gateway method but the database-only history ones (`HISTORY_CALLS`). These reads never touch `busyChanged` or the status bar, and deletes re-list their pane themselves. Resume is the opposite: a GPU job on the worker that takes `RESEARCHING` like any report run.
 
 ## Related documents
 

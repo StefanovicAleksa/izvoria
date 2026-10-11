@@ -30,7 +30,7 @@ def app_settings():
 def host(settings, app_settings):
     host = EngineHost(settings, progress_listener=MagicMock(name="listener"))
     host._app = dict(settings=app_settings, DatabaseManager=MagicMock(name="DatabaseManager"),
-                     OnyxBootstrapper=MagicMock(name="OnyxBootstrapper"))
+                     IzvoriaBootstrapper=MagicMock(name="IzvoriaBootstrapper"))
     host._kit = MagicMock(name="kit")
     host._ready = True
     with patch.object(EngineHost, "_ensure_database") as ensure:
@@ -46,20 +46,20 @@ class TestFirmEngines:
         host.ensure_database.assert_called_once_with("onyx_firm_legal_demo")
         host._app["DatabaseManager"].assert_called_once_with(
             url="postgresql+psycopg2://onyx:pw@db:5432/onyx_firm_legal_demo", pool_size=2, max_overflow=1)
-        host._app["OnyxBootstrapper"].build.assert_called_once_with(
+        host._app["IzvoriaBootstrapper"].build.assert_called_once_with(
             progress_listener=host._progress_listener, database=host._app["DatabaseManager"].return_value,
             vault_dir=root / "vault", reports_dir=root / "reports", kit=host._kit)
-        assert engine is host._app["OnyxBootstrapper"].build.return_value
+        assert engine is host._app["IzvoriaBootstrapper"].build.return_value
         engine.start.assert_called_once_with()
         assert all((root / sub).is_dir() for sub in ("vault", "reports", "uploads"))
 
     def test_a_firm_engine_is_built_once_and_reused(self, host):
         assert host.engine("legal-demo") is host.engine("legal-demo")
 
-        host._app["OnyxBootstrapper"].build.assert_called_once()
+        host._app["IzvoriaBootstrapper"].build.assert_called_once()
 
     def test_two_firms_get_two_engines(self, host):
-        host._app["OnyxBootstrapper"].build.side_effect = [MagicMock(name="a"), MagicMock(name="b")]
+        host._app["IzvoriaBootstrapper"].build.side_effect = [MagicMock(name="a"), MagicMock(name="b")]
 
         assert host.engine("firm-a") is not host.engine("firm-b")
 
@@ -68,7 +68,7 @@ class TestFirmEngines:
             time.sleep(0.05)
             return MagicMock(name="engine")
 
-        host._app["OnyxBootstrapper"].build.side_effect = slow_build
+        host._app["IzvoriaBootstrapper"].build.side_effect = slow_build
         engines = []
         threads = [threading.Thread(target=lambda: engines.append(host.engine("legal-demo"))) for _ in range(4)]
         for thread in threads:
@@ -76,7 +76,7 @@ class TestFirmEngines:
         for thread in threads:
             thread.join(timeout=5)
 
-        assert host._app["OnyxBootstrapper"].build.call_count == 1
+        assert host._app["IzvoriaBootstrapper"].build.call_count == 1
         assert len(engines) == 4 and all(e is engines[0] for e in engines)
 
     def test_a_firm_whose_engine_fails_to_start_frees_its_pool_and_is_retried_next_time(self, host):
@@ -84,7 +84,7 @@ class TestFirmEngines:
         broken = MagicMock(name="broken")
         broken.start.side_effect = RuntimeError("migration failed")
         healthy = MagicMock(name="healthy")
-        host._app["OnyxBootstrapper"].build.side_effect = [broken, healthy]
+        host._app["IzvoriaBootstrapper"].build.side_effect = [broken, healthy]
 
         with pytest.raises(RuntimeError, match="migration failed"):
             host.engine("legal-demo")
@@ -93,7 +93,7 @@ class TestFirmEngines:
         assert host.engine("legal-demo") is healthy
 
     def test_a_failed_build_frees_the_pool_too(self, host):
-        host._app["OnyxBootstrapper"].build.side_effect = ValueError("bad wiring")
+        host._app["IzvoriaBootstrapper"].build.side_effect = ValueError("bad wiring")
 
         with pytest.raises(ValueError):
             host.engine("legal-demo")
@@ -118,7 +118,7 @@ class TestBusyAndStop:
         a, b = MagicMock(name="a"), MagicMock(name="b")
         a.busy_snapshot.return_value = {"inflight": 2, "reports_running": 0}
         b.busy_snapshot.return_value = {"inflight": 1, "reports_running": 1}
-        host._app["OnyxBootstrapper"].build.side_effect = [a, b]
+        host._app["IzvoriaBootstrapper"].build.side_effect = [a, b]
         host.engine("firm-a")
         host.engine("firm-b")
 

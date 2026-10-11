@@ -92,7 +92,7 @@ class BatchAudioPipeline:
 
     def process_directory(self, target_directory: str) -> Dict[PipelinePhase, PhaseBatchResult]:
         pipeline_results: Dict[PipelinePhase, PhaseBatchResult] = {}
-        logger.info(f"========== Starting Onyx Audio Batch Pipeline for [{target_directory}] ==========")
+        logger.info(f"========== Starting Izvoria Audio Batch Pipeline for [{target_directory}] ==========")
 
         try:
             # ==========================================

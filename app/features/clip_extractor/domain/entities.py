@@ -14,7 +14,7 @@ class VideoClip(BaseModel):
     source_id: uuid.UUID
     chunk_id: uuid.UUID
 
-    # Links to the actual physical .mp4 file stored in the Onyx Vault
+    # Links to the actual physical .mp4 file stored in the Izvoria Vault
     extracted_file_id: uuid.UUID
 
     start_sec: float

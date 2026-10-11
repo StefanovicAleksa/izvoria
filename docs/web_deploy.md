@@ -1,4 +1,4 @@
-# Hosted Onyx for many firms (`web_deploy/`)
+# Hosted Izvoria for many firms (`web_deploy/`)
 
 This is the hosted web version that demos are shown on and that users use. It runs on two machines:
 
@@ -38,7 +38,7 @@ browser ──https──▶ Caddy (VPS) ──▶ gateway (VPS)                
    - The box never sees a cookie or a password.
 2. **The API checks the signature and picks the firm's engine.**
    - It hands that firm's engine to a worker thread.
-   - A firm's engine is an ordinary `OnyxEngine` built by `OnyxBootstrapper.build(database=…, vault_dir=…, reports_dir=…, kit=…)`. Every firm shares one `ModelKit`, so a new firm costs a connection pool, not a model load.
+   - A firm's engine is an ordinary `IzvoriaEngine` built by `IzvoriaBootstrapper.build(database=…, vault_dir=…, reports_dir=…, kit=…)`. Every firm shares one `ModelKit`, so a new firm costs a connection pool, not a model load.
 3. **Long calls become runs.**
    - A chat turn, search, report scoping or report run returns a run id at once (`web_deploy/api/runs.py`).
    - The browser follows the run's Server-Sent Events: `progress` ticks, then one `result` or `error`.
@@ -69,7 +69,7 @@ The owner's console is the firm `admin`, with its own shared password (`set-firm
 - An administrator can't disable or demote themselves, and a firm always keeps one enabled administrator.
 
 **Public pages:**
-- **Request Onyx for your firm** (`/request-access`, `POST /public/signup`). Contact details plus the firm profile from `docs/glossary_authoring/firm_profile_template.md`. The emailed copy follows the template's sections, so it pastes straight into the glossary creator prompt as `{{FIRM_PROFILE}}`. The names section is optional and warns that the form travels by email.
+- **Request Izvoria for your firm** (`/request-access`, `POST /public/signup`). Contact details plus the firm profile from `docs/glossary_authoring/firm_profile_template.md`. The emailed copy follows the template's sections, so it pastes straight into the glossary creator prompt as `{{FIRM_PROFILE}}`. The names section is optional and warns that the form travels by email.
 - **Help & support** (`/help`, `POST /public/support`). Linked from both sign-in steps and the request page.
 
 How the public pages are handled:
@@ -82,7 +82,7 @@ How the public pages are handled:
 - Hetzner Cloud blocks outbound 25 and 465 on new projects, so use 587 with STARTTLS.
 - Gmail (dev) needs 2-step verification and an app password, and `MAIL_FROM` must be the same address.
 
-**Look.** The web app copies the desktop app (`frontend/onyx_desktop/ui/theme.py`):
+**Look.** The web app copies the desktop app (`frontend/izvoria_desktop/ui/theme.py`):
 - the ink sidebar, serif headings, warm neutrals and the deep green accent;
 - dark by default, with a light toggle;
 - three panes for Chat, Search and Report, with Source review on the right.
@@ -208,7 +208,7 @@ Not measured here: the over-full cache. Its two long requests shared one cached 
 
 ### llama-server patch: answers before long prompts
 
-llama-server is built with Onyx's own patch, `web_deploy/provision/llama_patches/0001-server-answers-before-long-prompts.patch`, which `build_llama_server.sh` applies to the pinned release.
+llama-server is built with Izvoria's own patch, `web_deploy/provision/llama_patches/0001-server-answers-before-long-prompts.patch`, which `build_llama_server.sh` applies to the pinned release.
 
 **The problem.** In every step llama-server first adds one token for each answer being written, then fills the batch with prompts still being read. A step finishes only when everything in it is done. While someone's long prompt (a report section, a long conversation) is being read, each answer token waits for a 2K-token chunk of it: answers dropped from ~50 to ~5 tokens a second, and chats asked beside a 40K-token request took 43 s instead of 5.
 
@@ -418,7 +418,7 @@ venv/bin/python -m web_deploy.provision.compact_storage --all --dry-run   # what
 venv/bin/python -m web_deploy.provision.compact_storage --all             # free it (or name firms)
 ```
 
-Locally, load `web_deploy/local/local.env` instead and add `TENANTS_ROOT=onyx_data/local-web/tenants` and `CONTROL_DATABASE_URL=sqlite:///onyx_data/local-web/control.sqlite3`. Each firm runs in its own child process (`OnyxEngine.compact_storage`); the run is refused while an ingestion is running.
+Locally, load `web_deploy/local/local.env` instead and add `TENANTS_ROOT=onyx_data/local-web/tenants` and `CONTROL_DATABASE_URL=sqlite:///onyx_data/local-web/control.sqlite3`. Each firm runs in its own child process (`IzvoriaEngine.compact_storage`); the run is refused while an ingestion is running.
 
 ## Backups
 

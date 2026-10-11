@@ -229,7 +229,7 @@ class ReasonerJobResult(BaseModel):
     model_config = ConfigDict(frozen=True)
 
 # NEW: Reasoned Answer pipeline result — the engine returns this directly as chat_reasoned()'s
-# response type (mirrors how OnyxEngine.chat() already returns QAResponse, a feature entity,
+# response type (mirrors how IzvoriaEngine.chat() already returns QAResponse, a feature entity,
 # unchanged; this lives in orchestration rather than app/engine/domain/entities.py so the
 # pipeline that builds it doesn't have to depend upward on the engine layer).
 class ReasoningIterationTrace(BaseModel):

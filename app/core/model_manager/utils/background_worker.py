@@ -16,13 +16,13 @@ class BackgroundModelWorker:
         self._orchestrator = orchestrator
         self._executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=1,
-            thread_name_prefix="OnyxModelWorker"
+            thread_name_prefix="IzvoriaModelWorker"
         )
 
         self._telemetry_stop_event = threading.Event()
         self._telemetry_thread = threading.Thread(
             target=self._telemetry_loop,
-            name="OnyxVramTelemetry",
+            name="IzvoriaVramTelemetry",
             daemon=True
         )
         self._telemetry_thread.start()

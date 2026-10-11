@@ -7,7 +7,7 @@ const documentBody = {
   stage: "document",
   running: false,
   document: {
-    report_id: "r1", topic: "Termination", title: "", markdown: "# Termination\n\nThe notice is 30 days [Doc 4](onyx://doc/4).",
+    report_id: "r1", topic: "Termination", title: "", markdown: "# Termination\n\nThe notice is 30 days [Doc 4](izvoria://doc/4).",
     status: "completed", mode: "deep", language: "en", section_count: 1, uncovered_count: 0, rounds_used: 1,
     indexed_source_count: 3, swept_source_count: 3,
     evidence: [{ doc_number: 4, chunk_id: "c4", source_id: "s", start_sec: 0, end_sec: 0, excerpt: "Thirty days' notice.",
@@ -97,7 +97,7 @@ describe("report titles", () => {
 describe("report math", () => {
   it("typesets $$ formulas and leaves prices as text", async () => {
     const body = { ...documentBody, document: { ...documentBody.document,
-      markdown: "# T\n\nElasticity $$E_p$$ is defined [Doc 4](onyx://doc/4). It cut the price from $6.40 to $3.00." } };
+      markdown: "# T\n\nElasticity $$E_p$$ is defined [Doc 4](izvoria://doc/4). It cut the price from $6.40 to $3.00." } };
     globalThis.fetch = vi.fn(async (url: any) =>
       new Response(JSON.stringify(String(url).startsWith("/api/reports/r1") ? body : { reports: [] }), { status: 200 }),
     ) as any;

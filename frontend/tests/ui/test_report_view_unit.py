@@ -8,14 +8,14 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from onyx_desktop.domain.entities import (  # noqa: E402
+from izvoria_desktop.domain.entities import (  # noqa: E402
     Evidence, ProgressTick, ReportDocument, ReportOutlineDraft, ReportPlanDraft,
 )
-from onyx_desktop.domain.enums import (  # noqa: E402
+from izvoria_desktop.domain.enums import (  # noqa: E402
     JobProgressState, MediaKind, ReportMode, ReportRunStatus,
 )
-from onyx_desktop.ui.views.report_view import ReportView  # noqa: E402
-from onyx_desktop.ui.widgets.report_document import ReportDocumentView  # noqa: E402
+from izvoria_desktop.ui.views.report_view import ReportView  # noqa: E402
+from izvoria_desktop.ui.widgets.report_document import ReportDocumentView  # noqa: E402
 
 pytestmark = pytest.mark.gui
 
@@ -57,7 +57,7 @@ def _document(status=ReportRunStatus.COMPLETED, evidence=None) -> ReportDocument
     return ReportDocument(
         report_id=REPORT_ID,
         topic="chain of custody",
-        markdown="# chain of custody\n\nSealed [Doc 1](onyx://doc/1).\n",
+        markdown="# chain of custody\n\nSealed [Doc 1](izvoria://doc/1).\n",
         status=status,
         mode=ReportMode.EXHAUSTIVE,
         evidence=evidence if evidence is not None else (_evidence(1),),
@@ -123,7 +123,7 @@ class TestPlanApproval:
         assert started[0].topic == "chain of custody"
 
     def test_history_lists_reports_by_title_and_untitled_ones_by_request(self, view):
-        from onyx_desktop.domain.entities import ReportRef
+        from izvoria_desktop.domain.entities import ReportRef
         shown = []
         view._history.set_entries = lambda entries: shown.extend(e.title for e in entries)
 
@@ -305,14 +305,14 @@ class TestReportDocumentView:
         widget.close()
         widget.deleteLater()
 
-    def test_an_onyx_doc_link_resolves_to_its_evidence(self, document):
+    def test_an_izvoria_doc_link_resolves_to_its_evidence(self, document):
         from PySide6.QtCore import QUrl
 
         clicked = []
         document.citationClicked.connect(clicked.append)
         document.show_report(_document(evidence=(_evidence(1), _evidence(7))))
 
-        document._on_anchor(QUrl("onyx://doc/7"))
+        document._on_anchor(QUrl("izvoria://doc/7"))
 
         assert [e.doc_number for e in clicked] == [7]
 
@@ -323,7 +323,7 @@ class TestReportDocumentView:
         document.citationMissing.connect(missing.append)
         document.show_report(_document())
 
-        document._on_anchor(QUrl("onyx://doc/42"))
+        document._on_anchor(QUrl("izvoria://doc/42"))
 
         assert missing == [42]
 
@@ -340,7 +340,7 @@ class TestReportDocumentView:
         assert clicked == [] and missing == []
 
     def test_qt_never_opens_links_itself(self, document):
-        """onyx:// means nothing outside this app; handing it to a browser would be a dead end."""
+        """izvoria:// means nothing outside this app; handing it to a browser would be a dead end."""
         assert document.openLinks() is False
         assert document.openExternalLinks() is False
 
@@ -348,7 +348,7 @@ class TestReportDocumentView:
 class TestHistory:
     @staticmethod
     def _ref(status, evidence_count=3, report_id=REPORT_ID):
-        from onyx_desktop.domain.entities import ReportRef
+        from izvoria_desktop.domain.entities import ReportRef
         return ReportRef(report_id=report_id, topic="chain of custody", status=status,
                          section_count=4, evidence_count=evidence_count)
 

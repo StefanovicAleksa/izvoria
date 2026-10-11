@@ -1,5 +1,5 @@
 """
-Email for the two public pages: a firm asking for Onyx, and a help request. Plain SMTP from the standard library.
+Email for the two public pages: a firm asking for Izvoria, and a help request. Plain SMTP from the standard library.
 
 Mail never goes out on a request thread. The request is stored first (the owner's console lists every one, so a
 lost email loses nothing), then a single background worker sends it and records whether that worked. Without
@@ -93,7 +93,7 @@ def signup_body(request: InboundRequest) -> str:
     p: Dict = request.payload
     profile: Dict = p.get("profile") or {}
     lines = [
-        "A firm asked for Onyx.",
+        "A firm asked for Izvoria.",
         "",
         f"Firm: {p.get('firm_name', '')}",
         f"Contact: {request.name} <{request.email}>",
@@ -125,7 +125,7 @@ def signup_body(request: InboundRequest) -> str:
 
 def support_body(request: InboundRequest) -> str:
     return "\n".join([
-        "A help request from the Onyx web app.",
+        "A help request from the Izvoria web app.",
         "",
         f"From: {request.name or '-'} <{request.email}>",
         f"Firm: {request.firm or '-'}",
@@ -142,10 +142,10 @@ def support_body(request: InboundRequest) -> str:
 def build_message(settings: MailSettings, request: InboundRequest) -> EmailMessage:
     message = EmailMessage()
     if request.kind == "signup":
-        subject = f"Onyx access request: {request.payload.get('firm_name', '')}"
+        subject = f"Izvoria access request: {request.payload.get('firm_name', '')}"
         body = signup_body(request)
     else:
-        subject = f"Onyx support: {request.subject}"
+        subject = f"Izvoria support: {request.subject}"
         body = support_body(request)
     message["Subject"] = _header(subject)[:SUBJECT_MAX]
     message["From"] = _header(settings.mail_from)

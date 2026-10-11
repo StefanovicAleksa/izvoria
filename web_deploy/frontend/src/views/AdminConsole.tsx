@@ -278,7 +278,7 @@ const PROFILE_LABELS: [string, string][] = [
   ["industry", "Field of work"],
   ["description", "What your firm does"],
   ["sub_domains", "Practice areas or specialities"],
-  ["data_kinds", "What you will bring to Onyx"],
+  ["data_kinds", "What you will bring to Izvoria"],
   ["mishearings", "Terms transcription already gets wrong"],
 ];
 const LANGUAGE_LABELS: [string, string][] = [
@@ -324,7 +324,7 @@ function RequestsSection() {
   return (
     <section className="page narrow">
       <div className="page-header"><h2>{t("Requests")}</h2></div>
-      <p className="page-intro">{t("Firms asking for Onyx, and help requests, as sent from the public pages. Each is also emailed when email is set up.")}</p>
+      <p className="page-intro">{t("Firms asking for Izvoria, and help requests, as sent from the public pages. Each is also emailed when email is set up.")}</p>
       {!mailEnabled && <p className="banner warning">{t("Email is not set up on this gateway (SMTP_HOST): requests are only kept here.")}</p>}
       {error && <p className="banner danger">{error}</p>}
       <div className="row" style={{ marginBottom: 14 }}>

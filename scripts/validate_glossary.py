@@ -1,7 +1,7 @@
 # Path: scripts/validate_glossary.py
 """
 Checks glossaries written with docs/glossary_authoring/glossary_creator_prompt.md, and splits Claude's answer into
-the per-language files Onyx reads (data/glossaries/<lang>/<industry>.json).
+the per-language files Izvoria reads (data/glossaries/<lang>/<industry>.json).
 
 The loaders read only `base_terms` and `sub_domains.<LABEL>.{anchor_words, terms}`; `description`, `term_details`
 and `review` ride along for people and for later code (Serbian `forms`), so a file written here stays a drop-in

@@ -2,7 +2,7 @@
 The only module of the hosted API that imports `app.*`.
 
 One process serves every firm. It holds ONE model kit (the orchestrator plus the live models: BGE-M3 and the reranker
-pinned in this process, the Qwen roles served by llama-server) and builds one OnyxEngine per firm on first use, each
+pinned in this process, the Qwen roles served by llama-server) and builds one IzvoriaEngine per firm on first use, each
 with the firm's own database, vault and reports directory. Firm engines share the kit, so a new firm costs a database
 connection pool, not a model load.
 
@@ -44,7 +44,7 @@ class EngineHost(IEngineHost):
         from app.core.config import settings
         from app.core.database.service.manager import DatabaseManager
         from app.core.language.service.language_api import get_supported_language_packs, language_scope
-        from app.engine.service.bootstrap import OnyxBootstrapper
+        from app.engine.service.bootstrap import IzvoriaBootstrapper
         from app.features.deep_research_report.domain.entities import OutlineSection, SubQuestion
         from app.features.deep_research_report.utils import markdown_renderer
         from app.features.report_export.service.report_export_api import ReportExportAPI
@@ -59,7 +59,7 @@ class EngineHost(IEngineHost):
             )
 
         self._app = dict(
-            settings=settings, DatabaseManager=DatabaseManager, OnyxBootstrapper=OnyxBootstrapper,
+            settings=settings, DatabaseManager=DatabaseManager, IzvoriaBootstrapper=IzvoriaBootstrapper,
             SearchQuery=SearchQuery, normalize_citation_tags=normalize_citation_tags,
             format_location=format_location, markdown_renderer=markdown_renderer,
             OutlineSection=OutlineSection, SubQuestion=SubQuestion, language_scope=language_scope,
@@ -68,7 +68,7 @@ class EngineHost(IEngineHost):
         )
         if settings.LLM_BACKEND == "llama_server":
             self._wait_for_llama_server(settings.LLM_SERVER_URL)
-        self._kit = OnyxBootstrapper.build_model_kit()
+        self._kit = IzvoriaBootstrapper.build_model_kit()
         warmed = self._kit.warm_up()
         logger.info(f"Shared models resident: {', '.join(t.value for t in warmed)}")
         self._ready = True
@@ -175,7 +175,7 @@ class EngineHost(IEngineHost):
         database = self._app["DatabaseManager"](url=url, pool_size=self._settings.firm_pool_size,
                                                 max_overflow=self._settings.firm_pool_overflow)
         try:
-            engine = self._app["OnyxBootstrapper"].build(
+            engine = self._app["IzvoriaBootstrapper"].build(
                 progress_listener=self._progress_listener, database=database,
                 vault_dir=root / "vault", reports_dir=root / "reports", kit=self._kit,
             )

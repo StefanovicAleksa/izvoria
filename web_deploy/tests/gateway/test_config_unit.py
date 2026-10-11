@@ -28,7 +28,7 @@ class TestPublicUrl:
         assert env(VAST_API_KEY="key", PUBLIC_URL="https://onyx.example.com/").public_url == "https://onyx.example.com"
 
     def test_an_env_file_from_before_still_works(self, env):
-        assert env(VAST_API_KEY="key", BASE_DOMAIN="Onyx.Example.com").public_url == "https://onyx.example.com"
+        assert env(VAST_API_KEY="key", BASE_DOMAIN="Izvoria.Example.com").public_url == "https://izvoria.example.com"
 
     def test_a_local_end_to_end_run_without_vast_needs_none(self, env):
         # docs/web_deploy.md "Local end-to-end without Vast"

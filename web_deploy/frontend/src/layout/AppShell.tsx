@@ -19,7 +19,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <div className="content">
         <div className="mobile-bar">
           <button type="button" onClick={() => setOpen(true)} aria-label={t("Menu")}>☰</button>
-          <span className="brand">Onyx</span>
+          <span className="brand">Izvoria</span>
         </div>
         {children}
       </div>

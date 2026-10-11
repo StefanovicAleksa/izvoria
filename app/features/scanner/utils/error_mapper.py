@@ -3,7 +3,7 @@ from app.features.scanner import exceptions as exc
 def map_scanner_error(e: Exception, context: str = "") -> exc.ScannerError:
     """
     Translates raw system errors (OSError, PermissionError) into
-    Onyx Scanner Domain Exceptions.
+    Izvoria Scanner Domain Exceptions.
 
     Args:
         e: The original exception caught.

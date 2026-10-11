@@ -17,7 +17,7 @@ export function Sidebar({ open }: { open: boolean }) {
     <aside className={`sidebar${open ? " open" : ""}`} aria-label={t("Navigation")}>
       <div className="brand-row">
         <div className="names">
-          <div className="brand">Onyx</div>
+          <div className="brand">Izvoria</div>
           <div className="brand-sub" title={me.firm?.name}>{owner ? t("Admin console") : me.firm?.name}</div>
         </div>
         <Toggles />

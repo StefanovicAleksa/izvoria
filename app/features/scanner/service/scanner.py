@@ -30,7 +30,7 @@ class FileScanner(IScanner):
             raise e
 
         if is_onyx_output(target_path):
-            logger.warning(f"{target_path} holds Onyx's own output (vault or reports); nothing is ingested from it.")
+            logger.warning(f"{target_path} holds Izvoria's own output (vault or reports); nothing is ingested from it.")
             return
 
         try:

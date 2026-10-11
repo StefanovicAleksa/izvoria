@@ -1,7 +1,7 @@
 """
 Engine results as JSON for the browser.
 
-Adapted from the desktop app's engine_gateway mapping (frontend/onyx_desktop/data/engine_gateway.py), which can't be
+Adapted from the desktop app's engine_gateway mapping (frontend/izvoria_desktop/data/engine_gateway.py), which can't be
 imported here: it is bound to Qt-free but desktop-only types and its i18n. The rules are the same: an answer's text
 and its citation list agree on [Doc N] numbers, an excerpt is the verbatim `raw_text` (never the generated context),
 and a document chunk is located by page/lines/section rather than by its 0.0 timestamps.

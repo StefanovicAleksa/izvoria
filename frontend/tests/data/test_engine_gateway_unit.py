@@ -16,9 +16,9 @@ from dataclasses import replace
 import pytest
 from unittest.mock import MagicMock, patch
 
-from onyx_desktop.domain.entities import ReportOutlineDraft, ReportPlanDraft
-from onyx_desktop.domain.enums import IngestMode, MediaKind, MessageRole, ReportMode, TurnOutcome
-from onyx_desktop.exceptions.base import DesktopError
+from izvoria_desktop.domain.entities import ReportOutlineDraft, ReportPlanDraft
+from izvoria_desktop.domain.enums import IngestMode, MediaKind, MessageRole, ReportMode, TurnOutcome
+from izvoria_desktop.exceptions.base import DesktopError
 
 pytest.importorskip("app.features.rag_retrieval.domain.entities")
 
@@ -47,7 +47,7 @@ from app.features.deep_research_report.domain.enums import (  # noqa: E402
 
 from app.engine.domain.enums import EngineState  # noqa: E402
 from app.engine.exceptions.lifecycle import EngineBusyError  # noqa: E402
-from onyx_desktop.data.engine_gateway import OnyxEngineGateway  # noqa: E402
+from izvoria_desktop.data.engine_gateway import IzvoriaEngineGateway  # noqa: E402
 
 CHUNK_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 SOURCE_ID = uuid.UUID("22222222-2222-2222-2222-222222222222")
@@ -72,14 +72,14 @@ def make_chunk(extracted_file_id=CLIP_ID, physical_path=None, **overrides):
     values.update(overrides)
     chunk = RetrievedChunk(**values)
     if physical_path is not None:
-        # Exactly what OnyxEngine._resolve_physical_paths does to these frozen entities.
+        # Exactly what IzvoriaEngine._resolve_physical_paths does to these frozen entities.
         object.__setattr__(chunk, "physical_path", physical_path)
     return chunk
 
 
 @pytest.fixture
 def gateway_and_engine():
-    gateway = OnyxEngineGateway()
+    gateway = IzvoriaEngineGateway()
     engine = MagicMock()
     gateway._engine = engine
     return gateway, engine
@@ -94,7 +94,7 @@ class TestSearchMapping:
         )
 
         outcome = gateway.search("schedule", __import__(
-            "onyx_desktop.domain.enums", fromlist=["SearchMode"]).SearchMode.STANDARD, 5)
+            "izvoria_desktop.domain.enums", fromlist=["SearchMode"]).SearchMode.STANDARD, 5)
 
         hit = outcome.hits[0]
         assert hit.text == "SPEAKER_01: The schedule was circulated on the fourteenth."
@@ -107,7 +107,7 @@ class TestSearchMapping:
             query="q", results=[make_chunk(physical_path="/vault/clip.mp4")],
             execution_time_ms=1,
         )
-        from onyx_desktop.domain.enums import SearchMode
+        from izvoria_desktop.domain.enums import SearchMode
 
         evidence = gateway.search("q", SearchMode.STANDARD, 5).hits[0].as_evidence()
         assert evidence.media_kind is MediaKind.CLIP
@@ -123,7 +123,7 @@ class TestSearchMapping:
             results=[make_chunk(extracted_file_id=None, physical_path="/vault/whole.wav")],
             execution_time_ms=1,
         )
-        from onyx_desktop.domain.enums import SearchMode
+        from izvoria_desktop.domain.enums import SearchMode
 
         evidence = gateway.search("q", SearchMode.STANDARD, 5).hits[0].as_evidence()
         assert evidence.media_kind is MediaKind.FULL_SOURCE
@@ -137,7 +137,7 @@ class TestSearchMapping:
         engine.search_standard.return_value = SearchResult(
             query="q", results=[make_chunk()], execution_time_ms=1
         )
-        from onyx_desktop.domain.enums import SearchMode
+        from izvoria_desktop.domain.enums import SearchMode
 
         evidence = gateway.search("q", SearchMode.STANDARD, 5).hits[0].as_evidence()
         assert evidence.clip_path is None
@@ -149,7 +149,7 @@ class TestSearchMapping:
         engine.search_verified.return_value = SearchResult(
             query="q", results=[], execution_time_ms=1
         )
-        from onyx_desktop.domain.enums import SearchMode
+        from izvoria_desktop.domain.enums import SearchMode
 
         gateway.search("q", SearchMode.VERIFIED, 7)
 
@@ -173,7 +173,7 @@ class TestChatMapping:
             inference_time_ms=24000,
         )
         engine.get_chunks.return_value = [make_chunk()]
-        from onyx_desktop.domain.enums import ChatMode
+        from izvoria_desktop.domain.enums import ChatMode
 
         message = gateway.chat("q", SESSION_ID, ChatMode.SINGLE_PASS, 5)
 
@@ -206,7 +206,7 @@ class TestChatMapping:
             inference_time_ms=1,
         )
         engine.get_chunks.return_value = []
-        from onyx_desktop.domain.enums import ChatMode
+        from izvoria_desktop.domain.enums import ChatMode
 
         message = gateway.chat("q", SESSION_ID, ChatMode.SINGLE_PASS, 5)
 
@@ -218,7 +218,7 @@ class TestChatMapping:
             query="q", generated_answer="I could not find that.", citations=[],
             inference_time_ms=1,
         )
-        from onyx_desktop.domain.enums import ChatMode
+        from izvoria_desktop.domain.enums import ChatMode
 
         message = gateway.chat("q", SESSION_ID, ChatMode.SINGLE_PASS, 5)
 
@@ -239,7 +239,7 @@ class TestChatMapping:
             inference_time_ms=1,
         )
         engine.get_chunks.side_effect = RuntimeError("database went away")
-        from onyx_desktop.domain.enums import ChatMode
+        from izvoria_desktop.domain.enums import ChatMode
 
         message = gateway.chat("q", SESSION_ID, ChatMode.SINGLE_PASS, 5)
 
@@ -261,7 +261,7 @@ class TestReasonedMapping:
             )],
             total_iterations=1,
         )
-        from onyx_desktop.domain.enums import ChatMode
+        from izvoria_desktop.domain.enums import ChatMode
 
         message = gateway.chat("q", SESSION_ID, ChatMode.REASONING, 5)
 
@@ -286,7 +286,7 @@ class TestReasonedMapping:
             total_iterations=3,
         )
         engine.get_chunks.return_value = []
-        from onyx_desktop.domain.enums import ChatMode
+        from izvoria_desktop.domain.enums import ChatMode
 
         message = gateway.chat("q", SESSION_ID, ChatMode.REASONING, 5)
 
@@ -323,8 +323,8 @@ class TestHydration:
 
 class TestErrorTranslation:
     def test_engine_failures_become_desktop_errors(self, gateway_and_engine):
-        from onyx_desktop.exceptions.base import DesktopError
-        from onyx_desktop.domain.enums import SearchMode
+        from izvoria_desktop.exceptions.base import DesktopError
+        from izvoria_desktop.domain.enums import SearchMode
 
         gateway, engine = gateway_and_engine
         engine.search_standard.side_effect = RuntimeError("cuda is sulking")
@@ -336,11 +336,11 @@ class TestErrorTranslation:
         assert caught.value.user_message
 
     def test_calling_before_boot_is_refused(self):
-        from onyx_desktop.domain.enums import SearchMode
-        from onyx_desktop.exceptions.gateway import ApplianceOfflineError
+        from izvoria_desktop.domain.enums import SearchMode
+        from izvoria_desktop.exceptions.gateway import ApplianceOfflineError
 
         with pytest.raises(ApplianceOfflineError):
-            OnyxEngineGateway().search("q", SearchMode.STANDARD, 5)
+            IzvoriaEngineGateway().search("q", SearchMode.STANDARD, 5)
 
 
 class TestReportMapping:
@@ -513,7 +513,7 @@ class TestReportMapping:
 
         document = gateway._map_report(self._report())
 
-        assert "[Doc 1](onyx://doc/1)" in document.markdown
+        assert "[Doc 1](izvoria://doc/1)" in document.markdown
         assert document.evidence_for(1) is not None
 
     def test_evidence_uses_raw_text_and_resolves_its_clip(self, gateway_and_engine):
@@ -578,14 +578,14 @@ class TestReportMapping:
 
         document = gateway._map_report(self._report())
 
-        assert "[Doc 1](onyx://doc/1)" in document.markdown
+        assert "[Doc 1](izvoria://doc/1)" in document.markdown
         assert document.evidence == ()
 
 
 class TestDocuments:
     def test_a_document_hit_carries_its_page_and_opens_as_a_document(self, gateway_and_engine):
         from app.core.anchors.domain.enums import AnchorKind
-        from onyx_desktop.domain.enums import SearchMode
+        from izvoria_desktop.domain.enums import SearchMode
 
         gateway, engine = gateway_and_engine
         chunk = make_chunk(extracted_file_id=None, physical_path="/vault/lease.pdf", start_sec=0.0, end_sec=0.0,
@@ -615,7 +615,7 @@ class TestDocuments:
         assert (evidence.anchor_kind, evidence.page_start, evidence.page_end) == ("page", 3, 4)
 
     def test_a_transcript_hit_has_no_document_location(self, gateway_and_engine):
-        from onyx_desktop.domain.enums import SearchMode
+        from izvoria_desktop.domain.enums import SearchMode
 
         gateway, engine = gateway_and_engine
         engine.search_standard.return_value = SearchResult(
@@ -624,7 +624,7 @@ class TestDocuments:
         assert gateway.search("q", SearchMode.STANDARD, 5).hits[0].location == ""
 
     def test_document_mode_runs_document_ingestion(self, gateway_and_engine):
-        from onyx_desktop.domain.enums import IngestMode
+        from izvoria_desktop.domain.enums import IngestMode
 
         gateway, engine = gateway_and_engine
         engine.ingest_documents.return_value = MagicMock(
@@ -641,7 +641,7 @@ class TestDocuments:
 class TestImagesAndLines:
     def test_an_image_hit_is_located_as_image_and_opens_as_an_image(self, gateway_and_engine):
         from app.core.anchors.domain.enums import AnchorKind
-        from onyx_desktop.domain.enums import SearchMode
+        from izvoria_desktop.domain.enums import SearchMode
 
         gateway, engine = gateway_and_engine
         chunk = make_chunk(extracted_file_id=None, physical_path="/vault/board.jpg", start_sec=0.0, end_sec=0.0,
@@ -657,7 +657,7 @@ class TestImagesAndLines:
     def test_a_line_anchored_hit_is_a_document_with_its_lines(self, gateway_and_engine):
         """TXT/Markdown citations used to fall through as recordings: "Open recording", no location."""
         from app.core.anchors.domain.enums import AnchorKind
-        from onyx_desktop.domain.enums import SearchMode
+        from izvoria_desktop.domain.enums import SearchMode
 
         gateway, engine = gateway_and_engine
         chunk = make_chunk(extracted_file_id=None, physical_path="/vault/novel.txt", start_sec=0.0, end_sec=0.0,
@@ -673,7 +673,7 @@ class TestImagesAndLines:
         assert (evidence.anchor_kind, evidence.page_start, evidence.page_end) == ("line", 120, 164)
 
     def test_image_mode_runs_image_ingestion(self, gateway_and_engine):
-        from onyx_desktop.domain.enums import IngestMode
+        from izvoria_desktop.domain.enums import IngestMode
 
         gateway, engine = gateway_and_engine
         engine.ingest_images.return_value = MagicMock(
@@ -760,7 +760,7 @@ class TestHistory:
         assert outcome.is_saved and outcome.mode.value == "verified" and outcome.query == "notice period"
 
     def test_a_deleted_search_is_a_clear_error(self, gateway_and_engine):
-        from onyx_desktop.exceptions.base import DesktopError
+        from izvoria_desktop.exceptions.base import DesktopError
         gateway, engine = gateway_and_engine
         engine.get_search.return_value = None
         with pytest.raises(DesktopError):
@@ -820,11 +820,11 @@ class TestLanguage:
     @pytest.fixture
     def bootstrapper(self):
         bootstrapper = MagicMock()
-        with patch("onyx_desktop.data.engine_gateway._import_engine", return_value={"bootstrapper": bootstrapper}):
+        with patch("izvoria_desktop.data.engine_gateway._import_engine", return_value={"bootstrapper": bootstrapper}):
             yield bootstrapper
 
     def test_languages_are_the_packs_named_in_themselves(self):
-        options = OnyxEngineGateway().languages()
+        options = IzvoriaEngineGateway().languages()
 
         assert [(o.code, o.name) for o in options] == [("en", "English"), ("sr", "Srpski")]
 

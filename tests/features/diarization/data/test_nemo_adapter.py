@@ -70,7 +70,7 @@ class TestNeMoDiarizationAdapter:
 
         # 1. OS Mocks
         mock_temp = MagicMock()
-        mock_temp.__enter__.return_value = "/tmp/fake_onyx_dir"
+        mock_temp.__enter__.return_value = "/tmp/fake_izvoria_dir"
         mock_temp_dir.return_value = mock_temp
         mock_path_exists.return_value = True
 
@@ -137,7 +137,7 @@ class TestNeMoDiarizationAdapter:
         vad_map = VadMap(source_id=source_id, segments=[VadSegment(start_sec=1.0, end_sec=5.0, confidence=0.99)])
 
         mock_temp = MagicMock()
-        mock_temp.__enter__.return_value = "/tmp/fake_onyx_dir"
+        mock_temp.__enter__.return_value = "/tmp/fake_izvoria_dir"
         mock_temp_dir.return_value = mock_temp
         mock_path_exists.return_value = True
 
@@ -183,7 +183,7 @@ class TestNeMoDiarizationAdapter:
         mock_ta_load.return_value = (torch.zeros(1, 16000), 16000)
 
         mock_temp = MagicMock()
-        mock_temp.__enter__.return_value = "/tmp/fake_onyx_dir"
+        mock_temp.__enter__.return_value = "/tmp/fake_izvoria_dir"
         mock_temp_dir.return_value = mock_temp
 
         mock_diarizer_instance = MagicMock()
@@ -219,7 +219,7 @@ class TestNeMoDiarizationAdapter:
         mock_ta_load.return_value = (torch.zeros(1, 16000), 16000)
 
         mock_temp = MagicMock()
-        mock_temp.__enter__.return_value = "/tmp/fake_onyx_dir"
+        mock_temp.__enter__.return_value = "/tmp/fake_izvoria_dir"
         mock_temp_dir.return_value = mock_temp
 
         mock_diarizer_instance = MagicMock()
@@ -250,7 +250,7 @@ class TestNeMoDiarizationAdapter:
         mock_ta_load.return_value = (torch.zeros(1, 16000), 16000)
 
         mock_temp = MagicMock()
-        mock_temp.__enter__.return_value = "/tmp/fake_onyx_dir"
+        mock_temp.__enter__.return_value = "/tmp/fake_izvoria_dir"
         mock_temp_dir.return_value = mock_temp
 
         mock_path_exists.return_value = False

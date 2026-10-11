@@ -145,7 +145,7 @@ def start(env: Dict[str, str]) -> int:
         processes[name] = subprocess.Popen(command, env=env, cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
 
     port = env.get("LOCAL_PORT", "8000")
-    print(f"Onyx (dev hardware) is starting. Open http://{lan_address()}:{port} on your network "
+    print(f"Izvoria (dev hardware) is starting. Open http://{lan_address()}:{port} on your network "
           f"(http://localhost:{port} here).\nThe models take a minute or two to load. Logs: {logs}\nCtrl+C stops it.")
 
     stopping = False

@@ -2,7 +2,7 @@ import type { Lang } from "../api/types";
 import { LANGUAGE_NAMES, useI18n } from "../i18n";
 import { useTheme } from "../theme";
 
-// The desktop's Feather-style strokes (frontend/onyx_desktop/ui/icons.py)
+// The desktop's Feather-style strokes (frontend/izvoria_desktop/ui/icons.py)
 const SUN = (
   <>
     <circle cx="12" cy="12" r="4" />

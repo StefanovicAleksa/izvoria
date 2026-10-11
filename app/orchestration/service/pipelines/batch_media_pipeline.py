@@ -113,7 +113,7 @@ class BatchMediaPipeline:
     def process_directory(self, target_directory: str, source_type: SourceType) -> Dict[
         PipelinePhase, PhaseBatchResult]:
         pipeline_results: Dict[PipelinePhase, PhaseBatchResult] = {}
-        logger.info(f"========== Starting Onyx Batch Pipeline for [{target_directory}] ==========")
+        logger.info(f"========== Starting Izvoria Batch Pipeline for [{target_directory}] ==========")
 
         try:
             # ==========================================

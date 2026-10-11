@@ -1,5 +1,5 @@
 /*
- * The desktop app's look (frontend/onyx_desktop/ui/theme.py), on the web: editorial, professional-services.
+ * The desktop app's look (frontend/izvoria_desktop/ui/theme.py), on the web: editorial, professional-services.
  * Warm neutrals, serif headings, near-square corners, outlined citation tags, an ink sidebar in both modes and a
  * deep green accent. Every colour is a token below, so dark and light swap as a set; keep them in step with
  * theme.py's DARK and LIGHT palettes.

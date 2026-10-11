@@ -5,7 +5,7 @@
 pydantic>=2.6.0
 pydantic-settings>=2.1.0
 sqlalchemy>=2.0.25
-alembic>=1.13        # Schema migrations, run by OnyxEngine.start(); pure Python (+ Mako)
+alembic>=1.13        # Schema migrations, run by IzvoriaEngine.start(); pure Python (+ Mako)
 psycopg2-binary>=2.9.9
 python-dotenv>=1.0.1
 pgvector>=0.2.5        # Added for PostgreSQL Vector Database Support

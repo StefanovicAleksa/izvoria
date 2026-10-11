@@ -138,7 +138,7 @@ no_sources_cited = "_Noben vir ni bil citiran._"
 unresolved_reference = "_nerazrešeno_"
 no_speakers = "—"
 # Slovenian nouns take four forms after a number, so the templates name counts instead of agreeing with them
-generated = "> Poročilo je ustvaril Onyx {generated}. Citirani odlomki: {cited}; viri: {sources}."
+generated = "> Poročilo je ustvarila Izvoria {generated}. Citirani odlomki: {cited}; viri: {sources}."
 coverage_partial = "> Pokritost: pregledano {swept} od {indexed} indeksiranih virov."
 coverage_all = "> Pokritost: pregledani so vsi indeksirani viri ({indexed})."
 rounds_many = "> Število krogov iskanja: {rounds} (način: {mode}); poznejši krogi so ponovno iskali dokaze za razdelke, ki jih prvi prehod ni mogel podpreti."

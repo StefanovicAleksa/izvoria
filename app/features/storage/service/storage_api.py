@@ -162,7 +162,7 @@ class StorageAPI:
 
         physical_path = Path(file_record.file_path)
         if not physical_path.exists():
-            raise FileNotFoundError(f"Physical file missing from Onyx Vault: {physical_path}")
+            raise FileNotFoundError(f"Physical file missing from Izvoria Vault: {physical_path}")
 
         return physical_path
 

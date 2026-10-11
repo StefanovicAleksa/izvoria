@@ -1,5 +1,5 @@
 [Unit]
-Description=Back up the Onyx web gateway database daily
+Description=Back up the Izvoria web gateway database daily
 
 [Timer]
 OnCalendar=*-*-* 03:30:00
