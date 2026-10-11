@@ -17,9 +17,9 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from onyx_desktop.domain.entities import Evidence  # noqa: E402
-from onyx_desktop.domain.enums import MediaKind  # noqa: E402
-from onyx_desktop.ui.widgets.source_panel import SourcePanel  # noqa: E402
+from izvoria_desktop.domain.entities import Evidence  # noqa: E402
+from izvoria_desktop.domain.enums import MediaKind  # noqa: E402
+from izvoria_desktop.ui.widgets.source_panel import SourcePanel  # noqa: E402
 
 pytestmark = pytest.mark.gui
 
@@ -105,7 +105,7 @@ class TestSourcePanel:
         evidence = make_evidence(tmp_path)
         panel.show_evidence(evidence)
 
-        with patch("onyx_desktop.ui.system_open.QDesktopServices.openUrl",
+        with patch("izvoria_desktop.ui.system_open.QDesktopServices.openUrl",
                    return_value=True) as opened:
             panel._on_open()
 
@@ -118,7 +118,7 @@ class TestSourcePanel:
 
         failures = []
         panel.openFailed.connect(failures.append)
-        with patch("onyx_desktop.ui.system_open.QDesktopServices.openUrl") as opened:
+        with patch("izvoria_desktop.ui.system_open.QDesktopServices.openUrl") as opened:
             panel._on_open()
 
         opened.assert_not_called()
@@ -131,7 +131,7 @@ class TestSourcePanel:
 
         failures = []
         panel.openFailed.connect(failures.append)
-        with patch("onyx_desktop.ui.system_open.QDesktopServices.openUrl",
+        with patch("izvoria_desktop.ui.system_open.QDesktopServices.openUrl",
                    return_value=False):
             panel._on_open()
 
@@ -192,8 +192,8 @@ class TestHostedBox:
         evidence = make_evidence(tmp_path, media_kind=MediaKind.FULL_SOURCE)
         panel.show_evidence(evidence)
 
-        with patch("onyx_desktop.ui.system_open.QDesktopServices.openUrl") as opened, \
-                patch("onyx_desktop.ui.system_open.SourceOfferClient.offer", return_value=None) as offered:
+        with patch("izvoria_desktop.ui.system_open.QDesktopServices.openUrl") as opened, \
+                patch("izvoria_desktop.ui.system_open.SourceOfferClient.offer", return_value=None) as offered:
             panel._on_open()
 
         opened.assert_not_called()
@@ -206,7 +206,7 @@ class TestHostedBox:
         failures = []
         panel.openFailed.connect(failures.append)
 
-        with patch("onyx_desktop.ui.system_open.SourceOfferClient.offer",
+        with patch("izvoria_desktop.ui.system_open.SourceOfferClient.offer",
                    return_value="the appliance's file service isn't answering"):
             panel._on_open()
 
@@ -215,7 +215,7 @@ class TestHostedBox:
 
     def test_a_missing_file_is_still_caught_before_anything_is_sent(self, panel, tmp_path, hosted):
         panel.show_evidence(make_evidence(tmp_path, exists=False))
-        with patch("onyx_desktop.ui.system_open.SourceOfferClient.offer") as offered:
+        with patch("izvoria_desktop.ui.system_open.SourceOfferClient.offer") as offered:
             panel._on_open()
         offered.assert_not_called()
         assert panel._problem.isVisible() is True
@@ -227,7 +227,7 @@ class TestHostedBox:
 
     def test_the_sent_note_clears_for_the_next_citation(self, panel, tmp_path, hosted):
         panel.show_evidence(make_evidence(tmp_path))
-        with patch("onyx_desktop.ui.system_open.SourceOfferClient.offer", return_value=None):
+        with patch("izvoria_desktop.ui.system_open.SourceOfferClient.offer", return_value=None):
             panel._on_open()
         panel.show_evidence(make_evidence(tmp_path))
         assert panel._sent.isVisible() is False
@@ -236,8 +236,8 @@ class TestHostedBox:
         monkeypatch.delenv("ONYX_SOURCE_OFFER_URL", raising=False)
         monkeypatch.delenv("ONYX_SOURCE_OFFER_TOKEN", raising=False)
         panel.show_evidence(make_evidence(tmp_path))
-        with patch("onyx_desktop.ui.system_open.QDesktopServices.openUrl", return_value=True) as opened, \
-                patch("onyx_desktop.ui.system_open.SourceOfferClient.offer") as offered:
+        with patch("izvoria_desktop.ui.system_open.QDesktopServices.openUrl", return_value=True) as opened, \
+                patch("izvoria_desktop.ui.system_open.SourceOfferClient.offer") as offered:
             panel._on_open()
         opened.assert_called_once()
         offered.assert_not_called()

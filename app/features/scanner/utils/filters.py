@@ -5,7 +5,7 @@ from typing import Iterable
 
 from app.core.config import settings
 
-# Onyx Supported Extensions
+# Izvoria Supported Extensions
 VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.mov', '.avi', '.webm'}
 # Every format the audio pipeline decodes: a suffix missing here is dropped by the scan before any pipeline sees it
 AUDIO_EXTENSIONS = {
@@ -36,21 +36,21 @@ def storage_root() -> Path:
     return Path(os.getenv("ONYX_STORAGE_PATH", "onyx_data")).resolve()
 
 
-def onyx_output_dirs() -> Iterable[Path]:
-    """Directories Onyx writes its own files into; never ingested back."""
+def izvoria_output_dirs() -> Iterable[Path]:
+    """Directories Izvoria writes its own files into; never ingested back."""
     return (settings.REPORTS_DIR.resolve(),)
 
 
 def is_onyx_output(path: Path) -> bool:
     """
-    A directory holding Onyx's own output rather than the client's material: the vault's date shards
+    A directory holding Izvoria's own output rather than the client's material: the vault's date shards
     (`<storage root>/YYYY/...`: video frames, clips, extracted audio, copies of ingested files) and the finished
     reports. Ingesting them would index frames as images, clips as videos, and -- worst -- the model-written
-    reports as source documents, citing Onyx's own prose as evidence. Anything else under the storage root (the
+    reports as source documents, citing Izvoria's own prose as evidence. Anything else under the storage root (the
     language benchmark's media) is still scanned.
     """
     resolved = path.resolve()
-    if any(resolved == root or root in resolved.parents for root in onyx_output_dirs()):
+    if any(resolved == root or root in resolved.parents for root in izvoria_output_dirs()):
         return True
     try:
         relative = resolved.relative_to(storage_root())

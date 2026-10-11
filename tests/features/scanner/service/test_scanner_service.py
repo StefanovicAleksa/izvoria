@@ -89,7 +89,7 @@ class TestFileScannerService:
                 with pytest.raises(exc.ScanPermissionError):
                     list(scanner.scan("/root"))
 
-class TestScannerSkipsOnyxOutput:
+class TestScannerSkipsIzvoriaOutput:
     def test_vault_shards_and_reports_are_not_walked_into(self, tmp_path, monkeypatch):
         from app.core.config import settings
         storage = tmp_path / "onyx_data"

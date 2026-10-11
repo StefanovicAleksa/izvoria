@@ -1,1 +1,1 @@
-{"base_terms": ["Onyx", "AI"], "sub_domains": {"legal": {"anchor_words": ["affidavit", "plaintiff"], "terms": ["litigation"]}, "medical": {"anchor_words": ["diagnosis", "cardiology"], "terms": ["prognosis"]}}}
+{"base_terms": ["Izvoria", "AI"], "sub_domains": {"legal": {"anchor_words": ["affidavit", "plaintiff"], "terms": ["litigation"]}, "medical": {"anchor_words": ["diagnosis", "cardiology"], "terms": ["prognosis"]}}}

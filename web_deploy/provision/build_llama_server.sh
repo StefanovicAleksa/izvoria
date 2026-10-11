@@ -24,7 +24,7 @@ git -C "${SRC}" fetch --tags origin
 # --force: the patches below are applied on a clean tree every time, never on top of an older copy of themselves
 git -C "${SRC}" checkout --force --detach "${REF}" 2>/dev/null || git -C "${SRC}" checkout --force --detach "origin/${REF}"
 
-# Onyx's own patches (web_deploy/provision/llama_patches/*.patch, in order), written against the pinned release.
+# Izvoria's own patches (web_deploy/provision/llama_patches/*.patch, in order), written against the pinned release.
 # 0001: answers before long prompts: while answers are being written, a prompt longer than ONYX_SHORT_PROMPT_TOKENS
 #       waits (and pending prompts are read shortest-first), so one long prompt cannot slow every chat to a crawl.
 # Moving the pin means re-checking that each still applies and still does what it says (the spike's stress stage).

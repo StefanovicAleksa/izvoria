@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 MIGRATIONS_DIR = Path(__file__).resolve().parent.parent / "data" / "migrations"
 # The schema as it stood when Alembic was introduced; a database from an earlier build is caught up to it
 BASELINE_REVISION = "0001"
-# Present in every database any Onyx build has created, and the first table a baseline creates
+# Present in every database any Izvoria build has created, and the first table a baseline creates
 _SENTINEL_TABLE = "sources"
 # Alembic installs the running migration's context into module globals (`alembic.context`, `alembic.op`), so two
 # upgrades at once in one process can run one database's revisions on the other's connection. The hosted API starts
@@ -35,7 +35,7 @@ def _config(connection: Connection) -> Config:
 
 
 def _is_pre_alembic(connection: Connection) -> bool:
-    """Onyx tables, but no record of which revision they are at: a database from before migrations existed."""
+    """Izvoria tables, but no record of which revision they are at: a database from before migrations existed."""
     inspector = inspect(connection)
     return not inspector.has_table("alembic_version") and inspector.has_table(_SENTINEL_TABLE)
 

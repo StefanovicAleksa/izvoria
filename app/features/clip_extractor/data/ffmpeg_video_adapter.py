@@ -23,7 +23,7 @@ class FFmpegVideoAdapter(IFFmpegVideoAdapter):
             raise map_clip_extractor_error(raw_error)
 
         # 1. Secure Temporary File Management
-        temp_fd, temp_path_str = tempfile.mkstemp(suffix=".mp4", prefix="onyx_clip_")
+        temp_fd, temp_path_str = tempfile.mkstemp(suffix=".mp4", prefix="izvoria_clip_")
         os.close(temp_fd)
         temp_path = Path(temp_path_str)
 

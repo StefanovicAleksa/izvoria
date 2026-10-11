@@ -61,7 +61,7 @@ def _firm_password(slug: str, generate: bool) -> str:
 
 
 def main(argv: Optional[list] = None, store: Optional[Store] = None) -> int:
-    parser = argparse.ArgumentParser(prog="admin_cli", description="Manage firms and users of the hosted Onyx.")
+    parser = argparse.ArgumentParser(prog="admin_cli", description="Manage firms and users of the hosted Izvoria.")
     parser.add_argument("--db", default=os.environ.get("GATEWAY_DB", "/var/lib/onyx-web/gateway.sqlite3"))
     sub = parser.add_subparsers(dest="command", required=True)
 

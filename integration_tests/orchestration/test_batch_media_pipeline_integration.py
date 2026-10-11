@@ -127,7 +127,7 @@ class TestBatchMediaPipelineIntegration:
 
         if not glossary_file.exists():
             mock_data = {
-                "base_terms": ["Onyx", "AI"],
+                "base_terms": ["Izvoria", "AI"],
                 "sub_domains": {
                     "legal": {"anchor_words": ["affidavit", "plaintiff"], "terms": ["litigation"]},
                     "medical": {"anchor_words": ["diagnosis", "cardiology"], "terms": ["prognosis"]}

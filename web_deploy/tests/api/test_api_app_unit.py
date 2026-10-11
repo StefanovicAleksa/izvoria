@@ -237,7 +237,7 @@ class TestReports:
         run = call(client, ALICE, "POST", f"/api/reports/{stored.id}/run", body).json()["run_id"]
         result = events(client, ALICE, run)[-1]["data"]
 
-        assert result["markdown"].endswith("[Doc 1](onyx://doc/1).")
+        assert result["markdown"].endswith("[Doc 1](izvoria://doc/1).")
         name, _, kwargs, language = engine.calls[-1]
         assert (name, language) == ("execute_research_report", "sr")
         plan = kwargs["plan"]
@@ -271,7 +271,7 @@ class TestReports:
 
     def test_formulas_are_prepared_for_the_page_but_the_download_keeps_them_as_written(self, client, host, monkeypatch):
         stored = host.stored_report(host.engine("legal-demo"), "alice", status="completed")
-        monkeypatch.setattr(host, "render_report", lambda report: "# T\n\nElasticity $E$ [Doc 1](onyx://doc/1).")
+        monkeypatch.setattr(host, "render_report", lambda report: "# T\n\nElasticity $E$ [Doc 1](izvoria://doc/1).")
         engine = MagicMock()
         engine.get_chunks.return_value = []
 
@@ -373,7 +373,7 @@ class TestSources:
 
         assert info["kind"] == "pdf"
         assert info["variants"] == ["media", "original"]
-        assert info["download_name"] == "Onyx Doc 3.pdf"
+        assert info["download_name"] == "Izvoria Doc 3.pdf"
 
     def test_a_file_outside_the_vault_is_never_served(self, client, host, tmp_path):
         outside = tmp_path / "secrets.pdf"

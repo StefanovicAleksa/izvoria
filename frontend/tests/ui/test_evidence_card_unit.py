@@ -19,9 +19,9 @@ from PySide6.QtCore import QPointF, Qt  # noqa: E402
 from PySide6.QtGui import QMouseEvent  # noqa: E402
 from PySide6.QtWidgets import QLabel, QPushButton  # noqa: E402
 
-from onyx_desktop.domain.entities import Evidence  # noqa: E402
-from onyx_desktop.domain.enums import MediaKind  # noqa: E402
-from onyx_desktop.ui.widgets.evidence_card import EvidenceCard  # noqa: E402
+from izvoria_desktop.domain.entities import Evidence  # noqa: E402
+from izvoria_desktop.domain.enums import MediaKind  # noqa: E402
+from izvoria_desktop.ui.widgets.evidence_card import EvidenceCard  # noqa: E402
 
 pytestmark = pytest.mark.gui
 

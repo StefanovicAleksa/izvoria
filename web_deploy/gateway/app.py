@@ -4,7 +4,7 @@ The always-on gateway on the Hetzner VPS: who you are, which firm you belong to,
 Everyone uses one address. Signing in takes two steps: the firm (its sign-in name and the password its people share)
 gives the browser a firm pass (`onyx_firm`), and a person then signs in with their own email and password within
 that firm (`onyx_session`). The owner's console is the firm "admin". A firm's administrators manage its accounts
-(/firm/api); the owner manages firms (/admin/api). Two public pages need no sign-in: a firm asking for Onyx, and a
+(/firm/api); the owner manages firms (/admin/api). Two public pages need no sign-in: a firm asking for Izvoria, and a
 help request (/public), both stored here and emailed to the owner (mailer.py).
 
 Signing in wakes the GPU box. Once it is ready, /api/* is forwarded to it, signed for the user (proxy.py); the box
@@ -520,7 +520,7 @@ def create_app(settings: GatewaySettings, store: Store, box: BoxController, idle
                 box.stop()
         return JSONResponse((await box.status()).as_json())
 
-    # ---------- the public pages: a firm asking for Onyx, and help ----------
+    # ---------- the public pages: a firm asking for Izvoria, and help ----------
 
     def public_form(kind: str, max_bytes: int, parse: Callable[[Dict[str, Any]], Dict[str, Any]]):
         async def handler(request: Request) -> Response:

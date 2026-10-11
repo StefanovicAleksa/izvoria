@@ -28,7 +28,7 @@ class VideoClipModel(Base):
     # Link to the specific RAG chunk from the Unification phase
     chunk_id = Column(UUID(as_uuid=True), nullable=False, unique=True, index=True)
 
-    # Link to the newly generated physical .mp4 file in the Onyx Vault
+    # Link to the newly generated physical .mp4 file in the Izvoria Vault
     extracted_file_id = Column(
         UUID(as_uuid=True),
         ForeignKey("files.id", ondelete="CASCADE"),

@@ -1,4 +1,4 @@
-// Dark or light, like the desktop app's toggle (frontend/onyx_desktop/ui/appearance.py). Dark unless chosen
+// Dark or light, like the desktop app's toggle (frontend/izvoria_desktop/ui/appearance.py). Dark unless chosen
 // otherwise; the choice is this browser's own. index.html applies it before the first paint.
 
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from "react";

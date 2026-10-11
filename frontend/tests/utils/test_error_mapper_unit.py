@@ -3,7 +3,7 @@
 
 import pytest
 
-from onyx_desktop.exceptions.gateway import (
+from izvoria_desktop.exceptions.gateway import (
     ApplianceBootError,
     ApplianceBusyError,
     ApplianceOfflineError,
@@ -11,7 +11,7 @@ from onyx_desktop.exceptions.gateway import (
     InvalidRequestError,
     OutOfMemoryError,
 )
-from onyx_desktop.utils.error_mapper import file_label, file_problem, map_engine_error
+from izvoria_desktop.utils.error_mapper import file_label, file_problem, map_engine_error
 
 
 # Stand-ins named exactly as the engine's classes are. The mapper matches on class name walked

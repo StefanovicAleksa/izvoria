@@ -4,7 +4,7 @@
 
 ## What it does
 
-Holds every rule in Onyx that depends on the language being spoken, one validated **language pack** per language. An appliance serves every language that has a pack in `data/languages/` (`en`, `sr` today), in one database. Packs in `data/languages/legacy/` are kept but not served (Slovenian; see its README):
+Holds every rule in Izvoria that depends on the language being spoken, one validated **language pack** per language. An appliance serves every language that has a pack in `data/languages/` (`en`, `sr` today), in one database. Packs in `data/languages/legacy/` are kept but not served (Slovenian; see its README):
 
 - **A batch has a language.** It is transcribed and indexed in the language picked for it (the Ingest view's "Language of these files", or the CLI's prompt).
 - **The index holds every language.** Each chunk is keyword-indexed with its own language's stemmer (`vector_chunks.fts_config`), and search finds evidence in all of them.
@@ -37,7 +37,7 @@ Translation was ruled out deliberately. A translated index is model-written text
 
 **Switching the active language.** There is no per-call language parameter. Only one engine job runs at a time (`EngineState`, one desktop worker thread), so the language is switched between jobs and every existing `get_language_pack()` / `settings.*` call site follows it.
 - `Settings.use_language(code)` sets `APPLIANCE_LANGUAGE` and re-applies the pack. Fields the previous pack set go back to their defaults first, so leaving Serbian doesn't keep its Gemma. An explicit field still wins over every pack. The explicit set is snapshotted at construction (`_explicit_fields`), because pydantic adds every assigned field to `model_fields_set`.
-- `OnyxBootstrapper.switch_language(engine, code)` does the switch. It checks the engine is idle, stops it, calls `use_language`, then `build()` and `start()`. Model paths are baked into manifests at build time, so the engine is rebuilt rather than patched. That takes seconds and loads no model, since `stop()` frees every resident model first. A failed rebuild returns settings to the previous language.
+- `IzvoriaBootstrapper.switch_language(engine, code)` does the switch. It checks the engine is idle, stops it, calls `use_language`, then `build()` and `start()`. Model paths are baked into manifests at build time, so the engine is rebuilt rather than patched. That takes seconds and loads no model, since `stop()` frees every resident model first. A failed rebuild returns settings to the previous language.
 - `Settings.remember_language()` writes `onyx_data/<ENV>/active_language`. Without an explicit `APPLIANCE_LANGUAGE`, the next start reads it back (`REMEMBER_LANGUAGE`, which the root `conftest.py` turns off for tests). The hosted demo sets the variable, so its landing-page choice wins.
 - `settings.supported_languages()` is the codes of the `*.toml` packs, and `settings.SEARCH_FTS_CONFIGS` their text search configurations.
 - A cache over pack-dependent results must key on the language: `term_candidate_finder._cached_key_similarity` does.

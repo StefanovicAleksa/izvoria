@@ -4,14 +4,14 @@
 from pathlib import Path
 
 from app.tools.glossary_miner.domain.interfaces import IGlossaryStorageAdapter
-from app.tools.glossary_miner.domain.entities import OnyxGlossaryManifest
+from app.tools.glossary_miner.domain.entities import IzvoriaGlossaryManifest
 from app.tools.glossary_miner.exceptions import DataProcessingError
 
 
 class LocalFileStorageAdapter(IGlossaryStorageAdapter):
     """
     Concrete implementation for persisting the final Glossary Manifest to disk.
-    Saves directly to the Onyx appliance's data directory.
+    Saves directly to the Izvoria appliance's data directory.
     """
 
     def __init__(self, base_dir: str = "data/glossaries"):
@@ -19,7 +19,7 @@ class LocalFileStorageAdapter(IGlossaryStorageAdapter):
         self.base_path = Path(base_dir).resolve()
         self.base_path.mkdir(parents=True, exist_ok=True)
 
-    def save_manifest(self, file_name: str, manifest: OnyxGlossaryManifest) -> str:
+    def save_manifest(self, file_name: str, manifest: IzvoriaGlossaryManifest) -> str:
         if not file_name.endswith(".json"):
             file_name += ".json"
 

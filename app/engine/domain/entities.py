@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, ConfigDict
 
 
 class IngestionReport(BaseModel):
-    """The structured result of pointing the Onyx Engine at a directory."""
+    """The structured result of pointing the Izvoria Engine at a directory."""
     target_path: str
     total_files_scanned: int = 0
     successful_ingestions: int = 0
@@ -42,7 +42,7 @@ class IngestionReport(BaseModel):
 
 
 class StorageCompactionReport(BaseModel):
-    """What `OnyxEngine.compact_storage` freed (or, as a dry run, would free) across the indexed recordings."""
+    """What `IzvoriaEngine.compact_storage` freed (or, as a dry run, would free) across the indexed recordings."""
     dry_run: bool = False
     sources_checked: int = 0
     clip_bytes: int = 0

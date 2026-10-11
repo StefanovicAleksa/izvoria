@@ -31,7 +31,7 @@ class TestSwitchLanguage:
     def test_the_active_language_keeps_the_engine(self):
         engine = _engine("sr")
 
-        with patch.object(main.OnyxBootstrapper, "switch_language") as switch:
+        with patch.object(main.IzvoriaBootstrapper, "switch_language") as switch:
             assert main.switch_language(engine, "sr") is engine
 
         switch.assert_not_called()
@@ -39,19 +39,19 @@ class TestSwitchLanguage:
     def test_another_language_rebuilds_the_engine(self):
         engine = _engine("en")
 
-        with patch.object(main.OnyxBootstrapper, "switch_language") as switch:
+        with patch.object(main.IzvoriaBootstrapper, "switch_language") as switch:
             assert main.switch_language(engine, "sr") is switch.return_value
 
         switch.assert_called_once_with(engine, "sr")
 
     def test_a_busy_engine_is_reported_not_replaced(self):
-        with patch.object(main.OnyxBootstrapper, "switch_language", side_effect=EngineBusyError("ingesting")), \
+        with patch.object(main.IzvoriaBootstrapper, "switch_language", side_effect=EngineBusyError("ingesting")), \
                 pytest.raises(EngineBusyError):
             main.switch_language(_engine("en"), "sr")
 
     def test_a_failed_rebuild_restarts_in_the_previous_language(self):
-        with patch.object(main.OnyxBootstrapper, "switch_language", side_effect=RuntimeError("no GPU")), \
-                patch.object(main.OnyxBootstrapper, "build") as build:
+        with patch.object(main.IzvoriaBootstrapper, "switch_language", side_effect=RuntimeError("no GPU")), \
+                patch.object(main.IzvoriaBootstrapper, "build") as build:
             restarted = main.switch_language(_engine("en"), "sr")
 
         build.return_value.start.assert_called_once_with()

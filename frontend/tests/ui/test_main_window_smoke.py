@@ -16,17 +16,17 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QEventLoop, QTimer  # noqa: E402
 
-from onyx_desktop.domain.entities import ChatMessage  # noqa: E402
-from onyx_desktop.domain.enums import (  # noqa: E402
+from izvoria_desktop.domain.entities import ChatMessage  # noqa: E402
+from izvoria_desktop.domain.enums import (  # noqa: E402
     ApplianceStatus,
     ChatMode,
     MessageRole,
     SearchMode,
     TurnOutcome,
 )
-from onyx_desktop.service.engine_bridge import EngineBridge  # noqa: E402
-from onyx_desktop.service.log_relay import LogRelay  # noqa: E402
-from onyx_desktop.ui.main_window import MainWindow  # noqa: E402
+from izvoria_desktop.service.engine_bridge import EngineBridge  # noqa: E402
+from izvoria_desktop.service.log_relay import LogRelay  # noqa: E402
+from izvoria_desktop.ui.main_window import MainWindow  # noqa: E402
 
 pytestmark = pytest.mark.gui
 
@@ -54,7 +54,7 @@ class TestMainWindowSmoke:
         # Chat, Search, Ingest, Report. The nav button id IS the stack index, so this count and the
         # label tuple in _sidebar() must stay in step.
         assert window._views.count() == 4
-        assert window.windowTitle().startswith("Onyx")
+        assert window.windowTitle().startswith("Izvoria")
 
     def test_every_signal_connection_is_valid(self, window):
         """
@@ -169,7 +169,7 @@ class TestApplianceControls:
 class TestThemes:
     @pytest.mark.parametrize("mode", ["dark", "light"])
     def test_the_window_builds_in_each_mode(self, qt_app, stub_gateway, mode):
-        from onyx_desktop.ui import theme
+        from izvoria_desktop.ui import theme
 
         try:
             theme.use(mode)
@@ -191,14 +191,14 @@ class TestModeSwitch:
 
     @pytest.fixture(autouse=True)
     def _restore_theme(self, qt_app):
-        from onyx_desktop.ui import theme
+        from izvoria_desktop.ui import theme
 
         yield
         theme.use()
         theme.apply_to(qt_app)
 
     def test_the_toggle_switches_the_whole_app_and_back(self, window, qt_app):
-        from onyx_desktop.ui import appearance, theme
+        from izvoria_desktop.ui import appearance, theme
 
         window.show()
         assert theme.MODE == "dark"
@@ -216,7 +216,7 @@ class TestModeSwitch:
         assert appearance.saved_mode() == "dark"
 
     def test_it_works_while_the_appliance_is_busy(self, window):
-        from onyx_desktop.ui import theme
+        from izvoria_desktop.ui import theme
 
         window.show()
         window._bridge.boot()
@@ -229,8 +229,8 @@ class TestModeSwitch:
         pump(600)
 
     def test_citations_already_on_screen_take_the_new_colour(self, window):
-        from onyx_desktop.ui import theme
-        from onyx_desktop.ui.widgets.message_bubble import MessageBubble
+        from izvoria_desktop.ui import theme
+        from izvoria_desktop.ui.widgets.message_bubble import MessageBubble
 
         window.show()
         window._chat.add_message(ChatMessage(role=MessageRole.ASSISTANT, text="Signed on the 14th [Doc 1]."))
@@ -249,8 +249,8 @@ class TestDisplayLanguage:
     """The app's own text switches language in place, separately from the language answers are written in."""
 
     def test_switching_relabels_the_whole_window_and_back(self, window):
-        from onyx_desktop.ui import appearance
-        from onyx_desktop.utils import i18n
+        from izvoria_desktop.ui import appearance
+        from izvoria_desktop.utils import i18n
 
         window.show()
         window._bridge.boot()

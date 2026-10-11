@@ -17,9 +17,9 @@ from app.features.deep_research_report.domain.entities import (
 from app.features.search_history.domain.entities import SearchRecord, SearchRecordSummary
 from app.features.session_memory.domain.entities import SessionSummary, SessionTurn
 
-class IOnyxEngine(ABC):
+class IIzvoriaEngine(ABC):
     """
-    The unified public Facade for the Onyx AI Appliance.
+    The unified public Facade for the Izvoria AI Appliance.
 
     `owner_id` is the signed-in user on the hosted multi-user API: their turns, searches and reports are recorded
     under it and every history read is limited to it. The appliance never passes one, and history stays shared.
@@ -90,7 +90,7 @@ class IOnyxEngine(ABC):
     @abstractmethod
     def search_standard(self, query: SearchQuery, owner_id: Optional[str] = None) -> SearchResult:
         """
-        Executes a fast, standard RAG hybrid search against the Onyx Vault.
+        Executes a fast, standard RAG hybrid search against the Izvoria Vault.
         """
         pass
 

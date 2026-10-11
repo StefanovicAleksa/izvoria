@@ -77,7 +77,7 @@ class TestScannerErrorMapper:
         assert isinstance(mapped, exc.ScannerError)
         assert "Unexpected scanner error" in str(mapped)
 
-class TestOnyxOutputIsNeverIngested:
+class TestIzvoriaOutputIsNeverIngested:
     """Frames, clips and extracted audio live in the vault's date shards, reports under REPORTS_DIR."""
 
     @pytest.fixture

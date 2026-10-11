@@ -13,13 +13,13 @@ os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 from app.core.anchors.domain.enums import AnchorKind
 from app.core.anchors.utils.formatting import format_location
 from app.core.language.service.language_api import get_language_pack, get_supported_language_packs
-from app.engine.service.bootstrap import OnyxBootstrapper
+from app.engine.service.bootstrap import IzvoriaBootstrapper
 from app.engine.exceptions.base import EngineError
 from app.features.rag_retrieval.domain.entities import SearchQuery
 
 # Setup minimal logging for clean CLI output
 logging.basicConfig(level=logging.WARNING)
-logger = logging.getLogger("onyx_cli")
+logger = logging.getLogger("izvoria_cli")
 logger.setLevel(logging.INFO)
 
 
@@ -53,14 +53,14 @@ def switch_language(engine, code: str):
         return engine
     print(f"\n[SYSTEM] Switching to {language_label(code)}...")
     try:
-        return OnyxBootstrapper.switch_language(engine, code)
+        return IzvoriaBootstrapper.switch_language(engine, code)
     except EngineError:
         raise
     except Exception as e:
         # The old engine is already stopped; come back up in the language we were in
         print(f"\n[ENGINE ERROR] Could not switch to {language_label(code)}: {e}")
         print(f"[SYSTEM] Restarting in {language_label(engine.active_language)}...")
-        restarted = OnyxBootstrapper.build()
+        restarted = IzvoriaBootstrapper.build()
         restarted.start()
         return restarted
 
@@ -127,7 +127,7 @@ def _location(item, time_label: str, document_label: str) -> str:
 
 def print_reasoned_result(result):
     if result.qa_response:
-        print(f"\n[ONYX AI - REASONED ANSWER]\n{result.qa_response.generated_answer}")
+        print(f"\n[IZVORIA AI - REASONED ANSWER]\n{result.qa_response.generated_answer}")
         print(f"\n[CITATIONS USED: {len(result.qa_response.citations)}]")
         for cit in result.qa_response.citations:
             print(f"  {cit.doc_id} {cit.physical_path or 'No physical file resolved'}")
@@ -135,7 +135,7 @@ def print_reasoned_result(result):
         if result.critique_unresolved:
             print("\n[NOTE] Self-critique had unresolved concerns about this answer's grounding.")
     else:
-        print(f"\n[ONYX AI - CLARIFICATION NEEDED]\n{result.clarification_question}")
+        print(f"\n[IZVORIA AI - CLARIFICATION NEEDED]\n{result.clarification_question}")
 
     print(f"\n[REASONING TRACE: {result.total_iterations} iteration(s)]")
     for step in result.iteration_trace:
@@ -145,7 +145,7 @@ def print_reasoned_result(result):
 
 
 def print_chat_response(response):
-    print(f"\n[ONYX AI]\n{response.generated_answer}")
+    print(f"\n[IZVORIA AI]\n{response.generated_answer}")
     print(f"\n[CITATIONS USED: {len(response.citations)}]")
     for cit in response.citations:
         print(f"  {cit.doc_id} {cit.physical_path or 'No physical file resolved'}")
@@ -347,7 +347,7 @@ def main():
     print("[SYSTEM] Initializing hardware state and preloading UI models...")
 
     try:
-        engine = OnyxBootstrapper.build()
+        engine = IzvoriaBootstrapper.build()
         engine.start()
     except Exception as e:
         print(f"\n[FATAL STARTUP ERROR] Appliance failed to boot: {e}")
@@ -439,7 +439,7 @@ def main():
         print("\n[SYSTEM] Emergency interrupt detected.")
     finally:
         engine.stop()
-        print("[SYSTEM] Onyx Appliance is Offline.")
+        print("[SYSTEM] Izvoria Appliance is Offline.")
 
 
 if __name__ == "__main__":

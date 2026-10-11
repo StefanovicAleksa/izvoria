@@ -1,7 +1,7 @@
 # Path: app/core/language/domain/entities.py
 
 """
-A language pack: every rule in Onyx that depends on the language being spoken, in one validated object.
+A language pack: every rule in Izvoria that depends on the language being spoken, in one validated object.
 
 An appliance ingests and answers in every language that has a pack in `data/languages/<code>.toml`; one of
 them is active at a time (`settings.APPLIANCE_LANGUAGE`). Nothing here translates anything: the transcript, the index and the answers all

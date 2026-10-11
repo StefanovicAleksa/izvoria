@@ -3,7 +3,7 @@
 
 from PySide6.QtCore import QSettings
 
-from onyx_desktop.ui import appearance
+from izvoria_desktop.ui import appearance
 
 
 class TestAppearance:

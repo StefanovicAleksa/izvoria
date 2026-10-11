@@ -2,19 +2,19 @@ import inspect
 
 import pytest
 
-from app.engine.domain.interfaces import IOnyxEngine
-from app.engine.service.onyx_engine import OnyxEngine
+from app.engine.domain.interfaces import IIzvoriaEngine
+from app.engine.service.izvoria_engine import IzvoriaEngine
 
-PORT_METHODS = [name for name, _ in inspect.getmembers(IOnyxEngine, predicate=inspect.isfunction)]
+PORT_METHODS = [name for name, _ in inspect.getmembers(IIzvoriaEngine, predicate=inspect.isfunction)]
 
 
-class TestIOnyxEngine:
+class TestIIzvoriaEngine:
     """The port is what the desktop app, the CLI and the hosted API program against; it must say what the engine takes."""
 
     @pytest.mark.parametrize("name", PORT_METHODS)
     def test_the_engine_takes_exactly_the_parameters_the_port_declares(self, name):
-        declared = inspect.signature(getattr(IOnyxEngine, name)).parameters
-        implemented = inspect.signature(getattr(OnyxEngine, name)).parameters
+        declared = inspect.signature(getattr(IIzvoriaEngine, name)).parameters
+        implemented = inspect.signature(getattr(IzvoriaEngine, name)).parameters
 
         assert list(implemented) == list(declared)
         assert [p.default for p in implemented.values()] == [p.default for p in declared.values()]
@@ -25,7 +25,7 @@ class TestIOnyxEngine:
         "get_search", "delete_search",
     ])
     def test_every_per_user_call_takes_an_optional_owner(self, name):
-        owner = inspect.signature(getattr(IOnyxEngine, name)).parameters["owner_id"]
+        owner = inspect.signature(getattr(IIzvoriaEngine, name)).parameters["owner_id"]
 
         assert owner.default is None
 

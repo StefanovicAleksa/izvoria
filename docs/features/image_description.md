@@ -40,7 +40,7 @@ Input: a `SourceType.IMAGE` source id and the loaded VLM. Output: `ImageDescript
 
 ## Where it fits
 
-`BatchImagePipeline`: scan → ingest (`SourceType.IMAGE`; the VLM preloads meanwhile) → `ImageDescriptionPhase` (per image: describe → OCR → check → `ContextualizerAPI.execute_image`, which saves a one-chunk transcript with no model) → context_unification (`[Image Context: …]`) → rag_storage. It uses one VLM load for the whole batch, then the embedder. There is no transcript stage, contextual SLM or clip extraction. `OnyxEngine.ingest_images()`, CLI option 10, and the desktop's "Images" mode.
+`BatchImagePipeline`: scan → ingest (`SourceType.IMAGE`; the VLM preloads meanwhile) → `ImageDescriptionPhase` (per image: describe → OCR → check → `ContextualizerAPI.execute_image`, which saves a one-chunk transcript with no model) → context_unification (`[Image Context: …]`) → rag_storage. It uses one VLM load for the whole batch, then the embedder. There is no transcript stage, contextual SLM or clip extraction. `IzvoriaEngine.ingest_images()`, CLI option 10, and the desktop's "Images" mode.
 
 Formats: `.jpg .jpeg .png .webp .tif .tiff .bmp`. HEIC is not included because it needs pillow-heif, a native dependency.
 

@@ -51,7 +51,7 @@ class RetrievedChunk(BaseModel):
     # Cross-encoder score, set when the chunk passed through the reranker
     rerank_score: Optional[float] = Field(default=None, description="Cross-encoder relevance score.")
 
-    # The database linkage to the Storage Feature (Onyx Vault)
+    # The database linkage to the Storage Feature (Izvoria Vault)
     extracted_file_id: Optional[uuid.UUID] = Field(default=None, description="Link to the physical .mp4 clip.")
 
     model_config = ConfigDict(frozen=True)

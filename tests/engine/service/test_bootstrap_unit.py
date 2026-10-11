@@ -5,11 +5,11 @@ import pytest
 from unittest.mock import Mock, call, patch
 
 from app.engine.exceptions.lifecycle import EngineBusyError
-from app.engine.service.bootstrap import OnyxBootstrapper
-from app.engine.service.onyx_engine import OnyxEngine
+from app.engine.service.bootstrap import IzvoriaBootstrapper
+from app.engine.service.izvoria_engine import IzvoriaEngine
 
 
-class TestOnyxBootstrapperUnit:
+class TestIzvoriaBootstrapperUnit:
 
     @patch('app.core.database.service.manager.db_manager')
     @patch('app.features.scanner.service.scanner.FileScanner')
@@ -20,12 +20,12 @@ class TestOnyxBootstrapperUnit:
         all repositories, adapters, APIs, and phases without raising an exception.
         """
         try:
-            engine = OnyxBootstrapper.build()
+            engine = IzvoriaBootstrapper.build()
         except Exception as e:
             pytest.fail(f"Bootstrapper failed to assemble dependencies: {e}")
 
         try:
-            assert isinstance(engine, OnyxEngine)
+            assert isinstance(engine, IzvoriaEngine)
             assert engine._media_pipeline is not None
             assert engine._audio_pipeline is not None
             assert engine._live_pipeline is not None
@@ -51,8 +51,8 @@ class TestSwitchLanguage:
         settings.use_language.side_effect = lambda code: calls.use_language(code)
         settings.remember_language.side_effect = lambda code: calls.remember_language(code)
         listener = Mock()
-        with patch.object(OnyxBootstrapper, 'build', side_effect=lambda progress_listener: calls.build(progress_listener)):
-            rebuilt = OnyxBootstrapper.switch_language(old, "sr", progress_listener=listener)
+        with patch.object(IzvoriaBootstrapper, 'build', side_effect=lambda progress_listener: calls.build(progress_listener)):
+            rebuilt = IzvoriaBootstrapper.switch_language(old, "sr", progress_listener=listener)
 
         assert calls.mock_calls == [
             call.old.require_idle(), call.old.stop(), call.use_language("sr"), call.build(listener),
@@ -64,24 +64,24 @@ class TestSwitchLanguage:
         old = Mock()
         old.require_idle.side_effect = EngineBusyError("ingesting")
 
-        with patch.object(OnyxBootstrapper, 'build') as build, pytest.raises(EngineBusyError):
-            OnyxBootstrapper.switch_language(old, "sr")
+        with patch.object(IzvoriaBootstrapper, 'build') as build, pytest.raises(EngineBusyError):
+            IzvoriaBootstrapper.switch_language(old, "sr")
 
         old.stop.assert_not_called()
         settings.use_language.assert_not_called()
         build.assert_not_called()
 
     def test_a_failed_rebuild_goes_back_to_the_previous_language_and_remembers_nothing(self, settings):
-        with patch.object(OnyxBootstrapper, 'build', side_effect=RuntimeError("no GPU")), \
+        with patch.object(IzvoriaBootstrapper, 'build', side_effect=RuntimeError("no GPU")), \
                 pytest.raises(RuntimeError):
-            OnyxBootstrapper.switch_language(Mock(), "sr")
+            IzvoriaBootstrapper.switch_language(Mock(), "sr")
 
         assert settings.use_language.mock_calls == [call("sr"), call("en")]
         settings.remember_language.assert_not_called()
 
     def test_without_an_engine_it_just_builds_one(self, settings):
-        with patch.object(OnyxBootstrapper, 'build') as build:
-            rebuilt = OnyxBootstrapper.switch_language(None, "sl")
+        with patch.object(IzvoriaBootstrapper, 'build') as build:
+            rebuilt = IzvoriaBootstrapper.switch_language(None, "sl")
 
         settings.use_language.assert_called_once_with("sl")
         build.return_value.start.assert_called_once_with()
@@ -92,7 +92,7 @@ class TestModelKit:
     """The hosted API's shared model service: one kit, one engine per firm."""
 
     def test_the_appliance_kit_has_no_pinned_external_or_strict_residency(self):
-        kit = OnyxBootstrapper.build_model_kit()
+        kit = IzvoriaBootstrapper.build_model_kit()
         try:
             orchestrator = kit.orchestrator
             assert orchestrator._pinned_types == frozenset()
@@ -110,7 +110,7 @@ class TestModelKit:
         monkeypatch.setattr(settings, "ENGINE_CONCURRENT_LIVE", True)
         monkeypatch.setattr(settings, "VRAM_HEADROOM_MB", 1200.0)
 
-        kit = OnyxBootstrapper.build_model_kit()
+        kit = IzvoriaBootstrapper.build_model_kit()
         try:
             orchestrator = kit.orchestrator
             assert orchestrator._pinned_types == {ModelType.RAG_EMBEDDING, ModelType.RAG_RERANKING}
@@ -122,11 +122,11 @@ class TestModelKit:
 
     @patch('app.core.database.service.manager.db_manager')
     def test_firm_engines_share_the_kit_but_not_the_database(self, _):
-        kit = OnyxBootstrapper.build_model_kit()
+        kit = IzvoriaBootstrapper.build_model_kit()
         first_db, second_db = Mock(), Mock()
         try:
-            first = OnyxBootstrapper.build(database=first_db, kit=kit)
-            second = OnyxBootstrapper.build(database=second_db, kit=kit)
+            first = IzvoriaBootstrapper.build(database=first_db, kit=kit)
+            second = IzvoriaBootstrapper.build(database=second_db, kit=kit)
 
             assert first._async_service is kit.async_service is second._async_service
             assert first._db is first_db and second._db is second_db
@@ -156,9 +156,9 @@ class TestModelKit:
 
     @patch('app.core.database.service.manager.db_manager')
     def test_a_firm_engine_keeps_its_files_in_the_firms_own_vault_and_reports(self, _, tmp_path):
-        kit = OnyxBootstrapper.build_model_kit()
+        kit = IzvoriaBootstrapper.build_model_kit()
         try:
-            engine = OnyxBootstrapper.build(database=Mock(), kit=kit, vault_dir=tmp_path / "vault",
+            engine = IzvoriaBootstrapper.build(database=Mock(), kit=kit, vault_dir=tmp_path / "vault",
                                             reports_dir=tmp_path / "reports")
 
             assert engine._storage_api.file_manager.base_path == (tmp_path / "vault").resolve()
@@ -168,7 +168,7 @@ class TestModelKit:
 
     @patch('app.engine.service.bootstrap.db_manager')
     def test_the_appliance_engine_owns_its_own_kit_and_database(self, appliance_db):
-        engine = OnyxBootstrapper.build()
+        engine = IzvoriaBootstrapper.build()
         try:
             assert engine._owns_model_service is True
             assert engine._db is appliance_db

@@ -61,7 +61,7 @@ class BatchImagePipeline:
 
     def process_directory(self, target_directory: str) -> Dict[PipelinePhase, PhaseBatchResult]:
         pipeline_results: Dict[PipelinePhase, PhaseBatchResult] = {}
-        logger.info(f"========== Starting Onyx Image Batch Pipeline for [{target_directory}] ==========")
+        logger.info(f"========== Starting Izvoria Image Batch Pipeline for [{target_directory}] ==========")
 
         try:
             # ==========================================

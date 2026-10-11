@@ -20,10 +20,10 @@ from typing import Dict, Set
 
 import pytest
 
-from onyx_desktop.utils import i18n
+from izvoria_desktop.utils import i18n
 
 FRONTEND = Path(__file__).resolve().parents[2]
-SOURCE = FRONTEND / "onyx_desktop"
+SOURCE = FRONTEND / "izvoria_desktop"
 SERVED_PACKS = FRONTEND.parent / "data" / "languages"
 
 # helper name -> index of the argument holding the text
@@ -116,7 +116,7 @@ class TestCatalogs:
         assert served, "no served language packs found"
         assert served <= displayable, (
             f"no display catalog for {sorted(served - displayable)}: add "
-            f"frontend/onyx_desktop/locales/<code>.toml")
+            f"frontend/izvoria_desktop/locales/<code>.toml")
 
 
 class TestTranslation:

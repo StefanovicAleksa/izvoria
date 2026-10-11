@@ -104,7 +104,7 @@ except Exception as e:
 
 
 def test_torchcodec_works_standalone():
-    """Baseline: torchaudio.load() works when no Onyx model adapter has run yet."""
+    """Baseline: torchaudio.load() works when no Izvoria model adapter has run yet."""
     script = _CHECK_TORCHCODEC_TAIL.format(audio_path=_REAL_AUDIO_PATH)
     payload = _run_probe(script)
     assert payload["torchcodec_works"], f"torchcodec is broken even standalone: {payload['error']}"

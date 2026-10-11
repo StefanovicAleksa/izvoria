@@ -8,10 +8,10 @@ export function AuthLayout({ children, footer, wide = false }: { children: React
   return (
     <div className="auth">
       <aside className="auth-brand">
-        <div className="brand">Onyx</div>
+        <div className="brand">Izvoria</div>
         <p className="tagline">{t("Answers from your firm's own material, with a source for every claim.")}</p>
         <ul>
-          <li>{t("Answers only from your material: when it isn't there, Onyx says so.")}</li>
+          <li>{t("Answers only from your material: when it isn't there, Izvoria says so.")}</li>
           <li>{t("Every answer cites the passage it rests on, so it can be checked in a click.")}</li>
           <li>{t("Recordings, documents and images, in English and Serbian.")}</li>
         </ul>

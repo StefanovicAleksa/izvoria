@@ -32,7 +32,7 @@ class FFmpegAdapter(IFFmpegAdapter):
             raise map_ffmpeg_error(raw_error)
 
         # 1. Manage the OS-level temporary file securely
-        temp_fd, temp_path_str = tempfile.mkstemp(suffix=".wav", prefix="onyx_audio_")
+        temp_fd, temp_path_str = tempfile.mkstemp(suffix=".wav", prefix="izvoria_audio_")
         os.close(temp_fd)
         temp_path = Path(temp_path_str)
 

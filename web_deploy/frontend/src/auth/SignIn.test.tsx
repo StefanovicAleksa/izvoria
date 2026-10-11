@@ -121,7 +121,7 @@ describe("Signed in while the GPU server wakes", () => {
 describe("The client", () => {
   it("only treats a lost session as signing out, not a wrong password", async () => {
     const seen: string[] = [];
-    window.addEventListener("onyx:signed-out", () => seen.push("out"));
+    window.addEventListener("izvoria:signed-out", () => seen.push("out"));
     fakeGateway({
       "POST /auth/login": { status: 401, body: { error: "Wrong email or password." } },
       "/api/a": { status: 401, body: { error: "Please sign in.", kind: "auth" } },

@@ -21,14 +21,14 @@ from app.features.deep_research_report.utils.evidence_bank import entry_location
 
 # Emitted instead of a plain tag when the desktop renders the report, so a citation is clickable there
 # while the on-disk file stays plain text.
-_DOC_LINK_SCHEME = "onyx://doc/"
+_DOC_LINK_SCHEME = "izvoria://doc/"
 
 _DOC_TAG = re.compile(r"\[Doc (\d+)]")
 
 
 def render(report: Report, link_citations: bool = False) -> str:
     """
-    The whole report as Markdown. `link_citations` turns `[Doc 7]` into `[Doc 7](onyx://doc/7)` for the
+    The whole report as Markdown. `link_citations` turns `[Doc 7]` into `[Doc 7](izvoria://doc/7)` for the
     desktop's click-to-verify panel; the file written to disk uses plain tags.
     """
     entries = report.evidence_by_doc_number

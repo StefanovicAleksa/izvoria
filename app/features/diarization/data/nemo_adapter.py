@@ -71,7 +71,7 @@ class NeMoDiarizationAdapter(IDiarizationModelAdapter):
             audio_path_obj = Path(audio_path).resolve()
             audio_id = audio_path_obj.stem
 
-            with tempfile.TemporaryDirectory(prefix="onyx_diarization_") as tmpdir:
+            with tempfile.TemporaryDirectory(prefix="izvoria_diarization_") as tmpdir:
                 tmp_path = Path(tmpdir)
 
                 # --- ENFORCE 16KHz MONO ---

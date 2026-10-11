@@ -6,7 +6,7 @@ from app.core.database import exceptions as exc
 
 def map_database_error(sa_error: SQLAlchemyError) -> exc.DatabaseError:
     """
-    Analyzes a SQLAlchemy Exception and converts it into a typed Onyx Domain Exception.
+    Analyzes a SQLAlchemy Exception and converts it into a typed Izvoria Domain Exception.
     """
     # 1. Unwrap the exception to find the root cause (psycopg2 exception)
     original = getattr(sa_error, "orig", None)

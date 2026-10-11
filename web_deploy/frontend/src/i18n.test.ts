@@ -37,7 +37,7 @@ const INDIRECT = [
   "What your firm does", "For whom, and in which jurisdictions or markets.",
   "Practice areas or specialities",
   "One per line, with a short description, e.g. “M&A: share and asset deals, due diligence”.",
-  "What you will bring to Onyx",
+  "What you will bring to Izvoria",
   "Meetings, hearings, consultations, lectures, dictations, contracts? Who speaks, and how formally?",
   "Terms transcription already gets wrong", "If you have used speech recognition before: “heard X, should be Y”.",
   "Languages of your material", "Roughly what share is in English and what in Serbian.",

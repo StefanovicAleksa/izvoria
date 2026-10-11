@@ -13,7 +13,7 @@ class VramStatus(BaseModel):
 
 class ModelManifest(BaseModel):
     model_type: ModelType
-    model_path: str  # Local path to the weights on the Onyx Appliance
+    model_path: str  # Local path to the weights on the Izvoria Appliance
     required_vram_mb: float
 
     model_config = ConfigDict(frozen=True)

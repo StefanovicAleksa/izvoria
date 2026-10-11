@@ -1,6 +1,6 @@
 # Hosted demo: gateway VPS + on-demand Vast.ai GPU box
 
-Onyx is an on-premise appliance. This is **not** how a client runs it; it's how one tester (and demo viewers) use the real desktop app from a browser without us renting a $200+/month dedicated GPU server.
+Izvoria is an on-premise appliance. This is **not** how a client runs it; it's how one tester (and demo viewers) use the real desktop app from a browser without us renting a $200+/month dedicated GPU server.
 
 ```
 browser ──https──► Gateway VPS (~$5/mo, always on)       Caddy TLS → Starlette (deploy/gateway)
@@ -24,7 +24,7 @@ browser ──https──► Gateway VPS (~$5/mo, always on)       Caddy TLS →
 
 1. The tester signs in with the shared password (a signed `SameSite=strict` cookie, which is also the CSRF defence), picks the language the app starts in (**Serbian** or **English**), and clicks **Start appliance**.
 2. `ApplianceController` (`deploy/gateway/controller.py`) calls `PUT /api/v0/instances/{id}/ {"state": "running"}`, polls the instance until `actual_status == "running"`, reads the mapped ports for 8090 and 6080, waits for the agent's `/health` (Postgres + X display), then calls `POST /session {language}`.
-3. The agent (`deploy/instance/agent/session.py`) launches the desktop app with `APPLIANCE_LANGUAGE=<lang>` and `POSTGRES_DB=onyx` in its environment. Real environment variables override `.env.prod` in pydantic-settings. One database holds every language, so the tester can ingest Serbian and English into the same appliance and ask about either in either language. `OnyxEngine.start()` runs the Alembic migrations itself.
+3. The agent (`deploy/instance/agent/session.py`) launches the desktop app with `APPLIANCE_LANGUAGE=<lang>` and `POSTGRES_DB=onyx` in its environment. Real environment variables override `.env.prod` in pydantic-settings. One database holds every language, so the tester can ingest Serbian and English into the same appliance and ask about either in either language. `IzvoriaEngine.start()` runs the Alembic migrations itself.
 4. **Open appliance** loads `/desktop/vnc.html`. The gateway proxies noVNC's static files and the VNC WebSocket, and appends the websockify token itself. The token routes and authenticates in websockify's `TokenFile` plugin, and it never reaches the browser.
 5. Uploads go to `/workspace/uploads/<lang>/<YYYYMMDD-HHMMSS>/` on the box, named for the language picked on the page. Filenames are sanitised, and only the scanner's `ALLOWED_EXTENSIONS` are accepted; a test keeps the two lists in step. The page shows the folder to pick in the **Ingest** view and the language to set there ("Language of these files"). The Ingest view's picker is what the batch actually uses.
 
@@ -51,7 +51,7 @@ browser /appliance ◄─SSE /api/sources/stream─ gateway ◄─long-poll GET 
 | DOCX / EPUB / RTF / HTML / CSV | The verbatim excerpt and its location. Browsers can't render these safely, so it's download only |
 | Image | Shown inline |
 
-Everything has **Download original**, named `Onyx Doc 3 - p. 7 - Article 7.pdf`. A recording that has an
+Everything has **Download original**, named `Izvoria Doc 3 - p. 7 - Article 7.pdf`. A recording that has an
 excerpt also has **Download cited passage**.
 
 **Formats the browser can't play.** A clip is a stream copy, so it keeps the recording's codec. If that codec is
@@ -103,7 +103,7 @@ own player as before.
 - **Offer:** 1× RTX 3090, **≥120 GB disk** (51 GB models + venv + databases + uploads), `direct_port_count ≥ 4`, reliability ≥ 0.98, and a CUDA driver that matches the image. Prefer hosts with several 3090s: a stopped instance can only restart on the same machine.
 - **On-demand, not interruptible.**
 
-### 2. Put Onyx on it (from the dev box)
+### 2. Put Izvoria on it (from the dev box)
 
 ```bash
 deploy/instance/sync_to_box.sh root@<ssh-host> <ssh-port>          # code + 51 GB of models (rsync, resumable)

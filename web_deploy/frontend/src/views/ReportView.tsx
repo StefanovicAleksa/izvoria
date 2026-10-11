@@ -19,7 +19,7 @@ type Stage =
   | { kind: "writing"; reportId: string; total: number }
   | { kind: "document"; document: ReportDocument };
 
-const DOC_LINK = /^onyx:\/\/doc\/(\d+)$/;
+const DOC_LINK = /^izvoria:\/\/doc\/(\d+)$/;
 
 /** What a report is called: its title, or (from before titles) the request it was asked with. */
 export const reportName = (r: { title: string; topic: string }) => r.title || r.topic;

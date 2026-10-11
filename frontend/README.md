@@ -1,6 +1,6 @@
-# Onyx Desktop
+# Izvoria Desktop
 
-A native PySide6 (Qt6) desktop app for the Onyx appliance. It drives `OnyxEngine`
+A native PySide6 (Qt6) desktop app for the Izvoria appliance. It drives `IzvoriaEngine`
 **in-process** — no HTTP server, no IPC, no second runtime to vendor onto an air-gapped box.
 
 Its reason for existing is the verification loop the CLI cannot offer: read a claim, click its
@@ -55,7 +55,7 @@ English. Answers, excerpts, report text and file names are never translated.
   data. Each call records how to produce its text and replays it on a switch, which is what makes the switch
   instant without per-view refresh code. A bound widget's text set with a plain `setText()` would be
   overwritten by the next switch.
-- **A catalog per language** in `onyx_desktop/locales/<code>.toml` (`[meta]` code, native name, plural rule;
+- **A catalog per language** in `izvoria_desktop/locales/<code>.toml` (`[meta]` code, native name, plural rule;
   `[strings]` English → translation). A missing string falls back to English at runtime, but
   `tests/utils/test_i18n_catalogs_unit.py` reads the source for every string and fails on a missing, stale or
   placeholder-breaking entry, and on a served language pack (`data/languages/*.toml`) with no catalog.
@@ -87,7 +87,7 @@ request, an unresolved clip path, and a failure (ask it anything containing "fai
 Follows the project's hexagonal convention, plus a Qt-only `ui/` layer:
 
 ```
-onyx_desktop/
+izvoria_desktop/
 ├── domain/      frozen dataclasses, enums, and IEngineGateway — no Qt, no app.*
 ├── data/        engine_gateway.py (the ONLY module importing app.*), stub_gateway, report_writer
 ├── service/     engine_bridge / engine_worker (threading), log_relay, desktop_app
@@ -114,7 +114,7 @@ The Report view is the odd one out, deliberately:
 - It is the only place `[Doc N]` citations are actually clickable. The chat view renders them as
   coloured `<span>`s; you verify a chat claim through the evidence card beneath it. A report is pages
   long and has no cards, so the citation itself is the control — `QTextBrowser` + `setOpenLinks(False)`
-  + `anchorClicked`, against the `onyx://doc/N` links the engine's renderer emits in link mode.
+  + `anchorClicked`, against the `izvoria://doc/N` links the engine's renderer emits in link mode.
 - Its **cancel bypasses `EngineBridge`'s worker queue**. That is the single exception to "every engine
   call goes through the worker", and it exists because the worker is busy running the very report being
   cancelled — a queued call would arrive exactly when it is useless. Safe only because the engine just
@@ -157,7 +157,7 @@ Two non-obvious things in here, both of which caused real hangs before they were
   session id, so the answer model still reads the earlier turns — but the transcript starts empty,
   because `get_history` is capped at `CHAT_HISTORY_MAX_TURNS` and the engine cannot list sessions
   at all. The conversation index lives in `~/.config/onyx-desktop/sessions.json`.
-- **No embedded player, by design.** Onyx is not a media player. An evidence card's **Open clip**
+- **No embedded player, by design.** Izvoria is not a media player. An evidence card's **Open clip**
   button hands the file straight to
   your desktop's default player in one click (`xdg-open`; mpv here), which removed a whole class of codec and
   hardware-decode crash — Qt's FFmpeg backend tried VAAPI on this NVIDIA box, failed, and took the

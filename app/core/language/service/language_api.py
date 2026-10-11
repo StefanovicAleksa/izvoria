@@ -31,7 +31,7 @@ def _load(packs_dir: str, code: str) -> LanguagePack:
     return TomlLanguagePackRepository(packs_dir).load(code)
 
 
-_language_override: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("onyx_language", default=None)
+_language_override: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("izvoria_language", default=None)
 
 
 def active_language() -> str:

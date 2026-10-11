@@ -20,4 +20,4 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     # The appliance only moves forward; a restore from backup is the way back.
-    raise NotImplementedError("Onyx migrations are forward-only.")
+    raise NotImplementedError("Izvoria migrations are forward-only.")

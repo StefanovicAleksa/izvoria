@@ -1,5 +1,5 @@
 // Folds the engine's internal job names into the handful of general steps the desktop app shows while ingesting.
-// A copy of frontend/onyx_desktop/utils/progress_stages.py: keep the two in step. A job with no step here (a future
+// A copy of frontend/izvoria_desktop/utils/progress_stages.py: keep the two in step. A job with no step here (a future
 // one, say) is ignored rather than shown under its internal name.
 
 import type { IngestJob } from "../api/types";

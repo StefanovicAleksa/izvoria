@@ -9,8 +9,8 @@ def test_database_connection():
     Simple smoke test: Can we send SQL and get a result?
     """
     with db_manager.session() as session:
-        result = session.execute(text("SELECT 'Onyx Rules'")).scalar()
-        assert result == "Onyx Rules"
+        result = session.execute(text("SELECT 'Izvoria Rules'")).scalar()
+        assert result == "Izvoria Rules"
 
 
 @pytest.mark.integration

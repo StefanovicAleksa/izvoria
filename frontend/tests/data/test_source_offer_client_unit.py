@@ -10,11 +10,11 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from onyx_desktop.data.source_offer_client import (
+from izvoria_desktop.data.source_offer_client import (
     OFFER_TOKEN_ENV, OFFER_URL_ENV, TOKEN_HEADER, SourceOfferClient,
 )
-from onyx_desktop.domain.entities import Evidence
-from onyx_desktop.domain.enums import MediaKind
+from izvoria_desktop.domain.entities import Evidence
+from izvoria_desktop.domain.enums import MediaKind
 
 URL = "http://127.0.0.1:8090/offers"
 

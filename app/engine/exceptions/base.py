@@ -3,7 +3,7 @@
 
 class EngineError(Exception):
     """
-    The Root Exception for the unified Onyx Engine.
+    The Root Exception for the unified Izvoria Engine.
     """
     def __init__(self, message: str, original_exception: Exception = None):
         super().__init__(message)

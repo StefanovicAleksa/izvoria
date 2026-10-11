@@ -4,6 +4,14 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Onyx is now Izvoria
+
+The product is renamed **Izvoria** (from *izvor*, "source"), because "Onyx" is already the name of an AI enterprise-search product. Entries below this one keep the old name.
+
+- **Renamed:** everything a person sees (desktop app, web app, CLI, PDF and report footer, Serbian translations, docs), plus the code: `IzvoriaEngine`, `IzvoriaBootstrapper`, `frontend/izvoria_desktop/`, `app/engine/service/izvoria_engine.py`, the `izvoria-model-lifecycle` and `scaffold-izvoria-feature` skills, and the `izvoria://doc/N` citation links.
+- **Deliberately still `onyx`:** anything that names something outside the code, so existing data and deployed boxes keep working without a migration. That covers the `ONYX_*` environment variables, the databases (`onyx_dev_db`, `onyx_test_db`, `onyx_control`, `onyx_firm_<slug>`, `onyx_bench_<code>`), the Docker containers, `onyx_data/`, the `onyx_session`/`onyx_demo` cookies, the `x-onyx-*` signed headers, the systemd units and server paths (`/opt/onyx-*`, `/etc/onyx-*`, `/var/lib/onyx-web`), the desktop's `QSettings("Onyx", "Onyx Desktop")` and `~/.config/onyx-desktop`, and the repository directory `onyx_v3`.
+- **Deploy note:** the web API and the web app must be deployed together, since the API emits `izvoria://doc/N` links and the app now only recognises that scheme.
+
 ## The 3090 test passed; four fresh-box bugs fixed
 
 The M0 spike ran on a rented RTX 3090 and every verdict passed. While a 16-minute lecture was ingested, three simulated users chatted: 147 of 147 chats were answered (median 1.6 s), and VRAM peaked at 20.2 GB of 24. The chosen layout is 6 slots and 196,608 KV tokens (`api.env.example`). The scheduler patch made chats beside a long request answer in 6.5 s instead of 61.6 s. Numbers in `docs/web_deploy.md`, "The 3090 run".

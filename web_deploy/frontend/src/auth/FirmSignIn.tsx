@@ -46,7 +46,7 @@ export function FirmSignIn({ onDone }: { onDone: () => void }) {
       footer={
         <>
           <span>
-            {t("Is your firm not using Onyx yet?")} <Link to="/request-access">{t("Request access for your firm")}</Link>
+            {t("Is your firm not using Izvoria yet?")} <Link to="/request-access">{t("Request access for your firm")}</Link>
           </span>
           <span>
             {t("Trouble signing in?")} <Link to="/help">{t("Help & support")}</Link>

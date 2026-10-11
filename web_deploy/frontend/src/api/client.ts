@@ -4,7 +4,7 @@
 import type { ProgressEvent, RunError } from "./types";
 
 /** Fired when the gateway says this browser is no longer signed in, so the app goes back to the sign-in page. */
-export const SIGNED_OUT_EVENT = "onyx:signed-out";
+export const SIGNED_OUT_EVENT = "izvoria:signed-out";
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly kind: string = "error", readonly body: any = null) {

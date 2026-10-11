@@ -88,9 +88,9 @@ export function RequestAccess() {
   return (
     <AuthLayout wide footer={footer}>
       <form onSubmit={(e) => { e.preventDefault(); submit(); }}>
-        <h1>{t("Bring Onyx to your firm")}</h1>
+        <h1>{t("Bring Izvoria to your firm")}</h1>
         <p className="lead">
-          {t("Tell us about your firm and we will be in touch to arrange a demonstration and the next steps. Onyx is set up for each firm individually.")}
+          {t("Tell us about your firm and we will be in touch to arrange a demonstration and the next steps. Izvoria is set up for each firm individually.")}
         </p>
 
         <div className="form-section">
@@ -105,14 +105,14 @@ export function RequestAccess() {
         </div>
 
         <div className="form-section">
-          <h3>{t("Tailoring Onyx to your firm")}</h3>
+          <h3>{t("Tailoring Izvoria to your firm")}</h3>
           <p className="why">
-            {t("Onyx is tuned to each firm's vocabulary, so that the names, terms and abbreviations your people use are recognised and spelled correctly in transcripts and answers. The answers below are what we tune it with. Please be as accurate as you can, and leave a field empty rather than guess: you can add or correct anything later.")}
+            {t("Izvoria is tuned to each firm's vocabulary, so that the names, terms and abbreviations your people use are recognised and spelled correctly in transcripts and answers. The answers below are what we tune it with. Please be as accurate as you can, and leave a field empty rather than guess: you can add or correct anything later.")}
           </p>
           {profileField("industry", "Field of work", "For example law, medicine, finance, consulting.", 1)}
           {profileField("description", "What your firm does", "For whom, and in which jurisdictions or markets.")}
           {profileField("sub_domains", "Practice areas or specialities", "One per line, with a short description, e.g. “M&A: share and asset deals, due diligence”.", 4)}
-          {profileField("data_kinds", "What you will bring to Onyx", "Meetings, hearings, consultations, lectures, dictations, contracts? Who speaks, and how formally?")}
+          {profileField("data_kinds", "What you will bring to Izvoria", "Meetings, hearings, consultations, lectures, dictations, contracts? Who speaks, and how formally?")}
         </div>
 
         <div className="form-section">

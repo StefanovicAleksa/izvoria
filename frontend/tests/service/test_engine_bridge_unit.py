@@ -16,14 +16,14 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtCore import QEventLoop, QTimer  # noqa: E402
 
-from onyx_desktop.domain.enums import (  # noqa: E402
+from izvoria_desktop.domain.enums import (  # noqa: E402
     ApplianceStatus,
     ChatMode,
     IngestMode,
     ReportMode,
     SearchMode,
 )
-from onyx_desktop.service.engine_bridge import EngineBridge  # noqa: E402
+from izvoria_desktop.service.engine_bridge import EngineBridge  # noqa: E402
 
 pytestmark = pytest.mark.gui
 
@@ -298,7 +298,7 @@ class TestHistoryReads:
     def blocking_gateway(self):
         import threading
 
-        from onyx_desktop.data.stub_gateway import StubEngineGateway
+        from izvoria_desktop.data.stub_gateway import StubEngineGateway
 
         class BlockingIngest(StubEngineGateway):
             def __init__(self):
@@ -329,7 +329,7 @@ class TestHistoryReads:
 
             assert bridge.is_ingesting
             assert len(conversations) == 1
-            assert blocking_gateway.history_threads == ["onyx-history"]
+            assert blocking_gateway.history_threads == ["izvoria-history"]
         finally:
             blocking_gateway.release.set()
             bridge.stop(timeout_ms=10000)
@@ -393,7 +393,7 @@ class TestHistoryReads:
 
 class TestHistoryReader:
     def test_it_refuses_anything_that_is_not_a_history_call(self, stub_gateway):
-        from onyx_desktop.service.history_reader import HistoryReader
+        from izvoria_desktop.service.history_reader import HistoryReader
         with pytest.raises(ValueError):
             HistoryReader(stub_gateway).run(1, "ingest", ("/media", IngestMode.VIDEO))
 

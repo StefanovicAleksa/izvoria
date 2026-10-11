@@ -107,7 +107,7 @@ class _Pdf(FPDF):
         self.set_text_color(*FAINT)
         title = _fit(self, self.running_title, PAGE_W - 2 * MARGIN_X - 60)
         self.text(MARGIN_X, MARGIN_TOP - 30, title)
-        self.text(PAGE_W - MARGIN_X - self.get_string_width("Onyx"), MARGIN_TOP - 30, "Onyx")
+        self.text(PAGE_W - MARGIN_X - self.get_string_width("Izvoria"), MARGIN_TOP - 30, "Izvoria")
         self.set_draw_color(*RULE)
         self.set_line_width(0.5)
         self.line(MARGIN_X, MARGIN_TOP - 22, PAGE_W - MARGIN_X, MARGIN_TOP - 22)
@@ -161,8 +161,8 @@ class _Layout:
         report, pdf = self.report, self.pdf
         pdf.set_title(report.display_title)
         pdf.set_subject(" ".join(report.topic.split()))
-        pdf.set_author("Onyx")
-        pdf.set_creator("Onyx")
+        pdf.set_author("Izvoria")
+        pdf.set_creator("Izvoria")
         if report.language:
             pdf.set_lang(report.language)
         pdf.add_page()

@@ -1,4 +1,4 @@
-"""The two pages anyone can use: a firm asking for Onyx, and a help request. Stored, emailed, and hard to abuse."""
+"""The two pages anyone can use: a firm asking for Izvoria, and a help request. Stored, emailed, and hard to abuse."""
 
 import pytest
 
@@ -66,7 +66,7 @@ class TestSupportRequest:
         assert (request.subject, request.firm, request.payload) == (
             "Upload fails", "legal-demo", {"message": "A 2 GB video stops at 40%."})
         assert transport.sent[0]["To"] == "help@onyx.test"
-        assert transport.sent[0]["Subject"] == "Onyx support: Upload fails"
+        assert transport.sent[0]["Subject"] == "Izvoria support: Upload fails"
 
     def test_subject_and_message_are_required(self, app):
         assert client_for(app).post("/public/support", json=support(subject="")).status_code == 400

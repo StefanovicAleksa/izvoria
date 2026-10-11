@@ -53,9 +53,9 @@ def human(n: int) -> str:
 
 def run_child(firm: str, dry_run: bool) -> int:
     """In the firm's environment: compact its indexed recordings and print the report as one line of JSON."""
-    from app.engine.service.bootstrap import OnyxBootstrapper
+    from app.engine.service.bootstrap import IzvoriaBootstrapper
 
-    engine = OnyxBootstrapper.build()
+    engine = IzvoriaBootstrapper.build()
     engine.start()
     try:
         report = engine.compact_storage(dry_run=dry_run)

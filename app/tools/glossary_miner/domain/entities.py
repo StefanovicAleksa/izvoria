@@ -24,7 +24,7 @@ class WikidataItem(BaseModel):
 
 
 # ==========================================
-# ONYX APPLIANCE GLOSSARY MANIFEST ENTITIES
+# IZVORIA APPLIANCE GLOSSARY MANIFEST ENTITIES
 # ==========================================
 
 class SubDomainGlossary(BaseModel):
@@ -41,9 +41,9 @@ class SubDomainGlossary(BaseModel):
         description="The broader list of jargon, acronyms, and proper nouns for Whisper phonetic matching."
     )
 
-class OnyxGlossaryManifest(BaseModel):
+class IzvoriaGlossaryManifest(BaseModel):
     """
-    The ultimate Aggregate Root for the Onyx Appliance's Domain Adaptation feature.
+    The ultimate Aggregate Root for the Izvoria Appliance's Domain Adaptation feature.
     This schema perfectly mirrors what the Phase 8 `GlossaryBuilder` expects to load.
     """
     base_terms: List[str] = Field(

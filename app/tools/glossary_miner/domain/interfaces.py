@@ -4,7 +4,7 @@
 from abc import ABC, abstractmethod
 from typing import List
 
-from app.tools.glossary_miner.domain.entities import WikidataItem, OnyxGlossaryManifest
+from app.tools.glossary_miner.domain.entities import WikidataItem, IzvoriaGlossaryManifest
 
 
 class IWikidataAdapter(ABC):
@@ -24,11 +24,11 @@ class IWikidataAdapter(ABC):
 
 class IGlossaryStorageAdapter(ABC):
     """
-    Contract for persisting the finalized JSON manifest to the Onyx Appliance's data directory.
+    Contract for persisting the finalized JSON manifest to the Izvoria Appliance's data directory.
     """
 
     @abstractmethod
-    def save_manifest(self, file_name: str, manifest: OnyxGlossaryManifest) -> str:
+    def save_manifest(self, file_name: str, manifest: IzvoriaGlossaryManifest) -> str:
         """
         Saves the Pydantic model as a strict JSON file.
         Returns the absolute path to the saved file.

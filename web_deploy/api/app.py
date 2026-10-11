@@ -46,7 +46,7 @@ MAX_RESULT_LIMIT = 50
 SSE_POLL_SECONDS = 0.25
 SSE_KEEPALIVE_SECONDS = 15.0
 _BATCH = re.compile(r"^\d{8}-\d{6}-[a-z0-9]{6}$")
-_PLAIN_CITATION = re.compile(r"\]\(onyx://doc/\d+\)")
+_PLAIN_CITATION = re.compile(r"\]\(izvoria://doc/\d+\)")
 
 Handler = Callable[[Request, Principal], Awaitable[Response]]
 

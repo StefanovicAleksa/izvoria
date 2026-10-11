@@ -1,7 +1,7 @@
 # Canvas: nlp_router_prompts_v1
 # Path: app/features/nlp_router/data/prompts.py
 
-ROUTER_SYSTEM_PROMPT = """You are a highly precise semantic routing algorithm for the Onyx Multimodal AI.
+ROUTER_SYSTEM_PROMPT = """You are a highly precise semantic routing algorithm for the Izvoria Multimodal AI.
 Your ONLY job is to read a timestamped transcript and extract time windows where the speaker explicitly references a visual aid or on-screen content.
 
 CRITICAL RULES:

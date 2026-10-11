@@ -90,7 +90,7 @@ def map_wikidata_error(error: Exception) -> GlossaryMinerError:
 
     if isinstance(error, ValidationError):
         return ManifestFormattingError(
-            message="Failed to validate the extracted data against the Onyx appliance Pydantic schema.",
+            message="Failed to validate the extracted data against the Izvoria appliance Pydantic schema.",
             original_exception=error
         )
 

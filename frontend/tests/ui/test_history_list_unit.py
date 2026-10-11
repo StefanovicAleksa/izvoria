@@ -6,7 +6,7 @@ pytest.importorskip("PySide6")
 
 from PySide6.QtWidgets import QMessageBox  # noqa: E402
 
-from onyx_desktop.ui.widgets.history_list import HistoryEntry, HistoryList  # noqa: E402
+from izvoria_desktop.ui.widgets.history_list import HistoryEntry, HistoryList  # noqa: E402
 
 pytestmark = pytest.mark.gui
 

@@ -61,7 +61,7 @@ class TestAudioExtractorAPI:
         mock_storage.get_source.return_value = mock_source
 
         # 2. Mock FFmpeg Adapter
-        extracted_temp_path = Path("/tmp/onyx_audio_123.wav")
+        extracted_temp_path = Path("/tmp/izvoria_audio_123.wav")
         mock_ffmpeg.extract_audio.return_value = extracted_temp_path
 
         # 3. Mock Storage ingest_raw_file
@@ -132,7 +132,7 @@ class TestAudioExtractorAPI:
         mock_source.source_type = SourceType.AUDIO
         mock_source.file.file_path = "/vault/interview.m4a"
         mock_storage.get_source.return_value = mock_source
-        mock_ffmpeg.extract_audio.return_value = Path("/tmp/onyx_audio_456.wav")
+        mock_ffmpeg.extract_audio.return_value = Path("/tmp/izvoria_audio_456.wav")
         mock_storage.ingest_raw_file.return_value = MagicMock(id=uuid.uuid4())
         mock_repo.create.side_effect = lambda x: x
 
@@ -186,7 +186,7 @@ class TestDiscardedAudio:
         source = MagicMock(id=source_id, source_type=SourceType.VIDEO)
         source.file.file_path = "/vault/vid.mp4"
         mock_storage.get_source.return_value = source
-        mock_ffmpeg.extract_audio.return_value = Path("/tmp/onyx_audio_1.wav")
+        mock_ffmpeg.extract_audio.return_value = Path("/tmp/izvoria_audio_1.wav")
         mock_storage.ingest_raw_file.return_value = MagicMock(id=uuid.uuid4())
         mock_repo.create.side_effect = lambda x: x
 

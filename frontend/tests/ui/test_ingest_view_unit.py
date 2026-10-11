@@ -6,10 +6,10 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from onyx_desktop.domain.entities import IngestionSummary, LanguageOption, ProgressTick  # noqa: E402
-from onyx_desktop.domain.enums import IngestMode, JobProgressState  # noqa: E402
-from onyx_desktop.ui.widgets.stage_list import StageState  # noqa: E402
-from onyx_desktop.ui.views.ingest_view import IngestView  # noqa: E402
+from izvoria_desktop.domain.entities import IngestionSummary, LanguageOption, ProgressTick  # noqa: E402
+from izvoria_desktop.domain.enums import IngestMode, JobProgressState  # noqa: E402
+from izvoria_desktop.ui.widgets.stage_list import StageState  # noqa: E402
+from izvoria_desktop.ui.views.ingest_view import IngestView  # noqa: E402
 
 pytestmark = pytest.mark.gui
 

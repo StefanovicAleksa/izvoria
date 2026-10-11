@@ -85,11 +85,11 @@ class TestFFmpegVideoAdapter:
         mock_run.side_effect = subprocess.CalledProcessError(1, "ffmpeg")
 
         temp_dir = Path(tempfile.gettempdir())
-        initial_mp4s = set(temp_dir.glob("onyx_clip_*.mp4"))
+        initial_mp4s = set(temp_dir.glob("izvoria_clip_*.mp4"))
 
         with pytest.raises(exc.FFmpegVideoExecutionError):
             adapter.extract_clip(source_file, 0.0, 5.0)
 
-        final_mp4s = set(temp_dir.glob("onyx_clip_*.mp4"))
+        final_mp4s = set(temp_dir.glob("izvoria_clip_*.mp4"))
         leaked_files = final_mp4s - initial_mp4s
         assert len(leaked_files) == 0

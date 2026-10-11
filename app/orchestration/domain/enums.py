@@ -4,7 +4,7 @@
 from enum import Enum
 
 class PipelinePhase(str, Enum):
-    """The sequential phases of the Onyx Media Pipeline."""
+    """The sequential phases of the Izvoria Media Pipeline."""
     SCAN = "scan"
     INGEST = "ingest"
     AUDIO_EXTRACTION = "audio_extraction"

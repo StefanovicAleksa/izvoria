@@ -1,6 +1,6 @@
 class DatabaseError(Exception):
     """
-    The Root Exception for the entire Onyx Database Layer.
+    The Root Exception for the entire Izvoria Database Layer.
     All other database exceptions inherit from this.
     """
     def __init__(self, message: str, original_exception: Exception = None, details: dict = None):

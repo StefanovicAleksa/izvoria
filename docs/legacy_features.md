@@ -2,7 +2,7 @@
 
 `app/legacy_features/`
 
-These five features are kept in the codebase for reference but are **confirmed dead code** — none are wired into `OnyxBootstrapper.build()`, and none run in any current pipeline. Two of them (`hallucination_scrubber`, `intelligence_bridge`) still have orchestration `Phase` classes and `PipelinePhase` enum entries sitting unreferenced ("zombie" scaffolding); the other three have no orchestration presence left at all. Don't build on these without first confirming with the team whether they're meant to be revived or removed.
+These five features are kept in the codebase for reference but are **confirmed dead code** — none are wired into `IzvoriaBootstrapper.build()`, and none run in any current pipeline. Two of them (`hallucination_scrubber`, `intelligence_bridge`) still have orchestration `Phase` classes and `PipelinePhase` enum entries sitting unreferenced ("zombie" scaffolding); the other three have no orchestration presence left at all. Don't build on these without first confirming with the team whether they're meant to be revived or removed.
 
 ## asr_error_correction
 

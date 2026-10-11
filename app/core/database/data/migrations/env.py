@@ -1,6 +1,6 @@
 # Path: app/core/database/data/migrations/env.py
 #
-# Run two ways: by upgrade_to_head() on every OnyxEngine.start(), which hands over its own connection through
+# Run two ways: by upgrade_to_head() on every IzvoriaEngine.start(), which hands over its own connection through
 # config.attributes, and by a developer's `alembic` command (alembic.ini at the repo root), which connects to
 # settings.DATABASE_URL -- so ENV decides which database a new revision is generated against.
 

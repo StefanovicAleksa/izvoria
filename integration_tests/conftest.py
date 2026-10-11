@@ -39,7 +39,7 @@ def setup_test_database():
     1. Waits for the Database to become responsive.
     2. Forcefully drops the public schema to bypass Foreign Key deadlocks.
     3. Re-enables pgvector extension.
-    4. Builds the schema through the migrations, exactly as OnyxEngine.start() does on an appliance.
+    4. Builds the schema through the migrations, exactly as IzvoriaEngine.start() does on an appliance.
     5. Seeds dummy glossaries into the throwaway GLOSSARY_PATH directory (never data/glossaries).
     """
     real_engine = core_db_manager._engine_wrapper._engine  # noqa

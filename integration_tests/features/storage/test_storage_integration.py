@@ -64,7 +64,7 @@ class TestStorageIntegration:
 
         # 4. Error Path 2: Physical file maliciously deleted, but DB record remains
         verified_path.unlink()  # Delete from the physical disk
-        with pytest.raises(FileNotFoundError, match="Physical file missing from Onyx Vault"):
+        with pytest.raises(FileNotFoundError, match="Physical file missing from Izvoria Vault"):
             api.get_file_path(vaulted_file.id)
 
     def test_end_to_end_ingestion(self, api, tmp_path):

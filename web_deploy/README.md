@@ -1,6 +1,6 @@
 # web_deploy
 
-The hosted, multi-firm, multi-user web version of Onyx. The full guide is in [docs/web_deploy.md](../docs/web_deploy.md).
+The hosted, multi-firm, multi-user web version of Izvoria. The full guide is in [docs/web_deploy.md](../docs/web_deploy.md).
 
 | Folder | Runs on | What |
 |---|---|---|

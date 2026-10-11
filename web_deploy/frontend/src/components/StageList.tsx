@@ -1,7 +1,7 @@
 import type { StageRow, StageState } from "../views/ingestStages";
 import { useI18n } from "../i18n";
 
-// The desktop's StageList (frontend/onyx_desktop/ui/widgets/stage_list.py): a mark, the step, its bar, its state
+// The desktop's StageList (frontend/izvoria_desktop/ui/widgets/stage_list.py): a mark, the step, its bar, its state
 const MARKS: Record<StageState, string> = { waiting: "○", active: "●", done: "✓", failed: "✕" };
 const CAPTIONS: Record<StageState, string> = { waiting: "Waiting", active: "In progress", done: "Done", failed: "Stopped" };
 

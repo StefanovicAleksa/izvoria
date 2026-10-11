@@ -1,8 +1,8 @@
-# **Onyx AI Appliance 💎**
+# **Izvoria AI Appliance 💎**
 
-**Onyx** is an enterprise-grade, fully on-premise AI Appliance engineered specifically for Law Firms and Hospitals.  
-Designed with absolute privacy in mind, Onyx provides a powerful audio intelligence and processing pipeline that operates securely on local hardware. No data ever leaves the premise, and organizations benefit from flat-rate, unlimited usage.  
-⚠️ **Development Status:** Onyx is currently in active development. **This README reflects only the features currently implemented in the codebase.**
+**Izvoria** is an enterprise-grade, fully on-premise AI Appliance engineered specifically for Law Firms and Hospitals.  
+Designed with absolute privacy in mind, Izvoria provides a powerful audio intelligence and processing pipeline that operates securely on local hardware. No data ever leaves the premise, and organizations benefit from flat-rate, unlimited usage.  
+⚠️ **Development Status:** Izvoria is currently in active development. **This README reflects only the features currently implemented in the codebase.**
 
 ## **📍 Current Status**
 
@@ -14,7 +14,7 @@ The ingestion pipeline (transcription, diarization, visual analysis) and the RAG
 
 ## **🏗️ Current Features & Processing Pipeline**
 
-Onyx operates autonomously, transforming raw media into highly accurate, domain-corrected transcripts. Here is a detailed breakdown of the currently implemented pipeline:
+Izvoria operates autonomously, transforming raw media into highly accurate, domain-corrected transcripts. Here is a detailed breakdown of the currently implemented pipeline:
 
 ### **1\. Media Ingestion & Extraction**
 
@@ -63,22 +63,22 @@ Onyx operates autonomously, transforming raw media into highly accurate, domain-
 
 ## **🧠 The Orchestrator (VRAM Management)**
 
-**The Challenge:** Onyx is designed to run locally. Our development environment is strictly constrained to **12GB VRAM** (a single RTX 3060). Target client hardware is **2× RTX 3060 (24GB VRAM total)**, intended to be split so one GPU serves the ingestion pipeline and the other serves the LLM continuously for live chat — that GPU-affinity split does not exist in the code yet, so today everything still shares one VRAM budget on whichever single GPU is present. We cannot load the VAD, Whisper, Diarization, Correction, and RAG models simultaneously without crashing the system.  
+**The Challenge:** Izvoria is designed to run locally. Our development environment is strictly constrained to **12GB VRAM** (a single RTX 3060). Target client hardware is **2× RTX 3060 (24GB VRAM total)**, intended to be split so one GPU serves the ingestion pipeline and the other serves the LLM continuously for live chat — that GPU-affinity split does not exist in the code yet, so today everything still shares one VRAM budget on whichever single GPU is present. We cannot load the VAD, Whisper, Diarization, Correction, and RAG models simultaneously without crashing the system.  
 **The Solution:** The **Model Orchestrator** (`app/core/model_manager`).  
 This core architectural component acts as a traffic controller for GPU memory, linking every feature above together sequentially:
 
 1. **Job Queueing:** The Orchestrator takes a media file and locks it for sequential processing.  
 2. **Dynamic Swapping:** It loads MarbleNet (VAD) into VRAM, processes the audio, and **instantly unloads** it.  
 3. It then loads Whisper Tiny (Scout) \-\> Unloads \-\> Loads Whisper Large v3 (Transcribe) \-\> Unloads \-\> Loads TitaNet (Diarization) \-\> Unloads, and so on through every remaining stage, including the vision, embedding, scrubbing, and QA-generation models at query time.  
-4. **Result:** By enforcing strict lifecycle control and just-in-time loading, the Orchestrator ensures Onyx never exceeds its VRAM budget, maintaining absolute system stability on constrained hardware.
+4. **Result:** By enforcing strict lifecycle control and just-in-time loading, the Orchestrator ensures Izvoria never exceeds its VRAM budget, maintaining absolute system stability on constrained hardware.
 
 See `CLAUDE.md` for the full architecture (feature folder conventions, how to add a new feature, testing conventions) and `CHANGELOG.md` for build history.
 
 ## **🛠️ Setup Instructions**
 
-There are two ways to run Onyx:
+There are two ways to run Izvoria:
 
-- **A. Local appliance / development machine.** Onyx runs on a Linux box with an NVIDIA GPU (≥12 GB VRAM), which is how the product ships.
+- **A. Local appliance / development machine.** Izvoria runs on a Linux box with an NVIDIA GPU (≥12 GB VRAM), which is how the product ships.
 - **B. Hosted demo.** A tester uses the real desktop app from a browser. An always-on gateway VPS starts a rented Vast.ai GPU on demand. Your own PC doesn't need to be running.
 
 ### **A. Local setup (Debian / Ubuntu, NVIDIA GPU)**
@@ -137,7 +137,7 @@ Every model loads from `models/`. Nothing is downloaded at runtime, and a missin
 venv/bin/python -m scripts.download_ocr_models  # RapidOCR PP-OCRv5 (scanned PDFs)
 ```
 
-The rest come from an existing Onyx model set, for example `rsync` from the dev machine. For English and Serbian, that is:
+The rest come from an existing Izvoria model set, for example `rsync` from the dev machine. For English and Serbian, that is:
 
 | Path under `models/` | Used for |
 |:--|:--|
@@ -168,7 +168,7 @@ venv/bin/python frontend/main.py --stub                # UI only: no GPU, no dat
 venv/bin/python -m app.main                            # CLI menu over the same engine
 ```
 
-The engine applies database migrations itself on start (`OnyxEngine.start()` → Alembic).
+The engine applies database migrations itself on start (`IzvoriaEngine.start()` → Alembic).
 
 #### 6. Tests
 
@@ -186,7 +186,7 @@ deploy/.venv/bin/pytest deploy/tests                                    # hosted
 This costs about $35–60/month instead of $200+ for a dedicated GPU server. The GPU box is billed only while it's started, plus its disk.
 
 1. **Rent the GPU box.** On Vast.ai, rent one RTX 3090 with ≥120 GB of disk. Use image `nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04`, ports `-p 8090:8090 -p 6080:6080`, and on-start script `bash /workspace/onyx_v3/deploy/instance/onstart.sh`.
-2. **Copy Onyx and the models to it.** From a machine that has the models:
+2. **Copy Izvoria and the models to it.** From a machine that has the models:
    ```bash
    deploy/instance/sync_to_box.sh root@<ssh-host> <ssh-port>
    ssh -p <ssh-port> root@<ssh-host> bash /workspace/onyx_v3/deploy/instance/provision.sh

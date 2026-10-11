@@ -46,7 +46,7 @@ export function AccountSignIn({ me, onDone }: { me: Me; onDone: () => void }) {
       </div>
       <form onSubmit={(e) => { e.preventDefault(); submit(); }}>
         <h1>{t("Sign in")}</h1>
-        <p className="lead">{owner ? t("Sign in with your owner account.") : t("Sign in with your own Onyx account.")}</p>
+        <p className="lead">{owner ? t("Sign in with your owner account.") : t("Sign in with your own Izvoria account.")}</p>
         <label className="field">
           <span>{t("Email")}</span>
           <input type="email" autoComplete="email" value={email} onChange={(e) => setEmail(e.target.value)} required autoFocus />

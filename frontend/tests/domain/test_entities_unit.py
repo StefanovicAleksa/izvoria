@@ -10,8 +10,8 @@ import uuid
 
 import pytest
 
-from onyx_desktop.domain.entities import ChatMessage, Evidence, SearchHit
-from onyx_desktop.domain.enums import MediaKind, MessageRole, TurnOutcome
+from izvoria_desktop.domain.entities import ChatMessage, Evidence, SearchHit
+from izvoria_desktop.domain.enums import MediaKind, MessageRole, TurnOutcome
 
 CHUNK_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 SOURCE_ID = uuid.UUID("22222222-2222-2222-2222-222222222222")

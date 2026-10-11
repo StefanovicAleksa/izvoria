@@ -20,7 +20,7 @@ import pytest
 FRONTEND_ROOT = Path(__file__).resolve().parents[1]
 PROJECT_ROOT = FRONTEND_ROOT.parent
 
-# `onyx_desktop` lives under frontend/; `app` lives at the repo root.
+# `izvoria_desktop` lives under frontend/; `app` lives at the repo root.
 for _path in (str(FRONTEND_ROOT), str(PROJECT_ROOT)):
     if _path not in sys.path:
         sys.path.insert(0, _path)
@@ -65,7 +65,7 @@ def _isolate_logging():
 
 @pytest.fixture
 def stub_gateway():
-    from onyx_desktop.data.stub_gateway import StubEngineGateway
+    from izvoria_desktop.data.stub_gateway import StubEngineGateway
 
     return StubEngineGateway(latency_seconds=0.0)
 
@@ -107,7 +107,7 @@ def _isolate_settings(tmp_path):
 @pytest.fixture(autouse=True)
 def _english_display_language():
     """Tests assert on English text, so every test starts and ends with the app in English."""
-    from onyx_desktop.utils import i18n
+    from izvoria_desktop.utils import i18n
 
     i18n.use(i18n.BASE)
     yield

@@ -2,7 +2,7 @@
 
 `app/orchestration/`
 
-The composition layer between individual features and the top-level `OnyxEngine`: `Phase` classes wrap a single feature's `service` API with job tracking and (for GPU-bound stages) model preload/unload; `Pipeline` classes chain Phases into full workflows.
+The composition layer between individual features and the top-level `IzvoriaEngine`: `Phase` classes wrap a single feature's `service` API with job tracking and (for GPU-bound stages) model preload/unload; `Pipeline` classes chain Phases into full workflows.
 
 ## Phases (`service/phases/`)
 
@@ -50,4 +50,4 @@ All pipelines raise `WorkflowStateError` for state problems and wrap unexpected 
 
 ## Where it fits
 
-Sits directly below `OnyxEngine` (see `engine.md`) — `OnyxEngine.ingest_videos()`/`ingest_audios()`/`search_standard()`/`search_verified()`/`chat()` each delegate to exactly one of the five Pipelines above.
+Sits directly below `IzvoriaEngine` (see `engine.md`) — `IzvoriaEngine.ingest_videos()`/`ingest_audios()`/`search_standard()`/`search_verified()`/`chat()` each delegate to exactly one of the five Pipelines above.
