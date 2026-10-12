@@ -84,6 +84,10 @@ export const SERBIAN: Record<string, string> = {
   "Ingestion queue": "Red za uvoz",
   "Ingestion runs one batch at a time for the whole appliance. Yours starts when it reaches the front of the line.":
     "Uvoz se izvršava jedna serija po jedna za ceo sistem. Vaša počinje kada dođe na red.",
+  preparing: "priprema",
+  "Choose the same files again to continue where it stopped.":
+    "Izaberite iste fajlove ponovo da biste nastavili gde je stalo.",
+  "Making the 720p copies": "Pravljenje kopija u 720p",
   queued: "na čekanju",
   running: "u toku",
   done: "završeno",

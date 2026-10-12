@@ -11,7 +11,7 @@ from web_deploy.backup.config import BackupSettings
 from web_deploy.backup.restic import Restic, ResticError, sftp_target
 from web_deploy.backup.restore import Restorer
 from web_deploy.backup.runner import (
-    RETRY_AFTER_SECONDS, BackupRunner, health_state, is_due, read_status, write_status,
+    RETRY_AFTER_SECONDS, BackupRunner, is_due, is_running, read_status,
 )
 
 NOW = 2_000_000_000.0
@@ -204,22 +204,10 @@ class TestBackupRunner:
         assert BackupRunner(settings, Queue(), run=FakeRun(), clock=lambda: NOW).due()
 
 
-class TestHealthState:
-    def test_a_running_backup_and_a_due_one_keep_the_box_awake(self, tmp_path):
-        settings = _settings(tmp_path)
-        write_status(settings.status_file, {"running": True, "pid": os.getpid(), "last_success": NOW})
-        assert health_state(settings, None, NOW) == {"backup_running": True, "backup_due": False}
-
-        write_status(settings.status_file, {"running": False, "last_success": NOW - 30 * 3600})
-        assert health_state(settings, None, NOW) == {"backup_running": False, "backup_due": True}
-
-        write_status(settings.status_file, {"running": False, "last_success": NOW - 60})
-        assert health_state(settings, None, NOW) == {"backup_running": False, "backup_due": False}
-
+class TestStatus:
     def test_a_run_whose_process_died_is_not_running(self, tmp_path):
-        settings = _settings(tmp_path)
-        write_status(settings.status_file, {"running": True, "pid": 999_999_999, "last_success": NOW})
-        assert health_state(settings, None, NOW)["backup_running"] is False
+        assert is_running({"running": True, "pid": os.getpid()}) is True
+        assert is_running({"running": True, "pid": 999_999_999}) is False
 
 
 class TestRestorer:

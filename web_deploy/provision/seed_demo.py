@@ -1,12 +1,13 @@
 """
-Fills a demo firm with sample material: copies a folder of files into the firm's uploads on the GPU box and puts it
-on the ingestion wait list, exactly as an upload from the web app would.
+Fills a demo firm with sample material: copies a folder of files into the firm's uploads and puts it on the ingestion
+wait list, exactly as an upload from the web app would.
 
-Run on the box (the firm must exist on the gateway too, or nobody can sign in to see it):
-  cd /workspace/onyx_v3
-  set -a; . /workspace/web/api.env; set +a
-  venv/bin/python -m web_deploy.provision.seed_demo legal-demo document en /workspace/samples/contracts
-  venv/bin/python -m web_deploy.provision.seed_demo clinic-demo audio sr /workspace/samples/consultations
+Run on the Hetzner VPS, where the uploads and the queue live (the firm must exist on the gateway too, or nobody can
+sign in to see it). The GPU box picks the job up when it next runs:
+  cd /opt/onyx_v3
+  set -a; . /etc/onyx-web-gateway.env; set +a
+  sudo -u onyx -E /opt/onyx-web-gateway/bin/python -m web_deploy.provision.seed_demo legal-demo document en /srv/samples/contracts
+  sudo -u onyx -E /opt/onyx-web-gateway/bin/python -m web_deploy.provision.seed_demo clinic-demo audio sr /srv/samples/consultations
 
 Use separate runs per kind of file (video, audio, document, image) and per language.
 """
@@ -38,7 +39,10 @@ def seed(queue: IngestQueue, tenants_root: Path, firm: str, mode: IngestMode, la
     target.mkdir(parents=True)
     for path in files:
         shutil.copy2(path, target / sanitize_filename(path.name))
-    job = queue.enqueue(firm, SEED_OWNER, mode, language, str(target), len(files))
+    # Videos get their 720p copies on the VPS first when the gateway prepares them (PREPARE_VIDEOS)
+    from web_deploy.gateway.prepare import PrepareSettings
+    prepare = mode is IngestMode.VIDEO and PrepareSettings.from_env().enabled
+    job = queue.enqueue(firm, SEED_OWNER, mode, language, str(target), len(files), prepare=prepare)
     return {"job": job.id, "files": len(files), "position": queue.queue_positions().get(job.id)}
 
 

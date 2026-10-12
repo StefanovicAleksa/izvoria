@@ -90,32 +90,6 @@ export function runToCompletion<T>(url: string, body: unknown, onProgress?: (e: 
   );
 }
 
-/** Streams a file to the box. XHR, not fetch, for upload progress. */
-/** `name` is what the file is stored and cited as; a file from a folder carries its subfolders in it. */
-export function uploadFile(batch: string, file: File, onProgress: (fraction: number) => void,
-                           name: string = file.name): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("PUT", `/api/uploads/${encodeURIComponent(batch)}/${encodeURIComponent(name)}`);
-    xhr.withCredentials = true;
-    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded / e.total);
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) resolve();
-      else {
-        let message = xhr.statusText;
-        try {
-          message = JSON.parse(xhr.responseText).error ?? message;
-        } catch {
-          /* not JSON */
-        }
-        reject(new ApiError(message, xhr.status));
-      }
-    };
-    xhr.onerror = () => reject(new ApiError("The upload was interrupted.", 0, "offline"));
-    xhr.send(file);
-  });
-}
-
 export function sourceUrl(chunkId: string, variant: string, label: string, location: string): string {
   const query = new URLSearchParams({ label, location }).toString();
   return `/api/sources/${encodeURIComponent(chunkId)}/${variant}?${query}`;

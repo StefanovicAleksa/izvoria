@@ -13,7 +13,7 @@ from web_deploy.api.app import create_app
 from web_deploy.api.config import ApiSettings
 from web_deploy.api.runs import RunStore
 from web_deploy.common.signing import Principal, sign
-from web_deploy.tests.api.fakes import FakeHost, chunk, fake_queue, preparer
+from web_deploy.tests.api.fakes import FakeHost, chunk, fake_queue
 
 SECRET = "k" * 40
 ALICE = Principal(firm="legal-demo", user_id="alice", role="member")
@@ -33,11 +33,9 @@ def queue():
 
 @pytest.fixture
 def client(tmp_path, host, queue):
-    settings = ApiSettings(secret=SECRET, tenants_root=tmp_path / "tenants", media_cache_root=tmp_path / "cache",
-                           control_database_url="sqlite://", live_workers=4, report_workers=2,
-                           max_upload_bytes=1024)
-    app = create_app(host, settings, queue, runs=RunStore(), preparer=preparer(), start_host=False,
-                     link_extractor=FAKE_YOUTUBE)
+    settings = ApiSettings(secret=SECRET, tenants_root=tmp_path / "tenants", control_database_url="sqlite://",
+                           live_workers=4, report_workers=2)
+    app = create_app(host, settings, queue, runs=RunStore(), start_host=False, link_extractor=FAKE_YOUTUBE)
     with TestClient(app, client=("127.0.0.1", 50000)) as test_client:
         yield test_client
 
@@ -97,24 +95,20 @@ class TestAuth:
     def test_health_is_open_and_reports_counts_only(self, client):
         body = client.get("/health").json()
         assert body == {"ready": True, "starting_error": None, "paused": False, "inflight": 0, "reports_running": 0,
-                        "queued": 0, "ingesting": 0, "backup_running": False, "backup_due": False, "busy": False}
+                        "queued": 0, "ingesting": 0, "staging_pending": False, "busy": False}
 
-    def test_a_due_backup_keeps_the_box_busy_so_the_gateway_does_not_stop_it(self, tmp_path, host, queue):
-        from web_deploy.backup.config import BackupSettings
-        from web_deploy.backup.runner import write_status
-        backup = BackupSettings.from_env({"BACKUP_ENABLED": "true", "RESTIC_REPOSITORY": "sftp:u@h:repo",
-                                          "RESTIC_PASSWORD": "pw", "WEB_DIR": str(tmp_path / "web")})
-        settings = ApiSettings(secret=SECRET, tenants_root=tmp_path / "tenants", media_cache_root=tmp_path / "c",
-                               control_database_url="sqlite://", live_workers=1, report_workers=1)
-        app = create_app(host, settings, queue, runs=RunStore(), preparer=preparer(), start_host=False,
-                         backup_settings=backup, clock=lambda: 2_000_000_000.0)
+    def test_results_not_yet_pushed_to_the_vps_keep_the_box_busy(self, tmp_path, host, queue):
+        state = tmp_path / "staging-state"
+        settings = ApiSettings(secret=SECRET, tenants_root=tmp_path / "tenants", control_database_url="sqlite://",
+                               live_workers=1, report_workers=1, staging_state_dir=state)
+        app = create_app(host, settings, queue, runs=RunStore(), start_host=False)
         with TestClient(app, client=("127.0.0.1", 50000)) as test_client:
-            body = test_client.get("/health").json()
-            assert (body["backup_due"], body["busy"]) == (True, True)  # never backed up yet
+            assert test_client.get("/health").json()["busy"] is False
 
-            write_status(backup.status_file, {"running": False, "last_success": 2_000_000_000.0 - 60})
+            state.mkdir()
+            (state / "job-1.json").write_text("{}")
             body = test_client.get("/health").json()
-            assert (body["backup_due"], body["busy"]) == (False, False)
+            assert (body["staging_pending"], body["busy"]) == (True, True)
 
     def test_a_starting_appliance_answers_503(self, client, host):
         host._ready = False
@@ -313,81 +307,32 @@ class TestReports:
         assert response.status_code == 400
 
 
-class TestUploadsAndIngestion:
-    def test_upload_then_queue_a_batch(self, client, host, queue, tmp_path):
-        batch = call(client, ALICE, "POST", "/api/uploads").json()["batch"]
-        put = f"/api/uploads/{batch}/my deposition.mp4"
-        response = client.put(put.replace(" ", "%20"), content=b"video-bytes",
-                              headers=sign(SECRET, "PUT", put, "", ALICE))
-        assert response.status_code == 201, response.text
-        assert response.json() == {"name": "my deposition.mp4", "bytes": 11}
-
-        job = call(client, ALICE, "POST", "/api/ingest", {"batch": batch, "mode": "video", "language": "en"}).json()
-
-        assert (job["status"], job["position"], job["file_count"]) == ("queued", 1, 1)
-        stored = queue.get(job["id"])
-        assert stored.batch_dir == str(tmp_path / "tenants" / "legal-demo" / "uploads" / "alice" / batch)
-        assert "batch_dir" not in job
-
-    def test_an_upload_over_the_limit_is_refused_and_leaves_nothing(self, client, tmp_path):
-        batch = call(client, ALICE, "POST", "/api/uploads").json()["batch"]
-        put = f"/api/uploads/{batch}/big.mp4"
-        response = client.put(put, content=b"x" * 2048, headers=sign(SECRET, "PUT", put, "", ALICE))
-        assert response.status_code == 400
-        folder = tmp_path / "tenants" / "legal-demo" / "uploads" / "alice" / batch
-        assert list(folder.iterdir()) == []
-
-    @pytest.mark.parametrize("batch, name", [("../../x", "a.mp4"), ("20261004-120000-abcdef", "evil.exe")])
-    def test_bad_batch_or_file_names_are_refused(self, client, batch, name):
-        put = f"/api/uploads/{batch}/{name}"
-        response = client.put(put, content=b"x", headers=sign(SECRET, "PUT", put, "", ALICE))
-        assert response.status_code in (400, 404)
-
-    def test_an_empty_batch_cannot_be_queued(self, client):
-        batch = call(client, ALICE, "POST", "/api/uploads").json()["batch"]
-        response = call(client, ALICE, "POST", "/api/ingest", {"batch": batch, "mode": "audio", "language": "en"})
-        assert response.status_code == 400
-
-    def test_the_queue_shows_only_my_firms_jobs_and_only_owners_or_admins_cancel(self, client, queue):
-        from web_deploy.ingest_worker.queue import IngestMode
-        mine = queue.enqueue("legal-demo", "bob", IngestMode.AUDIO, "en", "/x", 2)
-        queue.enqueue("other-firm", "eve", IngestMode.AUDIO, "en", "/y", 1)
-
-        jobs = call(client, ALICE, "GET", "/api/ingest/jobs").json()["jobs"]
-        assert [j["id"] for j in jobs] == [mine.id]
-        assert call(client, ALICE, "DELETE", f"/api/ingest/jobs/{mine.id}").status_code == 403
-        assert call(client, EVE, "DELETE", f"/api/ingest/jobs/{mine.id}").status_code == 404
-        admin = Principal("legal-demo", "carol", "admin")
-        assert call(client, admin, "DELETE", f"/api/ingest/jobs/{mine.id}").json() == {"cancelled": True}
+class TestIngestion:
+    @pytest.mark.parametrize("method, path", [("POST", "/api/uploads"), ("POST", "/api/ingest"),
+                                              ("PUT", "/api/uploads/20261004-120000-abcdef/a.mp4"),
+                                              ("GET", "/api/ingest/jobs"), ("DELETE", "/api/ingest/jobs/x")])
+    def test_uploads_and_the_wait_list_are_the_gateways(self, client, method, path):
+        """A client's file reaches the box only as a staged copy of its own job; the queue is read on the VPS."""
+        assert call(client, ALICE, method, path, {}).status_code in (404, 405)
 
 
-class TestSources:
-    def test_a_cited_file_inside_the_firms_vault_is_served(self, client, host, tmp_path):
-        vault = tmp_path / "tenants" / "legal-demo" / "vault"
-        vault.mkdir(parents=True)
-        pdf = vault / "contract.pdf"
-        pdf.write_bytes(b"%PDF-1.4")
-        c = host.engine("legal-demo").add_chunk(chunk(path=str(pdf), anchor="page", page_start=7, page_end=7))
+class TestSourceLocation:
+    def test_a_cited_chunk_is_located_for_the_gateway_without_touching_its_file(self, client, host, tmp_path):
+        path = str(tmp_path / "tenants" / "legal-demo" / "vault" / "2026" / "contract.pdf")  # not on this box
+        c = host.engine("legal-demo").add_chunk(chunk(path=path, anchor="page", page_start=7, page_end=8))
 
-        info = call(client, ALICE, "GET", f"/api/sources/{c.chunk_id}", query="label=Doc%203").json()
+        located = call(client, ALICE, "GET", f"/api/sources/{c.chunk_id}/locate").json()
 
-        assert info["kind"] == "pdf"
-        assert info["variants"] == ["media", "original"]
-        assert info["download_name"] == "Izvoria Doc 3.pdf"
+        assert located == {"physical_path": path, "anchor_kind": "page", "extracted_file_id": None,
+                           "start_sec": 12.0, "end_sec": 20.0, "page_start": 7, "page_end": 8}
 
-    def test_a_file_outside_the_vault_is_never_served(self, client, host, tmp_path):
-        outside = tmp_path / "secrets.pdf"
-        outside.write_bytes(b"%PDF")
-        c = host.engine("legal-demo").add_chunk(chunk(path=str(outside)))
-        assert call(client, ALICE, "GET", f"/api/sources/{c.chunk_id}").status_code == 404
+    def test_a_chunk_of_another_firm_is_not_found(self, client, host):
+        c = host.engine("other-firm").add_chunk(chunk(path="/x.pdf"))
+        assert call(client, ALICE, "GET", f"/api/sources/{c.chunk_id}/locate").status_code == 404
 
-    def test_another_firms_vault_is_outside_mine(self, client, host, tmp_path):
-        theirs = tmp_path / "tenants" / "other-firm" / "vault"
-        theirs.mkdir(parents=True)
-        pdf = theirs / "x.pdf"
-        pdf.write_bytes(b"%PDF")
-        c = host.engine("legal-demo").add_chunk(chunk(path=str(pdf)))
-        assert call(client, ALICE, "GET", f"/api/sources/{c.chunk_id}").status_code == 404
+    def test_files_are_not_served_here(self, client, host):
+        c = host.engine("legal-demo").add_chunk(chunk(path="/x.pdf"))
+        assert call(client, ALICE, "GET", f"/api/sources/{c.chunk_id}").status_code in (404, 405)
 
 
 class TestGpuHandoff:
@@ -453,7 +398,7 @@ class TestYouTubeLinks:
             ("lecture0001", "Lecture 1", 600.0), ("lecture0002", "Lecture 2", 900.0)]
         assert [p["reason"] for p in body["problems"]] == ["Video unavailable", "Only YouTube links can be added."]
 
-    def test_queueing_writes_the_manifest_and_a_youtube_video_job(self, client, queue, tmp_path):
+    def test_queueing_keeps_the_videos_in_the_job_row_and_writes_no_folder(self, client, queue, tmp_path):
         response = call(client, ALICE, "POST", "/api/ingest/links",
                         {"links": [self.PLAYLIST, "https://youtu.be/lecture0003"], "language": "en",
                          "video_ids": ["lecture0001", "lecture0003"]})
@@ -462,9 +407,9 @@ class TestYouTubeLinks:
         job = response.json()
         assert (job["mode"], job["origin"], job["file_count"], job["language"]) == ("video", "youtube", 2, "en")
         stored = queue.get(job["id"])
-        manifest = json.loads((Path(stored.batch_dir) / ".youtube.json").read_text())
-        assert [v["id"] for v in manifest["videos"]] == ["lecture0001", "lecture0003"]
+        assert [v["id"] for v in stored.manifest["videos"]] == ["lecture0001", "lecture0003"]
         assert Path(stored.batch_dir).is_relative_to(tmp_path / "tenants" / "legal-demo" / "uploads" / "alice")
+        assert not Path(stored.batch_dir).exists()  # made in the box's scratch when the job runs
 
     def test_links_are_video_only(self, client):
         response = call(client, ALICE, "POST", "/api/ingest/links", {"links": [self.PLAYLIST], "mode": "audio"})
@@ -475,14 +420,10 @@ class TestYouTubeLinks:
         assert response.status_code == 400
         assert "None of these links" in response.json()["error"]
 
-    def test_the_job_list_says_whether_links_can_be_added(self, client):
-        assert call(client, ALICE, "GET", "/api/ingest/jobs").json()["links"] == {"enabled": True, "max_videos": 200}
-
     def test_links_can_be_turned_off(self, tmp_path, host, queue):
-        settings = ApiSettings(secret=SECRET, tenants_root=tmp_path / "tenants", media_cache_root=tmp_path / "cache",
-                               control_database_url="sqlite://", link_ingest_enabled=False)
-        app = create_app(host, settings, queue, runs=RunStore(), preparer=preparer(), start_host=False,
-                         link_extractor=FAKE_YOUTUBE)
+        settings = ApiSettings(secret=SECRET, tenants_root=tmp_path / "tenants", control_database_url="sqlite://",
+                               link_ingest_enabled=False)
+        app = create_app(host, settings, queue, runs=RunStore(), start_host=False, link_extractor=FAKE_YOUTUBE)
         with TestClient(app, client=("127.0.0.1", 50000)) as off:
             response = call(off, ALICE, "POST", "/api/ingest/links/preview", {"links": [self.PLAYLIST]})
         assert response.status_code == 400

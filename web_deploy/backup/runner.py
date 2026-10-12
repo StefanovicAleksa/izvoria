@@ -1,15 +1,15 @@
 """
-Backs the GPU box up to a Hetzner Storage Box: every firm's database (pg_dump), every firm's vault and reports, and
-the box's own settings and TLS key. Runs under supervisord beside the API and the ingestion worker.
+Backs the firms' data up to a Hetzner Storage Box: every firm's database and the ingestion queue (pg_dump), and every
+firm's vault. Runs on the Hetzner VPS, where all of it lives (docs/web_deploy.md, "Where data lives"), as the
+onyx-web-backup service that install_gateway.sh installs; the GPU box holds nothing to back up.
 
 A backup runs once BACKUP_INTERVAL_HOURS have passed since the last good one, and as soon as an ingestion job has
-finished since then, so new material is off the box before the gateway stops it. While one is due or running the
-API's /health reports busy, which keeps the gateway's idle stop away. A run that failed is retried after an hour,
-not at once, so a broken Storage Box cannot keep a rented GPU awake for good.
+finished since then (once the queue is empty, for one consistent snapshot of the vaults and their databases). A run
+that failed is retried after an hour, not at once.
 
 Uploads are not backed up (their files are in the vault), and neither is the source cache.
 
-Run: python -m web_deploy.backup.runner          (supervisord)
+Run: python -m web_deploy.backup.runner          (the onyx-web-backup service)
      python -m web_deploy.backup.runner --now    (one backup, now)
 """
 
@@ -29,6 +29,7 @@ from web_deploy.backup.restic import Restic
 
 logger = logging.getLogger(__name__)
 
+# The series' tag from when the data lived on the GPU box; kept, so `restore` reads snapshots from before the move too
 TAG = "box"
 RETRY_AFTER_SECONDS = 3600
 POLL_SECONDS = 60
@@ -36,7 +37,7 @@ CONTROL_DATABASE = "onyx_control"
 FIRM_DATABASE_PATTERN = "onyx\\_firm\\_%"
 
 
-# ---------- status: shared with the API's /health through one small file ----------
+# ---------- status: what the last run did, in one small file ----------
 
 def read_status(path: Path) -> dict:
     try:
@@ -77,13 +78,6 @@ def is_due(settings: BackupSettings, status: dict, last_finished: Optional[datet
     if now - last_success >= settings.interval_hours * 3600:
         return True
     return last_finished is not None and last_finished.timestamp() > last_success
-
-
-def health_state(settings: BackupSettings, last_finished: Optional[datetime], now: float) -> dict:
-    """What /health adds: a backup running, or due (about to start), keeps the box awake."""
-    status = read_status(settings.status_file)
-    running = is_running(status)
-    return {"backup_running": running, "backup_due": not running and is_due(settings, status, last_finished, now)}
 
 
 # ---------- the backup ----------
@@ -127,7 +121,7 @@ class BackupRunner:
             logger.error(f"Backup failed: {exc}")
             return False
         finally:
-            # The dumps are in the snapshot now (or the run failed): no need to keep a second copy on the box
+            # The dumps are in the snapshot now (or the run failed): no need to keep a second copy
             shutil.rmtree(self._settings.staging / "databases", ignore_errors=True)
             status["running"] = False
             write_status(self._settings.status_file, status)
@@ -173,7 +167,7 @@ class BackupRunner:
     def run_forever(self) -> None:
         status = read_status(self._settings.status_file)
         if status.get("running") and not _alive(status.get("pid")):
-            # The box stopped mid-run: the next run starts over (restic keeps what it had already sent)
+            # The machine stopped mid-run: the next run starts over (restic keeps what it had already sent)
             status["running"] = False
             write_status(self._settings.status_file, status)
         if not self._settings.configured:

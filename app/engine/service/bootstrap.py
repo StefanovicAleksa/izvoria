@@ -134,7 +134,7 @@ from app.features.search_history.data.repositories import SearchHistoryRepositor
 from app.features.search_history.service.search_history_api import SearchHistoryAPI
 from app.features.deep_research_report.data.report_llm_adapter import LlamaCppReportAdapter
 from app.features.deep_research_report.data.postgres_report_repo import PostgresReportRepository
-from app.features.deep_research_report.data.report_file_store import ReportFileStore
+from app.features.deep_research_report.data.report_file_store import NoReportFileStore, ReportFileStore
 from app.features.deep_research_report.service.report_api import ReportAuthoringAPI
 
 from app.orchestration.service.phases.scan_phase import ScanPhase
@@ -490,7 +490,8 @@ class IzvoriaBootstrapper:
         # second adapter here would silently multiply a run's model-loading time.
         report_adapter = kit.report_adapter
         report_repo = PostgresReportRepository(db)
-        report_file_store = ReportFileStore(base_dir=reports_dir)
+        report_file_store = (ReportFileStore(base_dir=reports_dir) if settings.REPORT_FILES_ENABLED
+                             else NoReportFileStore())
         report_api = ReportAuthoringAPI(
             adapter=report_adapter,
             orchestrator=orchestrator,

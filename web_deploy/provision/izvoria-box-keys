@@ -1,0 +1,10 @@
+#!/bin/sh
+# sshd's AuthorizedKeysCommand for the GPU box's account (installed as /usr/local/bin/izvoria-box-keys by
+# install_gateway.sh; must stay root-owned and not writable by anyone else, or sshd refuses it).
+#
+# Prints the box's two confined keys only while the gateway has the box started: the gateway writes "open" to the
+# access file before it starts the box and "closed" once it has stopped it (web_deploy/gateway/box.py). A stopped
+# box's keys therefore open nothing, even if they were copied off its disk.
+[ "$1" = "izvoria-box" ] || exit 0
+[ "$(cat /var/lib/onyx-web-box/access 2>/dev/null)" = "open" ] || exit 0
+exec cat /etc/onyx-web/box_authorized_keys

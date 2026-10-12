@@ -1,10 +1,13 @@
 [Unit]
-Description=Izvoria hosted gateway (firms, sign-in, the GPU box)
-After=network-online.target
-Wants=network-online.target
+Description=Izvoria hosted gateway (firms, sign-in, uploads and sources, the GPU box)
+After=network-online.target postgresql@15-main.service
+Wants=network-online.target postgresql@15-main.service
 
 [Service]
 User=onyx
+SupplementaryGroups=izvoria-data
+# Uploads and the vault are shared with the box's rsync through the izvoria-data group
+UMask=0007
 WorkingDirectory=/opt/onyx_v3
 EnvironmentFile=/etc/onyx-web-gateway.env
 ExecStart=/opt/onyx-web-gateway/bin/uvicorn web_deploy.gateway.app:create_production_app --factory --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips 127.0.0.1
@@ -14,7 +17,7 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-ReadWritePaths=/var/lib/onyx-web
+ReadWritePaths=/var/lib/onyx-web /var/lib/onyx-web-box /workspace/tenants /workspace/source-cache
 StateDirectory=onyx-web
 
 [Install]

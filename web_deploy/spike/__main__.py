@@ -13,6 +13,11 @@ Stages (docs/web_deploy.md, "M0 spike"):
   all     the three in order; the services are stopped for the first two and started again for the third
 
 Results: <out>/report.md and <out>/results.json (default /workspace/spike).
+
+`shared` predates the move of the data to the VPS (docs/web_deploy.md, "Where data lives"): it seeds files into the
+box's own tenants and expects the queue's database beside them. On a box provisioned for the new layout it needs the
+tunnel up and STAGING_REMOTE unset, and its files then never reach the VPS; adapting it is open. `sweep` and
+`stress` touch no data and are unaffected.
 """
 
 import argparse

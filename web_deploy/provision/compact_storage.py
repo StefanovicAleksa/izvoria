@@ -3,7 +3,8 @@ Brings material ingested before the storage settings were turned on in line with
 per-chunk clips and WAV, swaps its original for a compact copy, and removes upload folders no job will read again.
 New ingestions already leave the vault this way (docs/web_deploy.md, "Storage").
 
-Run on the box (or, for the local version, with run_local stopped or idle), with the API's settings loaded:
+For the local version (run_local stopped or idle), or a box from before the data moved to the VPS, with the API's
+settings loaded. The hosted box keeps no vault any more and refuses (STAGING_REMOTE is set there):
   cd /workspace/onyx_v3
   set -a; . /workspace/web/api.env; set +a
   venv/bin/python -m web_deploy.provision.compact_storage --all --dry-run    # what would be freed
@@ -29,7 +30,8 @@ from typing import Dict, List, Optional
 
 from web_deploy.common.tenancy import validate_slug
 from web_deploy.ingest_worker.queue import IngestQueue
-from web_deploy.ingest_worker.supervisor import firm_environment, stale_upload_folders
+from web_deploy.common.uploads import stale_upload_folders
+from web_deploy.ingest_worker.supervisor import firm_environment
 
 RESULT_PREFIX = "COMPACTION_RESULT "
 # Upload folders no job refers to are removed once untouched this long: anything older is not still arriving
@@ -108,6 +110,11 @@ def main(argv: Optional[list] = None, settings=None, queue: Optional[IngestQueue
     if args.child:
         return run_child(args.child, args.dry_run)
 
+    if os.environ.get("STAGING_REMOTE"):
+        # The hosted GPU box keeps no vault: new ingestions compact as they go, and the VPS has no appliance venv
+        print("error: this box holds no files (they live on the VPS); there is nothing here to compact.",
+              file=sys.stderr)
+        return 1
     if settings is None:
         from web_deploy.api.config import ApiSettings
         settings = ApiSettings.from_env()
@@ -132,7 +139,7 @@ def main(argv: Optional[list] = None, settings=None, queue: Optional[IngestQueue
         total += result["bytes_saved"]
         print(describe(firm, result))
 
-    stale = stale_upload_folders(queue, settings.tenants_root, time.time(), UPLOAD_MIN_AGE_SECONDS)
+    stale = stale_upload_folders(queue.active_batch_dirs(), settings.tenants_root, time.time(), UPLOAD_MIN_AGE_SECONDS)
     stale_bytes = sum(folder_size(folder) for folder in stale)
     if not args.dry_run:
         for folder in stale:

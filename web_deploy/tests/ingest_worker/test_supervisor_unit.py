@@ -215,121 +215,108 @@ class TestYouTubeBatches:
         assert fetched == []
 
 
-class TestUploadCleanup:
-    DAY = 24 * 3600
+class _Stager:
+    """Records the staging calls around a job, as the real one would make them over rsync."""
 
-    @staticmethod
-    def _batch(tenants, firm="legal-demo", owner="u1", batch="20261009-120000-abcdef"):
-        folder = tenants / firm / "uploads" / owner / batch
-        folder.mkdir(parents=True)
-        (folder / "talk.mp4").write_bytes(b"video")
-        return folder
+    def __init__(self, events, fail_in=False, pending=False):
+        self.events = events
+        self.fail_in = fail_in
+        self.pending = pending
+        self.enabled = True
 
-    @staticmethod
-    def _age(folder, seconds_ago, now):
-        import os
-        for path in [folder, *folder.rglob("*")]:
-            os.utime(path, (now - seconds_ago, now - seconds_ago))
+    def stage_in(self, job_id, firm, batch_dir):
+        self.events.append(("in", firm, batch_dir))
+        if self.fail_in:
+            raise RuntimeError("rsync failed (255): connection refused")
+        return []
 
-    @staticmethod
-    def _supervisor(queue, tenants, spawn, now=None, **kwargs):
-        return Supervisor(queue, tenants, spawn=spawn, base_env={}, arbiter=_Arbiter([]),
-                          clock=(lambda: now) if now is not None else __import__("time").time, **kwargs)
+    def stage_out(self, job_id):
+        self.events.append(("out", job_id))
 
-    def test_a_finished_jobs_uploads_are_removed(self, tmp_path):
+    def has_pending(self):
+        return self.pending
+
+    def recover(self):
+        self.events.append(("recover",))
+        self.pending = False
+        return 0
+
+
+class TestStaging:
+    def test_a_jobs_files_come_in_before_it_runs_and_its_results_go_back_after(self):
         queue = _queue()
-        folder = self._batch(tmp_path)
-        job = queue.enqueue("legal-demo", "u1", IngestMode.VIDEO, "en", str(folder), 1)
+        job = queue.enqueue("legal-demo", "u1", IngestMode.AUDIO, "en", "/t/legal-demo/uploads/u1/b", 1)
+        events = []
 
         def spawn(claimed, env):
-            queue.finish(claimed.id, {"succeeded": 1})
-            return 0
-
-        self._supervisor(queue, tmp_path, spawn).run_once()
-
-        assert queue.get(job.id).status is JobStatus.DONE
-        assert not folder.exists()
-        assert (tmp_path / "legal-demo" / "uploads" / "u1").is_dir()
-
-    def test_a_failed_jobs_uploads_are_removed_too(self, tmp_path):
-        queue = _queue()
-        folder = self._batch(tmp_path)
-        queue.enqueue("legal-demo", "u1", IngestMode.VIDEO, "en", str(folder), 1)
-
-        self._supervisor(queue, tmp_path, lambda j, e: -9).run_once()
-
-        assert not folder.exists()
-
-    def test_a_job_interrupted_by_a_stop_keeps_its_uploads_for_the_retry(self, tmp_path):
-        queue = _queue()
-        folder = self._batch(tmp_path)
-        queue.enqueue("legal-demo", "u1", IngestMode.VIDEO, "en", str(folder), 1)
-        supervisor = None
-
-        def spawn(claimed, env):
-            supervisor.stop()  # the box is stopping: the child is terminated mid-job
-            return -15
-
-        supervisor = self._supervisor(queue, tmp_path, spawn)
-        supervisor.run_once()
-
-        assert folder.exists()
-
-    def test_nothing_outside_the_firms_uploads_is_ever_removed(self, tmp_path):
-        queue = _queue()
-        elsewhere = tmp_path / "samples"
-        elsewhere.mkdir()
-        (elsewhere / "keep.mp4").write_bytes(b"x")
-        queue.enqueue("legal-demo", "u1", IngestMode.VIDEO, "en", str(elsewhere), 1)
-
-        def spawn(claimed, env):
+            events.append(("ingest",))
             queue.finish(claimed.id, {})
             return 0
 
-        self._supervisor(queue, tmp_path / "tenants", spawn).run_once()
+        Supervisor(queue, Path("/t"), spawn=spawn, base_env={}, arbiter=_Arbiter(events),
+                   stager=_Stager(events)).run_once()
 
-        assert (elsewhere / "keep.mp4").exists()
+        assert events == [("in", "legal-demo", "/t/legal-demo/uploads/u1/b"), "gpu", ("ingest",), ("out", job.id)]
 
-    def test_the_sweep_removes_only_old_folders_no_job_will_read(self, tmp_path):
-        now = 2_000_000_000.0
+    def test_a_failed_job_still_pushes_what_it_wrote(self):
+        """Its rows are in the VPS database already; their files must not exist only on the box."""
         queue = _queue()
-        abandoned = self._batch(tmp_path, batch="20261001-000000-aaaaaa")
-        uploading = self._batch(tmp_path, batch="20261009-000000-bbbbbb")
-        waiting = self._batch(tmp_path, firm="clinic-demo", batch="20261002-000000-cccccc")
-        self._age(abandoned, 2 * self.DAY, now)
-        self._age(uploading, 2 * self.DAY, now)
-        (uploading / ".big.mp4.part").write_bytes(b"still arriving")
-        import os
-        os.utime(uploading / ".big.mp4.part", (now - 60, now - 60))
-        self._age(waiting, 3 * self.DAY, now)
-        queue.enqueue("clinic-demo", "u1", IngestMode.AUDIO, "en", str(waiting), 1)
+        job = queue.enqueue("legal-demo", "u1", IngestMode.AUDIO, "en", "/b", 1)
+        events = []
 
-        removed = self._supervisor(queue, tmp_path, lambda j, e: 0, now=now).sweep_uploads()
+        Supervisor(queue, Path("/t"), spawn=lambda j, e: -9, base_env={}, arbiter=_Arbiter([]),
+                   stager=_Stager(events)).run_once()
 
-        assert removed == 1
-        assert not abandoned.exists()
-        assert uploading.exists() and waiting.exists()
+        assert events[-1] == ("out", job.id)
+        assert queue.get(job.id).status is JobStatus.FAILED
 
-    def test_an_idle_supervisor_sweeps_at_most_once_an_hour(self, tmp_path):
-        now = [2_000_000_000.0]
+    def test_files_that_cannot_be_fetched_fail_the_job_without_the_gpu(self):
         queue = _queue()
-        supervisor = Supervisor(queue, tmp_path, spawn=lambda j, e: 0, base_env={}, arbiter=_Arbiter([]),
-                                clock=lambda: now[0])
-        first = self._batch(tmp_path, batch="20261001-000000-aaaaaa")
-        self._age(first, 2 * self.DAY, now[0])
+        job = queue.enqueue("legal-demo", "u1", IngestMode.AUDIO, "en", "/b", 1)
+        events = []
 
-        supervisor.run_once()
-        assert not first.exists()
+        Supervisor(queue, Path("/t"), spawn=lambda j, e: events.append("ingest") or 0, base_env={},
+                   arbiter=_Arbiter(events), stager=_Stager(events, fail_in=True)).run_once()
 
-        second = self._batch(tmp_path, batch="20261001-000000-dddddd")
-        self._age(second, 2 * self.DAY, now[0])
-        now[0] += 60
-        supervisor.run_once()
-        assert second.exists()
+        assert "gpu" not in events and "ingest" not in events
+        assert "could not be fetched" in queue.get(job.id).error
 
-        now[0] += 3600
+    def test_a_stop_mid_job_leaves_the_results_for_the_next_start_to_push(self):
+        queue = _queue()
+        queue.enqueue("legal-demo", "u1", IngestMode.AUDIO, "en", "/b", 1)
+        events = []
+        supervisor = None
+
+        def spawn(claimed, env):
+            supervisor.stop()
+            return -15
+
+        supervisor = Supervisor(queue, Path("/t"), spawn=spawn, base_env={}, arbiter=_Arbiter([]),
+                                stager=_Stager(events))
         supervisor.run_once()
-        assert not second.exists()
+
+        assert [e[0] for e in events] == ["in"]
+
+    def test_a_youtube_batch_is_not_pulled_and_gets_its_videos_from_the_job_row(self, tmp_path):
+        from web_deploy.common import youtube
+        queue = _queue()
+        folder = tmp_path / "legal-demo" / "uploads" / "u1" / "20261012-120000-abcdef"
+        manifest = youtube.new_manifest([youtube.Video("video000001", "Lecture 1")])
+        queue.enqueue("legal-demo", "u1", IngestMode.VIDEO, "en", str(folder), 1, origin=JobOrigin.YOUTUBE,
+                      manifest=manifest)
+        events = []
+        seen = []
+
+        def fetch(claimed, env):
+            seen.append([v.id for v in youtube.pending(folder)])
+            queue.fail(claimed.id, "stop here")
+            return 1
+
+        Supervisor(queue, tmp_path, spawn=lambda j, e: 0, fetch=fetch, base_env={}, arbiter=_Arbiter([]),
+                   stager=_Stager(events)).run_once()
+
+        assert events[0] == ("in", "legal-demo", None)
+        assert seen == [["video000001"]]
 
 
 class TestActiveBatchDirs:
@@ -345,3 +332,15 @@ class TestActiveBatchDirs:
         queue.cancel(cancelled.id, "legal-demo")
 
         assert queue.active_batch_dirs() == {"/running", "/queued"}
+
+    def test_finished_jobs_folders_are_the_ones_cleanup_may_take(self):
+        queue = _queue()
+        done = queue.enqueue("legal-demo", "u1", IngestMode.AUDIO, "en", "/done", 1)
+        queue.enqueue("legal-demo", "u1", IngestMode.AUDIO, "en", "/queued", 1)
+        cancelled = queue.enqueue("legal-demo", "u1", IngestMode.AUDIO, "en", "/cancelled", 1)
+        queue.claim_next()
+        queue.finish(done.id, {})
+        queue.cancel(cancelled.id, "legal-demo")
+
+        assert queue.finished_batch_dirs() == {"/done", "/cancelled"}
+

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type DragEvent } from "react";
-import { api, uploadFile } from "../api/client";
+import { api } from "../api/client";
+import { forgetPending, pendingBatchFor, rememberPending, retryable, uploadAll } from "../api/uploads";
 import type { IngestJob, Lang, LinkPreview } from "../api/types";
 import { ProgressBar } from "../components/Controls";
 import { StageList } from "../components/StageList";
@@ -88,16 +89,19 @@ export function IngestView() {
     setBusy(true);
     setError(null);
     try {
-      const { batch } = await api.post<{ batch: string }>("/api/uploads");
-      for (const { file, name } of picked.files) {
-        await uploadFile(batch, file, (fraction) => setUploaded((u) => ({ ...u, [name]: fraction })), name);
-      }
+      // The same files picked again after a broken-off upload continue it, from the pieces already sent
+      const batch = pendingBatchFor(mode, language, picked.files)
+        ?? (await api.post<{ batch: string }>("/api/uploads")).batch;
+      rememberPending(batch, mode, language, picked.files);
+      await uploadAll(batch, picked.files, (name, fraction) => setUploaded((u) => ({ ...u, [name]: fraction })));
       await api.post("/api/ingest", { batch, mode, language });
+      forgetPending();
       setPicked(NOTHING);
       setUploaded({});
       await refresh();
     } catch (e: any) {
-      setError(e.message);
+      // A dropped connection can be resumed; a refused file can't
+      setError(retryable(e) ? `${e.message} ${t("Choose the same files again to continue where it stopped.")}` : e.message);
     } finally {
       setBusy(false);
     }
@@ -343,6 +347,13 @@ function JobItem({ job, onCancel }: { job: IngestJob; onCancel: () => void }) {
         {job.status === "queued" && job.position != null && (
           <span className="muted">{t("Position in line")}: {job.position}</span>
         )}
+        {job.status === "preparing" && (
+          <span className="muted">
+            {t("Making the 720p copies")}
+            {job.progress?.total ? ` · ${job.progress.done ?? 0}/${job.progress.total}` : ""}
+            {job.progress?.detail ? ` · ${job.progress.detail}` : ""}
+          </span>
+        )}
         {job.status === "done" && job.report && (
           <span className="muted">
             {t("{succeeded} of {scanned} added")
@@ -353,7 +364,8 @@ function JobItem({ job, onCancel }: { job: IngestJob; onCancel: () => void }) {
           </span>
         )}
         <span className="spacer" />
-        {job.status === "queued" && <button className="link" onClick={onCancel}>{t("Cancel")}</button>}
+        {(job.status === "queued" || job.status === "preparing") &&
+          <button className="link" onClick={onCancel}>{t("Cancel")}</button>}
       </div>
 
       {(running || job.status === "failed") && (

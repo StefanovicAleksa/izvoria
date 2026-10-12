@@ -210,9 +210,24 @@ def _empty_reason(link: Link, info: Dict[str, Any]) -> str:
 
 # ---------- the batch manifest ----------
 
+def new_manifest(videos: List[Video]) -> Dict[str, Any]:
+    return {"videos": [asdict(v) for v in videos], "errors": {}}
+
+
 def write_manifest(folder: Path, videos: List[Video]) -> None:
     folder.mkdir(parents=True, exist_ok=True)
-    _write(folder, {"videos": [asdict(v) for v in videos], "errors": {}})
+    _write(folder, new_manifest(videos))
+
+
+def place_manifest(folder: Path, manifest: Dict[str, Any]) -> None:
+    """
+    Puts the job row's manifest into the batch folder the download works in, unless one is already there: a download
+    a stop interrupted has recorded its failures in it, and those must survive.
+    """
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    if read_manifest(folder) is None:
+        _write(folder, manifest)
 
 
 def read_manifest(folder: Path) -> Optional[Dict[str, Any]]:

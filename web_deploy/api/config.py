@@ -6,6 +6,7 @@ settings (models, Postgres, the hosted residency flags) are read by app.core.con
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 API_PORT = 8095
 
@@ -13,15 +14,17 @@ API_PORT = 8095
 @dataclass(frozen=True)
 class ApiSettings:
     secret: str
+    # The box's scratch copy of the tenants (the same absolute path as the VPS's, which holds the data)
     tenants_root: Path
-    media_cache_root: Path
     control_database_url: str
     admin_database: str = "postgres"
     live_workers: int = 8
     report_workers: int = 2
     firm_pool_size: int = 3
     firm_pool_overflow: int = 3
-    max_upload_bytes: int = 20 * 1024 ** 3
+    # Where the ingestion worker marks jobs whose results are not on the VPS yet (STAGING_STATE_DIR); None when the
+    # box and the data share one disk
+    staging_state_dir: Optional[Path] = None
     # YouTube links on the Ingest page (web only: the appliance never reaches the internet)
     link_ingest_enabled: bool = True
     link_max_videos: int = 200
@@ -39,7 +42,6 @@ class ApiSettings:
         return cls(
             secret=secret,
             tenants_root=Path(os.environ.get("TENANTS_ROOT", "/workspace/tenants")),
-            media_cache_root=Path(os.environ.get("SOURCE_CACHE_ROOT", "/workspace/source-cache")),
             control_database_url=os.environ.get(
                 "CONTROL_DATABASE_URL", f"postgresql+psycopg2://{user}:{password}@{server}:{port}/onyx_control"),
             admin_database=os.environ.get("POSTGRES_ADMIN_DB", "postgres"),
@@ -50,4 +52,6 @@ class ApiSettings:
             link_ingest_enabled=os.environ.get("LINK_INGEST_ENABLED", "true").strip().lower() in ("1", "true", "yes"),
             link_max_videos=int(os.environ.get("LINK_MAX_VIDEOS", "200")),
             link_max_height=int(os.environ.get("LINK_MAX_HEIGHT", "720")),
+            staging_state_dir=(Path(os.environ.get("STAGING_STATE_DIR", "/workspace/staging-state"))
+                               if os.environ.get("STAGING_REMOTE") else None),
         )

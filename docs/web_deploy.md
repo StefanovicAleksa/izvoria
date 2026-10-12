@@ -2,8 +2,8 @@
 
 This is the hosted web version that demos are shown on and that users use. It runs on two machines:
 
-- **A Hetzner VPS.** Always on. It handles firms, users and sign-in, and wakes the GPU box.
-- **A rented Vast.ai GPU box.** On demand. It runs the appliance itself.
+- **A Hetzner VPS.** Always on. It handles firms, users and sign-in, wakes the GPU box, and **holds every firm's data**: the databases, the vaults, the uploads and the backups.
+- **A rented Vast.ai GPU box.** On demand. It runs the models and the appliance's code, and **keeps no client data at rest** (see "Where data lives").
 
 Everyone signs in at one address. Each firm has its own sign-in name and shared password, its own database and its own file vault, shared by all of that firm's users. Several users can chat, search and run reports at the same time. Ingestion waits its turn in a queue.
 
@@ -19,23 +19,21 @@ It is ops tooling, not the product's security model. The appliance proper stays 
 ## How a question travels
 
 ```
-browser ──https──▶ Caddy (VPS) ──▶ gateway (VPS)                      ──https, signed──▶ API (GPU box)
-                   one host, TLS     firms, users, sessions (SQLite)                      one process, all firms
-                                     Vast start/stop, idle stop                            │
-                                                                                          ├─ firm engine (own DB, vault)
-                                                                                          ├─ firm engine …
-                                                                                          └─ shared model kit
-                                                                                               ├─ BGE-M3 + reranker (pinned)
-                                                                                               └─ llama-server: Qwen3.5-9B,
-                                                                                                  parallel slots
-                                                                     ingestion supervisor ─▶ one child process per job
+browser ─https─▶ Caddy (VPS) ─▶ gateway (VPS) ──────────────▶ 127.0.0.1:18095 ══ ssh -R ══▶ API (GPU box, loopback)
+                 one host, TLS   firms, users, sessions (SQLite)                               one process, all firms
+                                 uploads ─▶ /workspace/tenants (vaults, uploads)               ├─ firm engine …
+                                 cited sources, cut from the vault here                        └─ shared model kit
+                                 Postgres 15 + pgvector (every firm) ◀══ ssh -L 15432 ══ box      ├─ BGE-M3 + reranker
+                                 backups ─▶ Storage Box                                           └─ llama-server
+                                 Vast start/stop, idle stop          ◀══ rsync (one job's files) ══ ingestion worker
 ```
 
 1. **The gateway identifies the firm and the user.**
    - The session names the user, and the user's account names the firm (see "Signing in" below).
    - The firm and the account are re-read on every request, so disabling either takes effect at once.
-   - The gateway forwards `/api/*` to the box with an HMAC over method, path, query, firm, user, role and timestamp (`web_deploy/common/signing.py`).
+   - The gateway forwards `/api/*` to the box with an HMAC over method, path, query, firm, user, role and timestamp (`web_deploy/common/signing.py`). It travels through the box's own SSH tunnel; the box has no public port.
    - The box never sees a cookie or a password.
+   - Uploads and cited files are the exception: the gateway handles them itself, because the files live on the VPS (`web_deploy/gateway/data.py`).
 2. **The API checks the signature and picks the firm's engine.**
    - It hands that firm's engine to a worker thread.
    - A firm's engine is an ordinary `IzvoriaEngine` built by `IzvoriaBootstrapper.build(database=…, vault_dir=…, reports_dir=…, kit=…)`. Every firm shares one `ModelKit`, so a new firm costs a connection pool, not a model load.
@@ -46,7 +44,61 @@ browser ──https──▶ Caddy (VPS) ──▶ gateway (VPS)                
 4. **Everything is scoped to the user.**
    - History is per user: `owner_id` on `session_turns`, `search_history` and `research_reports` (migration 0005).
    - Each user sees only their own conversations, searches and reports.
-   - A cited source is re-resolved by chunk id and must lie inside the firm's own vault.
+   - A cited source is re-resolved by chunk id on the box (`/api/sources/{chunk}/locate`: the file's path and the cited span), then cut and served by the gateway from the VPS's vault. The path must lie inside the firm's own vault there, so not even the box can make the gateway serve another firm's file.
+
+## Where data lives
+
+The data used to live on the rented box's disk. We can't vouch for what a Vast host does with a disk, so the box now only computes.
+
+| What | Where | Why there |
+|---|---|---|
+| Firm databases (`onyx_firm_<slug>`), the ingestion queue (`onyx_control`) | Postgres 15 on the VPS, loopback only | The box reaches it through its tunnel |
+| Vaults, uploads | `/workspace/tenants` on the VPS (a Hetzner Volume) | The gateway receives uploads and serves cited sources from here |
+| Source cache (cuts of cited recordings) | `/workspace/source-cache` on the VPS | Cut by the gateway's ffmpeg |
+| Backups | Hetzner Storage Box, from the VPS | Everything to back up is on the VPS |
+| Report Markdown copies | Nowhere (`REPORT_FILES_ENABLED=false` on the box) | Downloads render from the database row |
+| Models, code, settings, keys | The box's `/workspace` | Not client data |
+
+**The link: one SSH session the box opens** (`web_deploy/provision/box_tunnel.sh`, supervisord program `tunnel`):
+- `-L 127.0.0.1:15432` on the box reaches the VPS's Postgres; `-R 127.0.0.1:18095` on the VPS reaches the box's API.
+- SSH, not WireGuard: a Vast box is an unprivileged container, with no `/dev/net/tun` or `NET_ADMIN`, and often no FUSE. A plain outbound `ssh` needs none of them, and it lets the box expose no port at all.
+- The box's user on the VPS (`izvoria-box`) has two keys, each confined in `/etc/onyx-web/box_authorized_keys` (`add_box_keys.sh`):
+  - the tunnel key may only forward exactly those two ports;
+  - the sync key may only run `rrsync /workspace/tenants`.
+- **The keys work only while the gateway has the box started.** sshd asks `izvoria-box-keys` for them at every login, and it offers them only while `/var/lib/onyx-web-box/access` says `open`. The gateway writes `open` before it starts the box and `closed` once it has stopped it, or finds it stopped (`gateway/box.py`, `_set_access`). Keys copied off a stopped box's disk open nothing. A session already open is not cut by `closed`; it ends when the instance stops.
+- The VPS's host key is pinned on the box (`/workspace/web/known_hosts`, from `provision.sh`; compare its fingerprint with the VPS's).
+
+**Ingestion is staged** (`web_deploy/ingest_worker/staging.py`). Around each job:
+1. The batch's uploads are pulled from the VPS into the box's scratch. So are the vault files of any source with the same content (its original, frames, a kept WAV, clips), found by hash in the firm's database, so a retry or a re-upload finds its files where the database says they are.
+2. The ingestion child runs as before. Its rows go straight into the VPS database, its files into scratch.
+3. The firm's scratch vault is pushed to the VPS, vault files the job replaced are deleted there (a compaction swap of a pulled original), and the scratch is wiped.
+
+### Videos are prepared on the VPS (`PREPARE_VIDEOS`)
+
+Raw footage can run to ~100 GB an hour, and the box needs none of that resolution: the vault keeps a 720p copy anyway. With `PREPARE_VIDEOS=true` the gateway makes that copy **before** the box sees the recording (`web_deploy/gateway/prepare.py`), so only the copy is staged to the box, ingested and kept. Transfer to the rented GPU, which its host bills per byte, shrinks accordingly.
+
+- A video batch is queued as `preparing`. The box claims only `queued` jobs, and isn't woken until the batch is ready. The Ingest page shows "Making the 720p copies · 2/5", and the job can be cancelled meanwhile. The wait list and cancelling are answered by the gateway, so watching it doesn't wake the box.
+- Per video: ffprobe; an MP4 that is already compact (the box's own rule, `is_compact_video` in `app/features/media_compaction/utils/ffmpeg_args.py`) is left alone; otherwise the original is hashed, encoded with the box compaction's own arguments (`compact_video_args`, at `PREPARE_PRESET` and 128 kbit/s audio for Whisper), checked for length (±0.5 s / 0.2 %), and swapped in. `talk.mov` becomes `talk.mp4`, or `talk-2.mp4` if the batch already has one.
+- **Duplicate detection still works.** A source is matched by the hash of what was *uploaded*, and ffmpeg's output isn't reproducible. So the preparer leaves an upload record beside the copies (`.upload-record.json`, `app/features/storage/utils/upload_record.py`): each copy's original hash and name. `StorageAPI.ingest_local_file` uses it instead of hashing the copy, and the source keeps the uploaded name. Staging looks up a batch's earlier sources by the same hashes.
+- **The box re-encodes nothing.** Its compaction sees an already-compact MP4 and keeps it. The box ingests exactly the file that is kept, so the timeline check compaction exists for can't fail.
+- **If the copy fails** (ffmpeg error, a length that drifted), the original stays and the box ingests and compacts it as before.
+- **After a gateway restart**, a partial copy is removed, a recorded copy is kept (its original deleted if it was still there), and the rest is done again.
+- **Only video.** Audio uploads are small, and re-encoding them before transcription could cost accuracy. Documents, images and YouTube batches (already 720p) pass straight through.
+- **Cost:** the VPS's CPU. x264 runs niced with every core: a dedicated server with many cores prepares a long batch far faster than a small cloud VPS. The full-size original sits on the VPS only until its copy is made.
+- **Resolution costs the vision model nothing.** Qwen2-VL never sees more than about 720p anyway: a lone frame is capped at 1280×28×28 ≈ 1.0 MP (`_MAX_PIXELS` in `vlm_adapter.py`, ~1334×750 at 16:9, above 720p's 0.92 MP), and frames sent together at `VISION_MULTI_IMAGE_MAX_PIXELS` ≈ 0.6 MP (~1035×582, below 720p). Video frames get no OCR. What does change is that frames come from an H.264 encode (CRF 26, `PREPARE_PRESET`) instead of the upload, so very small slide text can pick up compression artifacts. A quick comparison on one dense-slide lecture is enough before turning it on; lower `PREPARE_VIDEO_CRF` if text smears.
+
+The scratch sits at **the same absolute path on both machines** (`/workspace/tenants`): the database stores absolute file paths, so a path written on the box is valid on the VPS once pushed, and nothing is ever rewritten.
+
+A marker per job (`/workspace/staging-state`) lives until its push succeeded. A crash, a host stop or a failed push leaves the job recoverable: the worker pushes and wipes before it takes new work, at the next start too, and the API's `/health` says `staging_pending` meanwhile, which keeps the gateway's idle stop away. Until a push lands, a citation to one of its new files answers "not available yet" rather than failing.
+
+**What this does and doesn't protect.** The agreed bar is *nothing persisted on the rented box, and everything in transit encrypted*. Two exposures remain, and the data-handling statement must say so:
+1. **Memory while working.** Audio, document text, questions, retrieved excerpts and answers are in plain form in the box's RAM and VRAM while they are processed. A host that inspects a running container's memory could read them. Only confidential-computing GPUs close this, not consumer cards.
+2. **The database while the box runs.** A running box holds working database credentials through its tunnel; the access gate above limits that to the time the gateway has it started.
+
+Also worth knowing:
+- The scratch is on the box's disk, because a symlink to `/dev/shm` would change the stored paths (the vault resolves its root). It is wiped after every job, but deleting from an SSD is not a secure erase.
+- `/workspace/tmp` (`TMPDIR`) is emptied at every fresh start.
+- Logs (`/workspace/logs`) rotate at 20 MB.
 
 ## Signing in, accounts and requests
 
@@ -103,6 +155,7 @@ Fonts are self-hosted (`@fontsource`), so no page asks a third party for anythin
 | `VIDEO_CLIPS_ENABLED` | true | false | No per-chunk clips; see "Storage". |
 | `KEEP_EXTRACTED_AUDIO` | true | false | A recording's WAV is deleted once it is indexed. |
 | `COMPACT_MEDIA_ORIGINALS` | false | true | An indexed recording's original becomes a 720p H.264/AAC copy. |
+| `REPORT_FILES_ENABLED` | true | false | No Markdown copy of a report on the box's disk (`NoReportFileStore`); the web app renders downloads from the row. |
 
 **What `ENGINE_CONCURRENT_LIVE=true` changes:**
 - Live calls run concurrently and are counted (`busy_snapshot()`).
@@ -138,7 +191,7 @@ If the live side measures over 13.5 GB:
 
 ## M0 spike: run this before anything else (rented 3090)
 
-It needs **only a rented GPU box**: no Hetzner VPS, no domain, no accounts. The test signs its own requests to the box's API with `WEB_API_SECRET`, exactly as the gateway would. It is one command, `web_deploy/spike` (`python -m web_deploy.spike`), in three stages:
+It was run before the data moved to the VPS, and needed **only a rented GPU box**: no Hetzner VPS, no domain, no accounts. `sweep` and `stress` still need nothing else. `shared` seeds files into the box's own tenants and expects a database beside them, so it is not yet adapted to the new layout. The test signs its own requests to the box's API with `WEB_API_SECRET`, exactly as the gateway would. It is one command, `web_deploy/spike` (`python -m web_deploy.spike`), in three stages:
 
 | Stage | What it answers | Needs |
 |---|---|---|
@@ -265,18 +318,37 @@ So the settings are `ONYX_SHORT_PROMPT_TOKENS=16384` and `ONYX_LONG_PROMPT_TRICK
 
 ## Setting it up
 
-**Settings made ahead of time (optional).** `web_deploy/provision/prod/` (gitignored, never synced) can hold the two production files, made from the examples with one shared `WEB_API_SECRET` and a fresh database password:
-- `api.env` → `/workspace/web/api.env` on the GPU box, copied **before** `provision.sh` (which then keeps it instead of generating secrets);
-- `gateway.env` → `/etc/onyx-web-gateway.env` on the VPS (`chmod 600`), copied **before** `install_gateway.sh` (which then keeps it).
+**Settings made ahead of time (optional).** `web_deploy/provision/prod/` (gitignored, never synced) can hold the two production files, made from the examples:
+- `gateway.env` → `/etc/onyx-web-gateway.env` on the VPS (`chmod 600`), copied **before** `install_gateway.sh` (which then keeps it instead of generating secrets);
+- `api.env` → `/workspace/web/api.env` on the GPU box, copied **before** `provision.sh`, with the same `WEB_API_SECRET` and `POSTGRES_PASSWORD` and the VPS's address in `VPS_HOST`.
 
-Without them, both scripts generate the files and you copy `WEB_API_SECRET` across by hand. Never copy `prod/` to either machine as part of the repo: the gateway file holds the Vast API key.
+Never copy `prod/` to either machine as part of the repo: the gateway file holds the Vast API key.
+
+### Gateway and data (Hetzner VPS), first
+
+1. Attach a Hetzner Volume and mount it at `/workspace` (vaults and uploads grow with every firm). The VPS also runs Postgres, pgvector search and the ffmpeg cuts now: 4 vCPU and 8–16 GB RAM is a sensible start.
+2. DNS: one A record for `onyx.example.com`, pointing at the VPS.
+3. Copy the repo, with the built `web_deploy/gateway/static`, to `/opt/onyx_v3`. Then:
+   ```bash
+   sudo bash /opt/onyx_v3/web_deploy/provision/install_gateway.sh onyx.example.com
+   ```
+   This installs Postgres 15 with pgvector (loopback only; the role, `onyx_control`, `vector` in `template1`), the data directories (group `izvoria-data`), the `izvoria-box` account with its sshd rules and `izvoria-box-keys`, the gateway, the backup service and Caddy. It writes `/etc/onyx-web-gateway.env` with fresh `WEB_API_SECRET`, `POSTGRES_PASSWORD` and `RESTIC_PASSWORD`, and prints the SSH host key's fingerprint.
+4. Fill in `/etc/onyx-web-gateway.env`: `VAST_API_KEY`, `VAST_INSTANCE_ID`, and `SMTP_*`, `MAIL_FROM`, `SIGNUP_TO`, `SUPPORT_TO` for the request and help pages. Then `systemctl restart onyx-web-gateway`.
+5. Create your owner account (it also asks for the console's firm password):
+   ```bash
+   cd /opt/onyx_v3 && sudo -u onyx GATEWAY_DB=/var/lib/onyx-web/gateway.sqlite3 \
+       /opt/onyx-web-gateway/bin/python -m web_deploy.gateway.admin_cli create-owner you@example.com
+   ```
+6. Sign in at `https://onyx.example.com` as the firm `admin`, then with your email. Create firms, each with a firm password, and their first administrators. `admin_cli` does the same from the shell (`create-firm … --generate` makes up the firm password and prints it once).
+
+Caddy gets and renews the one certificate for that host automatically.
 
 ### GPU box (Vast.ai)
 
 Template:
 - an nvidia/cuda `*-cudnn-devel-ubuntu22.04` image;
-- one 24 GB GPU;
-- port **8095** exposed;
+- one 24 GB GPU, on a host in the EU near the VPS's Hetzner location: every database query now crosses the tunnel;
+- **no ports exposed** (the box only dials out; Vast's own SSH stays for you);
 - on-start script `bash /workspace/onyx_v3/web_deploy/provision/onstart.sh`.
 
 Steps:
@@ -288,37 +360,29 @@ Steps:
    ```bash
    web_deploy/provision/sync_to_box.sh root@<ip> <ssh port>
    ```
-3. Provision the box:
+3. Provision the box, naming the VPS:
    ```bash
-   ssh … 'bash /workspace/onyx_v3/web_deploy/provision/provision.sh'
+   ssh … 'VPS_HOST=onyx.example.com bash /workspace/onyx_v3/web_deploy/provision/provision.sh'
    ```
-   This installs Postgres 15 with pgvector (in `template1`, so each firm database has it), builds `llama-server`, writes `/workspace/web/api.env` with fresh secrets, and makes a self-signed certificate for the API.
-4. Note what it prints: `WEB_API_SECRET`, and the path of the API certificate.
+   This installs the appliance venv, builds `llama-server`, writes `/workspace/web/api.env`, makes the box's two keys, and pins the VPS's host key. **Compare the fingerprint it prints with the one `install_gateway.sh` printed.**
+4. Do what it prints:
+   - on the VPS, as root: `izvoria-add-box-keys '<tunnel key>' '<sync key>'`;
+   - into the box's `api.env`: `WEB_API_SECRET` and `POSTGRES_PASSWORD` from `/etc/onyx-web-gateway.env`.
+5. Start it: `bash /workspace/onyx_v3/web_deploy/provision/onstart.sh`, or let the gateway start it at the next sign-in. The tunnel comes up only while the gateway has the box started (see "Where data lives").
 
-### Gateway (Hetzner VPS)
+A replacement box needs only steps 2–4: it holds nothing to restore.
 
-1. DNS: one A record for `onyx.example.com`, pointing at the VPS.
-2. Copy the repo, with the built `web_deploy/gateway/static`, to `/opt/onyx_v3`. Then:
-   ```bash
-   sudo bash /opt/onyx_v3/web_deploy/provision/install_gateway.sh onyx.example.com
-   ```
-3. Fill in `/etc/onyx-web-gateway.env`:
-   - `WEB_API_SECRET`;
-   - `VAST_API_KEY` and `VAST_INSTANCE_ID`;
-   - the box certificate at `/etc/onyx-web/box-cert.pem`;
-   - `SMTP_*`, `MAIL_FROM`, `SIGNUP_TO` and `SUPPORT_TO`, for the request and help pages.
+### Moving existing data
 
-   Then `systemctl restart onyx-web-gateway`.
-4. Create your owner account (it also asks for the console's firm password):
-   ```bash
-   cd /opt/onyx_v3 && sudo -u onyx GATEWAY_DB=/var/lib/onyx-web/gateway.sqlite3 \
-       /opt/onyx-web-gateway/bin/python -m web_deploy.gateway.admin_cli create-owner you@example.com
-   ```
-5. Sign in at `https://onyx.example.com` as the firm `admin`, then with your email. Create firms, each with a firm password, and their first administrators. `admin_cli` does the same from the shell (`create-firm … --generate` makes up the firm password and prints it once).
+A box provisioned before this change kept its own Postgres (`/workspace/pgdata`) and vault. To move a firm's data:
+1. On the old box, take a backup (`venv/bin/python -m web_deploy.backup.runner --now`, with its old `api.env`).
+2. On the VPS, restore it with `BACKUP_HOST_NAME=onyx-box` (see "Backups"). The paths stay valid, because `/workspace/tenants` is the same path on both machines.
+3. Give the restored files to the shared group: `chgrp -R izvoria-data /workspace/tenants && chmod -R g+rwX /workspace/tenants`.
+4. Destroy the old instance. A stopped one keeps its disk.
 
-Caddy gets and renews the one certificate for that host automatically.
+### Upgrading a deployment from subdomains
 
-**Upgrading a deployment from subdomains.** Firms used to live at `<firm>.<domain>`.
+Firms used to live at `<firm>.<domain>`.
 1. Deploy the code. The gateway database gains its new columns at startup, and existing firms have no firm password, so nobody can sign in yet.
 2. Run `admin_cli set-firm-password <slug>` for every firm (`list` flags the ones missing), and `set-firm-password admin` for the console.
 3. Install the new Caddyfile (`install_gateway.sh` does it) and replace `BASE_DOMAIN` with `PUBLIC_URL` (an old `BASE_DOMAIN` still works, as `https://<BASE_DOMAIN>`). The wildcard DNS record can go.
@@ -326,12 +390,13 @@ Caddy gets and renews the one certificate for that host automatically.
 
 ### Demo firms
 
-Create the firm on the gateway (`legal-demo`, "Demo"), then queue sample material on the box:
+Create the firm on the gateway (`legal-demo`, "Demo"), then queue sample material **on the VPS**, where uploads and the queue live:
 ```bash
-cd /workspace/onyx_v3 && set -a && . /workspace/web/api.env && set +a
-venv/bin/python -m web_deploy.provision.seed_demo legal-demo document en /workspace/samples/contracts
-venv/bin/python -m web_deploy.provision.seed_demo clinic-demo audio sr /workspace/samples/consultations
+cd /opt/onyx_v3 && set -a && . /etc/onyx-web-gateway.env && set +a
+sudo -u onyx -E /opt/onyx-web-gateway/bin/python -m web_deploy.provision.seed_demo legal-demo document en /srv/samples/contracts
+sudo -u onyx -E /opt/onyx-web-gateway/bin/python -m web_deploy.provision.seed_demo clinic-demo audio sr /srv/samples/consultations
 ```
+The box ingests them when it next runs.
 
 ## Local testing on dev hardware (one 12 GB GPU, your LAN)
 
@@ -368,7 +433,7 @@ venv/bin/python -m web_deploy.local.run_local                  # Ctrl+C stops ev
 
 **Then open it.** Use `http://<this machine's LAN IP>:8000` from any device on your network: the launcher prints the address. Sign in as the firm `legal-demo` with its firm password, then with your email; firm `admin` is the owner's console. Requests from the public pages reach the address in `local.env` once `SMTP_PASSWORD` (a Gmail app password) is filled in; until then they are listed in the console only.
 
-**What runs.** Everything is under `onyx_data/local-web/`: tenants, gateway and queue databases (SQLite), logs, and the `llama-server` build. Three processes run from the appliance venv:
+**What runs.** Everything is under `onyx_data/local-web/`: tenants, gateway and queue databases (SQLite), logs, and the `llama-server` build. The gateway receives uploads and serves cited sources here too, exactly as on the VPS, and staging is off (`STAGING_REMOTE` unset): the box and the data share one disk. Three processes run from the appliance venv:
 - the API, on `127.0.0.1:8095` only;
 - the ingestion worker, which owns `llama-server` here;
 - the gateway, on `0.0.0.0:8000` over plain HTTP.
@@ -377,16 +442,19 @@ Keep it on a network you trust.
 
 ## Running the box
 
-**Startup.** supervisord starts five programs: `postgres`, `llama-server`, `api`, `ingest` and `backup`. The API reports `ready` once the embedder and reranker are pinned and llama-server answers. Signing in wakes the box. The web app shows "Waking the appliance" until the box is ready.
+**Startup.** supervisord starts four programs: `tunnel`, `llama-server`, `api` and `ingest`. The API and the worker wait for the tunnel's end of Postgres (`wait_for_tunnel.sh`). The API reports `ready` once the embedder and reranker are pinned and llama-server answers. Signing in wakes the box. The web app shows "Waking the appliance" until the box is ready.
 
-**Idle stop.** The gateway stops the box after `IDLE_MINUTES` with nobody connected, but only when its `/health` says nothing is happening: no question in flight, no report running, and no ingestion running or queued.
+**What works while the box sleeps.** Uploading and queueing (the gateway writes the files and the queue row on the VPS, then wakes the box). Everything else needs the box: chat, search, reports, history and opening a cited source (the box says which file a chunk cites).
+
+**Idle stop.** The gateway stops the box after `IDLE_MINUTES` with nobody connected, but only when its `/health` says nothing is happening: no question in flight, no report running, no ingestion running or queued, and no results waiting to be pushed to the VPS (`staging_pending`).
 
 **The ingestion queue:**
 - One batch at a time, across all firms, first come first served (`onyx_control.ingest_jobs`).
 - Each job runs in a fresh child process:
   - with its firm's `POSTGRES_DB` and `ONYX_STORAGE_PATH`, and its batch's language;
-  - with the appliance's own in-process backend.
-- A box stop interrupts the running job. It is re-queued at the front when the box comes back, and per-source caching skips the work already done.
+  - with the appliance's own in-process backend;
+  - between the staging in and out described in "Where data lives".
+- A box stop interrupts the running job. What it had written is pushed to the VPS at the next start, the job is re-queued at the front, and per-source caching skips the work already done.
 
 **Reports.** Each runs in the language it was scoped in, whatever the user picks later. A stopped or interrupted report can be resumed.
 
@@ -396,21 +464,21 @@ The vault keeps **one file per recording**, and the upload folder keeps nothing 
 
 | What | Kept? | How |
 |---|---|---|
-| Upload folder (`uploads/<user>/<batch>`) | No | Ingestion copies each file into the vault. The supervisor deletes the folder once the job is done, failed or cancelled. A job a stop re-queued keeps it, because the retry reads it. An hourly sweep removes folders no queued or running job refers to, untouched for a day (cancelled jobs, uploads never queued). |
-| Per-chunk clips | No (`VIDEO_CLIPS_ENABLED=false`) | A citation points at the recording with its start and end; the source page cuts the excerpt (±5 s) when it is opened, cached in the 5 GB source cache. |
+| Upload folder (`uploads/<user>/<batch>`, on the VPS) | No | Ingestion copies each file into the vault. The gateway's janitor (`UploadJanitor`, every 10 minutes) deletes the folder once the job is done, failed or cancelled. A job a stop re-queued keeps it, because the retry reads it. Folders no job refers to go once untouched for a day (uploads never queued). |
+| Per-chunk clips | No (`VIDEO_CLIPS_ENABLED=false`) | A citation points at the recording with its start and end; the gateway cuts the excerpt (±5 s) when it is opened, cached in the VPS's 5 GB source cache. |
 | 16 kHz WAV | No (`KEEP_EXTRACTED_AUDIO=false`) | Only the audio stages read it. Deleted once the recording is indexed; a source that failed keeps it for the retry, and a later run re-extracts it if needed. |
 | Original video/audio | A compact copy (`COMPACT_MEDIA_ORIGINALS=true`) | Once indexed, replaced by a 720p H.264/AAC MP4 with `+faststart` (audio: AAC m4a, 64 kbit/s), which every browser plays and seeks without a transcode. |
 | Frames, documents, images, database | Yes | Small. |
 
 **What the compact copy changes:**
-- Ingestion always reads the full-quality upload; the copy is only what is kept and played back. **The full-quality original is not kept on the server.**
+- Without `PREPARE_VIDEOS`, ingestion reads the full-quality upload and the copy is only what is kept and played back. With it, the box ingests the 720p copy the VPS made (see "Videos are prepared on the VPS"). Either way **the full-quality original is not kept on the server.**
 - A copy is refused, and the original kept, unless its length is within 0.5 s (or 0.2%) of the original's, because chunk timestamps index into it, and it is at least 20% smaller (`COMPACT_MIN_SAVING`).
 - A file a browser already plays at a modest bitrate (an `.mp4` H.264 at most 720p and 3 Mbit/s, or a lean m4a/mp3) is left alone. YouTube downloads usually are.
 - The source keeps the hash of its upload, so uploading the same file again still finds it.
 - Tuning: `COMPACT_VIDEO_MAX_HEIGHT` (720, the short side, so portrait videos too), `COMPACT_VIDEO_CRF` (26), `COMPACT_AUDIO_BITRATE_KBPS` (64).
 - It costs CPU time after indexing (x264 `medium`, niced), not GPU time.
 
-**Material ingested before these settings.** Run the backfill while the ingestion queue is idle:
+**Material ingested before these settings.** The backfill needs the files, so it runs only where they are on the same machine as an appliance venv: the local version, or an old box from before the move. The hosted box refuses it (it holds no files, and new ingestions compact as they go). Run it while the ingestion queue is idle:
 
 ```bash
 set -a; . /workspace/web/api.env; set +a
@@ -422,37 +490,67 @@ Locally, load `web_deploy/local/local.env` instead and add `TENANTS_ROOT=onyx_da
 
 ## Backups
 
-Everything a firm has lives on the rented box's disk. A destroyed instance, or one Vast cannot start again, takes it all, so the box and the gateway back up to a **Hetzner Storage Box** with [restic](https://restic.net): encrypted with `RESTIC_PASSWORD` before it leaves the machine, and deduplicated, so after the first run only what changed travels.
+Everything a firm has lives on the VPS, so the VPS backs it up to a **Hetzner Storage Box** with [restic](https://restic.net): encrypted with `RESTIC_PASSWORD` before it leaves the machine, and deduplicated, so after the first run only what changed travels. The GPU box has nothing to back up.
 
-| What | From | When | Kept |
+| What | How | When | Kept |
 |---|---|---|---|
-| Every firm database and the queue (`pg_dump`, custom format) | GPU box (`backup` program, `web_deploy/backup/runner.py`) | Every 24 h, **and as soon as an ingestion job has finished**, once the queue is empty | 7 daily, 4 weekly, 6 monthly |
-| Every firm's `vault/` and `reports/` | GPU box | Same run | Same |
-| The box's `/workspace/web` (`api.env`, TLS key, backup key) | GPU box | Same run | Same |
-| The gateway database (firms, accounts, sign-up requests) | VPS (`onyx-web-gateway-backup.timer`, `web_deploy/backup/gateway.py`) | Daily at 03:30 | Same |
+| Every firm database and the queue (`pg_dump`, custom format), and every firm's `vault/` and `reports/` | `onyx-web-backup` service (`web_deploy/backup/runner.py`), series `onyx-data` | Every 24 h, **and once an ingestion job has finished**, when the queue is empty | 7 daily, 4 weekly, 6 monthly |
+| The gateway database (firms, accounts, sign-up requests) | `onyx-web-gateway-backup.timer` (`web_deploy/backup/gateway.py`), series `onyx-gateway` | Daily at 03:30 | Same |
 
-Not backed up: `uploads/` (their files are in the vault) and the source cache.
-
-**Keeping the box awake for it.** While a backup is due or running, the API's `/health` says `busy` (`backup_due`, `backup_running`), so the gateway's idle stop waits for new material to be off the box. A failed run is retried after an hour, not at once, so a broken Storage Box can't keep the GPU rented for good; `/workspace/web/backup-status.json` and `/workspace/logs/backup.log` say what happened.
+Not backed up: `uploads/` (their files are in the vault) and the source cache. A failed run is retried after an hour; `/var/lib/onyx-web/backup-status.json` and `journalctl -u onyx-web-backup` say what happened.
 
 **Setting it up:**
 1. Order a Storage Box (BX11, 1 TB, is plenty to start) in the same region as the VPS. Enable SSH support.
-2. Fill in `RESTIC_REPOSITORY=sftp:<user>@<user>.your-storagebox.de:onyx-backups` in both `api.env` and `/etc/onyx-web-gateway.env`, and the same `RESTIC_PASSWORD` in both (`web_deploy/provision/prod/` already has one). **Store `RESTIC_PASSWORD` off both machines** (a password manager): without it the backups can't be read.
-3. Add the two public keys `provision.sh` and `install_gateway.sh` print (`/workspace/web/backup_ed25519.pub`, `/etc/onyx-web/backup_ed25519.pub`) to the Storage Box: `ssh-copy-id -p 23 -s -i <key> <user>@<user>.your-storagebox.de`, or its `.ssh/authorized_keys`.
-4. Check both: `venv/bin/python -m web_deploy.backup.runner --now` on the box (with `api.env` loaded), and `systemctl start onyx-web-gateway-backup` on the VPS. The first run creates the repository.
+2. Set `RESTIC_REPOSITORY=sftp:<user>@<user>.your-storagebox.de:onyx-backups` in `/etc/onyx-web-gateway.env`. `RESTIC_PASSWORD` was generated there: **store it off the machine** (a password manager), because without it the backups can't be read.
+3. Add the public key `install_gateway.sh` printed (`/etc/onyx-web/backup_ed25519.pub`) to the Storage Box: `ssh-copy-id -p 23 -s -i <key> <user>@<user>.your-storagebox.de`, or its `.ssh/authorized_keys`.
+4. Check it: `systemctl restart onyx-web-backup && journalctl -fu onyx-web-backup` (the first backup starts at once), and `systemctl start onyx-web-gateway-backup`. The first run creates the repository.
 
-**Restoring the box** (`web_deploy/backup/restore.py`), onto a new instance:
-1. Provision it with the **same** `api.env` (the database password, restic settings and the `WEB_API_SECRET` the gateway knows) and the old backup key (`/workspace/web/backup_ed25519`), or add the new box's key to the Storage Box.
-2. `supervisorctl stop api ingest backup` (Postgres keeps running), then, with `api.env` loaded:
+**Restoring** (`web_deploy/backup/restore.py`), onto a new VPS:
+1. Run `install_gateway.sh` with the **same** `/etc/onyx-web-gateway.env` (the database password, restic settings, and the `WEB_API_SECRET` the box knows) and the old backup key, or add the new key to the Storage Box.
+2. `systemctl stop onyx-web-gateway onyx-web-backup` (Postgres keeps running), then:
    ```bash
-   venv/bin/python -m web_deploy.backup.restore --list
-   venv/bin/python -m web_deploy.backup.restore --snapshot latest --yes
-   supervisorctl start api ingest backup
+   cd /opt/onyx_v3 && set -a && . /etc/onyx-web-gateway.env && set +a
+   /opt/onyx-web-gateway/bin/python -m web_deploy.backup.restore --list
+   /opt/onyx-web-gateway/bin/python -m web_deploy.backup.restore --snapshot latest --yes
+   chgrp -R izvoria-data /workspace/tenants && chmod -R g+rwX /workspace/tenants
+   systemctl start onyx-web-gateway onyx-web-backup
    ```
-   It replaces every firm database and vault with the snapshot's, and puts back the TLS certificate the gateway pins.
-3. Point the gateway at the new instance (`VAST_INSTANCE_ID`).
+   It replaces every firm database and vault with the snapshot's. The restore reads the `onyx-data` series by default; `BACKUP_HOST_NAME=onyx-box` reads a backup the GPU box took before the data moved.
 
-The restore was checked end to end against Postgres 15 with pgvector and restic: back up, drop a table and delete a vault file, restore, and both come back.
+The restore was checked end to end against Postgres 15 with pgvector and restic (back up, drop a table and delete a vault file, restore, and both come back), before the move to the VPS.
+
+## Uploading a lot of video
+
+The upload from the firm's office is usually the slowest part of getting material in. At 1 Gbit/s, 10 TB takes about a day at best, and one connection to a server far away rarely fills such a line. Three things make it as fast as the line allows.
+
+**1. Resumable, parallel uploads** (`web_deploy/common/chunked.py`; the web app's `src/api/uploads.ts`):
+- Every file goes in 32 MB pieces, four at a time, also within one large file:
+  ```
+  POST /api/uploads/{batch}/{name}/chunks      {"size": S, "chunk": C}  -> {"received": [...], "complete": false}
+  PUT  /api/uploads/{batch}/{name}/chunks/{i}  bytes of piece i         -> {"complete": false}
+  ```
+- Each piece is written at its offset into one hidden file of the full size, so finishing a file is a rename, never a copy. A marker per piece says it arrived whole.
+- A failed piece is sent again after 1, 2, 4… up to 30 s; a refusal (a file too large) is final.
+- **An upload broken off continues where it stopped:** the client asks which pieces are there and sends the rest. In the web app, picking the same files again (same kind and language, within 20 hours) continues the same batch.
+- Queueing a batch discards anything half-sent, so the box never gets a partial file.
+- The old one-request `PUT /api/uploads/{batch}/{name}` still works, for small files and scripts.
+
+Measured on the dev box through the real gateway over loopback: ~4 Gbit/s with four pieces in flight, so the gateway itself is not what limits a 1 Gbit/s line.
+
+**2. The uploader: the 720p copy made at the firm** (`python -m web_deploy.uploader`, `web_deploy/uploader/`). For a firm with raw footage, the biggest win is to send less. Run on the firm's own computer, the uploader makes each video's 720p copy there (the same encode as "Videos are prepared on the VPS", `web_deploy/common/video_copy.py`), so only the copy crosses the internet: raw 4K at ~100 GB an hour becomes about 1 GB, and a day of uploading becomes minutes.
+```bash
+python -m web_deploy.uploader --server https://onyx.example.com --firm legal-demo --email you@firm.com \
+    --mode video --language en "D:/Depositions 2026"
+```
+- It signs in as the person (asking for the firm password and their own, or reading `IZVORIA_FIRM_PASSWORD` / `IZVORIA_PASSWORD`), then makes the copies one at a time while the previous one uploads (at most two wait on disk).
+- Each copy goes in parallel pieces, with retries; `POST /api/uploads/{batch}/record` then tells the gateway what each copy was (its original's hash and name), so duplicate detection and citations work as for the original.
+- **Running the same command again after an interruption continues it.** A state file remembers the batch and every finished file, and a half-sent file resumes from the pieces the gateway already has.
+- A copy that fails (or an MP4 that is already compact) is sent as it is. Audio, documents and images are never re-encoded.
+- Options: `--no-shrink`, `--parallel`, `--chunk-mb`, `--crf`, `--preset`, `--scratch`.
+- **Needs** Python 3.10+ and ffmpeg/ffprobe on the PATH; nothing else (standard library only). It runs from a copy of this repository. Packaging it as a single Windows/macOS program is open.
+- Checked end to end against a real gateway: two 278 MB 4K test clips became 1.7 MB copies in 4 s each, sent, recorded and queued; a run cut after 50 pieces continued the same batch, sent only the 508 missing pieces, and the stored files were byte-identical.
+
+**3. The receiving side.** A Hetzner cloud VPS's network is shared and not guaranteed; a **dedicated server** has its own 1 Gbit/s port (10 Gbit/s as a paid add-on, useful only if the office line is faster too) and the cores the 720p encode needs if it happens on the VPS instead. Put it in the **Hetzner location nearest the firms** (Falkenstein or Nuremberg for Serbia, rather than Helsinki): lower latency means each connection runs faster.
 
 ## Adding videos from YouTube
 
@@ -461,14 +559,15 @@ On the Ingest page, **Video** batches can also come from YouTube links: single v
 - **Checking.** "Check links" resolves the links with yt-dlp without downloading anything (`web_deploy/common/youtube.py`). The user sees every video, can drop some, and is told which links added nothing and why (private, deleted, still live, not YouTube).
   - At most `LINK_MAX_VIDEOS` (200) videos go into one batch.
   - A `watch?v=…&list=…` link adds only that video.
-- **Queueing.** The batch folder gets a `.youtube.json` manifest instead of files, and the job is marked `origin: youtube`.
-- **Downloading.** When the job reaches the front of the queue, the supervisor first runs `ingest_worker/fetch_links.py` as a child process:
+- **Queueing.** The box API resolves the links and queues the job with its videos in the job row (`ingest_jobs.manifest`), marked `origin: youtube`. No folder exists yet: the box never writes into the VPS's uploads.
+- **Downloading.** When the job reaches the front of the queue, the supervisor writes the manifest into the job's scratch folder and first runs `ingest_worker/fetch_links.py` as a child process:
   - It runs **before the GPU is asked for**, so on dev hardware chat keeps answering while the videos download.
   - Videos are fetched one at a time, up to `LINK_MAX_HEIGHT` (720p), as H.264 + AAC MP4.
   - Each file is named `<title> [<video id>].mp4`; the title is what citations show.
   - A video that fails is listed in the batch's report.
   - If none can be fetched, the job fails before the GPU is touched.
-  - A stop re-queues the job, and partial downloads resume.
+  - A stop re-queues the job; the downloads start again, since the scratch is wiped.
+  - The downloaded files are never pushed to the VPS; their copies in the vault are.
 - **Turning it off:** `LINK_INGEST_ENABLED=false` hides the panel and refuses the routes.
 - **Keeping it working.** yt-dlp (`yt-dlp[default]`, which includes the challenge solver) and deno (the JavaScript runtime it needs) come from `web_deploy/api/requirements.txt`. YouTube breaks old clients within months: if downloads start failing, run `venv/bin/pip install -U "yt-dlp[default]"` on the box. ffmpeg (already provisioned) merges the video and audio streams.
 
@@ -478,7 +577,7 @@ The Ingest page also takes a **whole folder**, picked or dropped, for every kind
 
 ```bash
 python3.11 -m venv web_deploy/.venv && web_deploy/.venv/bin/pip install -r web_deploy/requirements-dev.txt
-web_deploy/.venv/bin/pytest web_deploy/tests                 # gateway, API (fake engine), queue, worker, signing
+web_deploy/.venv/bin/pytest web_deploy/tests                 # gateway, API (fake engine), queue, worker, staging
 cd web_deploy/frontend && npm ci && npm test && npm run typecheck
 pytest tests                                                   # the app/ changes (appliance venv)
 ```
@@ -487,19 +586,20 @@ Under the appliance venv, a bare `pytest` skips `web_deploy/tests`, which needs 
 
 ### Local end-to-end without Vast
 
-Run the gateway against a box API on this machine:
-- `FAKE_BOX_HOST=127.0.0.1`
-- `GATEWAY_HTTPS_ONLY=0`
-- no `PUBLIC_URL` and no `BOX_CERT_FILE`
+Run the gateway against a box API on this machine (`run_local` does all of this for you):
+- `FAKE_BOX_HOST=127.0.0.1` and `GATEWAY_HTTPS_ONLY=0` (so `BOX_LINK=direct`), no `PUBLIC_URL`;
+- `TENANTS_ROOT`, `SOURCE_CACHE_ROOT` and `CONTROL_DATABASE_URL` the same as the API's: the gateway receives the uploads and serves the sources.
 
 Open `http://localhost:8000` and sign in as the firm, then as yourself.
 
 The box API needs:
-- `api.env`'s hosted settings;
-- a running `llama-server`;
-- uvicorn started without `--ssl-*`.
+- `api.env`'s hosted settings, with `POSTGRES_PORT` at the local database and no `STAGING_REMOTE` (one disk);
+- a running `llama-server`.
 
 ## Open items
 
-- **Data handling.** The hosted product needs its own data-handling statement. "No data leaves the premises" (CLAUDE.md) is true of the appliance, not of this.
+- **Data-handling statement.** "No data leaves the premises" (CLAUDE.md) is true of the appliance, not of this. The hosted product's statement should describe "Where data lives", including its two remaining exposures.
+- **A quick check for compression artifacts on slide text** before setting `PREPARE_VIDEOS=true` (see "Videos are prepared on the VPS"); resolution itself is not a concern.
+- **The two-machine run.** The 3090 measurements above predate the move. Run the layout end to end (ingest the lecture while three users chat), then on the box check that `find /workspace/tenants -type f` and `ls /workspace/staging-state` are empty and `ss -ltn` shows nothing public, and compare chat latency with the 2026-10-10 run (median 1.6 s). Then stop the box and check that its keys no longer log in to the VPS.
+- **The spike's `shared` stage** still assumes the old layout (see "M0 spike").
 - **Report speed.** Two reports beside live chats share four slots; each slows the others.

@@ -214,10 +214,10 @@ class IReportFileStore(ABC):
     """Writes the rendered report where a person can pick it up."""
 
     @abstractmethod
-    def write_markdown(self, report_id: uuid.UUID, markdown: str) -> str:
+    def write_markdown(self, report_id: uuid.UUID, markdown: str) -> Optional[str]:
         """
         Writes the report atomically and returns its absolute path. Atomically because a resume rewrites
-        the same file, and a half-written report on disk is worse than none.
+        the same file, and a half-written report on disk is worse than none. None when no file is kept.
         """
         pass
 

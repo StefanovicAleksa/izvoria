@@ -7,7 +7,6 @@ from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace as NS
 from typing import Any, Dict, List, Optional
-from unittest.mock import MagicMock
 
 from web_deploy.api.engine_port import IEngineHost, LiveGate
 
@@ -277,6 +276,3 @@ def fake_queue():
     from web_deploy.ingest_worker.queue import IngestQueue
     return IngestQueue.connect("sqlite://")
 
-
-def preparer():
-    return MagicMock()

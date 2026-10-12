@@ -3,3 +3,8 @@
 starlette>=0.41,<1
 uvicorn[standard]>=0.32
 httpx>=0.28
+# The VPS holds the firms' data: the ingestion queue in its Postgres, and cited sources cut and served from the vault
+# (deploy/instance/agent/media.py decodes text files with charset-normalizer; ffmpeg comes from apt)
+sqlalchemy>=2.0
+psycopg2-binary>=2.9
+charset-normalizer>=3.3

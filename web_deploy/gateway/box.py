@@ -2,8 +2,13 @@
 The rented GPU box: start it when someone signs in, know when it is ready, stop it when nobody needs it.
 
 Adapted from the noVNC demo's controller (deploy/gateway/controller.py), minus the desktop app: the box's services
-(Postgres, llama-server, the API, the ingestion supervisor) start on their own under supervisord, so "ready" simply
+(the tunnel, llama-server, the API, the ingestion supervisor) start on their own under supervisord, so "ready" simply
 means the API's /health says its shared models are resident. The Vast.ai client is reused as it is.
+
+The box holds no data; it reaches this VPS's database and vault through an SSH tunnel it opens itself, which also
+forwards its API to 127.0.0.1:BOX_TUNNEL_PORT here (BOX_LINK=tunnel). The box's keys are accepted only while the
+gateway has it started: `_set_access` writes "open" before a start and "closed" once it is stopped, and sshd asks
+`izvoria-box-keys` (install_gateway.sh), which reads that file, for the keys at every login.
 """
 
 import asyncio
@@ -81,8 +86,11 @@ class BoxStatus:
 
 
 def box_ssl_context(settings: GatewaySettings):
-    """Pins the box API's own self-signed certificate: the Vast port is public, the traffic is client data."""
-    if settings.box_cert_file is None:
+    """
+    Pins the box API's own self-signed certificate when it is reached over Vast's public port (BOX_LINK=direct). The
+    tunnel needs none: SSH encrypts it, and its end here listens on loopback only.
+    """
+    if settings.box_cert_file is None or settings.box_link == "tunnel":
         return False
     context = ssl.create_default_context(cafile=str(settings.box_cert_file))
     context.check_hostname = False  # the box is reached by IP; the pinned certificate is what is trusted
@@ -134,7 +142,7 @@ class BoxController:
 
     @property
     def scheme(self) -> str:
-        return "https" if self._settings.box_cert_file else "http"
+        return "https" if self._settings.box_cert_file and self._settings.box_link == "direct" else "http"
 
     # ---------- queries ----------
 
@@ -146,7 +154,26 @@ class BoxController:
 
     async def api_address(self) -> Optional[str]:
         info = await self.info()
-        return info.address(self._settings.api_port) if info.running else None
+        if not info.running:
+            return None
+        if self._settings.box_link == "tunnel":
+            return f"127.0.0.1:{self._settings.box_tunnel_port}"
+        return info.address(self._settings.api_port)
+
+    def _set_access(self, open_: bool) -> None:
+        path = self._settings.box_access_file
+        if path is None:
+            return
+        value = "open" if open_ else "closed"
+        try:
+            if path.exists() and path.read_text().strip() == value:
+                return
+            partial = path.with_name(path.name + ".tmp")
+            partial.write_text(value + "\n")
+            partial.replace(path)
+            logger.info(f"Box SSH access {value}")
+        except OSError as exc:
+            logger.error(f"Could not set the box's SSH access to {value}: {exc}")
 
     async def health(self, fresh: bool = False) -> Optional[BoxHealth]:
         if not fresh and self._health is not None and self._clock() - self._health_at < HEALTH_CACHE_SECONDS:
@@ -181,6 +208,8 @@ class BoxController:
         except VastError as exc:
             return BoxStatus(BoxState.ERROR, str(exc))
         if not info.running:
+            # Stopped from elsewhere (Vast's console, a host failure): its keys go too
+            self._set_access(False)
             return BoxStatus(BoxState.STOPPED, self._error)
         health = await self.health()
         if health is None or not health.ready:
@@ -223,6 +252,7 @@ class BoxController:
 
     async def _start(self) -> None:
         self._scheduling_since = None
+        self._set_access(True)  # before the box exists: its tunnel dials in as soon as it boots
         info = await self.info(fresh=True)
         if not info.running:
             await self._vast.start()
@@ -241,6 +271,7 @@ class BoxController:
     async def _stop(self) -> None:
         # Nothing to shut down gracefully: supervisord stops the API and the ingestion worker re-queues its job
         await self._vast.stop()
+        self._set_access(False)
         self._info = None
         self._health = None
 
