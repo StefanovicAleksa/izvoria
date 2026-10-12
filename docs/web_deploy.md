@@ -257,7 +257,7 @@ Four things a fresh box got wrong, now fixed (each would break every new deploy)
 
 Not measured here: the over-full cache. Its two long requests shared one cached prompt, so the cache never filled; the stress stage now sends different prompts. The dev card's run below shows what overflowing does, and `KvTokenBudget`'s test guards it.
 
-**Getting models onto a rented box.** Uploading 51 GB from a home connection (~2 MB/s up) takes ~7 hours. Instead, the box downloaded the 12 models that exist on Hugging Face (37 GB, every file checked against the local copy's hash) in 8 minutes; only the locally quantized Qwen2-VL (6.3 GB) and the small NeMo/OCR files were uploaded. Gemma 4 E4B is only needed for Serbian.
+**Getting models onto a rented box.** Uploading 51 GB from a home connection (~2 MB/s up) takes ~7 hours. Instead, the box downloaded the 12 models that exist on Hugging Face (37 GB, every file checked against the local copy's hash) in 8 minutes; only the locally quantized Qwen2-VL (6.3 GB) and the small NeMo/OCR files were uploaded. Gemma 4 E4B is only needed for Serbian. This is now `fetch_models.py` plus `sync_to_box.sh --local-only` (see "Setting it up").
 
 ### llama-server patch: answers before long prompts
 
@@ -356,10 +356,16 @@ Steps:
    ```bash
    cd web_deploy/frontend && npm ci && npm run build   # -> web_deploy/gateway/static
    ```
-2. Copy the code and models over:
+2. Copy the code, and the ~6 GB of models that exist only on the dev box (the 4-bit Qwen2-VL, the NeMo VAD and TitaNet files, RapidOCR):
    ```bash
-   web_deploy/provision/sync_to_box.sh root@<ip> <ssh port>
+   web_deploy/provision/sync_to_box.sh root@<ip> <ssh port> --local-only
    ```
+   Meanwhile, on the box, fetch the other ~49 GB from Hugging Face (minutes on a data-centre line; it needs only the system Python, so it can run beside step 3):
+   ```bash
+   python3 /workspace/onyx_v3/web_deploy/provision/fetch_models.py
+   python3 /workspace/onyx_v3/web_deploy/provision/fetch_models.py --verify   # once both are done
+   ```
+   Each model is pinned to the exact commit the dev box downloaded, and every file is checked against `web_deploy/provision/models.lock.json` (size and sha256 of the dev box's copies), so the box runs byte-identical models. A download that stops resumes. After changing a model on the dev box, update `HUGGING_FACE` in `fetch_models.py` and run `venv/bin/python -m web_deploy.provision.fetch_models --write-lock`. (Without `--local-only`, `sync_to_box.sh` still uploads all 51 GB from the dev box.)
 3. Provision the box, naming the VPS:
    ```bash
    ssh … 'VPS_HOST=onyx.example.com bash /workspace/onyx_v3/web_deploy/provision/provision.sh'
