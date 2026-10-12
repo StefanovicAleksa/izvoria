@@ -8,6 +8,7 @@ from app.features.media_compaction.domain.entities import CompactionOutcome, Com
 from app.features.media_compaction.domain.interfaces import IMediaTranscoder
 from app.features.media_compaction.exceptions.base import MediaCompactionError
 from app.features.media_compaction.utils.error_mapper import map_ffmpeg_error
+from app.features.media_compaction.utils.ffmpeg_args import is_compact_video
 from app.features.storage.domain.entities import SourceType
 from app.features.storage.service.storage_api import StorageAPI
 
@@ -15,7 +16,6 @@ logger = logging.getLogger(__name__)
 
 # A file a browser already plays that is already this lean is left alone: re-encoding it costs CPU and a
 # generation of quality for little. 720p H.264 from YouTube is typically 1-2.5 Mbit/s.
-COMPACT_VIDEO_MAX_BIT_RATE = 3_000_000
 _PLAYABLE_AUDIO = {".m4a": {"aac"}, ".mp3": {"mp3"}, ".opus": {"opus"}, ".ogg": {"opus", "vorbis"}}
 # How far the copy's length may drift from the original's before it is refused: chunk timestamps were taken
 # from the original's timeline (its WAV, decoded from t=0), and a citation seeks the copy to them.
@@ -85,10 +85,9 @@ class CompactionAPI:
     def _already_compact(path: Path, probe: MediaProbe, as_video: bool) -> bool:
         suffix = path.suffix.lower()
         if as_video:
-            short_side = min(probe.width or 0, probe.height or 0)
-            return (suffix == ".mp4" and probe.video_codec == "h264" and probe.audio_codec in (None, "aac")
-                    and 0 < short_side <= settings.COMPACT_VIDEO_MAX_HEIGHT
-                    and probe.bit_rate is not None and probe.bit_rate <= COMPACT_VIDEO_MAX_BIT_RATE)
+            # The same rule the hosted VPS's video preparer uses, so its 720p copies are never re-encoded here
+            return is_compact_video(suffix, probe.video_codec, probe.audio_codec, probe.width, probe.height,
+                                    probe.bit_rate, settings.COMPACT_VIDEO_MAX_HEIGHT)
         target = settings.COMPACT_AUDIO_BITRATE_KBPS * 1000
         return (probe.audio_codec in _PLAYABLE_AUDIO.get(suffix, ())
                 and probe.audio_bit_rate is not None and probe.audio_bit_rate <= 2 * target)

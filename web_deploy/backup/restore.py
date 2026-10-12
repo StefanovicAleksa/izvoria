@@ -1,16 +1,19 @@
 """
-Restores the GPU box from a backup, onto a freshly provisioned box (docs/web_deploy.md, "Backups").
+Restores the firms' data from a backup onto the Hetzner VPS (docs/web_deploy.md, "Backups"): every firm database and
+the ingestion queue, and every firm's vault.
 
-  1. Provision the new box with the SAME api.env as the old one (web_deploy/provision/prod/api.env): the same database
-     password, restic repository and password, and WEB_API_SECRET the gateway knows.
-  2. Install the backup SSH key the old box used (or add the new box's key to the Storage Box).
-  3. supervisorctl stop api ingest backup        (postgres keeps running)
-  4. venv/bin/python -m web_deploy.backup.restore --list
-     venv/bin/python -m web_deploy.backup.restore --snapshot latest --yes
-  5. supervisorctl start api ingest backup
+  1. Install the gateway (install_gateway.sh) with the SAME /etc/onyx-web-gateway.env as before: the same database
+     password, restic repository and password, and WEB_API_SECRET the GPU box knows.
+  2. Install the backup SSH key the old VPS used (or add the new one's key to the Storage Box).
+  3. systemctl stop onyx-web-gateway onyx-web-backup        (Postgres keeps running)
+  4. cd /opt/onyx_v3 && set -a && . /etc/onyx-web-gateway.env && set +a
+     /opt/onyx-web-gateway/bin/python -m web_deploy.backup.restore --list
+     /opt/onyx-web-gateway/bin/python -m web_deploy.backup.restore --snapshot latest --yes
+  5. systemctl start onyx-web-gateway onyx-web-backup
 
-It replaces every firm database and vault on this box with the snapshot's, and puts back the box's TLS certificate,
-so the one the gateway pins still matches.
+Snapshots are kept per series (BACKUP_HOST_NAME): onyx-data for the VPS's, onyx-box for those taken on the GPU box
+before the data moved to the VPS. Set BACKUP_HOST_NAME=onyx-box to restore one of those. The stored file paths are
+the same on both machines (/workspace/tenants), so nothing needs rewriting.
 """
 
 import argparse
@@ -86,15 +89,15 @@ class Restorer:
 
 
 def main(argv: Optional[list] = None) -> int:
-    parser = argparse.ArgumentParser(description="Restore this box from a backup (replaces its data).")
-    parser.add_argument("--list", action="store_true", help="list the box's snapshots and exit")
+    parser = argparse.ArgumentParser(description="Restore the firms' data from a backup (replaces it).")
+    parser.add_argument("--list", action="store_true", help="list the snapshots and exit")
     parser.add_argument("--snapshot", default="latest")
     parser.add_argument("--yes", action="store_true", help="confirm: every firm database and vault is replaced")
     args = parser.parse_args(argv)
 
     settings = BackupSettings.from_env()
     if not settings.repository or not settings.password:
-        print("error: RESTIC_REPOSITORY and RESTIC_PASSWORD must be set (load /workspace/web/api.env).",
+        print("error: RESTIC_REPOSITORY and RESTIC_PASSWORD must be set (load /etc/onyx-web-gateway.env).",
               file=sys.stderr)
         return 1
     restic = Restic(settings)
@@ -103,14 +106,14 @@ def main(argv: Optional[list] = None) -> int:
             print(f"{snap.get('short_id')}  {snap.get('time', '')[:19]}  {', '.join(snap.get('paths', []))}")
         return 0
     if not args.yes:
-        print("error: this replaces every firm database and vault on this box; pass --yes to go ahead.",
+        print("error: this replaces every firm database and vault here; pass --yes to go ahead.",
               file=sys.stderr)
         return 1
     workdir = Path(f"/workspace/restore-{time.strftime('%Y%m%d-%H%M%S')}")
     names = Restorer(settings, restic).restore(args.snapshot, workdir)
     shutil.rmtree(workdir, ignore_errors=True)
     print(f"Restored {len(names)} database(s): {', '.join(names)}. Start the services again: "
-          f"supervisorctl start api ingest backup")
+          f"systemctl start onyx-web-gateway onyx-web-backup")
     return 0
 
 

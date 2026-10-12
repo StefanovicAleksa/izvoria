@@ -8,11 +8,11 @@ from typing import Any, Dict, List, Optional
 from app.features.media_compaction.domain.entities import MediaProbe
 from app.features.media_compaction.domain.interfaces import IMediaTranscoder
 from app.features.media_compaction.utils.error_mapper import map_ffmpeg_error
+from app.features.media_compaction.utils.ffmpeg_args import VIDEO_AUDIO_BITRATE, compact_video_args, scale_filter
+
+__all__ = ["FFmpegTranscoder", "parse_probe", "scale_filter", "VIDEO_AUDIO_BITRATE"]
 
 logger = logging.getLogger(__name__)
-
-# Speech-quality stereo beside the picture; an audio-only recording gets the configured bitrate instead
-VIDEO_AUDIO_BITRATE = "96k"
 
 
 def parse_probe(payload: Dict[str, Any]) -> MediaProbe:
@@ -41,16 +41,6 @@ def parse_probe(payload: Dict[str, Any]) -> MediaProbe:
     )
 
 
-def scale_filter(max_height: int) -> str:
-    """
-    Caps the SHORT side at `max_height`, so a portrait phone video (autorotated by ffmpeg) is treated like a
-    landscape one, and never upscales. Both sides stay even, as yuv420p H.264 requires.
-    """
-    short = f"min({max_height},trunc(ih/2)*2)"
-    short_w = f"min({max_height},trunc(iw/2)*2)"
-    return f"scale=w='if(gte(iw,ih),-2,{short_w})':h='if(gte(iw,ih),{short},-2)'"
-
-
 class FFmpegTranscoder(IMediaTranscoder):
     def __init__(self, timeout_seconds: int = 6 * 3600):
         self._timeout = timeout_seconds
@@ -66,16 +56,7 @@ class FFmpegTranscoder(IMediaTranscoder):
             raise map_ffmpeg_error(e) from e
 
     def compact_video(self, source_path: str | Path, dest_path: str | Path, max_height: int, crf: int) -> None:
-        self._transcode([
-            "-i", os.fspath(source_path),
-            "-map", "0:v:0", "-map", "0:a:0?",
-            "-vf", scale_filter(max_height),
-            "-c:v", "libx264", "-preset", "medium", "-crf", str(crf), "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", VIDEO_AUDIO_BITRATE,
-            # The browser can start playing (and seek to a citation) before the whole file has arrived
-            "-movflags", "+faststart",
-            "-f", "mp4",
-        ], dest_path)
+        self._transcode(compact_video_args(source_path, max_height, crf), dest_path)
 
     def compact_audio(self, source_path: str | Path, dest_path: str | Path, bitrate_kbps: int) -> None:
         self._transcode([

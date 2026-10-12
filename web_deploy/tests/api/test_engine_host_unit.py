@@ -17,7 +17,7 @@ from web_deploy.api.engine_port import ApplianceIngesting
 
 @pytest.fixture
 def settings(tmp_path: Path) -> ApiSettings:
-    return ApiSettings(secret="s" * 32, tenants_root=tmp_path / "tenants", media_cache_root=tmp_path / "cache",
+    return ApiSettings(secret="s" * 32, tenants_root=tmp_path / "tenants",
                        control_database_url="postgresql://unused", firm_pool_size=2, firm_pool_overflow=1)
 
 

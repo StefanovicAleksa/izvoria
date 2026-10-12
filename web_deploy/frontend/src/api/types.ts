@@ -186,7 +186,7 @@ export interface IngestJob {
   mode: "video" | "audio" | "document" | "image";
   language: Lang;
   file_count: number;
-  status: "queued" | "running" | "done" | "failed" | "cancelled";
+  status: "preparing" | "queued" | "running" | "done" | "failed" | "cancelled";
   position: number | null;
   owner_id: string;
   created_at: string | null;

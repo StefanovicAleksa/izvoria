@@ -1,0 +1,31 @@
+[Unit]
+Description=Izvoria: back up every firm's database and vault to the Storage Box (installed by install_gateway.sh)
+After=network-online.target postgresql@15-main.service
+Wants=network-online.target
+
+[Service]
+# Long-running: backs up daily, and once an ingestion has finished and the queue is empty (web_deploy/backup/runner.py)
+User=onyx
+SupplementaryGroups=izvoria-data
+WorkingDirectory=/opt/onyx_v3
+EnvironmentFile=/etc/onyx-web-gateway.env
+Environment=PYTHONPATH=/opt/onyx_v3
+# restic's cache; the onyx system user has no home of its own
+Environment=HOME=/var/lib/onyx-web
+Environment=BACKUP_HOST_NAME=onyx-data
+Environment=BACKUP_SSH_KEY=/etc/onyx-web/backup_ed25519
+Environment=BACKUP_KNOWN_HOSTS=/var/lib/onyx-web/known_hosts
+Environment=BACKUP_STAGING_DIR=/var/lib/onyx-web/backup-staging
+Environment=BACKUP_STATUS_FILE=/var/lib/onyx-web/backup-status.json
+Environment=BACKUP_EXTRA_PATHS=
+ExecStart=/opt/onyx-web-gateway/bin/python -m web_deploy.backup.runner
+Restart=always
+RestartSec=30
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/onyx-web
+
+[Install]
+WantedBy=multi-user.target

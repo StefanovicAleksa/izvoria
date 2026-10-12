@@ -11,6 +11,7 @@ from app.features.storage.domain.entities import Source, File, SourceType
 from app.features.storage.domain.interfaces import IStorageRepository
 from app.features.storage.data.file_manager import FileManager
 from app.features.storage.utils.hashing import calculate_file_hash
+from app.features.storage.utils.upload_record import read_record
 from app.features.storage.exceptions.base import StorageError
 from app.features.storage.exceptions.conflict import SourceLanguageConflict
 from app.features.storage.exceptions.not_found import FileNotFound
@@ -62,7 +63,11 @@ class StorageAPI:
             raise FileNotFoundError(f"File not found: {file_path}")
 
         try:
-            content_hash = calculate_file_hash(str(source_path_obj))
+            # A file prepared from an upload (the hosted 720p copy) is known by the upload's hash and name, so the
+            # same upload still finds its source (utils/upload_record.py)
+            record = read_record(source_path_obj)
+            content_hash = record.sha256 if record else calculate_file_hash(str(source_path_obj))
+            name = name or (record.original_name if record else None)
             existing = self.repository.get_by_hash(content_hash)
             if existing:
                 if existing.language and existing.language != language:

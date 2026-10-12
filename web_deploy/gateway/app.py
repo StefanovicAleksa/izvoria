@@ -8,13 +8,15 @@ that firm (`onyx_session`). The owner's console is the firm "admin". A firm's ad
 help request (/public), both stored here and emailed to the owner (mailer.py).
 
 Signing in wakes the GPU box. Once it is ready, /api/* is forwarded to it, signed for the user (proxy.py); the box
-never sees a cookie or a password.
+never sees a cookie or a password. The firm's files stay here: uploads are received and queued, and cited sources
+served, by the gateway itself (data.py); the box only computes (docs/web_deploy.md, "Where data lives").
 
 Run: uvicorn web_deploy.gateway.app:create_production_app --factory --host 127.0.0.1 --port 8000 (behind Caddy)
 """
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import time
@@ -33,6 +35,7 @@ from web_deploy.common.signing import Principal
 from web_deploy.common.tenancy import InvalidSlug
 from web_deploy.gateway.box import BoxController, BoxState, box_ssl_context, build_vast
 from web_deploy.gateway.config import GatewaySettings
+from web_deploy.gateway.data import DataRoutes, DataSettings
 from web_deploy.gateway.idle import IdleMonitor
 from web_deploy.gateway.mailer import Mailer
 from web_deploy.gateway.passwords import WeakPassword
@@ -40,6 +43,7 @@ from web_deploy.gateway.proxy import forward
 from web_deploy.gateway.store import (
     OWNER_FIRM, SESSION_SECONDS, Store, StoreError, User, normalize_email,
 )
+from web_deploy.ingest_worker.queue import IngestQueue
 
 logger = logging.getLogger(__name__)
 
@@ -165,7 +169,8 @@ async def read_limited(request: Request, max_bytes: int) -> bytes:
 
 
 def create_app(settings: GatewaySettings, store: Store, box: BoxController, idle: IdleMonitor,
-               http: httpx.AsyncClient, run_idle_monitor: bool = True, mailer: Optional[Mailer] = None) -> Starlette:
+               http: httpx.AsyncClient, run_idle_monitor: bool = True, mailer: Optional[Mailer] = None,
+               data: Optional[Callable[..., DataRoutes]] = None, run_background: bool = True) -> Starlette:
     mailer = mailer or Mailer(settings.mail, store)
     account_limiter = Limiter(LOGIN_WINDOW_SECONDS, {"ip": LOGIN_MAX_FAILURES, "account": LOGIN_MAX_FAILURES})
     firm_limiter = Limiter(LOGIN_WINDOW_SECONDS, {"ip": LOGIN_MAX_FAILURES, "firm": FIRM_MAX_FAILURES})
@@ -351,21 +356,45 @@ def create_app(settings: GatewaySettings, store: Store, box: BoxController, idle
         box.start()
         return JSONResponse((await box.status()).as_json(), status_code=202)
 
-    async def api(request: Request, user: User) -> Response:
-        if user.firm_slug == OWNER_FIRM:
-            return JSONResponse({"error": "The admin console has no appliance of its own."}, status_code=404)
+    async def box_base():
+        """The box API's base URL once it is ready; otherwise the 503 to send (and the box woken if asleep)."""
         status = await box.status()
         if status.state is not BoxState.READY:
             if status.state is BoxState.STOPPED:
                 box.start()
             return JSONResponse({"error": status.as_json()["message"], "kind": "box", "box": status.as_json()},
                                 status_code=503)
-        address = await box.api_address()
+        return f"{box.scheme}://{await box.api_address()}"
+
+    async def wake_for_work() -> None:
+        idle.touch()
+        if (await box.status()).state is BoxState.STOPPED:
+            box.start()
+
+    async def api(request: Request, user: User) -> Response:
+        if user.firm_slug == OWNER_FIRM:
+            return JSONResponse({"error": "The admin console has no appliance of its own."}, status_code=404)
+        base = await box_base()
+        if isinstance(base, Response):
+            return base
         principal = Principal(firm=user.firm_slug, user_id=user.id, role=user.role)
         cm = idle.in_flight()
         cm.__enter__()
-        return await forward(request, http, f"{box.scheme}://{address}", settings.api_secret, principal,
+        return await forward(request, http, base, settings.api_secret, principal,
                              on_close=lambda: cm.__exit__(None, None, None))
+
+    # ---------- the firm's files, held here (data.py) ----------
+
+    files = data(locate_base=box_base, on_enqueue=wake_for_work) if data is not None else None
+
+    def firm_data(handler_name: str):
+        async def handler(request: Request, user: User) -> Response:
+            if user.firm_slug == OWNER_FIRM or files is None:
+                return JSONResponse({"error": "The admin console has no appliance of its own."}, status_code=404)
+            idle.touch()
+            principal = Principal(firm=user.firm_slug, user_id=user.id, role=user.role)
+            return await getattr(files, handler_name)(request, principal)
+        return handler
 
     # ---------- a firm's administrators ----------
 
@@ -588,11 +617,14 @@ def create_app(settings: GatewaySettings, store: Store, box: BoxController, idle
         if not mailer.enabled:
             logger.warning("Email is off (no SMTP_HOST/MAIL_FROM/SIGNUP_TO): requests are only stored.")
         task = asyncio.create_task(idle.run_forever()) if run_idle_monitor else None
+        janitor = asyncio.create_task(files.run_janitor()) if files is not None and run_background else None
+        videos = asyncio.create_task(files.run_video_preparer()) if files is not None and run_background else None
         try:
             yield
         finally:
-            if task:
-                task.cancel()
+            for background in (task, janitor, videos):
+                if background:
+                    background.cancel()
             await box.wait()
             await asyncio.to_thread(mailer.shutdown)
 
@@ -609,6 +641,16 @@ def create_app(settings: GatewaySettings, store: Store, box: BoxController, idle
         Route("/public/support", public_form("support", SUPPORT_MAX_BYTES, support_payload), methods=["POST"]),
         Route("/box/status", g(box_status), methods=["GET"]),
         Route("/box/start", g(box_start), methods=["POST"]),
+        Route("/api/uploads", g(firm_data("new_batch")), methods=["POST"]),
+        Route("/api/uploads/{batch}/{filename}", g(firm_data("upload")), methods=["PUT"]),
+        Route("/api/uploads/{batch}/record", g(firm_data("record")), methods=["POST"]),
+        Route("/api/uploads/{batch}/{filename}/chunks", g(firm_data("chunks")), methods=["POST"]),
+        Route("/api/uploads/{batch}/{filename}/chunks/{index}", g(firm_data("chunk")), methods=["PUT"]),
+        Route("/api/ingest", g(firm_data("enqueue")), methods=["POST"]),
+        Route("/api/ingest/jobs", g(firm_data("jobs")), methods=["GET"]),
+        Route("/api/ingest/jobs/{job_id}", g(firm_data("cancel")), methods=["DELETE"]),
+        Route("/api/sources/{chunk_id}", g(firm_data("source_info")), methods=["GET"]),
+        Route("/api/sources/{chunk_id}/{variant}", g(firm_data("source_file")), methods=["GET"]),
         Route("/api/{path:path}", g(api), methods=["GET", "POST", "PUT", "DELETE"]),
         Route("/firm/api/users", g(firm_users, firm_admin=True), methods=["GET", "POST"]),
         Route("/firm/api/users/{user_id}/{action}", g(firm_user_action, firm_admin=True), methods=["POST"]),
@@ -637,5 +679,8 @@ def create_production_app() -> Starlette:
     http = httpx.AsyncClient(verify=box_ssl_context(settings), timeout=30.0)
     box = BoxController(settings, build_vast(settings), http)
     idle = IdleMonitor(box, settings.idle_minutes * 60)
+    data_settings = DataSettings.from_env()
+    queue = IngestQueue.connect(data_settings.control_database_url)
+    data = functools.partial(DataRoutes, data_settings, queue, http, settings.api_secret)
     # Dev hardware has no rented box to stop
-    return create_app(settings, store, box, idle, http, run_idle_monitor=settings.box_mode == "vast")
+    return create_app(settings, store, box, idle, http, run_idle_monitor=settings.box_mode == "vast", data=data)

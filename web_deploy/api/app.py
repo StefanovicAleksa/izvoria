@@ -2,11 +2,16 @@
 The hosted appliance's HTTP API, on the GPU box. Only the gateway talks to it.
 
 Every /api route is signed by the gateway on behalf of one user of one firm (web_deploy/common/signing.py); the
-request then reaches only that firm's engine, database and vault, and only that user's history. Long calls start a
-run and return its id; the browser follows the run's events (see runs.py). Ingestion is queued for the ingestion
-worker, never run here.
+request then reaches only that firm's engine and database, and only that user's history. Long calls start a run and
+return its id; the browser follows the run's events (see runs.py). Ingestion is queued for the ingestion worker,
+never run here.
 
-Run: uvicorn web_deploy.api.app:create_production_app --factory --host 0.0.0.0 --port 8095
+No client file passes through here: the firm's vault and uploads live on the VPS (docs/web_deploy.md, "Where data
+lives"). Uploads go to the gateway, and a cited source is served by the gateway from its own vault once this API has
+said which file and which span the cited chunk points at (`/api/sources/{chunk}/locate`).
+
+Run: uvicorn web_deploy.api.app:create_production_app --factory --host 127.0.0.1 --port 8095
+(reached by the gateway through the box's SSH tunnel)
 (one process: the shared models are per process, and concurrency comes from the runner's threads)
 """
 
@@ -16,28 +21,24 @@ import logging
 import re
 import time
 import uuid
-from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
+from starlette.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 from starlette.routing import Route
 
-from deploy.instance.agent.media import MediaError, MediaPreparer
-from deploy.instance.agent.uploads import ALLOWED_SUFFIXES, UploadRejected, sanitize_filename
 from web_deploy.api import mapping
 from web_deploy.api.config import ApiSettings
 from web_deploy.api.engine_port import ApplianceIngesting, IEngineHost
 from web_deploy.api.runner import Runner, call_in_scope, error_payload
 from web_deploy.api.runs import RunNotFound, RunStore, resume_point, sse_frame
-from web_deploy.api.sources import SourceRejected, Variant, describe, file_headers, offer_for_chunk
-from web_deploy.backup.config import BackupSettings
-from web_deploy.backup.runner import health_state as backup_state
 from web_deploy.common import youtube
 from web_deploy.common.signing import Principal, SignatureError, verify, verify_service
+from web_deploy.common.sources import locate
+from web_deploy.common.uploads import BatchRejected, batch_dir as firm_batch_dir, new_batch_id
 from web_deploy.ingest_worker.queue import IngestMode, IngestQueue, JobOrigin, QueueError
+from web_deploy.ingest_worker.staging import pending_markers
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,6 @@ MAX_PROMPT_CHARS = 4000
 MAX_RESULT_LIMIT = 50
 SSE_POLL_SECONDS = 0.25
 SSE_KEEPALIVE_SECONDS = 15.0
-_BATCH = re.compile(r"^\d{8}-\d{6}-[a-z0-9]{6}$")
 _PLAIN_CITATION = re.compile(r"\]\(izvoria://doc/\d+\)")
 
 Handler = Callable[[Request, Principal], Awaitable[Response]]
@@ -56,14 +56,11 @@ class BadRequest(ValueError):
 
 
 def create_app(host: IEngineHost, settings: ApiSettings, queue: IngestQueue,
-               runs: Optional[RunStore] = None, preparer: Optional[MediaPreparer] = None,
-               runner: Optional[Runner] = None, start_host: bool = True,
+               runs: Optional[RunStore] = None, runner: Optional[Runner] = None, start_host: bool = True,
                clock: Callable[[], float] = time.time,
-               link_extractor: Optional[youtube.Extractor] = None,
-               backup_settings: Optional[BackupSettings] = None) -> Starlette:
+               link_extractor: Optional[youtube.Extractor] = None) -> Starlette:
     runs = runs or RunStore()
     runner = runner or Runner(host, settings.live_workers, settings.report_workers)
-    preparer = preparer or MediaPreparer(settings.media_cache_root)
     startup: Dict[str, Any] = {"error": None}
 
     # ---------- plumbing ----------
@@ -80,7 +77,7 @@ def create_app(host: IEngineHost, settings: ApiSettings, queue: IngestQueue,
                                     status_code=503)
             try:
                 return await handler(request, principal)
-            except (BadRequest, ValueError, UploadRejected, QueueError) as exc:
+            except (BadRequest, ValueError, BatchRejected, QueueError) as exc:
                 return JSONResponse({"error": str(exc), "kind": "invalid"}, status_code=400)
             except RunNotFound:
                 return JSONResponse({"error": "Not found.", "kind": "not_found"}, status_code=404)
@@ -143,19 +140,13 @@ def create_app(host: IEngineHost, settings: ApiSettings, queue: IngestQueue,
         except Exception as exc:
             logger.warning(f"Queue depth unavailable: {exc}")
             depth = {"queued": 0, "running": 0}
-        backup = {"backup_running": False, "backup_due": False}
-        if backup_settings is not None:
-            try:
-                last_finished = await asyncio.to_thread(queue.last_finished_at)
-                backup = backup_state(backup_settings, last_finished, clock())
-            except Exception as exc:
-                logger.warning(f"Backup state unavailable: {exc}")
+        # An ingestion's results not yet pushed to the VPS (staging.py): stopping the box now would strand them
+        staging_pending = bool(pending_markers(settings.staging_state_dir)) if settings.staging_state_dir else False
         return JSONResponse({
             "ready": host.ready, "starting_error": startup["error"], "paused": host.ready and host.paused, **busy,
-            "queued": depth["queued"], "ingesting": depth["running"], **backup,
-            # A backup running, or due now that new material has landed, keeps the gateway's idle stop away
+            "queued": depth["queued"], "ingesting": depth["running"], "staging_pending": staging_pending,
             "busy": bool(busy["inflight"] or busy["reports_running"] or depth["queued"] or depth["running"]
-                         or backup["backup_running"] or backup["backup_due"]),
+                         or staging_pending),
         })
 
     # ---------- runs ----------
@@ -412,94 +403,18 @@ def create_app(host: IEngineHost, settings: ApiSettings, queue: IngestQueue,
         sources = await asyncio.to_thread(engine.list_sources)
         return JSONResponse({"sources": [mapping.source_ref(s) for s in sources]})
 
-    async def chunk_source(engine: Any, principal: Principal, chunk_id: uuid.UUID):
-        chunks = await asyncio.to_thread(engine.get_chunks, [chunk_id])
+    async def source_location(request: Request, principal: Principal) -> Response:
+        """
+        Which file and which span a cited chunk points at, for the gateway to serve from the firm's vault on the VPS.
+        Re-resolved by chunk id through the firm's own engine; the gateway still checks the path lies in that vault.
+        """
+        engine = await engine_for(principal)
+        chunks = await asyncio.to_thread(engine.get_chunks, [mapping.parse_uuid(request.path_params["chunk_id"])])
         if not chunks:
-            raise RunNotFound(str(chunk_id))
-        try:
-            return chunks[0], offer_for_chunk(chunks[0], host.firm_dir(principal.firm) / "vault")
-        except SourceRejected as exc:
-            raise RunNotFound(str(exc))
+            raise RunNotFound(request.path_params["chunk_id"])
+        return JSONResponse(locate(chunks[0]))
 
-    async def source_info(request: Request, principal: Principal) -> Response:
-        engine = await engine_for(principal)
-        _, offer = await chunk_source(engine, principal, mapping.parse_uuid(request.path_params["chunk_id"]))
-        return JSONResponse(describe(offer, request.query_params.get("label", ""),
-                                     request.query_params.get("location", "")))
-
-    async def source_file(request: Request, principal: Principal) -> Response:
-        try:
-            variant = Variant(request.path_params["variant"])
-        except ValueError:
-            raise RunNotFound("variant")
-        engine = await engine_for(principal)
-        _, offer = await chunk_source(engine, principal, mapping.parse_uuid(request.path_params["chunk_id"]))
-        if variant not in offer.variants:
-            raise RunNotFound("variant")
-        try:
-            prepared = await preparer.prepare(offer, variant)
-        except MediaError as exc:
-            return JSONResponse({"error": str(exc)}, status_code=500)
-        name = describe(offer, request.query_params.get("label", ""),
-                        request.query_params.get("location", ""))["download_name"]
-        return FileResponse(prepared.path, media_type=prepared.mime,
-                            headers=file_headers(offer, variant, prepared.mime, name))
-
-    # ---------- uploads & ingestion ----------
-
-    def uploads_dir(principal: Principal) -> Path:
-        return host.firm_dir(principal.firm) / "uploads"
-
-    def new_batch_id() -> str:
-        import secrets as _secrets
-        return f"{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}-{_secrets.token_hex(3)}"
-
-    async def new_batch(request: Request, principal: Principal) -> Response:
-        return JSONResponse({"batch": new_batch_id()}, status_code=201)
-
-    def batch_dir(principal: Principal, batch: str) -> Path:
-        if not _BATCH.match(batch or ""):
-            raise BadRequest(f"'{batch}' is not a batch id.")
-        return uploads_dir(principal) / principal.user_id / batch
-
-    async def upload(request: Request, principal: Principal) -> Response:
-        folder = batch_dir(principal, request.path_params["batch"])
-        name = sanitize_filename(request.path_params["filename"])
-        folder.mkdir(parents=True, exist_ok=True)
-        target = folder / name
-        partial = folder / f".{name}.part"
-        size = 0
-        try:
-            with partial.open("wb") as handle:
-                async for chunk in request.stream():
-                    size += len(chunk)
-                    if size > settings.max_upload_bytes:
-                        raise BadRequest("The file is larger than the appliance accepts.")
-                    handle.write(chunk)
-            partial.replace(target)
-        finally:
-            partial.unlink(missing_ok=True)
-        return JSONResponse({"name": name, "bytes": size}, status_code=201)
-
-    async def enqueue(request: Request, principal: Principal) -> Response:
-        data = await body(request)
-        folder = batch_dir(principal, str(data.get("batch") or ""))
-        try:
-            mode = IngestMode(str(data.get("mode") or ""))
-        except ValueError:
-            raise BadRequest("'mode' must be video, audio, document or image.")
-        language = language_of(data)
-        files = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in ALLOWED_SUFFIXES
-                 and not p.name.startswith(".")] if folder.is_dir() else []
-        job = await asyncio.to_thread(queue.enqueue, principal.firm, principal.user_id, mode, language,
-                                      str(folder), len(files))
-        positions = await asyncio.to_thread(queue.queue_positions)
-        return JSONResponse(job.public(positions.get(job.id)), status_code=201)
-
-    async def ingest_jobs(request: Request, principal: Principal) -> Response:
-        return JSONResponse({"jobs": await asyncio.to_thread(queue.list_for_firm, principal.firm),
-                             "links": {"enabled": settings.link_ingest_enabled,
-                                       "max_videos": settings.link_max_videos}})
+    # ---------- ingestion (uploads, the wait list and cancelling are the gateway's, on the VPS) ----------
 
     # ---------- YouTube links (video only) ----------
 
@@ -530,26 +445,13 @@ def create_app(host: IEngineHost, settings: ApiSettings, queue: IngestQueue,
         if not resolution.videos:
             raise BadRequest("None of these links has a video that can be downloaded.")
         language = language_of(data)
-        folder = batch_dir(principal, new_batch_id())
-        await asyncio.to_thread(youtube.write_manifest, folder, resolution.videos)
+        # The folder exists only in the box's scratch, made when the job runs; the videos travel in the job row
+        folder = firm_batch_dir(settings.tenants_root, principal.firm, principal.user_id, new_batch_id())
         job = await asyncio.to_thread(queue.enqueue, principal.firm, principal.user_id, IngestMode.VIDEO, language,
-                                      str(folder), len(resolution.videos), JobOrigin.YOUTUBE)
+                                      str(folder), len(resolution.videos), JobOrigin.YOUTUBE,
+                                      youtube.new_manifest(resolution.videos))
         positions = await asyncio.to_thread(queue.queue_positions)
         return JSONResponse(job.public(positions.get(job.id)), status_code=201)
-
-    async def ingest_job(request: Request, principal: Principal) -> Response:
-        job_id = request.path_params["job_id"]
-        job = await asyncio.to_thread(queue.get, job_id)
-        if job is None or job.firm != principal.firm:
-            raise RunNotFound(job_id)
-        if job.owner_id != principal.user_id and principal.role not in ("admin", "owner"):
-            return JSONResponse({"error": "Only the person who queued it, or a firm admin, can cancel it."},
-                                status_code=403)
-        cancelled = await asyncio.to_thread(queue.cancel, job_id, principal.firm)
-        if not cancelled:
-            return JSONResponse({"error": "It has already started; an ingestion can't be stopped midway.",
-                                 "kind": "busy"}, status_code=409)
-        return JSONResponse({"cancelled": True})
 
     # ---------- handing the GPU to ingestion (box-internal: the ingestion worker only) ----------
 
@@ -622,15 +524,9 @@ def create_app(host: IEngineHost, settings: ApiSettings, queue: IngestQueue,
             r("/api/reports/{report_id}/cancel", cancel_report, ["POST"]),
             r("/api/reports/{report_id}/rename", rename_report, ["POST"]),
             r("/api/library", library, ["GET"]),
-            r("/api/sources/{chunk_id}", source_info, ["GET"]),
-            r("/api/sources/{chunk_id}/{variant}", source_file, ["GET"]),
-            r("/api/uploads", new_batch, ["POST"]),
-            r("/api/uploads/{batch}/{filename}", upload, ["PUT"]),
-            r("/api/ingest", enqueue, ["POST"]),
+            r("/api/sources/{chunk_id}/locate", source_location, ["GET"]),
             r("/api/ingest/links/preview", preview_links, ["POST"]),
             r("/api/ingest/links", enqueue_links, ["POST"]),
-            r("/api/ingest/jobs", ingest_jobs, ["GET"]),
-            r("/api/ingest/jobs/{job_id}", ingest_job, ["DELETE"]),
         ],
         lifespan=lifespan,
     )
@@ -642,5 +538,4 @@ def create_production_app() -> Starlette:
     from web_deploy.api.progress import job_listener
     settings = ApiSettings.from_env()
     host = EngineHost(settings, progress_listener=job_listener)
-    return create_app(host, settings, IngestQueue.connect(settings.control_database_url),
-                      backup_settings=BackupSettings.from_env())
+    return create_app(host, settings, IngestQueue.connect(settings.control_database_url))

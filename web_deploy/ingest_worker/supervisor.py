@@ -11,36 +11,31 @@ A child per job, not one long-lived worker, because:
 The child runs the appliance exactly as the desktop does (LLM_BACKEND=llama_cpp, single-slot pool), but sees the card
 minus VRAM_HEADROOM_MB, so it never takes the room the live models need to answer.
 
-Uploads are deleted once their job is over (done, failed or cancelled): ingestion copies every file into the firm's
-vault, so the upload folder would otherwise keep a second copy of everything forever. A job re-queued by a stop keeps
-its folder, since the retry reads it again. A periodic sweep removes folders no job will read any more (cancelled jobs,
-uploads never queued) once nothing has been written to them for a day.
+The box keeps no client data at rest (docs/web_deploy.md, "Where data lives"). Each job's files are pulled from the
+VPS into scratch before it runs and its vault pushed back afterwards (staging.py); upload folders on the VPS are
+removed there, by the gateway's janitor (web_deploy/common/uploads.py).
 
 Run: python -m web_deploy.ingest_worker.supervisor  (supervisord, see web_deploy/provision/supervisord.conf)
 """
 
 import logging
 import os
-import shutil
 import signal
 import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Callable, Dict, Iterator, List, Optional
+from typing import Callable, Dict, Optional
 
 from web_deploy.common import youtube
 from web_deploy.common.tenancy import database_name, firm_root
 from web_deploy.ingest_worker.gpu_arbiter import GpuArbiter, arbiter_from_env
 from web_deploy.ingest_worker.queue import IngestJob, IngestQueue, JobOrigin
+from web_deploy.ingest_worker.staging import Stager, StagingError, StagingSettings
 
 logger = logging.getLogger(__name__)
 
 POLL_SECONDS = 5.0
-# An upload folder no queued or running job refers to is removed once untouched this long: an upload still arriving
-# (its .part file grows) or a batch about to be queued is always newer
-UPLOAD_SWEEP_AGE_SECONDS = 24 * 3600
-UPLOAD_SWEEP_INTERVAL_SECONDS = 3600
 
 
 def child_environment(job: IngestJob, tenants_root: Path, base: Dict[str, str]) -> Dict[str, str]:
@@ -76,31 +71,57 @@ class Supervisor:
                  spawn: Optional[Callable[[IngestJob, Dict[str, str]], int]] = None,
                  base_env: Optional[Dict[str, str]] = None, arbiter: Optional[GpuArbiter] = None,
                  fetch: Optional[Callable[[IngestJob, Dict[str, str]], int]] = None,
-                 clock: Callable[[], float] = time.time) -> None:
+                 stager: Optional[Stager] = None) -> None:
         self._queue = queue
         self._arbiter = arbiter or GpuArbiter()
         self._tenants_root = tenants_root
         self._spawn = spawn or self._spawn_child
         self._fetch = fetch or self._spawn_fetch
         self._base_env = dict(base_env if base_env is not None else os.environ)
+        # Off (one shared disk) unless STAGING_REMOTE names the VPS
+        self._stager = stager or Stager(StagingSettings(remote="", tenants_root=tenants_root,
+                                                        state_dir=tenants_root / ".staging"))
         self._child: Optional[subprocess.Popen] = None
         self._stopping = False
-        self._clock = clock
-        self._last_sweep = float("-inf")
 
     def run_once(self) -> bool:
         """Runs the next job if there is one. Returns whether it ran one."""
         job = self._queue.claim_next()
         if job is None:
             self._arbiter.when_idle()
-            if self._clock() - self._last_sweep >= UPLOAD_SWEEP_INTERVAL_SECONDS:
-                self.sweep_uploads()
             return False
         try:
-            self._run_job(job)
+            if self._stage_in(job):
+                self._run_job(job)
         finally:
-            self._remove_finished_upload(job)
+            self._stage_out(job)
         return True
+
+    def _stage_in(self, job: IngestJob) -> bool:
+        """The batch's files into the box's scratch. Returns whether the job should run."""
+        try:
+            self._stager.stage_in(job.id, job.firm, None if job.origin is JobOrigin.YOUTUBE else job.batch_dir)
+            if job.origin is JobOrigin.YOUTUBE and job.manifest:
+                youtube.place_manifest(Path(job.batch_dir), job.manifest)
+            return True
+        except Exception as exc:
+            logger.exception(f"Could not bring job {job.id}'s files to the box")
+            self._queue.fail(job.id, f"The files could not be fetched for ingestion: {exc}")
+            return False
+
+    def _stage_out(self, job: IngestJob) -> None:
+        """
+        The vault back to the VPS and the scratch wiped, whatever the job's outcome: a failed job's rows are in the
+        database already and must not point at files that only ever existed here. Not during a stop: the marker
+        stays, and the next start pushes it (Stager.recover) before the re-queued job runs again.
+        """
+        if self._stopping:
+            return
+        try:
+            self._stager.stage_out(job.id)
+        except StagingError as exc:
+            # /health keeps the box awake while the marker is there; the next pass of the loop retries
+            logger.error(f"Could not push job {job.id}'s results to the VPS: {exc}")
 
     def _run_job(self, job: IngestJob) -> None:
         if job.origin is JobOrigin.YOUTUBE and not self._download(job):
@@ -118,48 +139,6 @@ class Supervisor:
         final = self._queue.get(job.id)
         if final is not None and final.status.value == "running":
             self._queue.fail(job.id, f"The ingestion worker stopped unexpectedly (exit code {code}).")
-
-    def _remove_finished_upload(self, job: IngestJob) -> None:
-        """The batch's upload folder, once its job can never run again. Never during a stop: the job is re-queued."""
-        if self._stopping:
-            return
-        try:
-            final = self._queue.get(job.id)
-            if final is None or final.status.value not in ("done", "failed", "cancelled"):
-                return
-            folder = self._upload_folder(job.firm, Path(job.batch_dir))
-            if folder is not None:
-                shutil.rmtree(folder, ignore_errors=True)
-                logger.info(f"Removed the uploads of job {job.id}: their files are in the vault")
-        except Exception as exc:
-            # The sweep catches it later; a failed cleanup must not stop the wait list
-            logger.warning(f"Could not remove the uploads of job {job.id}: {exc}")
-
-    def sweep_uploads(self) -> int:
-        """Removes upload folders no queued or running job refers to and nothing has touched for a day."""
-        self._last_sweep = self._clock()
-        try:
-            stale = stale_upload_folders(self._queue, self._tenants_root, self._clock())
-        except Exception as exc:
-            logger.warning(f"Upload sweep skipped: could not read the queue ({exc})")
-            return 0
-        for folder in stale:
-            shutil.rmtree(folder, ignore_errors=True)
-        if stale:
-            logger.info(f"Upload sweep removed {len(stale)} folder(s) no job will read")
-        return len(stale)
-
-    def _upload_folder(self, firm: str, batch_dir: Path) -> Optional[Path]:
-        """`batch_dir` if it really is a batch under that firm's uploads, else None (never delete anything else)."""
-        try:
-            uploads = (firm_root(self._tenants_root, firm) / "uploads").resolve()
-            folder = batch_dir.resolve()
-        except Exception:
-            return None
-        if folder.parent.parent != uploads or not folder.is_dir():
-            logger.warning(f"Not removing {batch_dir}: it is not a batch folder under {uploads}")
-            return None
-        return folder
 
     def _download(self, job: IngestJob) -> bool:
         """
@@ -215,46 +194,24 @@ class Supervisor:
 
     def run_forever(self) -> None:
         self._arbiter.start()
+        self._recover_staging()
         recovered = self._queue.recover_interrupted()
         if recovered:
             logger.info(f"Re-queued {recovered} ingestion job(s) interrupted by the last shutdown.")
-        self.sweep_uploads()
         while not self._stopping:
+            if self._stager.has_pending() and not self._recover_staging():
+                time.sleep(POLL_SECONDS)  # a push still pending: the VPS's files first, new work after
+                continue
             if not self.run_once():
                 time.sleep(POLL_SECONDS)
 
-
-def stale_upload_folders(queue: IngestQueue, tenants_root: Path, now: float,
-                         min_age_seconds: float = UPLOAD_SWEEP_AGE_SECONDS) -> List[Path]:
-    """Batch folders no queued or running job refers to, untouched for `min_age_seconds`."""
-    active = {str(Path(d).resolve()) for d in queue.active_batch_dirs()}
-    cutoff = now - min_age_seconds
-    return [folder for folder in batch_folders(tenants_root)
-            if str(folder.resolve()) not in active and _last_written(folder) <= cutoff]
-
-
-def batch_folders(tenants_root: Path) -> Iterator[Path]:
-    """<tenants>/<firm>/uploads/<user>/<batch>"""
-    if not tenants_root.is_dir():
-        return
-    for firm in sorted(tenants_root.iterdir()):
-        uploads = firm / "uploads"
-        if not uploads.is_dir():
-            continue
-        for owner in sorted(uploads.iterdir()):
-            if owner.is_dir():
-                yield from (batch for batch in sorted(owner.iterdir()) if batch.is_dir() and not batch.is_symlink())
-
-
-def _last_written(folder: Path) -> float:
-    """The newest mtime of the folder and its files: a file still uploading keeps the whole batch fresh."""
-    newest = folder.stat().st_mtime
-    for path in folder.rglob("*"):
+    def _recover_staging(self) -> bool:
+        """Pushes what an earlier run left in scratch. Returns whether nothing is pending any more."""
         try:
-            newest = max(newest, path.stat().st_mtime)
-        except OSError:
-            pass
-    return newest
+            return self._stager.recover() == 0
+        except Exception as exc:
+            logger.error(f"Could not recover the box's scratch: {exc}")
+            return False
 
 
 def main() -> None:
@@ -263,7 +220,8 @@ def main() -> None:
     settings = ApiSettings.from_env()
     log_dir = os.environ.get("WEB_LOG_DIR")
     supervisor = Supervisor(IngestQueue.connect(settings.control_database_url), settings.tenants_root,
-                            arbiter=arbiter_from_env(dict(os.environ), Path(log_dir) if log_dir else None))
+                            arbiter=arbiter_from_env(dict(os.environ), Path(log_dir) if log_dir else None),
+                            stager=Stager(StagingSettings.from_env()))
     signal.signal(signal.SIGTERM, supervisor.stop)
     signal.signal(signal.SIGINT, supervisor.stop)
     supervisor.run_forever()

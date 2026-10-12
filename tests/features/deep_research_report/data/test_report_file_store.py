@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 import pytest
 
-from app.features.deep_research_report.data.report_file_store import ReportFileStore
+from app.features.deep_research_report.data.report_file_store import NoReportFileStore, ReportFileStore
 from app.features.deep_research_report.exceptions.storage import ReportFileError
 
 
@@ -80,3 +80,14 @@ def test_defaults_to_the_configured_reports_directory(tmp_path, monkeypatch):
     path = ReportFileStore().write_markdown(uuid.uuid4(), "# R\n")
 
     assert str(tmp_path / "configured") in path
+
+
+class TestNoReportFileStore:
+    def test_keeps_no_file_and_says_so(self, tmp_path):
+        with patch("app.features.deep_research_report.data.report_file_store.settings") as settings:
+            settings.REPORTS_DIR = tmp_path
+
+            assert NoReportFileStore().write_markdown(uuid.uuid4(), "# Report\n") is None
+
+        assert list(tmp_path.iterdir()) == []
+

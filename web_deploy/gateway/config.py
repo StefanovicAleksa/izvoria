@@ -21,9 +21,16 @@ class GatewaySettings:
     vast_instance_id: int = 0
     idle_minutes: float = 30.0
     https_only: bool = True
-    # The box API's self-signed certificate, copied from the box at provision time. Without it the gateway talks
-    # plain HTTP (local runs only).
+    # The box API's self-signed certificate, for BOX_LINK=direct over Vast's public port. Without it the gateway
+    # talks plain HTTP: through the tunnel (encrypted by SSH) or on dev hardware.
     box_cert_file: Optional[Path] = None
+    # "tunnel": the box dials this VPS over SSH and forwards its API to 127.0.0.1:box_tunnel_port here; the box has
+    # no public port. "direct": the API at Vast's public address (the layout from before the data moved here).
+    box_link: str = "direct"
+    box_tunnel_port: int = 18095
+    # Whether the box's SSH keys are accepted on this VPS: "open" while the gateway has the box started, "closed"
+    # otherwise (read by sshd's AuthorizedKeysCommand, izvoria-box-keys). None: not managed (local runs).
+    box_access_file: Optional[Path] = None
     # Local end-to-end runs: treat this host as the "GPU box" instead of calling Vast
     fake_box_host: str = ""
     api_port: int = API_PORT
@@ -58,6 +65,10 @@ class GatewaySettings:
         if box_mode == "vast" and not fake and not key:
             raise RuntimeError("Set VAST_API_KEY and VAST_INSTANCE_ID (or BOX_MODE=local on dev hardware).")
         cert = os.environ.get("BOX_CERT_FILE", "")
+        box_link = os.environ.get("BOX_LINK", "tunnel" if box_mode == "vast" and not fake else "direct")
+        if box_link not in ("tunnel", "direct"):
+            raise RuntimeError("BOX_LINK is 'tunnel' or 'direct'.")
+        access = os.environ.get("BOX_ACCESS_FILE", "/var/lib/onyx-web-box/access" if box_link == "tunnel" else "")
         return cls(
             api_secret=secret,
             database_path=Path(os.environ.get("GATEWAY_DB", "/var/lib/onyx-web/gateway.sqlite3")),
@@ -67,6 +78,9 @@ class GatewaySettings:
             idle_minutes=float(os.environ.get("IDLE_MINUTES", "30")),
             https_only=https_only,
             box_cert_file=Path(cert) if cert else None,
+            box_link=box_link,
+            box_tunnel_port=int(os.environ.get("BOX_TUNNEL_PORT", "18095")),
+            box_access_file=Path(access) if access else None,
             fake_box_host=fake,
             api_port=int(os.environ.get("BOX_API_PORT", str(API_PORT))),
             box_mode=box_mode,

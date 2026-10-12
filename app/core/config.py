@@ -94,6 +94,10 @@ class Settings(BaseSettings):
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    # Whether a finished report is also written to REPORTS_DIR as Markdown. The hosted GPU box turns it off: it
+    # keeps no client data on disk, and its web API renders every download from the database row.
+    REPORT_FILES_ENABLED: bool = True
+
     # What the vault keeps after a recording is indexed. The defaults are the appliance's; the hosted web version
     # turns all three around to store one compact file per recording (docs/web_deploy.md, "Storage").
     # A per-chunk clip repeats its stretch of the recording; without one a citation is cut from the original.

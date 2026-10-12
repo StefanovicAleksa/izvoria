@@ -70,3 +70,16 @@ class ReportFileStore(IReportFileStore):
 
         except Exception as e:
             raise map_report_error(e, context=f"Writing report {report_id} to disk") from e
+
+
+class NoReportFileStore(IReportFileStore):
+    """
+    Keeps no file: the report lives only in its database row (`REPORT_FILES_ENABLED=False`).
+
+    The hosted GPU box holds no client data at rest (docs/web_deploy.md, "Where data lives"); its web API renders
+    every download from the row, so a Markdown copy on the box's disk would only be a leftover.
+    """
+
+    def write_markdown(self, report_id: uuid.UUID, markdown: str) -> Optional[str]:
+        return None
+

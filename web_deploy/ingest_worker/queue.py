@@ -21,6 +21,8 @@ from sqlalchemy.engine import Engine
 
 
 class JobStatus(str, Enum):
+    # The VPS is making the batch's 720p copies (web_deploy/gateway/prepare.py); the box never claims it yet
+    PREPARING = "preparing"
     QUEUED = "queued"
     RUNNING = "running"
     DONE = "done"
@@ -61,12 +63,16 @@ ingest_jobs = Table(
     Column("error", Text, nullable=True),
     Column("origin", String(16), nullable=False, default=JobOrigin.UPLOAD.value,
            server_default=JobOrigin.UPLOAD.value),
+    # A YouTube batch's videos (youtube.write_manifest's content). Kept in the row, not the batch folder: the folder
+    # lives on the VPS, and the GPU box that resolved the links never writes there
+    Column("manifest", JSON, nullable=True),
 )
 
 # Columns added after the table first shipped, as (name, DDL). `create_all` makes a missing table but never alters an
 # existing one, so `connect` adds these to a queue database from before them.
 _ADDED_COLUMNS = (
     ("origin", f"VARCHAR(16) NOT NULL DEFAULT '{JobOrigin.UPLOAD.value}'"),
+    ("manifest", "JSON"),
 )
 
 
@@ -91,6 +97,7 @@ class IngestJob:
     report: Optional[dict]
     error: Optional[str]
     origin: JobOrigin = JobOrigin.UPLOAD
+    manifest: Optional[dict] = None
 
     def public(self, position: Optional[int] = None) -> dict:
         """What the firm's users see. Never the box path."""
@@ -120,7 +127,7 @@ def _job(row: Any) -> IngestJob:
         batch_dir=m["batch_dir"], file_count=m["file_count"] or 0, status=JobStatus(m["status"]),
         created_at=_utc(m["created_at"]), started_at=_utc(m["started_at"]), finished_at=_utc(m["finished_at"]),
         progress=m["progress"], report=m["report"], error=m["error"],
-        origin=JobOrigin(m["origin"] or JobOrigin.UPLOAD.value),
+        origin=JobOrigin(m["origin"] or JobOrigin.UPLOAD.value), manifest=m["manifest"],
     )
 
 
@@ -156,14 +163,16 @@ class IngestQueue:
     # ---------- API side ----------
 
     def enqueue(self, firm: str, owner_id: str, mode: IngestMode, language: str, batch_dir: str,
-                file_count: int, origin: JobOrigin = JobOrigin.UPLOAD) -> IngestJob:
+                file_count: int, origin: JobOrigin = JobOrigin.UPLOAD,
+                manifest: Optional[dict] = None, prepare: bool = False) -> IngestJob:
         if file_count <= 0:
             raise QueueError("The batch has no files.")
         job_id = str(uuid.uuid4())
         with self._engine.begin() as connection:
             connection.execute(ingest_jobs.insert().values(
                 id=job_id, firm=firm, owner_id=owner_id, mode=mode.value, language=language, batch_dir=batch_dir,
-                file_count=file_count, status=JobStatus.QUEUED.value, created_at=_now(), origin=origin.value,
+                file_count=file_count, status=(JobStatus.PREPARING if prepare else JobStatus.QUEUED).value,
+                created_at=_now(), origin=origin.value, manifest=manifest,
             ))
         return self.get(job_id)
 
@@ -196,7 +205,7 @@ class IngestQueue:
             result = connection.execute(
                 update(ingest_jobs)
                 .where(ingest_jobs.c.id == job_id, ingest_jobs.c.firm == firm,
-                       ingest_jobs.c.status == JobStatus.QUEUED.value)
+                       ingest_jobs.c.status.in_([JobStatus.PREPARING.value, JobStatus.QUEUED.value]))
                 .values(status=JobStatus.CANCELLED.value, finished_at=_now())
             )
             return bool(result.rowcount)
@@ -220,11 +229,42 @@ class IngestQueue:
         return _utc(value) if value else None
 
     def active_batch_dirs(self) -> Set[str]:
-        """The upload folders a queued or running job will still read: the ones a sweep must leave alone."""
+        """The upload folders a job will still read (being prepared, queued or running): a sweep leaves them alone."""
         with self._engine.connect() as connection:
             return set(connection.execute(
-                select(ingest_jobs.c.batch_dir).where(
-                    ingest_jobs.c.status.in_([JobStatus.QUEUED.value, JobStatus.RUNNING.value]))
+                select(ingest_jobs.c.batch_dir).where(ingest_jobs.c.status.in_(
+                    [JobStatus.PREPARING.value, JobStatus.QUEUED.value, JobStatus.RUNNING.value]))
+            ).scalars().all())
+
+    # ---------- the VPS's video preparer ----------
+
+    def next_to_prepare(self) -> Optional[IngestJob]:
+        """The oldest job whose videos still need their 720p copies. One preparer runs, so nothing is claimed."""
+        with self._engine.connect() as connection:
+            job_id = connection.execute(
+                select(ingest_jobs.c.id).where(ingest_jobs.c.status == JobStatus.PREPARING.value)
+                .order_by(ingest_jobs.c.created_at, ingest_jobs.c.id).limit(1)
+            ).scalar()
+        return self.get(job_id) if job_id else None
+
+    def mark_prepared(self, job_id: str, file_count: Optional[int] = None) -> bool:
+        """Hands a prepared job to the box's line, unless it was cancelled meanwhile. Returns whether it did."""
+        values: Dict[str, Any] = {"status": JobStatus.QUEUED.value, "progress": None}
+        if file_count is not None:
+            values["file_count"] = file_count
+        with self._engine.begin() as connection:
+            return bool(connection.execute(
+                update(ingest_jobs)
+                .where(ingest_jobs.c.id == job_id, ingest_jobs.c.status == JobStatus.PREPARING.value)
+                .values(**values)
+            ).rowcount)
+
+    def finished_batch_dirs(self) -> Set[str]:
+        """The upload folders of jobs that can never run again (done, failed or cancelled): safe to remove."""
+        with self._engine.connect() as connection:
+            return set(connection.execute(
+                select(ingest_jobs.c.batch_dir).where(ingest_jobs.c.status.in_(
+                    [JobStatus.DONE.value, JobStatus.FAILED.value, JobStatus.CANCELLED.value]))
             ).scalars().all())
 
     def claim_next(self) -> Optional[IngestJob]:

@@ -137,6 +137,15 @@ class TestMain:
         assert code == 1
         assert "an ingestion is running" in capsys.readouterr().err
 
+    def test_refused_on_a_box_that_keeps_no_files(self, tenants, capsys, monkeypatch):
+        monkeypatch.setenv("STAGING_REMOTE", "izvoria-box@vps.test")
+
+        code = main(["--all"], settings=self._settings(tenants), queue=IngestQueue.connect("sqlite://"),
+                    compact=lambda *a: pytest.fail("must not compact"))
+
+        assert code == 1
+        assert "holds no files" in capsys.readouterr().err
+
     def test_a_failed_firm_is_reported_and_the_others_continue(self, tenants, capsys):
         (tenants / "clinic-demo" / "vault").mkdir(parents=True)
         queue = IngestQueue.connect("sqlite://")

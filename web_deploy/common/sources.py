@@ -6,40 +6,66 @@ vault check that refuses anything outside the vault or behind a symlink, and the
 5 GB cache. They are reused here as they are. What differs is where the request comes from: not an "offer" the
 desktop app posted, but a chunk id the user's own answer cited, re-resolved through the firm's own engine, so a
 user can only ever open a file of their own firm's vault.
+
+Two halves, on two machines. The box's API knows the chunk (`locate`: its file's path and the cited span); the
+gateway on the VPS holds the vault and serves the file (`offer_for_chunk` and the rest). The gateway re-checks the
+path against the firm's own vault, so not even the box can make it serve anything else.
 """
 
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict
 from urllib.parse import quote
 
 from deploy.instance.agent.sources import (
     Offer, OfferRequest, SourceKind, SourceRejected, Variant, classify, resolve_vault_path, variants_for,
 )
 
-__all__ = ["SourceRejected", "Variant", "offer_for_chunk", "file_headers", "describe"]
+__all__ = ["SourceRejected", "Variant", "locate", "offer_for_chunk", "file_headers", "describe"]
 
 
-def offer_for_chunk(chunk: Any, vault_root: Path) -> Offer:
-    """What can be served for a chunk. Raises SourceRejected when it has no file in the firm's vault."""
-    path = resolve_vault_path(str(getattr(chunk, "physical_path", None) or ""), vault_root)
-    kind, mime = classify(path)
+def locate(chunk: Any) -> Dict[str, Any]:
+    """What the gateway needs of a cited chunk (box side): plain values, no file is touched."""
     anchor = getattr(getattr(chunk, "anchor_kind", None), "value", getattr(chunk, "anchor_kind", None)) or "time"
+    extracted = getattr(chunk, "extracted_file_id", None)
+    return {
+        "physical_path": str(getattr(chunk, "physical_path", None) or ""),
+        "anchor_kind": str(anchor),
+        "extracted_file_id": str(extracted) if extracted else None,
+        "start_sec": float(getattr(chunk, "start_sec", None) or 0.0),
+        "end_sec": float(getattr(chunk, "end_sec", None) or 0.0),
+        "page_start": getattr(chunk, "page_start", None),
+        "page_end": getattr(chunk, "page_end", None),
+    }
+
+
+def offer_for_chunk(location: Dict[str, Any], vault_root: Path) -> Offer:
+    """
+    What can be served for a located chunk (gateway side). Raises SourceRejected when its file is not in the firm's
+    vault: a path outside it, behind a symlink, or not there yet (an ingestion whose results are still being pushed).
+    """
+    path = resolve_vault_path(str(location.get("physical_path") or ""), vault_root)
+    kind, mime = classify(path)
+    anchor = str(location.get("anchor_kind") or "time")
     request = OfferRequest(
         path=str(path),
-        media_kind="clip" if getattr(chunk, "extracted_file_id", None) else ("full_source" if anchor == "time" else anchor),
+        media_kind="clip" if location.get("extracted_file_id") else ("full_source" if anchor == "time" else anchor),
         anchor_kind=anchor,
-        start_sec=float(chunk.start_sec or 0.0),
-        end_sec=float(chunk.end_sec or 0.0),
-        page_start=getattr(chunk, "page_start", None),
-        page_end=getattr(chunk, "page_end", None),
+        start_sec=float(location.get("start_sec") or 0.0),
+        end_sec=float(location.get("end_sec") or 0.0),
+        page_start=_page(location.get("page_start")),
+        page_end=_page(location.get("page_end")),
     )
     return Offer(
         id=secrets.token_urlsafe(16), seq=0, path=path, kind=kind, mime=mime, request=request, created_at=0.0,
         created_wall=datetime.now(timezone.utc).isoformat(timespec="seconds"),
         variants=variants_for(kind, path, request),
     )
+
+
+def _page(value: Any):
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else None
 
 
 def describe(offer: Offer, doc_label: str, location: str) -> dict:

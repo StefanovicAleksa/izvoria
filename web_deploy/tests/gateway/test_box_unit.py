@@ -60,6 +60,47 @@ class TestBoxController:
         assert vast.stops == 1
 
 
+class TestTunnel:
+    def _settings(self, tmp_path, **extra):
+        return GatewaySettings(api_secret="k" * 40, database_path=tmp_path / "g.db", static_dir=tmp_path,
+                               fake_box_host="127.0.0.1", box_link="tunnel", box_tunnel_port=18095,
+                               box_access_file=tmp_path / "box-access", **extra)
+
+    @pytest.mark.asyncio
+    async def test_the_api_is_reached_through_the_tunnels_end_here_in_plain_http(self, tmp_path):
+        vast = FakeVastClient("203.0.113.9", (8095,))
+        await vast.start()
+        box = BoxController(self._settings(tmp_path, box_cert_file=tmp_path / "cert.pem"), vast,
+                            health_client({"ready": True}))
+
+        assert await box.api_address() == "127.0.0.1:18095"
+        assert box.scheme == "http"  # SSH encrypts it; a leftover certificate setting doesn't apply
+
+    @pytest.mark.asyncio
+    async def test_the_boxs_keys_are_accepted_only_while_it_is_started(self, tmp_path):
+        vast = FakeVastClient("127.0.0.1", (8095,))
+        box = BoxController(self._settings(tmp_path), vast, health_client({"ready": True, "busy": False}),
+                            sleep=_no_sleep)
+        access = tmp_path / "box-access"
+
+        box.start()
+        await box.wait()
+        assert access.read_text().strip() == "open"
+
+        box.stop()
+        await box.wait()
+        assert access.read_text().strip() == "closed"
+
+    @pytest.mark.asyncio
+    async def test_a_box_stopped_from_elsewhere_loses_its_keys_too(self, tmp_path):
+        vast = FakeVastClient("127.0.0.1", (8095,))
+        (tmp_path / "box-access").write_text("open\n")
+        box = BoxController(self._settings(tmp_path), vast, health_client({"ready": True}))
+
+        assert (await box.status()).state is BoxState.STOPPED
+        assert (tmp_path / "box-access").read_text().strip() == "closed"
+
+
 class TestIdleMonitor:
     async def _box(self, tmp_path, health):
         vast = FakeVastClient("127.0.0.1", (8095,))
