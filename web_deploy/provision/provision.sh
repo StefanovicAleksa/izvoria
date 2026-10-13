@@ -46,12 +46,26 @@ fi
 set -a; . "${ENV_FILE}"; set +a
 : "${VPS_HOST:?set VPS_HOST in ${ENV_FILE} (the Hetzner VPS address), then run this again}"
 
-echo "== The box's two keys for the VPS: the tunnel, and moving one job's files (each confined there)"
-for key in tunnel sync; do
-    if [ ! -f "${WEB}/${key}_ed25519" ]; then
-        ssh-keygen -q -t ed25519 -N "" -C "izvoria-box ${key}" -f "${WEB}/${key}_ed25519"
+echo "== The box's key for the VPS: its tunnels only (no shell, no files there)"
+if [ ! -f "${WEB}/tunnel_ed25519" ]; then
+    ssh-keygen -q -t ed25519 -N "" -C "izvoria-box tunnel" -f "${WEB}/tunnel_ed25519"
+fi
+# The file-staging key of earlier versions reached every firm's files on the VPS: no box has one any more
+rm -f "${WEB}/sync_ed25519" "${WEB}/sync_ed25519.pub"
+
+echo "== No database password on this box: it gets one from the gateway at each start, kept in memory only"
+if grep -q '^POSTGRES_PASSWORD=..*' "${ENV_FILE}"; then
+    sed -i 's/^POSTGRES_PASSWORD=.*/POSTGRES_PASSWORD=/' "${ENV_FILE}"
+    echo "   removed the database password an earlier version kept in ${ENV_FILE}"
+fi
+for leftover in "${ROOT}/.env" "${ROOT}/.env.prod" "${ROOT}/.env.test"; do
+    if [ -f "${leftover}" ] && grep -q '^POSTGRES_PASSWORD=..*' "${leftover}"; then
+        echo "!! ${leftover} holds a database password; remove it (the box must keep none): rm ${leftover}" >&2
+        exit 1
     fi
 done
+# rsync, for the VPS to move one job's files to and from the scratch through the box's own sshd
+command -v rsync >/dev/null || apt-get install -y --no-install-recommends rsync
 
 echo "== The VPS's host key, pinned (check the fingerprint against the VPS's own: ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub)"
 if [ ! -s "${WEB}/known_hosts" ]; then
@@ -99,8 +113,9 @@ rm -rf /workspace/source-cache /workspace/backup-staging
 cat <<EOF
 
 Provisioned. On the VPS, as root (docs/web_deploy.md, "Setting it up"):
-  1. Let this box in (izvoria-box-keys only offers these while the gateway has the box started):
-       /opt/onyx_v3/web_deploy/provision/add_box_keys.sh '$(cat "${WEB}/tunnel_ed25519.pub")' '$(cat "${WEB}/sync_ed25519.pub")'
-  2. Copy into ${ENV_FILE} the values from /etc/onyx-web-gateway.env:  WEB_API_SECRET, POSTGRES_PASSWORD
+  1. Let this box in (only its tunnels, and only while the gateway has the box started):
+       izvoria-add-box-keys '$(cat "${WEB}/tunnel_ed25519.pub")'
+  2. Copy into ${ENV_FILE} the value from /etc/onyx-web-gateway.env:  WEB_API_SECRET
+     (no database password: the gateway gives this box a new one at every start)
 Then start everything with:  bash ${ROOT}/web_deploy/provision/onstart.sh
 EOF

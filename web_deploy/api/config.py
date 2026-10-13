@@ -53,5 +53,5 @@ class ApiSettings:
             link_max_videos=int(os.environ.get("LINK_MAX_VIDEOS", "200")),
             link_max_height=int(os.environ.get("LINK_MAX_HEIGHT", "720")),
             staging_state_dir=(Path(os.environ.get("STAGING_STATE_DIR", "/workspace/staging-state"))
-                               if os.environ.get("STAGING_REMOTE") else None),
+                               if os.environ.get("BOX_GATEWAY_URL") else None),
         )

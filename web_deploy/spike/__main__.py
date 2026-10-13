@@ -16,7 +16,7 @@ Results: <out>/report.md and <out>/results.json (default /workspace/spike).
 
 `shared` predates the move of the data to the VPS (docs/web_deploy.md, "Where data lives"): it seeds files into the
 box's own tenants and expects the queue's database beside them. On a box provisioned for the new layout it needs the
-tunnel up and STAGING_REMOTE unset, and its files then never reach the VPS; adapting it is open. `sweep` and
+tunnel up and BOX_GATEWAY_URL unset, and its files then never reach the VPS; adapting it is open. `sweep` and
 `stress` touch no data and are unaffected.
 """
 

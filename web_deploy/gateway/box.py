@@ -32,6 +32,8 @@ CONTAINER_TIMEOUT_SECONDS = 15 * 60
 SERVICES_TIMEOUT_SECONDS = 10 * 60
 INFO_CACHE_SECONDS = 5.0
 HEALTH_CACHE_SECONDS = 2.0
+# What Vast reports for an instance that is not coming back by itself
+STOPPED_STATUSES = ("exited", "stopped", "offline")
 
 
 class BoxState(str, Enum):
@@ -208,8 +210,10 @@ class BoxController:
         except VastError as exc:
             return BoxStatus(BoxState.ERROR, str(exc))
         if not info.running:
-            # Stopped from elsewhere (Vast's console, a host failure): its keys go too
-            self._set_access(False)
+            # Stopped from elsewhere (Vast's console, a host failure): its keys and database access go too. Only when
+            # truly stopped: closing rotates the box's database password, which a box merely reloading still needs
+            if info.actual_status in STOPPED_STATUSES and info.intended_status != "running":
+                self._set_access(False)
             return BoxStatus(BoxState.STOPPED, self._error)
         health = await self.health()
         if health is None or not health.ready:

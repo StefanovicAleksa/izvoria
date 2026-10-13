@@ -78,8 +78,8 @@ class Supervisor:
         self._spawn = spawn or self._spawn_child
         self._fetch = fetch or self._spawn_fetch
         self._base_env = dict(base_env if base_env is not None else os.environ)
-        # Off (one shared disk) unless STAGING_REMOTE names the VPS
-        self._stager = stager or Stager(StagingSettings(remote="", tenants_root=tenants_root,
+        # Off (one shared disk) unless BOX_GATEWAY_URL names the gateway through the tunnel
+        self._stager = stager or Stager(StagingSettings(gateway_url="", tenants_root=tenants_root,
                                                         state_dir=tenants_root / ".staging"))
         self._child: Optional[subprocess.Popen] = None
         self._stopping = False
@@ -194,6 +194,7 @@ class Supervisor:
 
     def run_forever(self) -> None:
         self._arbiter.start()
+        self._allow_staging()
         self._recover_staging()
         recovered = self._queue.recover_interrupted()
         if recovered:
@@ -203,6 +204,16 @@ class Supervisor:
                 time.sleep(POLL_SECONDS)  # a push still pending: the VPS's files first, new work after
                 continue
             if not self.run_once():
+                time.sleep(POLL_SECONDS)
+
+    def _allow_staging(self) -> None:
+        """Lets the VPS reach the scratch (its staging key, for root). Retried until the gateway answers."""
+        while not self._stopping:
+            try:
+                self._stager.ensure_access()
+                return
+            except Exception as exc:
+                logger.error(f"Could not let the VPS's staging key in yet: {exc}")
                 time.sleep(POLL_SECONDS)
 
     def _recover_staging(self) -> bool:
@@ -216,6 +227,8 @@ class Supervisor:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from web_deploy.common.box_credentials import install_from_env
+    install_from_env()  # the hosted box: the database password comes from the gateway, never from the environment
     from web_deploy.api.config import ApiSettings
     settings = ApiSettings.from_env()
     log_dir = os.environ.get("WEB_LOG_DIR")

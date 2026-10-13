@@ -101,6 +101,19 @@ class TestTunnel:
         assert (tmp_path / "box-access").read_text().strip() == "closed"
 
 
+    @pytest.mark.asyncio
+    async def test_a_box_merely_reloading_keeps_its_access(self, tmp_path):
+        """Closing rotates its database password: a box that is coming back would lose the one it is using."""
+        vast = FakeVastClient("127.0.0.1", (8095,))
+        vast._status = "loading"
+        (tmp_path / "box-access").write_text("open\n")
+        box = BoxController(self._settings(tmp_path), vast, health_client({"ready": True}))
+
+        await box.status()
+
+        assert (tmp_path / "box-access").read_text().strip() == "open"
+
+
 class TestIdleMonitor:
     async def _box(self, tmp_path, health):
         vast = FakeVastClient("127.0.0.1", (8095,))

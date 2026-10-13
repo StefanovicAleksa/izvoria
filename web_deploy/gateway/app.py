@@ -35,7 +35,9 @@ from web_deploy.common.signing import Principal
 from web_deploy.common.tenancy import InvalidSlug
 from web_deploy.gateway.box import BoxController, BoxState, box_ssl_context, build_vast
 from web_deploy.gateway.config import GatewaySettings
+from web_deploy.gateway.box_internal import BoxInternalSettings, box_internal_routes
 from web_deploy.gateway.data import DataRoutes, DataSettings
+from web_deploy.gateway.staging_server import BoxFiles, StagingServer
 from web_deploy.gateway.idle import IdleMonitor
 from web_deploy.gateway.mailer import Mailer
 from web_deploy.gateway.passwords import WeakPassword
@@ -170,7 +172,8 @@ async def read_limited(request: Request, max_bytes: int) -> bytes:
 
 def create_app(settings: GatewaySettings, store: Store, box: BoxController, idle: IdleMonitor,
                http: httpx.AsyncClient, run_idle_monitor: bool = True, mailer: Optional[Mailer] = None,
-               data: Optional[Callable[..., DataRoutes]] = None, run_background: bool = True) -> Starlette:
+               data: Optional[Callable[..., DataRoutes]] = None, run_background: bool = True,
+               internal_routes: Optional[list] = None) -> Starlette:
     mailer = mailer or Mailer(settings.mail, store)
     account_limiter = Limiter(LOGIN_WINDOW_SECONDS, {"ip": LOGIN_MAX_FAILURES, "account": LOGIN_MAX_FAILURES})
     firm_limiter = Limiter(LOGIN_WINDOW_SECONDS, {"ip": LOGIN_MAX_FAILURES, "firm": FIRM_MAX_FAILURES})
@@ -665,6 +668,8 @@ def create_app(settings: GatewaySettings, store: Store, box: BoxController, idle
         Route("/admin/api/box", g(admin_box, owner=True), methods=["GET"]),
         Route("/admin/api/box/{action}", g(admin_box, owner=True), methods=["POST"]),
     ]
+    # What the GPU box asks through its tunnel (box_internal.py): its database password, file staging
+    routes.extend(internal_routes or [])
     if assets.is_dir():
         routes.append(Mount("/assets", StaticFiles(directory=str(assets)), name="assets"))
     routes.append(Route("/{path:path}", spa, methods=["GET"]))
@@ -682,5 +687,14 @@ def create_production_app() -> Starlette:
     data_settings = DataSettings.from_env()
     queue = IngestQueue.connect(data_settings.control_database_url)
     data = functools.partial(DataRoutes, data_settings, queue, http, settings.api_secret)
+    internal = None
+    if settings.box_link == "tunnel" and settings.box_access_file is not None:
+        files = BoxFiles.from_env()
+        internal = box_internal_routes(BoxInternalSettings(
+            secret=settings.api_secret, access_file=settings.box_access_file,
+            password_file=settings.box_access_file.with_name("db-password"),
+            staging_public_key=files.key.with_name(files.key.name + ".pub") if files.key else None,
+        ), StagingServer(files, queue))
     # Dev hardware has no rented box to stop
-    return create_app(settings, store, box, idle, http, run_idle_monitor=settings.box_mode == "vast", data=data)
+    return create_app(settings, store, box, idle, http, run_idle_monitor=settings.box_mode == "vast", data=data,
+                      internal_routes=internal)

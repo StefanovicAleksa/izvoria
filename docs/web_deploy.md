@@ -59,19 +59,26 @@ The data used to live on the rented box's disk. We can't vouch for what a Vast h
 | Report Markdown copies | Nowhere (`REPORT_FILES_ENABLED=false` on the box) | Downloads render from the database row |
 | Models, code, settings, keys | The box's `/workspace` | Not client data |
 
-**The link: one SSH session the box opens** (`web_deploy/provision/box_tunnel.sh`, supervisord program `tunnel`):
-- `-L 127.0.0.1:15432` on the box reaches the VPS's Postgres; `-R 127.0.0.1:18095` on the VPS reaches the box's API.
+**The link: two SSH sessions the box opens**, so file transfers never delay chat:
+- `tunnel` (`box_tunnel.sh`): `-L 127.0.0.1:15432` reaches the VPS's Postgres, `-L 127.0.0.1:18000` the gateway (the box's database password, its requests for file transfers), and `-R 127.0.0.1:18095` lets the gateway reach the box's API.
+- `tunnel-files` (`box_tunnel_files.sh`): `-R 127.0.0.1:18022` lets the VPS reach the box's own sshd, through which it moves one job's files.
 - SSH, not WireGuard: a Vast box is an unprivileged container, with no `/dev/net/tun` or `NET_ADMIN`, and often no FUSE. A plain outbound `ssh` needs none of them, and it lets the box expose no port at all.
-- The box's user on the VPS (`izvoria-box`) has two keys, each confined in `/etc/onyx-web/box_authorized_keys` (`add_box_keys.sh`):
-  - the tunnel key may only forward exactly those two ports;
-  - the sync key may only run `rrsync /workspace/tenants`.
-- **The keys work only while the gateway has the box started.** sshd asks `izvoria-box-keys` for them at every login, and it offers them only while `/var/lib/onyx-web-box/access` says `open`. The gateway writes `open` before it starts the box and `closed` once it has stopped it, or finds it stopped (`gateway/box.py`, `_set_access`). Keys copied off a stopped box's disk open nothing. A session already open is not cut by `closed`; it ends when the instance stops.
+- The box's user on the VPS (`izvoria-box`) has **one key, for those ports only**: no shell, no files (`/etc/onyx-web/box_authorized_keys`, `add_box_keys.sh`).
+- **Everything works only while the gateway has the box started.** The gateway writes `open` to `/var/lib/onyx-web-box/access` before it starts the box, and `closed` once it has stopped it, or finds it truly stopped (`exited`/`stopped`/`offline`, not a reload; `gateway/box.py`). Root applies every change (`izvoria-box-access`, run by `izvoria-box-access.path`):
+  - **open:** the box's database role `izvoria_box` may log in, with a **new random password**; sshd offers the box's key (`izvoria-box-keys`).
+  - **closed:** the role may not log in and has no password; **its database sessions and the box's SSH sessions are cut**; sshd no longer offers the key.
+
+  A stopped box, or anything copied off its disk, reaches nothing.
+- **No database password on the box**, on disk or in any process environment. Each box process asks the gateway for this start's password whenever it opens a new database connection (`web_deploy/common/box_credentials.py` → `app/core/database/data/credentials.py`, a `do_connect` hook on every engine). Pools reuse connections, so this is a local call now and then. The gateway answers only a signed, loopback caller while the box is started (`gateway/box_internal.py`; Caddy refuses `/internal/*` from outside).
+- **No key to the VPS's files on the box.** The VPS moves each job's files itself (below).
 - The VPS's host key is pinned on the box (`/workspace/web/known_hosts`, from `provision.sh`; compare its fingerprint with the VPS's).
 
-**Ingestion is staged** (`web_deploy/ingest_worker/staging.py`). Around each job:
-1. The batch's uploads are pulled from the VPS into the box's scratch. So are the vault files of any source with the same content (its original, frames, a kept WAV, clips), found by hash in the firm's database, so a retry or a re-upload finds its files where the database says they are.
+**Ingestion is staged, by the VPS** (`gateway/staging_server.py`; the box's side is `ingest_worker/staging.py`). Around each job the box asks, and the VPS decides what moves, only for the job that is running:
+1. **In:** the VPS sends the batch's uploads into the box's scratch, and the vault files of any source with the same content (its original, frames, a kept WAV, clips), found by hash in the firm's database, so a retry or a re-upload finds its files where the database says they are. Nothing of another firm, or another job, travels.
 2. The ingestion child runs as before. Its rows go straight into the VPS database, its files into scratch.
-3. The firm's scratch vault is pushed to the VPS, vault files the job replaced are deleted there (a compaction swap of a pulled original), and the scratch is wiped.
+3. **Out:** the VPS takes the firm's scratch vault back, deletes on its side the files it sent that the box no longer has (a compaction swap of a pulled original), and the box wipes its scratch.
+
+At start the ingest worker lets the VPS's staging key in for root on the box (`ensure_access`), so the VPS can reach the scratch through `tunnel-files`.
 
 ### Videos are prepared on the VPS (`PREPARE_VIDEOS`)
 
@@ -89,11 +96,11 @@ Raw footage can run to ~100 GB an hour, and the box needs none of that resolutio
 
 The scratch sits at **the same absolute path on both machines** (`/workspace/tenants`): the database stores absolute file paths, so a path written on the box is valid on the VPS once pushed, and nothing is ever rewritten.
 
-A marker per job (`/workspace/staging-state`) lives until its push succeeded. A crash, a host stop or a failed push leaves the job recoverable: the worker pushes and wipes before it takes new work, at the next start too, and the API's `/health` says `staging_pending` meanwhile, which keeps the gateway's idle stop away. Until a push lands, a citation to one of its new files answers "not available yet" rather than failing.
+A marker per job (`/workspace/staging-state`) lives until the VPS has taken the results back. A crash, a host stop or a failed push leaves the job recoverable: the worker pushes and wipes before it takes new work, at the next start too, and the API's `/health` says `staging_pending` meanwhile, which keeps the gateway's idle stop away. Until a push lands, a citation to one of its new files answers "not available yet" rather than failing.
 
 **What this does and doesn't protect.** The agreed bar is *nothing persisted on the rented box, and everything in transit encrypted*. Two exposures remain, and the data-handling statement must say so:
 1. **Memory while working.** Audio, document text, questions, retrieved excerpts and answers are in plain form in the box's RAM and VRAM while they are processed. A host that inspects a running container's memory could read them. Only confidential-computing GPUs close this, not consumer cards.
-2. **The database while the box runs.** A running box holds working database credentials through its tunnel; the access gate above limits that to the time the gateway has it started.
+2. **The database while the box runs.** The box's processes hold this start's database password in memory. Someone with root on the host who deliberately dumps a process's memory could take it and read every firm's database **until the box is stopped** (then the role is disabled, the password changed and every session cut). There is no file to copy and no environment variable to read; it takes a deliberate attack on a running process. Only moving the engine itself off the box (the box as a pure model server) would close this.
 
 Also worth knowing:
 - The scratch is on the box's disk, because a symlink to `/dev/shm` would change the stored paths (the vault resolves its root). It is wiped after every job, but deleting from an SSD is not a secure erase.
@@ -320,7 +327,7 @@ So the settings are `ONYX_SHORT_PROMPT_TOKENS=16384` and `ONYX_LONG_PROMPT_TRICK
 
 **Settings made ahead of time (optional).** `web_deploy/provision/prod/` (gitignored, never synced) can hold the two production files, made from the examples:
 - `gateway.env` → `/etc/onyx-web-gateway.env` on the VPS (`chmod 600`), copied **before** `install_gateway.sh` (which then keeps it instead of generating secrets);
-- `api.env` → `/workspace/web/api.env` on the GPU box, copied **before** `provision.sh`, with the same `WEB_API_SECRET` and `POSTGRES_PASSWORD` and the VPS's address in `VPS_HOST`.
+- `api.env` → `/workspace/web/api.env` on the GPU box, copied **before** `provision.sh`, with the same `WEB_API_SECRET` and the VPS's address in `VPS_HOST` (and **no** database password).
 
 Never copy `prod/` to either machine as part of the repo: the gateway file holds the Vast API key.
 
@@ -370,10 +377,10 @@ Steps:
    ```bash
    ssh … 'VPS_HOST=onyx.example.com bash /workspace/onyx_v3/web_deploy/provision/provision.sh'
    ```
-   This installs the appliance venv, builds `llama-server`, writes `/workspace/web/api.env`, makes the box's two keys, and pins the VPS's host key. **Compare the fingerprint it prints with the one `install_gateway.sh` printed.**
+   This installs the appliance venv, builds `llama-server`, writes `/workspace/web/api.env`, makes the box's tunnel key, and pins the VPS's host key. **Compare the fingerprint it prints with the one `install_gateway.sh` printed.**
 4. Do what it prints:
-   - on the VPS, as root: `izvoria-add-box-keys '<tunnel key>' '<sync key>'`;
-   - into the box's `api.env`: `WEB_API_SECRET` and `POSTGRES_PASSWORD` from `/etc/onyx-web-gateway.env`.
+   - on the VPS, as root: `izvoria-add-box-keys '<tunnel key>'`;
+   - into the box's `api.env`: `WEB_API_SECRET` from `/etc/onyx-web-gateway.env` (no database password: it gets one at every start).
 5. Start it: `bash /workspace/onyx_v3/web_deploy/provision/onstart.sh`, or let the gateway start it at the next sign-in. The tunnel comes up only while the gateway has the box started (see "Where data lives").
 
 A replacement box needs only steps 2–4: it holds nothing to restore.
@@ -599,7 +606,7 @@ Run the gateway against a box API on this machine (`run_local` does all of this 
 Open `http://localhost:8000` and sign in as the firm, then as yourself.
 
 The box API needs:
-- `api.env`'s hosted settings, with `POSTGRES_PORT` at the local database and no `STAGING_REMOTE` (one disk);
+- `api.env`'s hosted settings, with `POSTGRES_PORT` and `POSTGRES_PASSWORD` for the local database and no `BOX_GATEWAY_URL` / `BOX_CREDENTIALS_URL` (one disk, a password in the environment);
 - a running `llama-server`.
 
 ## Open items

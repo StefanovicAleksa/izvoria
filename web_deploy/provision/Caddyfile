@@ -4,6 +4,8 @@
 # console too, as the firm "admin"); Caddy gets and renews its certificate automatically.
 onyx.example.com {
 	# Never compress cited sources or event streams: gzip breaks Range requests and buffers SSE
+	# The GPU box's own routes (credentials, file staging) are reached only through its tunnel, never from outside
+	respond /internal/* 404
 	@compressible not path /api/sources/* /api/runs/*
 	encode @compressible gzip
 	reverse_proxy 127.0.0.1:8000 {

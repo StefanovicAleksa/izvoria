@@ -1,0 +1,9 @@
+[Unit]
+Description=Izvoria: apply the GPU box's access state when the gateway changes it (installed by install_gateway.sh)
+
+[Path]
+PathChanged=/var/lib/onyx-web-box/access
+Unit=izvoria-box-access.service
+
+[Install]
+WantedBy=multi-user.target

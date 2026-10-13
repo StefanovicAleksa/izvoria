@@ -135,6 +135,8 @@ def _js_runtimes() -> Dict[str, Dict]:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from web_deploy.common.box_credentials import install_from_env
+    install_from_env()  # the hosted box: the database password comes from the gateway, never from the environment
     from web_deploy.api.config import ApiSettings
     settings = ApiSettings.from_env()
     queue = IngestQueue.connect(settings.control_database_url)

@@ -1,0 +1,12 @@
+[Unit]
+Description=Izvoria: open or close the GPU box's database role and SSH sessions (izvoria-box-access)
+After=postgresql@15-main.service
+Requires=postgresql@15-main.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/izvoria-box-access
+
+[Install]
+# Also at boot, so the database role always matches the file
+WantedBy=multi-user.target

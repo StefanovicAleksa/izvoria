@@ -534,6 +534,8 @@ def create_app(host: IEngineHost, settings: ApiSettings, queue: IngestQueue,
 
 def create_production_app() -> Starlette:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    from web_deploy.common.box_credentials import install_from_env
+    install_from_env()  # the hosted box: the database password comes from the gateway, never from the environment
     from web_deploy.api.engine_host import EngineHost
     from web_deploy.api.progress import job_listener
     settings = ApiSettings.from_env()

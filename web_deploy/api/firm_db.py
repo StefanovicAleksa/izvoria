@@ -14,7 +14,9 @@ def ensure_firm_database(name: str, host: str, port: int, user: str, password: s
     import psycopg2
     from psycopg2 import errors, sql
 
-    params = dict(host=host, port=port, user=user, password=password)
+    from app.core.database.data.credentials import current_password
+    # On the GPU box the password comes from the gateway (web_deploy/common/box_credentials.py), not the environment
+    params = dict(host=host, port=port, user=user, password=current_password() or password)
     admin = psycopg2.connect(dbname=admin_database, **params)
     admin.autocommit = True
     try:

@@ -1,9 +1,10 @@
 from typing import Optional
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 from app.core.config import settings
 from app.core.database import exceptions as exc
+from app.core.database.data.credentials import apply_to_connection
 
 # The Base Class for all future models
 class Base(DeclarativeBase):
@@ -33,6 +34,10 @@ class SQLAlchemyEngine:
                 pool_size=self._pool_size if self._pool_size is not None else settings.DB_POOL_SIZE,
                 max_overflow=self._max_overflow if self._max_overflow is not None else settings.DB_MAX_OVERFLOW
             )
+            # Each new connection may take its password from a provider instead of the URL (data/credentials.py:
+            # the hosted GPU box, which keeps none on disk). Without a provider this changes nothing.
+            event.listen(self._engine, "do_connect",
+                         lambda dialect, conn_rec, cargs, cparams: apply_to_connection(cparams))
             self._session_maker = sessionmaker(
                 bind=self._engine,
                 autocommit=False,
