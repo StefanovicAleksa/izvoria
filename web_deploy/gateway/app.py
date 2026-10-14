@@ -49,6 +49,10 @@ from web_deploy.ingest_worker.queue import IngestQueue
 
 logger = logging.getLogger(__name__)
 
+# What an open page re-asks on its own (the Ingest page's wait list, every few seconds): not someone working, so it
+# never keeps the rented GPU awake
+PASSIVE_DATA_CALLS = frozenset({"jobs"})
+
 COOKIE = "onyx_session"
 FIRM_COOKIE = "onyx_firm"
 # A firm pass lets a browser on to the account step. Short unless the device is remembered.
@@ -351,7 +355,7 @@ def create_app(settings: GatewaySettings, store: Store, box: BoxController, idle
     # ---------- the box ----------
 
     async def box_status(request: Request, user: User) -> Response:
-        idle.touch()
+        # Not activity: every open tab asks every few seconds, and that alone must never keep a rented GPU running
         return JSONResponse((await box.status()).as_json())
 
     async def box_start(request: Request, user: User) -> Response:
@@ -394,7 +398,8 @@ def create_app(settings: GatewaySettings, store: Store, box: BoxController, idle
         async def handler(request: Request, user: User) -> Response:
             if user.firm_slug == OWNER_FIRM or files is None:
                 return JSONResponse({"error": "The admin console has no appliance of its own."}, status_code=404)
-            idle.touch()
+            if handler_name not in PASSIVE_DATA_CALLS:
+                idle.touch()  # an upload, a queued batch, an opened source: someone is working
             principal = Principal(firm=user.firm_slug, user_id=user.id, role=user.role)
             return await getattr(files, handler_name)(request, principal)
         return handler

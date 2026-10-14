@@ -86,6 +86,7 @@ class TestTunnel:
         box.start()
         await box.wait()
         assert access.read_text().strip() == "open"
+        assert access.stat().st_mode & 0o777 == 0o644  # sshd's key command reads it as "nobody"
 
         box.stop()
         await box.wait()

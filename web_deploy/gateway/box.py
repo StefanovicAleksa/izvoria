@@ -172,6 +172,9 @@ class BoxController:
                 return
             partial = path.with_name(path.name + ".tmp")
             partial.write_text(value + "\n")
+            # World-readable: sshd's key command (izvoria-box-keys) runs as "nobody", and the gateway's umask (0007)
+            # would otherwise hide the file from it, so the box's key would never be offered. It holds no secret.
+            partial.chmod(0o644)
             partial.replace(path)
             logger.info(f"Box SSH access {value}")
         except OSError as exc:

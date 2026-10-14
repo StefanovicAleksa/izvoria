@@ -44,6 +44,8 @@ if [ ! -f "${ENV_FILE}" ]; then
     sed -e "s/^VPS_HOST=.*/VPS_HOST=${VPS_HOST:-}/" web_deploy/provision/api.env.example > "${ENV_FILE}"
 fi
 set -a; . "${ENV_FILE}"; set +a
+# api.env points TMPDIR at /workspace/tmp, which onstart.sh only makes at a start: the compilers below need it now
+install -d -m 700 "${TMPDIR:-/workspace/tmp}"
 : "${VPS_HOST:?set VPS_HOST in ${ENV_FILE} (the Hetzner VPS address), then run this again}"
 
 echo "== The box's key for the VPS: its tunnels only (no shell, no files there)"

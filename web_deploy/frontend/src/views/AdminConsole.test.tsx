@@ -64,9 +64,9 @@ describe("describeBox", () => {
     [null, "", "Connecting…"],
     [status("ready"), "ready", "Ready"],
     [status("ready", true), "busy", "Ingesting files"],
-    [status("booting"), "waking", "Starting"],
-    [status("gpu_unavailable"), "waking", "Starting"],
-    [status("stopping"), "waking", "Stopping"],
+    [status("booting"), "pending", "Starting"],
+    [status("gpu_unavailable"), "pending", "Starting"],
+    [status("stopping"), "pending", "Stopping"],
     [status("error"), "error", "Error"],
     [status("stopped"), "", "Offline"],
   ])("%o", (input, dot, label) => {
