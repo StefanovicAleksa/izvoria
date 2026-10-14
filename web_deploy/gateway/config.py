@@ -4,7 +4,7 @@ import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from web_deploy.api.config import API_PORT
 from web_deploy.gateway.mailer import MailSettings
@@ -18,7 +18,10 @@ class GatewaySettings:
     database_path: Path
     static_dir: Path
     vast_api_key: str = ""
-    vast_instance_id: int = 0
+    # The YouTube account the box downloads with (youtube_cookies.py); beside the gateway database by default
+    youtube_cookies_file: Optional[Path] = None
+    # Preference order: the primary box, then its spares (vast_pool.py). VAST_INSTANCE_ID takes a comma list
+    vast_instance_ids: Tuple[int, ...] = ()
     idle_minutes: float = 30.0
     https_only: bool = True
     # The box API's self-signed certificate, for BOX_LINK=direct over Vast's public port. Without it the gateway
@@ -64,6 +67,8 @@ class GatewaySettings:
             logger.warning("FIRM_ROUTING is no longer used: every firm signs in at one address. Remove it.")
         if box_mode == "vast" and not fake and not key:
             raise RuntimeError("Set VAST_API_KEY and VAST_INSTANCE_ID (or BOX_MODE=local on dev hardware).")
+        if box_mode == "vast" and not fake and not parse_instance_ids(os.environ.get("VAST_INSTANCE_ID", "")):
+            raise RuntimeError("Set VAST_INSTANCE_ID: the box's Vast instance id, or several, comma-separated, primary first.")
         cert = os.environ.get("BOX_CERT_FILE", "")
         box_link = os.environ.get("BOX_LINK", "tunnel" if box_mode == "vast" and not fake else "direct")
         if box_link not in ("tunnel", "direct"):
@@ -72,9 +77,11 @@ class GatewaySettings:
         return cls(
             api_secret=secret,
             database_path=Path(os.environ.get("GATEWAY_DB", "/var/lib/onyx-web/gateway.sqlite3")),
+            youtube_cookies_file=Path(os.environ.get("YOUTUBE_COOKIES_FILE") or Path(
+                os.environ.get("GATEWAY_DB", "/var/lib/onyx-web/gateway.sqlite3")).with_name("youtube_cookies.txt")),
             static_dir=Path(os.environ.get("STATIC_DIR", str(Path(__file__).parent / "static"))),
             vast_api_key=key,
-            vast_instance_id=int(os.environ.get("VAST_INSTANCE_ID", "0") or 0),
+            vast_instance_ids=parse_instance_ids(os.environ.get("VAST_INSTANCE_ID", "")),
             idle_minutes=float(os.environ.get("IDLE_MINUTES", "30")),
             https_only=https_only,
             box_cert_file=Path(cert) if cert else None,
@@ -102,3 +109,17 @@ def mail_settings_from_env() -> MailSettings:
         signup_to=signup_to,
         support_to=os.environ.get("SUPPORT_TO", "").strip() or signup_to,
     )
+
+
+def parse_instance_ids(raw: str) -> Tuple[int, ...]:
+    """"55919995,55823057" -> (55919995, 55823057): the primary box first, then its spares; duplicates dropped."""
+    ids: list = []
+    for part in raw.replace(";", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if not part.isdigit():
+            raise RuntimeError(f"VAST_INSTANCE_ID: '{part}' is not an instance id.")
+        if int(part) not in ids:
+            ids.append(int(part))
+    return tuple(ids)

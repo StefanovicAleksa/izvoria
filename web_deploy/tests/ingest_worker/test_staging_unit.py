@@ -52,6 +52,61 @@ class TestStager:
         assert not written.exists()
         assert pending_markers(settings.state_dir) == []
 
+    def test_a_firms_glossary_lives_on_the_box_only_while_its_job_runs(self, settings):
+        glossary = settings.tenants_root / "legal-demo" / "glossaries" / "en" / "medical.json"
+        glossary.parent.mkdir(parents=True)
+        glossary.write_text("{}")  # left by an earlier job; the owner may have cleared it since
+        stager = Stager(settings, call=FakeGateway())
+
+        stager.stage_in("j1", "legal-demo", None)
+        assert not glossary.exists()  # only what the VPS sends now counts
+        glossary.parent.mkdir(parents=True)
+        glossary.write_text("{}")
+        stager.stage_out("j1")
+
+        assert not (settings.tenants_root / "legal-demo" / "glossaries").exists()
+
+    def test_the_youtube_cookies_go_after_the_download_and_at_every_restart(self, tmp_path):
+        cookies = tmp_path / "web" / "youtube_cookies.txt"
+        cookies.parent.mkdir()
+        on = StagingSettings(gateway_url="http://127.0.0.1:18000", tenants_root=tmp_path / "tenants",
+                             state_dir=tmp_path / "state", secret="k" * 40, youtube_cookies=cookies)
+        cookies.write_text("x")
+        Stager(on, call=FakeGateway()).drop_youtube_cookies()
+        assert not cookies.exists()
+        cookies.write_text("x")
+        Stager(on, call=FakeGateway()).recover()
+        assert not cookies.exists()
+
+    def test_after_a_download_the_vps_takes_the_cookies_back_or_hears_of_the_refusal(self, tmp_path):
+        cookies = tmp_path / "youtube_cookies.txt"
+        on = StagingSettings(gateway_url="http://127.0.0.1:18000", tenants_root=tmp_path / "tenants",
+                             state_dir=tmp_path / "state", secret="k" * 40, youtube_cookies=cookies)
+        gateway = FakeGateway()
+        stager = Stager(on, call=gateway)
+        stager.youtube_cookies_back("j1", refused=False)  # no cookies were staged: nothing to give back
+        cookies.write_text("x")
+        stager.youtube_cookies_back("j1", refused=False)
+        stager.youtube_cookies_back("j2", refused=True)
+        assert gateway.calls == [("POST", "/internal/box/youtube-cookies/j1/refreshed"),
+                                 ("POST", "/internal/box/youtube-cookies/j2/refused")]
+        Stager(on, call=FakeGateway(fail="youtube")).youtube_cookies_back("j3", refused=True)  # logged, not raised
+
+    def test_on_one_shared_disk_the_gateways_own_file_is_left_alone(self, tmp_path):
+        cookies = tmp_path / "youtube_cookies.txt"
+        cookies.write_text("x")
+        off = StagingSettings(gateway_url="", tenants_root=tmp_path, state_dir=tmp_path / "s", youtube_cookies=cookies)
+        Stager(off).drop_youtube_cookies()
+        assert cookies.exists()
+
+    def test_a_restart_wipes_every_firms_glossary(self, settings):
+        glossary = settings.tenants_root / "other-firm" / "glossaries" / "sr" / "law.json"
+        glossary.parent.mkdir(parents=True)
+        glossary.write_text("{}")
+
+        assert Stager(settings, call=FakeGateway()).recover() == 0
+        assert not glossary.parent.parent.exists()
+
     def test_a_failed_transfer_keeps_the_scratch_and_the_next_start_retries(self, settings):
         stager = Stager(settings, call=FakeGateway(fail="stage-out"))
         stager.stage_in("j1", "legal-demo", None)

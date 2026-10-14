@@ -63,7 +63,22 @@ def firm_environment(firm: str, language: str, tenants_root: Path, base: Dict[st
         "ENGINE_CONCURRENT_LIVE": "false",
         "VRAM_HEADROOM_MB": base.get("INGEST_VRAM_HEADROOM_MB", "1500"),
     })
+    # The firm's own glossary for this language, if the owner set one (gateway/glossaries.py; on the hosted box it
+    # arrives with the job's files). The child reads <GLOSSARY_PATH>/<language>/<industry>.json exactly as the appliance
+    # reads data/glossaries/; without one, the shared general glossary
+    env.pop("GLOSSARY_PATH", None)
+    env.pop("APPLIANCE_INDUSTRY", None)
+    glossary = firm_glossary(root, language)
+    if glossary is not None:
+        env["GLOSSARY_PATH"] = str(root / "glossaries")
+        env["APPLIANCE_INDUSTRY"] = glossary.stem.upper()
     return env
+
+
+def firm_glossary(firm_dir: Path, language: str) -> Optional[Path]:
+    """<firm>/glossaries/<language>/<industry>.json when there is exactly one, else None."""
+    files = [p for p in (firm_dir / "glossaries" / language).glob("*.json") if p.name != "meta.json"]
+    return files[0] if len(files) == 1 else None
 
 
 class Supervisor:
@@ -124,8 +139,15 @@ class Supervisor:
             logger.error(f"Could not push job {job.id}'s results to the VPS: {exc}")
 
     def _run_job(self, job: IngestJob) -> None:
-        if job.origin is JobOrigin.YOUTUBE and not self._download(job):
-            return
+        if job.origin is JobOrigin.YOUTUBE:
+            try:
+                downloaded = self._download(job)
+            finally:
+                # The refreshed cookies go back to the VPS (or the owner hears YouTube refused them); none stay here
+                self._stager.youtube_cookies_back(job.id, refused=youtube.bot_checked(Path(job.batch_dir)))
+                self._stager.drop_youtube_cookies()
+            if not downloaded:
+                return
         self._queue.record_progress(job.id, {"phase": "waiting_for_gpu", "state": "started", "detail": None})
         self._arbiter.before_job()
         logger.info(f"Ingesting job {job.id} for {job.firm}: {job.file_count} {job.mode.value} file(s) in {job.language}")

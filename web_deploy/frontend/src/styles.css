@@ -129,7 +129,7 @@ input[type="checkbox"] { accent-color: var(--accent); padding: 0; }
 textarea { resize: vertical; width: 100%; }
 select { cursor: pointer; }
 
-button, a.button {
+button, a.button, label.button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -144,15 +144,15 @@ button, a.button {
   white-space: nowrap;
   transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
-button:hover:not(:disabled), a.button:hover { background: var(--surface-raised); }
-button:disabled { opacity: 0.5; cursor: default; }
-button.primary, a.button.primary {
+button:hover:not(:disabled), a.button:hover, label.button:hover { background: var(--surface-raised); }
+button:disabled, label.button.disabled { opacity: 0.5; cursor: default; }
+button.primary, a.button.primary, label.button.primary {
   background: var(--accent);
   border-color: var(--accent);
   color: var(--on-accent);
   font-weight: 600;
 }
-button.primary:hover:not(:disabled), a.button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+button.primary:hover:not(:disabled), a.button.primary:hover, label.button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
 button.danger-outline { color: var(--danger); }
 button.danger-outline:hover:not(:disabled) { background: var(--danger-soft); }
 button.wide { width: 100%; }

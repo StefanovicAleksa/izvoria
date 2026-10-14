@@ -184,5 +184,24 @@ class Mailer:
             return
         self._store.set_mail_result(request.id, "sent")
 
+    def notify_owner(self, subject: str, body: str) -> None:
+        """A note to the owner (SUPPORT_TO, else SIGNUP_TO), in the background; a failure is only logged."""
+        if not self.enabled:
+            logger.warning("Mail is off; not emailing the owner: %s", subject)
+            return
+        message = EmailMessage()
+        message["Subject"] = _header(subject)[:SUBJECT_MAX]
+        message["From"] = _header(self.settings.mail_from)
+        message["To"] = _header(self.settings.recipient("support"))
+        message.set_content(body)
+
+        def send() -> None:
+            try:
+                self._transport(self.settings, message)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Could not email the owner (%s): %s", subject, exc)
+
+        self._executor.submit(send)
+
     def shutdown(self) -> None:
         self._executor.shutdown(wait=True, cancel_futures=False)

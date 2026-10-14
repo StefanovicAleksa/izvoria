@@ -3,7 +3,7 @@ from pathlib import Path
 
 from web_deploy.common import youtube
 from web_deploy.common.youtube import Video
-from web_deploy.ingest_worker.fetch_links import _js_runtimes, fetch
+from web_deploy.ingest_worker.fetch_links import COOKIES_HINT, _js_runtimes, fetch, ytdlp_downloader
 from web_deploy.ingest_worker.queue import IngestMode, IngestQueue, JobOrigin, JobStatus
 
 VIDEOS = [Video("video000001", "Lecture 1"), Video("video000002", "Lecture 2"), Video("video000003", "Lecture 3")]
@@ -111,3 +111,52 @@ class TestReportErrors:
     def test_an_uploaded_batch_has_none(self, tmp_path):
         from web_deploy.ingest_worker.run_job import _download_errors
         assert _download_errors(str(tmp_path)) == {}
+
+
+class BotCheck(FakeDownloader):
+    def __call__(self, video, folder, on_fraction):
+        raise RuntimeError(f"ERROR: [youtube] {video.id}: Sign in to confirm you’re not a bot. Use --cookies")
+
+
+class TestYoutubeCookies:
+    def test_without_cookies_the_bot_check_tells_the_owner_what_to_do(self, tmp_path):
+        queue, job = _job(tmp_path / "batch")
+        assert fetch(job.id, queue, BotCheck(), cookies=tmp_path / "missing.txt") == 1
+        assert queue.get(job.id).error.endswith(COOKIES_HINT)
+
+    def test_with_cookies_the_failure_is_youtubes_own(self, tmp_path):
+        cookies = tmp_path / "cookies.txt"
+        cookies.write_text("# Netscape HTTP Cookie File\n")
+        queue, job = _job(tmp_path / "batch")
+        fetch(job.id, queue, BotCheck(), cookies=cookies)
+        assert COOKIES_HINT not in queue.get(job.id).error
+
+    def test_yt_dlp_is_given_the_cookies_only_when_they_are_there(self, tmp_path, monkeypatch):
+        import sys
+        import types
+        seen = []
+
+        class Client:
+            def __init__(self, options):
+                seen.append(options)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+            def download(self, urls):
+                pass
+
+        monkeypatch.setitem(sys.modules, "yt_dlp", types.SimpleNamespace(YoutubeDL=Client))
+        cookies = tmp_path / "cookies.txt"
+        for present in (False, True):
+            if present:
+                cookies.write_text("# Netscape HTTP Cookie File\n")
+            try:
+                ytdlp_downloader(720, cookies)(VIDEOS[0], tmp_path, lambda f: None)
+            except RuntimeError:
+                pass  # no MP4 appears with the fake client
+        assert "cookiefile" not in seen[0]
+        assert seen[1]["cookiefile"] == str(cookies)

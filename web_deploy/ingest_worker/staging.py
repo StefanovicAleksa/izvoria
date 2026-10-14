@@ -52,6 +52,8 @@ class StagingSettings:
     tenants_root: Path
     state_dir: Path
     secret: str = ""
+    # The owner's YouTube cookies, sent by the VPS with a YouTube job (gateway/youtube_cookies.py)
+    youtube_cookies: Path = Path("/workspace/web/youtube_cookies.txt")
 
     @property
     def enabled(self) -> bool:
@@ -65,6 +67,7 @@ class StagingSettings:
             tenants_root=Path(env.get("TENANTS_ROOT", "/workspace/tenants")),
             state_dir=Path(env.get("STAGING_STATE_DIR", "/workspace/staging-state")),
             secret=env.get("WEB_API_SECRET", ""),
+            youtube_cookies=Path(env.get("YOUTUBE_COOKIES_FILE", "/workspace/web/youtube_cookies.txt")),
         )
 
 
@@ -112,6 +115,8 @@ class Stager:
         self._write_marker(job_id, {"firm": firm})
         if batch_dir:
             Path(batch_dir).mkdir(parents=True, exist_ok=True)
+        # The glossary comes only from the VPS: one an earlier job left here may since have been cleared there
+        _remove_tree(firm_root(self._settings.tenants_root, firm) / "glossaries")
         answer = self._call("POST", f"/internal/box/stage-in/{job_id}")
         logger.info(f"Job {job_id}: the VPS sent {answer.get('batch_files', 0)} batch file(s) and "
                     f"{answer.get('vault_files', 0)} vault file(s)")
@@ -145,18 +150,44 @@ class Stager:
     # ---------- scratch ----------
 
     def wipe(self, firm: str) -> None:
-        """A firm's scratch vault and uploads (reports are kept in the database only: REPORT_FILES_ENABLED=false)."""
+        """
+        A firm's scratch vault, uploads and glossary (its client names). Reports are kept in the database only
+        (REPORT_FILES_ENABLED=false).
+        """
         root = firm_root(self._settings.tenants_root, firm)
+        _remove_tree(root / "glossaries")
         for part in ("vault", "uploads"):
             _remove_tree(root / part)
             (root / part).mkdir(parents=True, exist_ok=True)
 
+    def youtube_cookies_back(self, job_id: str, refused: bool) -> None:
+        """
+        After a download step: the VPS takes back the cookies yt-dlp refreshed (keeping the sign-in alive), or, when
+        YouTube took the box for a bot, hears so and tells the owner. Never fails the job.
+        """
+        if not self.enabled:
+            return
+        try:
+            if refused:
+                self._call("POST", f"/internal/box/youtube-cookies/{job_id}/refused")
+            elif self._settings.youtube_cookies.is_file():
+                self._call("POST", f"/internal/box/youtube-cookies/{job_id}/refreshed")
+        except StagingError as exc:
+            logger.warning(f"Job {job_id}: could not hand the YouTube cookies' state to the VPS: {exc}")
+
+    def drop_youtube_cookies(self) -> None:
+        """The YouTube account's cookies, once the download step is over: the box keeps no credential at rest."""
+        if self.enabled:
+            self._settings.youtube_cookies.unlink(missing_ok=True)
+
     def wipe_all(self) -> None:
+        self.drop_youtube_cookies()  # a restart in the middle of a download
         root = self._settings.tenants_root
         if not root.is_dir():
             return
         for firm in sorted(root.iterdir()):
             if firm.is_dir() and not firm.is_symlink():
+                _remove_tree(firm / "glossaries")
                 for part in ("vault", "uploads", "reports"):
                     _remove_tree(firm / part)
                     (firm / part).mkdir(parents=True, exist_ok=True)

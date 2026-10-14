@@ -4,7 +4,7 @@ import { describeBox } from "../box";
 import { fakeGateway } from "../test-utils";
 import { AdminConsole } from "./AdminConsole";
 
-const view = (section: "firms" | "requests") => render(<MemoryRouter><AdminConsole section={section} /></MemoryRouter>);
+const view = (section: "firms" | "requests" | "server") => render(<MemoryRouter><AdminConsole section={section} /></MemoryRouter>);
 
 describe("The owner's firms", () => {
   it("flags a firm nobody can sign in to, and keeps a refused new firm's details", async () => {
@@ -26,6 +26,58 @@ describe("The owner's firms", () => {
 
     expect(await screen.findByText(/already exists/)).toBeInTheDocument();
     expect((inputs[1] as HTMLInputElement).value).toBe("legal-demo");
+  });
+});
+
+describe("A firm's glossaries", () => {
+  const FIRMS = { console_has_password: true, firms: [
+    { slug: "petrovic", name: "Petrović", default_language: "sr", is_demo: false, disabled: false, has_password: true, users: 1 }] };
+  const MEDICAL = { language: "en", industry: "medical", source: "builtin", builtin: "medical", original_name: null,
+    updated_at: "2026-10-14T10:00:00+00:00", terms: 120, sub_domains: ["CARDIOLOGY"], warnings: [] };
+
+  it("shows each language's glossary, picks a built-in and shows a refused upload's errors", async () => {
+    const calls = fakeGateway({
+      "GET /admin/api/firms": { body: FIRMS },
+      "GET /admin/api/firms/petrovic/glossaries": { body: {
+        glossaries: { en: null, sr: null }, builtins: { en: ["finance", "general", "medical"], sr: [] } } },
+      "PUT /admin/api/firms/petrovic/glossaries/en": (call) => call.body.builtin
+        ? { body: { glossaries: { en: MEDICAL, sr: null }, builtins: { en: ["finance", "general", "medical"], sr: [] } } }
+        : { status: 400, body: { error: "The glossary has 1 error(s).", errors: ["en: sub-domain 'x' is not UPPER_SNAKE_CASE"], kind: "invalid" } },
+    });
+    view("firms");
+    fireEvent.click(await screen.findByRole("button", { name: "Glossary" }));
+    expect(await screen.findAllByText("General (shared)", { selector: "div" })).toHaveLength(2);
+
+    fireEvent.change(screen.getAllByLabelText("Built-in glossary")[0], { target: { value: "medical" } });
+    expect(await screen.findByText(/Built-in: medical · 1 sub-domains · 120 terms · 2026-10-14/)).toBeInTheDocument();
+
+    const file = new File([JSON.stringify({ industry: "law", base_terms: ["Petrović"] })], "law.json", { type: "application/json" });
+    fireEvent.change(screen.getByTestId("glossary-file-en"), { target: { files: [file] } });
+    expect(await screen.findByText(/is not UPPER_SNAKE_CASE/)).toBeInTheDocument();
+    expect(calls.filter((c) => c.method === "PUT").map((c) => c.body)).toEqual([
+      { builtin: "medical" },
+      { glossary: { industry: "law", base_terms: ["Petrović"] }, file_name: "law.json" },
+    ]);
+  });
+});
+
+describe("The YouTube account the GPU server downloads with", () => {
+  it("shows the cookies' state and uploads a new file", async () => {
+    const signed = { present: true, cookies: 12, signed_in: true, expires: 1790000000, expired: false, updated_at: 1760000000, refused_at: null };
+    const calls = fakeGateway({
+      "GET /admin/api/box": { body: { state: "stopped", message: "", error: "", queued: 0, ingesting: 0, reports_running: 0, paused: false } },
+      "GET /admin/api/youtube-cookies": { body: { present: false, cookies: 0, signed_in: false, expires: null, expired: false, updated_at: null, refused_at: 1760000000 } },
+      "PUT /admin/api/youtube-cookies": { body: signed },
+    });
+    view("server");
+    expect(await screen.findByText("No cookies: YouTube links fail on the GPU server.")).toBeInTheDocument();
+    expect(screen.getByText(/YouTube refused a download as a bot on 2025-10-09/)).toBeInTheDocument();
+
+    const file = new File(["# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t1790000000\tSAPISID\tx\n"], "cookies.txt");
+    fireEvent.change(screen.getByTestId("youtube-cookies-file"), { target: { files: [file] } });
+
+    expect(await screen.findByText(/Signed-in cookies · 12 cookies/)).toBeInTheDocument();
+    expect(calls.find((c) => c.method === "PUT")!.body.cookies).toContain("SAPISID");
   });
 });
 

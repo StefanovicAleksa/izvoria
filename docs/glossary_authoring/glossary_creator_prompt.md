@@ -18,6 +18,10 @@ glossaries Izvoria reads at ingestion (`data/glossaries/<lang>/<industry>.json`)
    `venv/bin/python -m scripts.validate_glossary <industry>`.
 4. Read the `review` list in the answer. Terms in it are not in the glossary. Add any you confirm by hand.
 5. Measure before trusting it: `scripts/eval/glossary_ablation.py` (see its docstring).
+6. On the hosted web version, attach it to the firm (it reads no `data/glossaries/` files of its own): the owner
+   console's Firms → *Glossary*, per language, or on the VPS
+   `admin_cli set-glossary <firm> --from-claude answer.json` for every language at once
+   (`docs/web_deploy.md`, "Firm glossaries").
 
 **Why the prompt says what it says.** A glossary drives three stages, and each one rewards precision, not volume:
 

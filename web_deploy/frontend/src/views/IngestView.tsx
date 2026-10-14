@@ -196,7 +196,7 @@ export function IngestView() {
         </p>
         {jobs.length === 0 && <p>{t("Nothing queued.")}</p>}
         <ul className="jobs">
-          {jobs.map((job) => (
+          {withoutRetriedFailures(jobs).map((job) => (
             <JobItem key={job.id} job={job}
                      onCancel={() => api.del(`/api/ingest/jobs/${job.id}`).then(refresh).catch((e) => setError(e.message))} />
           ))}
@@ -310,6 +310,17 @@ function YouTubeLinks({ language, maxVideos, onQueued }: {
       )}
     </div>
   );
+}
+
+/**
+ * The queue without failures that were tried again: a failed or cancelled batch is hidden once a newer batch of the
+ * same kind is queued, running or done. A failure nobody retried stays, with its error.
+ */
+export function withoutRetriedFailures(jobs: IngestJob[]): IngestJob[] {
+  const settled = (job: IngestJob) => job.status === "failed" || job.status === "cancelled";
+  const time = (job: IngestJob) => (job.created_at ? Date.parse(job.created_at) : 0);
+  return jobs.filter((job) => !settled(job)
+    || !jobs.some((other) => other !== job && other.mode === job.mode && !settled(other) && time(other) > time(job)));
 }
 
 function JobItem({ job, onCancel }: { job: IngestJob; onCancel: () => void }) {

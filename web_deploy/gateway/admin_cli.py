@@ -10,6 +10,15 @@ The owner's command line on the gateway VPS: the first owner account, and firms 
   python -m web_deploy.gateway.admin_cli list
   python -m web_deploy.gateway.admin_cli list-requests [--kind signup|support] [--status new|handled|spam]
   python -m web_deploy.gateway.admin_cli mark-request <id> handled
+  python -m web_deploy.gateway.admin_cli glossaries legal-demo                          # what each language uses
+  python -m web_deploy.gateway.admin_cli set-glossary legal-demo en glossary.json        # the firm's own file
+  python -m web_deploy.gateway.admin_cli set-glossary legal-demo en --builtin medical    # one of Izvoria's
+  python -m web_deploy.gateway.admin_cli set-glossary legal-demo --from-claude answer.json   # every language at once
+  python -m web_deploy.gateway.admin_cli clear-glossary legal-demo en                   # back to the general one
+  python -m web_deploy.gateway.admin_cli set-youtube-cookies cookies.txt   # the account the GPU box downloads with
+
+Glossaries are files beside the firm's data (TENANTS_ROOT, /workspace/tenants): run those as the gateway's user,
+e.g. `sudo -u onyx …`, so the files keep the group the GPU box's staging reads them with.
 
 Signing in is two steps: the firm (its sign-in name and the password its people share), then a person's own email
 and password. The owner signs in as the firm "admin".
@@ -20,6 +29,7 @@ ONYX_ADMIN_PASSWORD to script it (and ONYX_FIRM_PASSWORD for a firm's shared pas
 
 import argparse
 import getpass
+import json
 import os
 import secrets
 import sys
@@ -103,6 +113,26 @@ def main(argv: Optional[list] = None, store: Optional[Store] = None) -> int:
     mark = sub.add_parser("mark-request")
     mark.add_argument("request_id")
     mark.add_argument("status", choices=REQUEST_STATUSES)
+
+    shown = sub.add_parser("glossaries", help="what each language of a firm is transcribed with")
+    shown.add_argument("slug")
+    set_glossary = sub.add_parser("set-glossary", help="a firm's glossary for one language (or every language)")
+    set_glossary.add_argument("slug")
+    set_glossary.add_argument("language", nargs="?")
+    set_glossary.add_argument("file", nargs="?", type=Path, help="the glossary JSON")
+    set_glossary.add_argument("--builtin", help="one of Izvoria's (e.g. medical, finance) instead of a file")
+    set_glossary.add_argument("--from-claude", type=Path, help="the glossary creator prompt's answer: every language")
+    cleared = sub.add_parser("clear-glossary", help="back to the shared general glossary")
+    cleared.add_argument("slug")
+    cleared.add_argument("language")
+    sub.add_parser("youtube-cookies", help="the YouTube account the GPU box downloads with")
+    set_cookies = sub.add_parser("set-youtube-cookies", help="a spare account's exported cookies.txt")
+    set_cookies.add_argument("file", type=Path)
+    sub.add_parser("clear-youtube-cookies")
+    parser.add_argument("--youtube-cookies", type=Path, default=None,
+                        help="where they are kept (YOUTUBE_COOKIES_FILE; default: beside --db)")
+    parser.add_argument("--tenants", type=Path, default=Path(os.environ.get("TENANTS_ROOT", "/workspace/tenants")),
+                        help="where the firms' data lives (glossary commands)")
     args = parser.parse_args(argv)
 
     if store is None:
@@ -164,10 +194,91 @@ def main(argv: Optional[list] = None, store: Optional[Store] = None) -> int:
         elif args.command == "mark-request":
             store.set_request_status(args.request_id, args.status)
             print(f"{args.request_id}: {args.status}.")
+        elif args.command in ("glossaries", "set-glossary", "clear-glossary"):
+            return _glossary_command(args, store)
+        elif args.command in ("youtube-cookies", "set-youtube-cookies", "clear-youtube-cookies"):
+            return _cookies_command(args)
     except (StoreError, WeakPassword, InvalidSlug) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     return 0
+
+
+def _cookies_command(args) -> int:
+    from web_deploy.gateway import youtube_cookies
+    path = args.youtube_cookies or Path(os.environ.get("YOUTUBE_COOKIES_FILE") or youtube_cookies.default_path(
+        Path(args.db)))
+    try:
+        if args.command == "set-youtube-cookies":
+            youtube_cookies.set_cookies(path, args.file.read_text(encoding="utf-8", errors="replace"))
+        elif args.command == "clear-youtube-cookies":
+            youtube_cookies.clear(path)
+    except (youtube_cookies.CookiesRejected, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+    state = youtube_cookies.status(path)
+    if not state["present"]:
+        print("No YouTube cookies: the GPU box's downloads are refused as a bot.")
+    else:
+        expires = datetime.fromtimestamp(state["expires"]).strftime("%Y-%m-%d") if state["expires"] else "unknown"
+        print(f"YouTube cookies: {state['cookies']} cookies, "
+              f"{'signed in' if state['signed_in'] else 'NOT signed in (export them while signed in)'}, "
+              f"sign-in expires {expires}{' (EXPIRED)' if state['expired'] else ''}.")
+    return 0
+
+
+def _glossary_command(args, store: Store) -> int:
+    from web_deploy.gateway import glossaries
+    if store.firm(args.slug) is None or args.slug == OWNER_FIRM:
+        raise StoreError(f"No firm called '{args.slug}'.")
+    try:
+        if args.command == "set-glossary":
+            if args.from_claude:
+                answer = json.loads(args.from_claude.read_text(encoding="utf-8"))
+                for code, meta in glossaries.import_claude_answer(args.tenants, args.slug, answer,
+                                                                  args.from_claude.name).items():
+                    print(f"{args.slug} [{code}]: {_describe_glossary(meta)}")
+                    _print_warnings(meta)
+                return 0
+            if not args.language:
+                raise glossaries.GlossaryRejected("Name the language (en, sr), or use --from-claude.")
+            if args.builtin:
+                meta = glossaries.set_builtin(args.tenants, args.slug, args.language, args.builtin)
+            elif args.file:
+                glossary = json.loads(args.file.read_text(encoding="utf-8"))
+                meta = glossaries.set_uploaded(args.tenants, args.slug, args.language, glossary, args.file.name)
+            else:
+                raise glossaries.GlossaryRejected("Give a glossary file, --builtin <name> or --from-claude <answer>.")
+            print(f"{args.slug} [{args.language}]: {_describe_glossary(meta)}")
+            _print_warnings(meta)
+        elif args.command == "clear-glossary":
+            glossaries.clear(args.tenants, args.slug, args.language)
+            print(f"{args.slug} [{args.language}]: back to the shared general glossary.")
+        else:
+            for code, meta in glossaries.status(args.tenants, args.slug).items():
+                print(f"{args.slug} [{code}]: {_describe_glossary(meta)}")
+            print(f"built-in: " + "; ".join(f"{code}: {', '.join(names) or 'none'}"
+                                             for code, names in glossaries.builtins().items()))
+    except (glossaries.GlossaryRejected, ValueError, OSError) as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        for error in getattr(exc, "errors", []):
+            print(f"  {error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def _describe_glossary(meta: Optional[dict]) -> str:
+    if not meta:
+        return "the shared general glossary"
+    origin = f"built-in '{meta['builtin']}'" if meta.get("source") == "builtin" else (
+        f"uploaded {meta.get('original_name') or ''}".strip())
+    return (f"{meta['industry']} ({origin}): {meta['terms']} terms, {len(meta['sub_domains'])} sub-domains, "
+            f"{meta['updated_at']}")
+
+
+def _print_warnings(meta: Optional[dict]) -> None:
+    for warning in (meta or {}).get("warnings", []):
+        print(f"  warning: {warning}")
 
 
 if __name__ == "__main__":

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { api } from "../api/client";
-import type { AdminFirm, BoxStatus, InboundRequest, User } from "../api/types";
-import { useI18n } from "../i18n";
+import type { AdminFirm, BoxStatus, FirmGlossaries, FirmGlossary, InboundRequest, Lang, User, YoutubeCookies } from "../api/types";
+import { LANGUAGE_NAMES, useI18n } from "../i18n";
 
 export type AdminSection = "firms" | "requests" | "server";
 
@@ -21,6 +21,7 @@ function FirmsSection() {
   const [firms, setFirms] = useState<AdminFirm[]>([]);
   const [consoleHasPassword, setConsoleHasPassword] = useState(true);
   const [selected, setSelected] = useState<string | null>(null);
+  const [glossaryFor, setGlossaryFor] = useState<string | null>(null);
   const [settingPassword, setSettingPassword] = useState<string | null>(null);
   const [firmPassword, setFirmPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -94,6 +95,7 @@ function FirmsSection() {
                   ) : (
                     <div className="actions">
                       <button className="link" onClick={() => setSelected(selected === f.slug ? null : f.slug)}>{t("Users")}</button>
+                      <button className="link" onClick={() => setGlossaryFor(glossaryFor === f.slug ? null : f.slug)}>{t("Glossary")}</button>
                       <button className="link" onClick={() => { setSettingPassword(f.slug); setFirmPassword(""); }}>{t("Firm password")}</button>
                       <button className={`link${f.disabled ? "" : " danger"}`}
                               onClick={() => act(api.post(`/admin/api/firms/${f.slug}/${f.disabled ? "enable" : "disable"}`)).catch(() => {})}>
@@ -109,6 +111,7 @@ function FirmsSection() {
       </div>
 
       {selected && <FirmUsers slug={selected} onChange={load} />}
+      {glossaryFor && <FirmGlossaryCard slug={glossaryFor} />}
 
       <form className="card" onSubmit={(e) => {
         e.preventDefault();
@@ -233,6 +236,122 @@ function FirmUsers({ slug, onChange }: { slug: string; onChange: () => void }) {
         </select>
         <button className="primary" disabled={!form.email || form.password.length < 10}>{t("Add account")}</button>
       </form>
+    </div>
+  );
+}
+
+const readText = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(file);
+  });
+
+/**
+ * A firm's glossary per language: what its recordings' transcription and phonetic correction are given. A file the
+ * owner uploads (checked by scripts/validate_glossary.py on the gateway), one of Izvoria's built-ins, or the shared
+ * general one. Applies to recordings ingested from now on; one already indexed keeps what it was read with.
+ */
+function FirmGlossaryCard({ slug }: { slug: string }) {
+  const { t } = useI18n();
+  const [state, setState] = useState<FirmGlossaries | null>(null);
+  const [error, setError] = useState<{ language: string; text: string; errors: string[] } | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    setState(null);
+    setError(null);
+    api.get<FirmGlossaries>(`/admin/api/firms/${slug}/glossaries`).then(setState)
+      .catch((e) => setError({ language: "", text: e.message, errors: [] }));
+  }, [slug]);
+
+  const change = (language: string, promise: () => Promise<FirmGlossaries>) => {
+    setError(null);
+    setBusy(language);
+    promise().then(setState)
+      .catch((e) => setError({ language, text: e.message, errors: Array.isArray(e.body?.errors) ? e.body.errors : [] }))
+      .finally(() => setBusy(null));
+  };
+  const url = (language: string) => `/admin/api/firms/${slug}/glossaries/${language}`;
+  const upload = (language: string, file: File) =>
+    change(language, () => readText(file).then((text) => {
+      let glossary: unknown;
+      try {
+        glossary = JSON.parse(text);
+      } catch {
+        throw new Error(t("That file is not JSON."));
+      }
+      return api.put<FirmGlossaries>(url(language), { glossary, file_name: file.name });
+    }));
+
+  const describe = (g: FirmGlossary | null) => {
+    if (!g) return t("General (shared)");
+    const what = g.source === "builtin" ? `${t("Built-in")}: ${g.builtin}` : `${t("Uploaded")}: ${g.industry}`;
+    return `${what} · ${g.sub_domains.length} ${t("sub-domains")} · ${g.terms} ${t("terms")} · ${g.updated_at.slice(0, 10)}`;
+  };
+
+  return (
+    <div className="card">
+      <div className="section-label">{t("Glossaries of")} {slug}</div>
+      <p className="muted">
+        {t("Names and terms the firm's recordings are transcribed and corrected with, one per language. A change applies to recordings ingested from now on.")}
+      </p>
+      {error && !error.language && <p className="banner danger">{error.text}</p>}
+      {state && (
+        <table className="table">
+          <tbody>
+            {Object.entries(state.glossaries).map(([language, g]) => (
+              <tr key={language}>
+                <td>{LANGUAGE_NAMES[language as Lang] ?? language}</td>
+                <td>
+                  <div>{describe(g)}</div>
+                  {g && g.warnings.length > 0 && (
+                    <details className="muted">
+                      <summary>{g.warnings.length} {t("warnings")}</summary>
+                      <ul>{g.warnings.map((w) => <li key={w}>{w}</li>)}</ul>
+                    </details>
+                  )}
+                  {error?.language === language && (
+                    <div className="banner danger">
+                      {error.text}
+                      {error.errors.length > 0 && <ul>{error.errors.map((e) => <li key={e}>{e}</li>)}</ul>}
+                    </div>
+                  )}
+                </td>
+                <td>
+                  <div className="actions">
+                    <label className={`button${busy ? " disabled" : ""}`}>
+                      <input type="file" accept=".json,application/json" className="visually-hidden" disabled={!!busy}
+                             data-testid={`glossary-file-${language}`}
+                             onChange={(e) => {
+                               const file = e.target.files?.[0];
+                               e.target.value = "";
+                               if (file) upload(language, file);
+                             }} />
+                      {t("Upload file")}
+                    </label>
+                    <select aria-label={t("Built-in glossary")} disabled={!!busy}
+                            value={g?.source === "builtin" ? g.builtin ?? "" : g ? "" : "general"}
+                            onChange={(e) => {
+                              const name = e.target.value;
+                              if (!name) return;
+                              change(language, () => name === "general"
+                                ? api.del<FirmGlossaries>(url(language))
+                                : api.put<FirmGlossaries>(url(language), { builtin: name }));
+                            }}>
+                      {g?.source === "upload" && <option value="">{t("Uploaded file")}</option>}
+                      <option value="general">{t("General (shared)")}</option>
+                      {(state.builtins[language] ?? []).filter((name) => name !== "general")
+                        .map((name) => <option key={name} value={name}>{name}</option>)}
+                    </select>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
@@ -461,6 +580,63 @@ function ServerSection() {
           <button className="danger-outline" onClick={() => act("stop")}>{t("Stop")}</button>
         </div>
       </div>
+      <YoutubeCookiesCard />
     </section>
+  );
+}
+
+/**
+ * The YouTube account the GPU server downloads with. YouTube refuses a data-centre IP that isn't signed in, so the
+ * owner uploads a spare account's cookies.txt; the server gets it only for a YouTube job and deletes it afterwards.
+ */
+function YoutubeCookiesCard() {
+  const { t } = useI18n();
+  const [state, setState] = useState<YoutubeCookies | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const url = "/admin/api/youtube-cookies";
+  useEffect(() => {
+    api.get<YoutubeCookies>(url).then(setState).catch((e) => setError(e.message));
+  }, []);
+  const change = (promise: Promise<YoutubeCookies>) => {
+    setError(null);
+    promise.then(setState).catch((e) => setError(e.message));
+  };
+  const day = (seconds: number | null) => (seconds ? new Date(seconds * 1000).toISOString().slice(0, 10) : "?");
+
+  return (
+    <div className="card">
+      <div className="section-label">{t("YouTube downloads")}</div>
+      <p className="muted">
+        {t("YouTube refuses the GPU server's downloads unless they come from a signed-in account. Export the cookies of a spare Google account (a private window, signed in, on youtube.com, with a cookies.txt extension) and upload them here. The server gets them only while it downloads a YouTube batch.")}
+      </p>
+      {error && <p className="banner danger">{error}</p>}
+      {state && (
+        <p data-testid="youtube-cookies-status">
+          {!state.present
+            ? t("No cookies: YouTube links fail on the GPU server.")
+            : `${state.signed_in ? t("Signed-in cookies") : t("Cookies without a sign-in")} · ${state.cookies} ${t("cookies")} · ${t("updated")} ${day(state.updated_at)} · ${t("expire")} ${day(state.expires)}`}
+          {state.present && (state.expired || !state.signed_in) && (
+            <span className="badge danger">{t(state.expired ? "Expired" : "Not signed in")}</span>
+          )}
+        </p>
+      )}
+      {state?.refused_at && (
+        <p className="banner warning">
+          {t("YouTube refused a download as a bot on")} {day(state.refused_at)}. {t("Export fresh cookies and upload them.")}
+        </p>
+      )}
+      <div className="row">
+        <label className="button primary">
+          <input type="file" accept=".txt,text/plain" className="visually-hidden" data-testid="youtube-cookies-file"
+                 onChange={(e) => {
+                   const file = e.target.files?.[0];
+                   e.target.value = "";
+                   if (file) change(readText(file).then((cookies) => api.put<YoutubeCookies>(url, { cookies })));
+                 }} />
+          {t("Upload cookies.txt")}
+        </label>
+        {state?.present && <button className="danger-outline" onClick={() => change(api.del<YoutubeCookies>(url))}>{t("Remove")}</button>}
+      </div>
+    </div>
   );
 }
