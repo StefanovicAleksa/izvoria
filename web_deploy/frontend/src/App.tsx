@@ -137,6 +137,17 @@ export function BoxGate({ children }: { children: ReactNode }) {
       </>
     );
   }
+  if (status?.state === "stopped") {
+    return (
+      <div className="waking">
+        <div className="card">
+          <h2>{t("The appliance is asleep")}</h2>
+          <p className="muted">{t("It goes to sleep after half an hour without use, so the GPU isn't paid for while nobody needs it.")}</p>
+          <button className="primary" onClick={() => api.post<BoxStatus>("/box/start").then(setStatus)}>{t("Wake it")}</button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="waking">
       <div className="card">

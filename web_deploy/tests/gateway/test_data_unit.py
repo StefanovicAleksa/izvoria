@@ -349,3 +349,35 @@ class TestLanguages:
             (tmp_path / "data" / "languages" / f"{code}.toml").write_text("")
         (tmp_path / "data" / "languages" / "legacy" / "sl.toml").write_text("")
         assert served_languages(tmp_path) == ("en", "sr")
+
+
+class TestIdleActivity:
+    """Only someone working keeps the rented GPU awake: what an open page re-asks on its own never does."""
+
+    def test_status_checks_and_wait_list_refreshes_are_not_activity(self, tmp_path, store, vast, box_api, tenants,
+                                                                    queue, preparer):
+        static = tmp_path / "static"
+        static.mkdir()
+        (static / "index.html").write_text("<html>spa</html>")
+        settings = GatewaySettings(api_secret=SECRET, database_path=tmp_path / "g.db", static_dir=static,
+                                   fake_box_host="127.0.0.1", https_only=False, mail=MAIL)
+        http = httpx.AsyncClient(transport=httpx.MockTransport(box_api))
+        box = BoxController(settings, vast, http)
+        now = [0.0]
+        idle = IdleMonitor(box, 1800, clock=lambda: now[0])
+        data_settings = DataSettings(tenants_root=tenants, source_cache_root=tmp_path / "cache",
+                                     control_database_url="sqlite://", max_upload_bytes=1024, languages=("en",))
+        data = functools.partial(DataRoutes, data_settings, queue, http, SECRET, preparer=preparer)
+        mailer = Mailer(MAIL, store, transport=RecordingTransport(), executor=InlineExecutor())
+        app = create_app(settings, store, box, idle, http, run_idle_monitor=False, mailer=mailer, data=data,
+                         run_background=False)
+        client = signed_in(app)
+
+        now[0] = 1000.0
+        for _ in range(3):
+            assert client.get("/box/status").status_code == 200
+            assert client.get("/api/ingest/jobs").status_code == 200
+        assert idle._last_activity < 1000.0  # still counting from sign-in: an open tab doesn't hold the box
+
+        client.post("/api/uploads")  # someone actually doing something
+        assert idle._last_activity == 1000.0

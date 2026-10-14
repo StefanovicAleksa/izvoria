@@ -85,6 +85,10 @@ export const SERBIAN: Record<string, string> = {
   "Ingestion runs one batch at a time for the whole appliance. Yours starts when it reaches the front of the line.":
     "Uvoz se izvršava jedna serija po jedna za ceo sistem. Vaša počinje kada dođe na red.",
   preparing: "priprema",
+  "The appliance is asleep": "Sistem spava",
+  "It goes to sleep after half an hour without use, so the GPU isn't paid for while nobody needs it.":
+    "Uspava se posle pola sata bez korišćenja, da se GPU ne plaća dok ga niko ne koristi.",
+  "Wake it": "Probudi ga",
   "Choose the same files again to continue where it stopped.":
     "Izaberite iste fajlove ponovo da biste nastavili gde je stalo.",
   "Making the 720p copies": "Pravljenje kopija u 720p",

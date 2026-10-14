@@ -1,0 +1,39 @@
+#!/bin/bash
+# Applies the GPU box's access state on the VPS, as root (installed as /usr/local/sbin/izvoria-box-access by
+# install_gateway.sh, run by izvoria-box-access.path whenever the gateway changes /var/lib/onyx-web-box/access).
+#
+#   open    the box's database role may log in, with a fresh random password (the old one is useless from now on),
+#           which the gateway hands the box through its tunnel (gateway/box_internal.py)
+#   closed  the role may not log in and has no password; every database session it has and every SSH session of
+#           the box's account are cut, so a stopped box (or anything copied off its disk) reaches nothing
+#
+# Idempotent: it applies whatever the file says, so running it twice, or at boot, is harmless.
+set -euo pipefail
+
+STATE_DIR=/var/lib/onyx-web-box
+ACCESS="${STATE_DIR}/access"
+PASSWORD_FILE="${STATE_DIR}/db-password"
+ROLE=izvoria_box
+STATE="$(cat "${ACCESS}" 2>/dev/null | tr -d '[:space:]' || true)"
+
+psql_admin() { su postgres -c "psql -v ON_ERROR_STOP=1 -qAt $*"; }
+
+if [ "${STATE}" = "open" ]; then
+    if [ -s "${PASSWORD_FILE}" ] && [ "$(psql_admin "-c \"SELECT rolcanlogin FROM pg_roles WHERE rolname='${ROLE}'\"")" = "t" ]; then
+        exit 0  # already open (a repeated write): keep the password the box is using
+    fi
+    PASSWORD="$(openssl rand -hex 24)"
+    psql_admin "-c \"ALTER ROLE ${ROLE} LOGIN PASSWORD '${PASSWORD}'\""
+    umask 027
+    printf '%s\n' "${PASSWORD}" > "${PASSWORD_FILE}.tmp"
+    chown root:onyx "${PASSWORD_FILE}.tmp"
+    chmod 0640 "${PASSWORD_FILE}.tmp"
+    mv "${PASSWORD_FILE}.tmp" "${PASSWORD_FILE}"
+    echo "box access open: ${ROLE} may log in with a new password"
+else
+    rm -f "${PASSWORD_FILE}"
+    psql_admin "-c \"ALTER ROLE ${ROLE} NOLOGIN PASSWORD NULL\""
+    psql_admin "-c \"SELECT count(pg_terminate_backend(pid)) FROM pg_stat_activity WHERE usename='${ROLE}'\"" >/dev/null
+    pkill -u izvoria-box 2>/dev/null || true
+    echo "box access closed: ${ROLE} disabled, its sessions and the box's SSH sessions cut"
+fi

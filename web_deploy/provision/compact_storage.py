@@ -4,7 +4,7 @@ per-chunk clips and WAV, swaps its original for a compact copy, and removes uplo
 New ingestions already leave the vault this way (docs/web_deploy.md, "Storage").
 
 For the local version (run_local stopped or idle), or a box from before the data moved to the VPS, with the API's
-settings loaded. The hosted box keeps no vault any more and refuses (STAGING_REMOTE is set there):
+settings loaded. The hosted box keeps no vault any more and refuses (BOX_GATEWAY_URL is set there):
   cd /workspace/onyx_v3
   set -a; . /workspace/web/api.env; set +a
   venv/bin/python -m web_deploy.provision.compact_storage --all --dry-run    # what would be freed
@@ -110,7 +110,7 @@ def main(argv: Optional[list] = None, settings=None, queue: Optional[IngestQueue
     if args.child:
         return run_child(args.child, args.dry_run)
 
-    if os.environ.get("STAGING_REMOTE"):
+    if os.environ.get("BOX_GATEWAY_URL"):
         # The hosted GPU box keeps no vault: new ingestions compact as they go, and the VPS has no appliance venv
         print("error: this box holds no files (they live on the VPS); there is nothing here to compact.",
               file=sys.stderr)

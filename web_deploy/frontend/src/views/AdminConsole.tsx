@@ -446,7 +446,7 @@ function ServerSection() {
         {box && (
           <>
             <div className="row">
-              <span className={`dot ${box.state === "ready" ? "ready" : box.state === "error" ? "error" : box.state === "stopped" ? "" : "waking"}`} />
+              <span className={`dot ${box.state === "ready" ? "ready" : box.state === "error" ? "error" : box.state === "stopped" ? "" : "pending"}`} />
               <strong>{box.state}</strong>
               <span className="muted">{box.message}</span>
             </div>

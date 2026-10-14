@@ -138,7 +138,7 @@ class TestMain:
         assert "an ingestion is running" in capsys.readouterr().err
 
     def test_refused_on_a_box_that_keeps_no_files(self, tenants, capsys, monkeypatch):
-        monkeypatch.setenv("STAGING_REMOTE", "izvoria-box@vps.test")
+        monkeypatch.setenv("BOX_GATEWAY_URL", "http://127.0.0.1:18000")
 
         code = main(["--all"], settings=self._settings(tenants), queue=IngestQueue.connect("sqlite://"),
                     compact=lambda *a: pytest.fail("must not compact"))

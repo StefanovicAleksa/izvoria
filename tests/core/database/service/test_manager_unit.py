@@ -75,6 +75,7 @@ class TestDatabaseSelection:
 
     @pytest.fixture
     def create_engine(self, mocker):
+        mocker.patch("app.core.database.data.engine.event")  # the password hook needs a real engine
         return mocker.patch("app.core.database.data.engine.create_engine")
 
     def test_defaults_to_the_appliance_database_and_pool(self, create_engine):

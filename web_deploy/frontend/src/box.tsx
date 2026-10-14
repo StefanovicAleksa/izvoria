@@ -18,10 +18,14 @@ export function BoxStatusProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
+    // Opening the app (or signing in) wakes the GPU server once. After that a sleeping server stays asleep until
+    // someone asks for it: a tab left open must never keep a rented GPU running, or start it again after its idle stop.
+    let woken = false;
     const poll = async () => {
       try {
         let next = await api.get<BoxStatus>("/box/status");
-        if (next.state === "stopped") next = await api.post<BoxStatus>("/box/start");
+        if (next.state === "stopped" && !woken) next = await api.post<BoxStatus>("/box/start");
+        woken = true;
         if (cancelled) return;
         setStatus(next);
         // While ready, keep an eye out for ingestion taking the GPU (dev hardware) so the status is current
@@ -51,9 +55,9 @@ export function describeBox(status: BoxStatus | null): { dot: string; label: str
     case "starting":
     case "booting":
     case "gpu_unavailable":
-      return { dot: "waking", label: "Starting" };
+      return { dot: "pending", label: "Starting" };
     case "stopping":
-      return { dot: "waking", label: "Stopping" };
+      return { dot: "pending", label: "Stopping" };
     case "error":
       return { dot: "error", label: "Error" };
     default:

@@ -274,7 +274,8 @@ button.cite:hover:not(:disabled) { background: var(--accent-soft); }
 .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; background: var(--text-muted); }
 .dot.ready { background: var(--success); }
 .dot.busy { background: var(--accent); }
-.dot.waking { background: var(--warning); }
+/* Not .waking: that is the whole-page waking screen (flex: 1, padding), which would stretch the dot into a bar */
+.dot.pending { background: var(--warning); }
 .dot.error { background: var(--danger); }
 
 .spinner {

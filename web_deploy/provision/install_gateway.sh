@@ -5,9 +5,9 @@
 #
 # The VPS holds every firm's data (docs/web_deploy.md, "Where data lives"): the Postgres databases, and the vaults and
 # uploads under /workspace/tenants (mount a Hetzner Volume at /workspace first). The rented GPU box keeps none of it;
-# it reaches the databases through an SSH tunnel it opens to this machine, as the user izvoria-box, whose keys can
-# only forward two ports and rsync inside /workspace/tenants, and are accepted only while the gateway has the box
-# started. No GPU, models or appliance dependencies here: only web_deploy/ and deploy/'s small modules run.
+# it reaches the databases through an SSH tunnel it opens to this machine, as the user izvoria-box, whose key can
+# only forward the tunnel's ports and is accepted only while the gateway has the box started; its database role works
+# only then too. The VPS moves each job's files to and from the box itself; the box has no key to the files here. No GPU, models or appliance dependencies here: only web_deploy/ and deploy/'s small modules run.
 set -euo pipefail
 
 DOMAIN="${1:?usage: install_gateway.sh <domain>}"
@@ -70,6 +70,16 @@ if [ -z "$(psql_admin "-c \"SELECT 1 FROM pg_database WHERE datname='onyx_contro
 fi
 # pgvector is created per firm database by the API; a non-superuser may only do that for a trusted extension
 psql_admin "-d template1 -c \"CREATE EXTENSION IF NOT EXISTS vector\""
+# The GPU box's own role. It creates and owns the firm databases (its API migrates them), and may log in only while the
+# gateway has the box started, with a password changed at every start (izvoria-box-access). The gateway's role is a
+# member, so the queue, backups and restores keep working on what the box owns.
+if [ -z "$(psql_admin "-c \"SELECT 1 FROM pg_roles WHERE rolname='izvoria_box'\"")" ]; then
+    psql_admin "-c \"CREATE ROLE izvoria_box NOLOGIN CREATEDB\""
+fi
+psql_admin "-c \"GRANT izvoria_box TO ${POSTGRES_USER}\""
+psql_admin "-d onyx_control -c \"GRANT ALL ON SCHEMA public TO izvoria_box\""
+psql_admin "-d onyx_control -c \"GRANT ALL ON ALL TABLES IN SCHEMA public TO izvoria_box\""
+psql_admin "-d onyx_control -c \"ALTER DEFAULT PRIVILEGES FOR ROLE ${POSTGRES_USER} IN SCHEMA public GRANT ALL ON TABLES TO izvoria_box\""
 
 echo "== Users and the data directories"
 id onyx >/dev/null 2>&1 || useradd --system --home /nonexistent --shell /usr/sbin/nologin onyx
@@ -85,28 +95,31 @@ install -d -o root -g izvoria-data -m 2770 "${DATA}/tenants"
 install -d -o onyx -g onyx -m 750 "${DATA}/source-cache"
 
 echo "== The GPU box's SSH access (tunnel + file staging), open only while the gateway has the box started"
-RRSYNC="$(command -v rrsync || true)"
-if [ -z "${RRSYNC}" ]; then
-    # Older rsync packages ship rrsync as an example script only
-    for candidate in /usr/share/doc/rsync/scripts/rrsync /usr/share/doc/rsync/scripts/rrsync.gz; do
-        if [ -f "${candidate}" ]; then
-            case "${candidate}" in *.gz) gunzip -c "${candidate}" > /usr/local/bin/rrsync ;; *) cp "${candidate}" /usr/local/bin/rrsync ;; esac
-            chmod 755 /usr/local/bin/rrsync
-            RRSYNC=/usr/local/bin/rrsync
-        fi
-    done
-fi
-[ -n "${RRSYNC}" ] || { echo "rrsync not found (it ships with rsync >= 3.2.4)." >&2; exit 1; }
-echo "${RRSYNC}" > /etc/onyx-web/rrsync-path
 install -m 755 "${ROOT}/web_deploy/provision/izvoria-box-keys" /usr/local/bin/izvoria-box-keys
 install -m 755 "${ROOT}/web_deploy/provision/add_box_keys.sh" /usr/local/sbin/izvoria-add-box-keys
 [ -f /etc/onyx-web/box_authorized_keys ] || install -m 644 /dev/null /etc/onyx-web/box_authorized_keys
 # The gateway (user onyx) says whether the box is started; sshd's key command (user nobody) reads it
 install -d -o onyx -g onyx -m 755 "${BOX_ACCESS_DIR}"
 [ -f "${BOX_ACCESS_DIR}/access" ] || { echo closed > "${BOX_ACCESS_DIR}/access"; chown onyx:onyx "${BOX_ACCESS_DIR}/access"; }
+# Root applies every change of that file: the box's database role on or off, its sessions cut when off
+install -m 755 "${ROOT}/web_deploy/provision/izvoria-box-access" /usr/local/sbin/izvoria-box-access
+install -m 644 "${ROOT}/web_deploy/provision/izvoria-box-access.path" /etc/systemd/system/
+install -m 644 "${ROOT}/web_deploy/provision/izvoria-box-access.service" /etc/systemd/system/
+systemctl daemon-reload
+systemctl enable --now izvoria-box-access.path
+systemctl enable izvoria-box-access.service
+systemctl start izvoria-box-access.service
+# The VPS moves one job's files to and from the box itself (gateway/staging_server.py), with its own key, through the
+# box's tunnel; the box has no key that reaches the files here
+if [ ! -f /etc/onyx-web/staging_ed25519 ]; then
+    ssh-keygen -q -t ed25519 -N "" -C "onyx-vps staging" -f /etc/onyx-web/staging_ed25519
+fi
+chown onyx:onyx /etc/onyx-web/staging_ed25519 /etc/onyx-web/staging_ed25519.pub
+chmod 600 /etc/onyx-web/staging_ed25519
+install -d -o onyx -g onyx -m 700 /var/lib/onyx-web/staging
 cat > /etc/ssh/sshd_config.d/izvoria-box.conf <<SSHD
-# Installed by install_gateway.sh. The GPU box logs in as izvoria-box with one of two keys, each confined in
-# /etc/onyx-web/box_authorized_keys (port forwarding to Postgres and back to the box API; rsync in ${DATA}/tenants),
+# Installed by install_gateway.sh. The GPU box logs in as izvoria-box with its tunnel key, confined in
+# /etc/onyx-web/box_authorized_keys (port forwarding only: Postgres and the gateway here, its API and sshd back),
 # and offered by izvoria-box-keys only while ${BOX_ACCESS_DIR}/access says "open".
 Match User izvoria-box
     AuthorizedKeysFile none
@@ -153,8 +166,8 @@ Gateway installed. Next:
   1. DNS: an A record for ${DOMAIN} -> this VPS
   2. Fill in ${ENV_FILE}: VAST_API_KEY, VAST_INSTANCE_ID, SMTP_*; then systemctl restart onyx-web-gateway
   3. The GPU box needs, in its /workspace/web/api.env:
-       VPS_HOST=<this VPS's address>   WEB_API_SECRET=${WEB_API_SECRET}   POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
-     and this VPS needs the box's two keys, which its provision.sh prints:  izvoria-add-box-keys '<tunnel key>' '<sync key>'
+       VPS_HOST=<this VPS's address>   WEB_API_SECRET=${WEB_API_SECRET}   (no database password: it gets one per start)
+     and this VPS needs the box's tunnel key, which its provision.sh prints:  izvoria-add-box-keys '<tunnel key>'
      The box pins this host key (compare with what provision.sh shows):
        $(ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub)
   4. Your owner account and the console's firm password:

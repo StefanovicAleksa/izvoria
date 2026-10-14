@@ -15,9 +15,12 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 
 from sqlalchemy import (
-    JSON, Column, DateTime, Integer, MetaData, String, Table, Text, create_engine, func, inspect, select, text, update,
+    JSON, Column, DateTime, Integer, MetaData, String, Table, Text, create_engine, event, func, inspect, select, text,
+    update,
 )
 from sqlalchemy.engine import Engine
+
+from app.core.database.data.credentials import apply_to_connection
 
 
 class JobStatus(str, Enum):
@@ -155,6 +158,9 @@ class IngestQueue:
             engine = create_engine(url, poolclass=StaticPool, connect_args={"check_same_thread": False})
         else:
             engine = create_engine(url, pool_pre_ping=True, pool_size=2, max_overflow=2)
+            # On the GPU box the password comes from the gateway per connection, never from the URL
+            # (web_deploy/common/box_credentials.py); elsewhere this changes nothing
+            event.listen(engine, "do_connect", lambda dialect, conn_rec, cargs, cparams: apply_to_connection(cparams))
         queue = cls(engine)
         metadata.create_all(engine)
         _add_missing_columns(engine)

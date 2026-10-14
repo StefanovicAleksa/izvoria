@@ -32,6 +32,8 @@ CONTAINER_TIMEOUT_SECONDS = 15 * 60
 SERVICES_TIMEOUT_SECONDS = 10 * 60
 INFO_CACHE_SECONDS = 5.0
 HEALTH_CACHE_SECONDS = 2.0
+# What Vast reports for an instance that is not coming back by itself
+STOPPED_STATUSES = ("exited", "stopped", "offline")
 
 
 class BoxState(str, Enum):
@@ -170,6 +172,9 @@ class BoxController:
                 return
             partial = path.with_name(path.name + ".tmp")
             partial.write_text(value + "\n")
+            # World-readable: sshd's key command (izvoria-box-keys) runs as "nobody", and the gateway's umask (0007)
+            # would otherwise hide the file from it, so the box's key would never be offered. It holds no secret.
+            partial.chmod(0o644)
             partial.replace(path)
             logger.info(f"Box SSH access {value}")
         except OSError as exc:
@@ -208,8 +213,10 @@ class BoxController:
         except VastError as exc:
             return BoxStatus(BoxState.ERROR, str(exc))
         if not info.running:
-            # Stopped from elsewhere (Vast's console, a host failure): its keys go too
-            self._set_access(False)
+            # Stopped from elsewhere (Vast's console, a host failure): its keys and database access go too. Only when
+            # truly stopped: closing rotates the box's database password, which a box merely reloading still needs
+            if info.actual_status in STOPPED_STATUSES and info.intended_status != "running":
+                self._set_access(False)
             return BoxStatus(BoxState.STOPPED, self._error)
         health = await self.health()
         if health is None or not health.ready:
