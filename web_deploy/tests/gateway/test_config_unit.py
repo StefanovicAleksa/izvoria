@@ -25,10 +25,17 @@ class TestPublicUrl:
     def test_production_needs_the_address_everyone_signs_in_at(self, env):
         with pytest.raises(RuntimeError, match="PUBLIC_URL"):
             env(VAST_API_KEY="key")
-        assert env(VAST_API_KEY="key", PUBLIC_URL="https://onyx.example.com/").public_url == "https://onyx.example.com"
+        assert env(VAST_API_KEY="key", VAST_INSTANCE_ID="1",
+                   PUBLIC_URL="https://onyx.example.com/").public_url == "https://onyx.example.com"
+
+    def test_production_names_its_boxes_primary_first(self, env):
+        with pytest.raises(RuntimeError, match="VAST_INSTANCE_ID"):
+            env(VAST_API_KEY="key", PUBLIC_URL="https://onyx.example.com")
+        settings = env(VAST_API_KEY="key", PUBLIC_URL="https://onyx.example.com", VAST_INSTANCE_ID="55919995,55823057")
+        assert settings.vast_instance_ids == (55919995, 55823057)
 
     def test_an_env_file_from_before_still_works(self, env):
-        assert env(VAST_API_KEY="key", BASE_DOMAIN="Izvoria.Example.com").public_url == "https://izvoria.example.com"
+        assert env(VAST_API_KEY="key", VAST_INSTANCE_ID="1", BASE_DOMAIN="Izvoria.Example.com").public_url == "https://izvoria.example.com"
 
     def test_a_local_end_to_end_run_without_vast_needs_none(self, env):
         # docs/web_deploy.md "Local end-to-end without Vast"

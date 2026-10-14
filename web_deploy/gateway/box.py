@@ -21,8 +21,9 @@ from typing import Awaitable, Callable, Optional
 
 import httpx
 
-from deploy.gateway.vast_client import FakeVastClient, InstanceInfo, IVastClient, VastClient, VastError
+from deploy.gateway.vast_client import FakeVastClient, InstanceInfo, IVastClient, VastError
 from web_deploy.gateway.config import GatewaySettings
+from web_deploy.gateway.vast_pool import build_pool
 
 logger = logging.getLogger(__name__)
 
@@ -121,7 +122,7 @@ def build_vast(settings: GatewaySettings) -> IVastClient:
         return LocalBox(settings.api_port)
     if settings.fake_box_host:
         return FakeVastClient(settings.fake_box_host, (settings.api_port,))
-    return VastClient(settings.vast_api_key, settings.vast_instance_id)
+    return build_pool(settings.vast_api_key, settings.vast_instance_ids, settings.scheduling_grace_seconds)
 
 
 class BoxController:
@@ -218,6 +219,8 @@ class BoxController:
             if info.actual_status in STOPPED_STATUSES and info.intended_status != "running":
                 self._set_access(False)
             return BoxStatus(BoxState.STOPPED, self._error)
+        # Running, though perhaps not started by us (Vast's console, or before a gateway restart): it may come in
+        self._set_access(True)
         health = await self.health()
         if health is None or not health.ready:
             error = health.starting_error if health and health.starting_error else self._error

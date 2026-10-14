@@ -28,6 +28,7 @@ from typing import Callable, Dict, List, Optional
 from app.features.storage.utils.upload_record import read_record
 from web_deploy.common.tenancy import database_name, firm_root
 from web_deploy.common.uploads import batch_files
+from web_deploy.gateway import youtube_cookies
 from web_deploy.ingest_worker.queue import IngestJob, IngestQueue, JobOrigin, JobStatus
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,9 @@ class BoxFiles:
     state_dir: Path
     port: int = 18022
     key: Optional[Path] = None
+    # The owner's YouTube cookies (youtube_cookies.py), sent for a YouTube job only, and where the box reads them
+    youtube_cookies: Optional[Path] = None
+    box_youtube_cookies: Path = Path("/workspace/web/youtube_cookies.txt")
 
     @classmethod
     def from_env(cls, env: Optional[Dict[str, str]] = None) -> "BoxFiles":
@@ -93,11 +97,12 @@ def sha256_of(path: Path) -> str:
 
 class StagingServer:
     def __init__(self, files: BoxFiles, queue: IngestQueue, lookup: Optional[VaultLookup] = None,
-                 run: Runner = subprocess.run) -> None:
+                 run: Runner = subprocess.run, on_youtube_refused: Optional[Callable[[], None]] = None) -> None:
         self._files = files
         self._queue = queue
         self._lookup = lookup or self._lookup_in_database
         self._run = run
+        self._on_youtube_refused = on_youtube_refused
 
     # ---------- the two transfers ----------
 
@@ -116,6 +121,15 @@ class StagingServer:
                 record = read_record(path)
                 hashes.append(record.sha256 if record else sha256_of(path))
         vault = self._send_vault_files(job.firm, hashes)
+        # The firm's own glossary for the job's language, if the owner set one (gateway/glossaries.py)
+        glossary = firm_root(self._files.tenants_root, job.firm) / "glossaries" / job.language
+        if any(glossary.glob("*.json")):
+            self._rsync(["--mkpath", f"{glossary}/", self._remote(glossary) + "/"])
+        # YouTube refuses the box's data-centre IP without a signed-in account; the box deletes this after the download
+        cookies = self._files.youtube_cookies
+        if job.origin is JobOrigin.YOUTUBE and cookies is not None and cookies.is_file():
+            self._call(["rsync", "-t", "--chmod=F600", "-e", self._ssh(), str(cookies),
+                        self._remote(self._files.box_youtube_cookies)])
         self._remember(job_id, {"firm": job.firm, "sent": vault})
         logger.info(f"Job {job_id}: sent {sent_batch} batch file(s) and {len(vault)} vault file(s) to the box")
         return {"batch_files": sent_batch, "vault_files": len(vault)}
@@ -140,6 +154,49 @@ class StagingServer:
         return {"removed": removed}
 
     # ---------- plumbing ----------
+
+    # ---------- the YouTube account, after a download step ----------
+
+    def youtube_cookies_refreshed(self, job_id: str) -> dict:
+        """
+        The cookie jar yt-dlp saved on the box, taken back when it is still a signed-in session: YouTube rotates
+        session cookies as they are used, so this is what keeps the sign-in from going stale.
+        """
+        job = self._job(job_id, allowed=(JobStatus.RUNNING, JobStatus.DONE, JobStatus.FAILED, JobStatus.QUEUED))
+        stored = self._files.youtube_cookies
+        if job.origin is not JobOrigin.YOUTUBE or stored is None or not stored.is_file():
+            return {"taken_back": False}
+        self._files.state_dir.mkdir(parents=True, exist_ok=True)
+        handle, partial = tempfile.mkstemp(prefix=".youtube_cookies-", dir=self._files.state_dir)
+        os.close(handle)
+        try:
+            try:
+                self._call(["rsync", "-t", "-e", self._ssh(), self._remote(self._files.box_youtube_cookies), partial])
+            except StagingFailed as exc:
+                logger.warning(f"Job {job_id}: no YouTube cookies to take back from the box: {exc}")
+                return {"taken_back": False}
+            text = Path(partial).read_text(encoding="utf-8", errors="replace")
+            taken = youtube_cookies.take_back(stored, text)
+        finally:
+            Path(partial).unlink(missing_ok=True)
+        logger.info(f"Job {job_id}: YouTube cookies {'refreshed' if taken else 'kept as they were'}")
+        return {"taken_back": taken}
+
+    def youtube_refused(self, job_id: str) -> dict:
+        """YouTube took the box for a bot: the cookies are missing or stale. The owner is emailed, once a day at most."""
+        job = self._job(job_id, allowed=(JobStatus.RUNNING, JobStatus.DONE, JobStatus.FAILED, JobStatus.QUEUED))
+        stored = self._files.youtube_cookies
+        if job.origin is not JobOrigin.YOUTUBE or stored is None:
+            return {"alerted": False}
+        news = youtube_cookies.mark_refused(stored)
+        logger.warning(f"Job {job_id}: YouTube refused the box's downloads as a bot")
+        if news and self._on_youtube_refused is not None:
+            try:
+                self._on_youtube_refused()
+            except Exception:  # noqa: BLE001 - the alert is a courtesy; the job's own error already says it
+                logger.exception("Could not alert the owner about the YouTube cookies")
+                return {"alerted": False}
+        return {"alerted": news}
 
     def _job(self, job_id: str, allowed) -> IngestJob:
         job = self._queue.get(job_id)

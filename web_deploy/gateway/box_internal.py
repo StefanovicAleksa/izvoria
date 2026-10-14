@@ -4,6 +4,8 @@ What the GPU box asks of the gateway, through its own tunnel (`-L 127.0.0.1:1800
 - `POST /internal/box/credentials`: the database password the box's role has this time it is started.
 - `GET  /internal/box/staging-key`: the VPS's staging public key, which the box installs so the VPS can reach its files.
 - `POST /internal/box/stage-in/{job}` and `/stage-out/{job}`: move one running job's files (staging_server.py).
+- `POST /internal/box/youtube-cookies/{job}/refreshed|refused`: after a YouTube download, the refreshed cookies come
+  back, or the owner learns YouTube refused them.
 
 Every route answers only a loopback caller (the tunnel arrives as one; Caddy also refuses /internal/* from outside)
 with a service signature (WEB_API_SECRET), and only while the gateway has the box started (the access file says
@@ -88,6 +90,9 @@ def box_internal_routes(settings: BoxInternalSettings, staging: Optional[Staging
         Route("/internal/box/staging-key", staging_key, methods=["GET"]),
         Route("/internal/box/stage-in/{job_id}", transfer("stage_in"), methods=["POST"]),
         Route("/internal/box/stage-out/{job_id}", transfer("stage_out"), methods=["POST"]),
+        Route("/internal/box/youtube-cookies/{job_id}/refreshed", transfer("youtube_cookies_refreshed"),
+              methods=["POST"]),
+        Route("/internal/box/youtube-cookies/{job_id}/refused", transfer("youtube_refused"), methods=["POST"]),
     ]
 
 

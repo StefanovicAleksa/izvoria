@@ -148,6 +148,22 @@ How the public pages are handled:
 
 Fonts are self-hosted (`@fontsource`), so no page asks a third party for anything.
 
+## Firm glossaries
+
+Each firm can have its own glossary per served language: the names and terms its recordings are transcribed (Whisper hotwords) and corrected (domain phonetic correction) with. Without one, a firm gets the shared `data/glossaries/<lang>/general.json`, as every firm did before; Serbian has no general glossary, so it gets none. Documents and images don't use a glossary.
+
+**Setting one: the owner only.**
+- **Owner console:** Firms → *Glossary* on the firm's row. Per language: upload a JSON file, pick a built-in (`finance`, `medical`, `prop_trading_macro`, …: whatever is in `data/glossaries/<lang>/`), or go back to *General (shared)*. A firm's own administrators can't see or change it (`/admin/api/firms/{slug}/glossaries[/{lang}]`, owner-only).
+- **`admin_cli`** on the VPS, as the gateway's user (the files share the box staging's group): `sudo -u onyx /opt/onyx-web-gateway/bin/python -m web_deploy.gateway.admin_cli glossaries <slug>`, `set-glossary <slug> <lang> file.json`, `set-glossary <slug> <lang> --builtin medical`, `set-glossary <slug> --from-claude answer.json` (every language of a glossary creator prompt answer at once, all or nothing), `clear-glossary <slug> <lang>`.
+
+**Checks.** An upload goes through `scripts/validate_glossary.py`: any error refuses it and is listed (UPPER_SNAKE_CASE labels, duplicates, Cyrillic in `sr`, …), warnings are kept and shown. It needs terms, at most 2 MB, and an industry name (its `"industry"` key, else the file's name), which becomes the file name. Built-ins are taken as shipped.
+
+**Where it lives and how it reaches a job** (`web_deploy/gateway/glossaries.py`):
+- `/workspace/tenants/<firm>/glossaries/<lang>/<industry>.json` plus `meta.json` (source, counts, warnings). At most one per language; a new one replaces the folder atomically.
+- The VPS staging sends the job's language's folder with the job (`staging_server.stage_in`). The box drops any glossary of the firm before asking, and wipes it with the rest of the scratch afterwards: it holds client names.
+- The ingestion child gets `GLOSSARY_PATH=<tenants>/<firm>/glossaries` and `APPLIANCE_INDUSTRY=<INDUSTRY>` (`supervisor.firm_environment`), which is exactly how the appliance reads its own `data/glossaries/`. No `app/` change.
+- **It applies to recordings ingested from now on.** Domain adaptation is cached per source, so a recording already indexed keeps the glossary it was read with until it is re-ingested.
+
 ## What changed in `app/` (all off by default; the desktop is untouched)
 
 | Setting | Appliance | Hosted | What it does |
@@ -385,6 +401,16 @@ Steps:
 
 A replacement box needs only steps 2–4: it holds nothing to restore.
 
+**Spare boxes.** A stopped Vast instance keeps its disk but not its GPU: anyone may rent that GPU meanwhile, and the instance can't start until they release it (on 2026-10-14 the primary's was taken for the rest of the day). So keep one or two spares: fully provisioned boxes on **other machines**, each costing only its disk while stopped (~$0.03/hr). Provision each like the primary (steps 2–4, its own tunnel key added with `izvoria-add-box-keys`), then list them all, primary first:
+```
+VAST_INSTANCE_ID=55919995,55823057
+```
+The gateway (`gateway/vast_pool.py`) then:
+- **wakes the first box whose GPU is free.** A box Vast refuses, or leaves "scheduling" past `scheduling_grace_seconds` (60 s), is stopped again at once (Vast queues a refused start and would run it later) and the next is tried. With every GPU taken, the web app says so on its "asleep" card;
+- **keeps at most one running.** Any other box found running, or with a start pending, is stopped, so a second GPU is never billed;
+- **stops them all** at the idle stop.
+Every box holds the same code and models and no data, so which one answers makes no difference. One listing call (`GET /api/v1/instances/`) reads every box's state, so polling stays within Vast's rate limit. Each box is still capped by its host's maximum duration (shown when renting): replace one before its date.
+
 ### Moving existing data
 
 A box provisioned before this change kept its own Postgres (`/workspace/pgdata`) and vault. To move a firm's data:
@@ -406,8 +432,8 @@ Firms used to live at `<firm>.<domain>`.
 Create the firm on the gateway (`legal-demo`, "Demo"), then queue sample material **on the VPS**, where uploads and the queue live:
 ```bash
 cd /opt/onyx_v3 && set -a && . /etc/onyx-web-gateway.env && set +a
-sudo -u onyx -E /opt/onyx-web-gateway/bin/python -m web_deploy.provision.seed_demo legal-demo document en /srv/samples/contracts
-sudo -u onyx -E /opt/onyx-web-gateway/bin/python -m web_deploy.provision.seed_demo clinic-demo audio sr /srv/samples/consultations
+sudo -u onyx /opt/onyx-web-gateway/bin/python -m web_deploy.provision.seed_demo legal-demo document en /srv/samples/contracts
+sudo -u onyx /opt/onyx-web-gateway/bin/python -m web_deploy.provision.seed_demo clinic-demo audio sr /srv/samples/consultations
 ```
 The box ingests them when it next runs.
 
@@ -581,6 +607,13 @@ On the Ingest page, **Video** batches can also come from YouTube links: single v
   - If none can be fetched, the job fails before the GPU is touched.
   - A stop re-queues the job; the downloads start again, since the scratch is wiped.
   - The downloaded files are never pushed to the VPS; their copies in the vault are.
+- **A rented box needs a signed-in YouTube account.** YouTube answers a data-centre IP that isn't signed in with "Sign in to confirm you're not a bot" for every video (found 2026-10-14 on the Vast box; listing a playlist still works). So the box downloads with the cookies of a **spare** Google account, never a personal one (`gateway/youtube_cookies.py`):
+  - **Export them:** open a private window, sign in to the spare account, open youtube.com, export its cookies with a cookies.txt extension (e.g. "Get cookies.txt LOCALLY"), then close the window *without signing out*, so the session isn't rotated away.
+  - **Upload them:** in the owner console, GPU server → YouTube downloads, or on the VPS `sudo -u onyx /opt/onyx-web-gateway/bin/python -m web_deploy.gateway.admin_cli set-youtube-cookies cookies.txt`. Only youtube.com and google.com cookies are kept, in `YOUTUBE_COOKIES_FILE` (beside the gateway database, mode 0600). The console shows whether they are signed in and when the sign-in expires.
+  - **How they travel:** the VPS staging sends them to the box (`/workspace/web/youtube_cookies.txt`, mode 0600) for a YouTube job only. The supervisor deletes them as soon as the download step ends, and every start deletes any left by a crash. In local mode (one disk) yt-dlp reads the gateway's own file.
+  - **They keep themselves alive.** YouTube rotates session cookies as they are used; after each download step the box asks the VPS to take back the jar yt-dlp saved (`/internal/box/youtube-cookies/{job}/refreshed`), which replaces the stored one only if it is still a signed-in session.
+  - **Upkeep:** re-export only when YouTube refuses them anyway. The box then reports it (`…/refused`), the owner gets one email a day while it lasts ("Izvoria: YouTube downloads need fresh cookies", to `SUPPORT_TO`), and the console card shows the date. Without any cookies, a failed batch's error also tells the owner to add them.
+  - **The risk:** YouTube may flag an account used this way. Today it is izvoria.support@gmail.com, which also sends the request emails, so a lock would stop those too. A dedicated account would avoid that.
 - **Turning it off:** `LINK_INGEST_ENABLED=false` hides the panel and refuses the routes.
 - **Keeping it working.** yt-dlp (`yt-dlp[default]`, which includes the challenge solver) and deno (the JavaScript runtime it needs) come from `web_deploy/api/requirements.txt`. YouTube breaks old clients within months: if downloads start failing, run `venv/bin/pip install -U "yt-dlp[default]"` on the box. ffmpeg (already provisioned) merges the video and audio streams.
 

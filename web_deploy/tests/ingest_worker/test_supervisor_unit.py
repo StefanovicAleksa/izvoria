@@ -2,7 +2,7 @@ from pathlib import Path
 
 from web_deploy.ingest_worker.queue import IngestMode, IngestQueue, JobOrigin, JobStatus
 from web_deploy.ingest_worker.run_job import ProgressWriter
-from web_deploy.ingest_worker.supervisor import Supervisor, child_environment
+from web_deploy.ingest_worker.supervisor import Supervisor, child_environment, firm_environment
 
 
 def _queue():
@@ -26,6 +26,33 @@ class TestChildEnvironment:
         assert (env["MODEL_PINNED_TYPES"], env["MODEL_EXTERNAL_TYPES"]) == ("[]", "[]")
         assert env["VRAM_HEADROOM_MB"] == "2000"
 
+
+class TestFirmGlossary:
+    def _glossary(self, tenants, language, *names):
+        folder = tenants / "legal-demo" / "glossaries" / language
+        folder.mkdir(parents=True)
+        for name in names:
+            (folder / name).write_text("{}")
+
+    def test_the_firms_glossary_for_the_language_is_what_the_child_reads(self, tmp_path):
+        self._glossary(tmp_path, "en", "legal_disputes.json", "meta.json")
+
+        env = firm_environment("legal-demo", "en", tmp_path, {"APPLIANCE_INDUSTRY": "FINANCE"})
+
+        assert env["GLOSSARY_PATH"] == str(tmp_path / "legal-demo" / "glossaries")
+        assert env["APPLIANCE_INDUSTRY"] == "LEGAL_DISPUTES"
+
+    def test_without_one_the_shared_general_glossary_whatever_the_base_says(self, tmp_path):
+        self._glossary(tmp_path, "en", "legal_disputes.json", "meta.json")
+
+        env = firm_environment("legal-demo", "sr", tmp_path, {"APPLIANCE_INDUSTRY": "FINANCE", "GLOSSARY_PATH": "/x"})
+
+        assert "APPLIANCE_INDUSTRY" not in env and "GLOSSARY_PATH" not in env
+
+    def test_an_ambiguous_folder_is_not_guessed_at(self, tmp_path):
+        self._glossary(tmp_path, "en", "a.json", "b.json")
+
+        assert "APPLIANCE_INDUSTRY" not in firm_environment("legal-demo", "en", tmp_path, {})
 
 class TestSupervisor:
     def test_runs_the_oldest_job_in_a_child(self):
@@ -233,6 +260,12 @@ class _Stager:
     def stage_out(self, job_id):
         self.events.append(("out", job_id))
 
+    def youtube_cookies_back(self, job_id, refused):
+        self.events.append(("cookies_back", refused))
+
+    def drop_youtube_cookies(self):
+        self.events.append(("drop_cookies",))
+
     def has_pending(self):
         return self.pending
 
@@ -317,6 +350,10 @@ class TestStaging:
 
         assert events[0] == ("in", "legal-demo", None)
         assert seen == [["video000001"]]
+        assert ("drop_cookies",) in events  # the YouTube account's cookies go, even though the download failed
+        assert ("cookies_back", False) in events
+        assert events.index(("cookies_back", False)) < events.index(("drop_cookies",))
+        assert events.index(("drop_cookies",)) < next(i for i, e in enumerate(events) if e[0] == "out")
 
 
 class TestActiveBatchDirs:

@@ -14,6 +14,7 @@ Run: python -m web_deploy.ingest_worker.fetch_links <job id>
 """
 
 import logging
+import os
 import re
 import shutil
 import sys
@@ -33,7 +34,11 @@ PROGRESS_INTERVAL_SECONDS = 2.0
 Downloader = Callable[[Video, Path, Callable[[float], None]], None]
 
 
-def fetch(job_id: str, queue: IngestQueue, downloader: Downloader, clock=time.monotonic, wall=time.time) -> int:
+COOKIES_HINT = " The owner can add YouTube cookies in the console (GPU server → YouTube downloads)."
+
+
+def fetch(job_id: str, queue: IngestQueue, downloader: Downloader, clock=time.monotonic, wall=time.time,
+          cookies: Optional[Path] = None) -> int:
     """Downloads every pending video of the job's batch. Returns 0 when at least one video is there, else 1."""
     job = queue.get(job_id)
     if job is None:
@@ -70,7 +75,8 @@ def fetch(job_id: str, queue: IngestQueue, downloader: Downloader, clock=time.mo
     if not fetched:
         errors = (youtube.read_manifest(folder) or {}).get("errors", {})
         first = next(iter(errors.values()), "no reason was given")
-        queue.fail(job_id, f"None of the {total} videos could be downloaded: {first}")
+        hint = COOKIES_HINT if youtube.BOT_CHECK in first and (cookies is None or not cookies.is_file()) else ""
+        queue.fail(job_id, f"None of the {total} videos could be downloaded: {first}{hint}")
         return 1
     return 0
 
@@ -86,8 +92,11 @@ def _remove_leftovers(folder: Path) -> None:
             path.unlink(missing_ok=True)
 
 
-def ytdlp_downloader(max_height: int) -> Downloader:
-    """yt-dlp, one video at a time, as MP4 named after the video (`Video.file_name`)."""
+def ytdlp_downloader(max_height: int, cookies: Optional[Path] = None) -> Downloader:
+    """
+    yt-dlp, one video at a time, as MP4 named after the video (`Video.file_name`). With `cookies` (a Netscape
+    cookies.txt, when it exists), as that YouTube account: the rented box's data-centre IP needs one.
+    """
     import yt_dlp
 
     # H.264 + AAC first (plays everywhere); otherwise the best at or under the height, remuxed into MP4
@@ -112,6 +121,8 @@ def ytdlp_downloader(max_height: int) -> Downloader:
             "progress_hooks": [hook],
             "js_runtimes": _js_runtimes(),
         }
+        if cookies is not None and cookies.is_file():
+            options["cookiefile"] = str(cookies)
         with yt_dlp.YoutubeDL(options) as client:
             client.download([video.url])
         if not youtube.downloaded(folder, video):
@@ -140,7 +151,8 @@ def main() -> None:
     from web_deploy.api.config import ApiSettings
     settings = ApiSettings.from_env()
     queue = IngestQueue.connect(settings.control_database_url)
-    sys.exit(fetch(sys.argv[1], queue, ytdlp_downloader(settings.link_max_height)))
+    cookies = Path(os.environ.get("YOUTUBE_COOKIES_FILE", "/workspace/web/youtube_cookies.txt"))
+    sys.exit(fetch(sys.argv[1], queue, ytdlp_downloader(settings.link_max_height, cookies), cookies=cookies))
 
 
 if __name__ == "__main__":

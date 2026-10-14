@@ -193,6 +193,16 @@ def ytdlp_extractor() -> Extractor:
     return extract
 
 
+# YouTube's answer to a data-centre IP without a signed-in account: "Sign in to confirm you're not a bot"
+BOT_CHECK = "confirm you"
+
+
+def bot_checked(folder: Path) -> bool:
+    """Whether any video of this batch was refused by YouTube's bot check (the YouTube cookies are missing or stale)."""
+    errors = (read_manifest(folder) or {}).get("errors", {})
+    return any(BOT_CHECK in str(message) for message in errors.values())
+
+
 def reason(exc: Exception) -> str:
     """yt-dlp's message, for the user without its "ERROR: [youtube] <id>:" prefix: "Private video", "Video unavailable"."""
     message = re.sub(r"^ERROR:\s*(\[[^\]]+\]\s*)?([A-Za-z0-9_-]+:\s*)?", "", str(exc).strip())

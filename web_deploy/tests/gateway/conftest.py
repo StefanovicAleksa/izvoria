@@ -51,8 +51,10 @@ def app(tmp_path, store, vast, box_api, transport):
     static.mkdir()
     (static / "index.html").write_text("<html>spa</html>")
     settings = GatewaySettings(api_secret=SECRET, database_path=tmp_path / "g.db", static_dir=static,
+                               youtube_cookies_file=tmp_path / "youtube_cookies.txt",
                                fake_box_host="127.0.0.1", https_only=False, mail=MAIL)
     http = httpx.AsyncClient(transport=httpx.MockTransport(box_api))
     box = BoxController(settings, vast, http)
     mailer = Mailer(MAIL, store, transport=transport, executor=InlineExecutor())
-    return create_app(settings, store, box, IdleMonitor(box, 1800), http, run_idle_monitor=False, mailer=mailer)
+    return create_app(settings, store, box, IdleMonitor(box, 1800), http, run_idle_monitor=False, mailer=mailer,
+                      glossary_root=tmp_path / "tenants")

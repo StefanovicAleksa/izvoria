@@ -16,6 +16,7 @@ Run: uvicorn web_deploy.gateway.app:create_production_app --factory --host 127.0
 
 import asyncio
 import contextlib
+import dataclasses
 import functools
 import json
 import logging
@@ -35,6 +36,7 @@ from web_deploy.common.signing import Principal
 from web_deploy.common.tenancy import InvalidSlug
 from web_deploy.gateway.box import BoxController, BoxState, box_ssl_context, build_vast
 from web_deploy.gateway.config import GatewaySettings
+from web_deploy.gateway import glossaries, youtube_cookies
 from web_deploy.gateway.box_internal import BoxInternalSettings, box_internal_routes
 from web_deploy.gateway.data import DataRoutes, DataSettings
 from web_deploy.gateway.staging_server import BoxFiles, StagingServer
@@ -177,7 +179,7 @@ async def read_limited(request: Request, max_bytes: int) -> bytes:
 def create_app(settings: GatewaySettings, store: Store, box: BoxController, idle: IdleMonitor,
                http: httpx.AsyncClient, run_idle_monitor: bool = True, mailer: Optional[Mailer] = None,
                data: Optional[Callable[..., DataRoutes]] = None, run_background: bool = True,
-               internal_routes: Optional[list] = None) -> Starlette:
+               internal_routes: Optional[list] = None, glossary_root: Optional[Path] = None) -> Starlette:
     mailer = mailer or Mailer(settings.mail, store)
     account_limiter = Limiter(LOGIN_WINDOW_SECONDS, {"ip": LOGIN_MAX_FAILURES, "account": LOGIN_MAX_FAILURES})
     firm_limiter = Limiter(LOGIN_WINDOW_SECONDS, {"ip": LOGIN_MAX_FAILURES, "firm": FIRM_MAX_FAILURES})
@@ -489,6 +491,64 @@ def create_app(settings: GatewaySettings, store: Store, box: BoxController, idle
             return JSONResponse({"error": "Unknown action."}, status_code=404)
         return JSONResponse(store.firm(slug).public())
 
+    # ---------- a firm's glossaries (glossaries.py): the owner only ----------
+
+    async def admin_glossaries(request: Request, user: User) -> Response:
+        slug = request.path_params["slug"]
+        if store.firm(slug) is None or slug == OWNER_FIRM:
+            return JSONResponse({"error": "No such firm."}, status_code=404)
+        if glossary_root is None:
+            return JSONResponse({"error": "Firm data is not set up on this gateway."}, status_code=503)
+        language = request.path_params.get("language")
+        try:
+            if request.method == "PUT":
+                raw = await read_limited(request, glossaries.MAX_BYTES + 64 * 1024)
+                try:
+                    data = json.loads(raw or b"{}")
+                except ValueError:
+                    raise glossaries.GlossaryRejected("That is not JSON.")
+                if not isinstance(data, dict):
+                    raise glossaries.GlossaryRejected("Expected a JSON object.")
+                if data.get("builtin"):
+                    await asyncio.to_thread(glossaries.set_builtin, glossary_root, slug, language,
+                                            str(data["builtin"]))
+                else:
+                    await asyncio.to_thread(glossaries.set_uploaded, glossary_root, slug, language,
+                                            data.get("glossary"), str(data.get("file_name") or "")[:200])
+            elif request.method == "DELETE":
+                await asyncio.to_thread(glossaries.clear, glossary_root, slug, language)
+        except glossaries.GlossaryRejected as exc:
+            return JSONResponse({"error": str(exc), "errors": exc.errors[:50], "kind": "invalid"}, status_code=400)
+        except PayloadError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
+        return JSONResponse({"glossaries": await asyncio.to_thread(glossaries.status, glossary_root, slug),
+                             "builtins": glossaries.builtins()})
+
+    # ---------- the YouTube account the box downloads with (youtube_cookies.py): the owner only ----------
+
+    async def admin_youtube_cookies(request: Request, user: User) -> Response:
+        path = settings.youtube_cookies_file
+        if path is None:
+            return JSONResponse({"error": "YouTube cookies are not set up on this gateway."}, status_code=503)
+        try:
+            if request.method == "PUT":
+                raw = await read_limited(request, youtube_cookies.MAX_BYTES + 64 * 1024)
+                try:
+                    data = json.loads(raw or b"{}")
+                except ValueError:
+                    raise youtube_cookies.CookiesRejected("Expected JSON with the file's text.")
+                text = data.get("cookies") if isinstance(data, dict) else None
+                if not isinstance(text, str):
+                    raise youtube_cookies.CookiesRejected("Expected the cookies.txt file's text.")
+                await asyncio.to_thread(youtube_cookies.set_cookies, path, text)
+            elif request.method == "DELETE":
+                await asyncio.to_thread(youtube_cookies.clear, path)
+        except youtube_cookies.CookiesRejected as exc:
+            return JSONResponse({"error": str(exc), "kind": "invalid"}, status_code=400)
+        except PayloadError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=exc.status_code)
+        return JSONResponse(await asyncio.to_thread(youtube_cookies.status, path))
+
     async def admin_console_password(request: Request, user: User) -> Response:
         data = await json_body(request)
         if await asyncio.to_thread(store.authenticate, OWNER_FIRM, user.email,
@@ -665,11 +725,15 @@ def create_app(settings: GatewaySettings, store: Store, box: BoxController, idle
         Route("/firm/api/password", g(firm_password, firm_admin=True), methods=["POST"]),
         Route("/admin/api/firms", g(admin_firms, owner=True), methods=["GET", "POST"]),
         Route("/admin/api/firms/{slug}/users", g(admin_users, owner=True), methods=["GET", "POST"]),
+        Route("/admin/api/firms/{slug}/glossaries", g(admin_glossaries, owner=True), methods=["GET"]),
+        Route("/admin/api/firms/{slug}/glossaries/{language}", g(admin_glossaries, owner=True),
+              methods=["PUT", "DELETE"]),
         Route("/admin/api/firms/{slug}/{action}", g(admin_firm_action, owner=True), methods=["POST"]),
         Route("/admin/api/users/{user_id}/{action}", g(admin_user, owner=True), methods=["POST"]),
         Route("/admin/api/console-password", g(admin_console_password, owner=True), methods=["POST"]),
         Route("/admin/api/requests", g(admin_requests, owner=True), methods=["GET"]),
         Route("/admin/api/requests/{request_id}/{action}", g(admin_request_action, owner=True), methods=["POST"]),
+        Route("/admin/api/youtube-cookies", g(admin_youtube_cookies, owner=True), methods=["GET", "PUT", "DELETE"]),
         Route("/admin/api/box", g(admin_box, owner=True), methods=["GET"]),
         Route("/admin/api/box/{action}", g(admin_box, owner=True), methods=["POST"]),
     ]
@@ -692,14 +756,29 @@ def create_production_app() -> Starlette:
     data_settings = DataSettings.from_env()
     queue = IngestQueue.connect(data_settings.control_database_url)
     data = functools.partial(DataRoutes, data_settings, queue, http, settings.api_secret)
+    mailer = Mailer(settings.mail, store)
     internal = None
     if settings.box_link == "tunnel" and settings.box_access_file is not None:
-        files = BoxFiles.from_env()
+        files = dataclasses.replace(BoxFiles.from_env(), youtube_cookies=settings.youtube_cookies_file)
         internal = box_internal_routes(BoxInternalSettings(
             secret=settings.api_secret, access_file=settings.box_access_file,
             password_file=settings.box_access_file.with_name("db-password"),
             staging_public_key=files.key.with_name(files.key.name + ".pub") if files.key else None,
-        ), StagingServer(files, queue))
+        ), StagingServer(files, queue, on_youtube_refused=lambda: mailer.notify_owner(
+            YOUTUBE_REFUSED_SUBJECT, YOUTUBE_REFUSED_BODY.format(console=settings.public_url or "the owner console"))))
     # Dev hardware has no rented box to stop
     return create_app(settings, store, box, idle, http, run_idle_monitor=settings.box_mode == "vast", data=data,
-                      internal_routes=internal)
+                      internal_routes=internal, glossary_root=data_settings.tenants_root, mailer=mailer)
+
+
+YOUTUBE_REFUSED_SUBJECT = "Izvoria: YouTube downloads need fresh cookies"
+YOUTUBE_REFUSED_BODY = """YouTube refused the GPU server's downloads as a bot ("Sign in to confirm you're not a bot").
+The YouTube account's cookies are missing or have expired, so every firm's YouTube links fail until they are replaced.
+
+To fix it (2 minutes):
+1. Open a private window, sign in to the spare YouTube account, open youtube.com and play a video for a few seconds.
+2. Export its cookies with the cookies.txt extension, then close the window without signing out.
+3. Upload the file: {console} -> owner console -> GPU server -> YouTube downloads.
+
+You get this email at most once a day while it lasts. docs/web_deploy.md, "Adding videos from YouTube", has the details.
+"""

@@ -39,6 +39,36 @@ export interface AdminFirm {
   users: number;
 }
 
+/** A firm's own glossary for one language (gateway/glossaries.py's meta); null means the shared general one. */
+export interface FirmGlossary {
+  language: Lang;
+  industry: string;
+  source: "upload" | "builtin";
+  builtin: string | null;
+  original_name: string | null;
+  updated_at: string;
+  terms: number;
+  sub_domains: string[];
+  warnings: string[];
+}
+
+export interface FirmGlossaries {
+  glossaries: Record<string, FirmGlossary | null>;
+  builtins: Record<string, string[]>;
+}
+
+/** The YouTube account the GPU box downloads with (gateway/youtube_cookies.py). */
+export interface YoutubeCookies {
+  present: boolean;
+  cookies: number;
+  signed_in: boolean;
+  expires: number | null;
+  expired: boolean;
+  updated_at: number | null;
+  /** When YouTube last refused a download as a bot since these were set: they need re-exporting. */
+  refused_at: number | null;
+}
+
 export interface InboundRequest {
   id: string;
   kind: "signup" | "support";

@@ -1,5 +1,5 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { IngestView } from "./IngestView";
+import { IngestView, withoutRetriedFailures } from "./IngestView";
 import { SessionContext } from "../session";
 import { fakeGateway } from "../test-utils";
 
@@ -93,5 +93,22 @@ describe("choosing a folder", () => {
     expect(screen.getByText("Unit 4 - Part I.mp4")).toBeInTheDocument();
     expect(screen.getByText(/2 files from Lectures/)).toBeInTheDocument();
     expect(screen.getByText(/1 left out/)).toBeInTheDocument();
+  });
+});
+
+describe("the queue", () => {
+  const job = (id: string, mode: string, status: string, created_at: string) =>
+    ({ id, mode, status, created_at, language: "en", file_count: 1, position: null, owner_id: "u1",
+       started_at: null, finished_at: null, progress: null }) as any;
+
+  it("hides a failure once a newer batch of the same kind is under way, and keeps one nobody retried", () => {
+    const jobs = [
+      job("retry", "video", "running", "2026-10-14T14:34:00Z"),
+      job("first", "video", "failed", "2026-10-14T12:58:00Z"),
+      job("doc", "document", "failed", "2026-10-14T13:00:00Z"),
+      job("older-cancel", "video", "cancelled", "2026-10-14T10:00:00Z"),
+    ];
+    expect(withoutRetriedFailures(jobs).map((j) => j.id)).toEqual(["retry", "doc"]);
+    expect(withoutRetriedFailures([jobs[1]]).map((j) => j.id)).toEqual(["first"]);
   });
 });

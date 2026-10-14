@@ -131,6 +131,56 @@ class TestStageIn:
         assert server.stage_in(job.id) == {"batch_files": 0, "vault_files": 0}
         assert fake.commands == []
 
+    def test_the_firms_glossary_for_the_jobs_language_goes_too(self, roots, queue):
+        vps, box = roots
+        job, _ = _running_job(queue, vps, {"talk.mp4": b"upload"})
+        for firm, language in (("legal-demo", "en"), ("legal-demo", "sr"), ("other-firm", "en")):
+            folder = vps / firm / "glossaries" / language
+            folder.mkdir(parents=True)
+            (folder / "law.json").write_text(f"{firm} {language}")
+            (folder / "meta.json").write_text("{}")
+        server, _ = _server(roots, queue)
+
+        server.stage_in(job.id)
+
+        assert (box / "legal-demo" / "glossaries" / "en" / "law.json").read_text() == "legal-demo en"
+        assert not (box / "legal-demo" / "glossaries" / "sr").exists()
+        assert not (box / "other-firm").exists()
+
+    def test_a_youtube_job_takes_the_youtube_cookies_and_an_upload_does_not(self, roots, queue, tmp_path):
+        vps, box = roots
+        cookies = tmp_path / "youtube_cookies.txt"
+        cookies.write_text("cookies")
+        files = BoxFiles(tenants_root=vps, state_dir=vps.parent / "state", port=18022,
+                         key=Path("/etc/onyx-web/staging"), youtube_cookies=cookies,
+                         box_youtube_cookies=Path("/workspace/web/youtube_cookies.txt"))
+        sent = []
+
+        def run(command, **kwargs):
+            sent.append(command)
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        upload, _ = _running_job(queue, vps, {"talk.mp4": b"upload"})
+        StagingServer(files, queue, lookup=lambda firm, hashes: [], run=run).stage_in(upload.id)
+        assert not any(str(cookies) in c for c in sent)
+        queue.fail(upload.id, "done")
+
+        tube, _ = _running_job(queue, vps, {}, origin=JobOrigin.YOUTUBE, firm="other-firm")
+        sent.clear()
+        StagingServer(files, queue, lookup=lambda firm, hashes: [], run=run).stage_in(tube.id)
+        command = next(c for c in sent if str(cookies) in c)
+        assert "--chmod=F600" in command and command[-1] == "root@127.0.0.1:/workspace/web/youtube_cookies.txt"
+
+    def test_no_glossary_sends_none(self, roots, queue):
+        vps, box = roots
+        job, _ = _running_job(queue, vps, {"talk.mp4": b"upload"})
+        server, fake = _server(roots, queue)
+
+        server.stage_in(job.id)
+
+        assert not (box / "legal-demo" / "glossaries").exists()
+        assert not any("glossaries" in " ".join(c) for c in fake.commands)
+
     def test_the_connection_is_the_boxs_own_forwarded_sshd_with_the_staging_key(self, roots, queue):
         vps, _ = roots
         job, _ = _running_job(queue, vps, {"talk.mp4": b"x"})
@@ -167,3 +217,42 @@ class TestStageOut:
         queue.fail(job.id, "boom")
         server, _ = _server(roots, queue)
         assert server.stage_out(job.id) == {"removed": 0}
+
+
+class TestYoutubeCookiesAfterTheDownload:
+    def _server(self, roots, queue, tmp_path, box_jar=None, alerts=None):
+        vps, _ = roots
+        stored = tmp_path / "youtube_cookies.txt"
+        signed = ".youtube.com\tTRUE\t/\tTRUE\t4102444800\tSAPISID\t{}\n"
+        stored.write_text("# Netscape HTTP Cookie File\n" + signed.format("old"))
+        files = BoxFiles(tenants_root=vps, state_dir=tmp_path / "state", port=18022, key=None,
+                         youtube_cookies=stored, box_youtube_cookies=Path("/workspace/web/youtube_cookies.txt"))
+
+        def run(command, **kwargs):
+            if box_jar is None:
+                return subprocess.CompletedProcess(command, 23, "", "No such file")
+            Path(command[-1]).write_text(box_jar.format(signed.format("rotated")))
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        server = StagingServer(files, queue, lookup=lambda f, h: [], run=run,
+                               on_youtube_refused=(lambda: alerts.append(1)) if alerts is not None else None)
+        job, _ = _running_job(queue, vps, {}, origin=JobOrigin.YOUTUBE)
+        return server, job, stored
+
+    def test_the_refreshed_cookies_come_back(self, roots, queue, tmp_path):
+        server, job, stored = self._server(roots, queue, tmp_path, box_jar="# Netscape HTTP Cookie File\n{}")
+        assert server.youtube_cookies_refreshed(job.id) == {"taken_back": True}
+        assert "rotated" in stored.read_text()
+
+    def test_nothing_on_the_box_keeps_the_stored_ones(self, roots, queue, tmp_path):
+        server, job, stored = self._server(roots, queue, tmp_path)
+        assert server.youtube_cookies_refreshed(job.id) == {"taken_back": False}
+        assert "old" in stored.read_text()
+        assert not list((tmp_path / "state").glob(".youtube_cookies-*"))
+
+    def test_a_refusal_emails_the_owner_once(self, roots, queue, tmp_path):
+        alerts = []
+        server, job, _ = self._server(roots, queue, tmp_path, alerts=alerts)
+        assert server.youtube_refused(job.id) == {"alerted": True}
+        assert server.youtube_refused(job.id) == {"alerted": False}
+        assert alerts == [1]

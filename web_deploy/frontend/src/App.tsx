@@ -143,6 +143,7 @@ export function BoxGate({ children }: { children: ReactNode }) {
         <div className="card">
           <h2>{t("The appliance is asleep")}</h2>
           <p className="muted">{t("It goes to sleep after half an hour without use, so the GPU isn't paid for while nobody needs it.")}</p>
+          {status.error && <p className="banner danger">{status.error}</p>}
           <button className="primary" onClick={() => api.post<BoxStatus>("/box/start").then(setStatus)}>{t("Wake it")}</button>
         </div>
       </div>

@@ -93,6 +93,17 @@ class TestTunnel:
         assert access.read_text().strip() == "closed"
 
     @pytest.mark.asyncio
+    async def test_a_box_started_from_elsewhere_is_let_in(self, tmp_path):
+        vast = FakeVastClient("127.0.0.1", (8095,))
+        await vast.start()  # Vast's console, or the gateway restarted while it ran
+        access = tmp_path / "box-access"
+        access.write_text("closed\n")
+        box = BoxController(self._settings(tmp_path), vast, health_client({"ready": False}))
+
+        assert (await box.status()).state is BoxState.BOOTING
+        assert access.read_text().strip() == "open"
+
+    @pytest.mark.asyncio
     async def test_a_box_stopped_from_elsewhere_loses_its_keys_too(self, tmp_path):
         vast = FakeVastClient("127.0.0.1", (8095,))
         (tmp_path / "box-access").write_text("open\n")
