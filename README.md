@@ -1,85 +1,127 @@
-# **Izvoria AI Appliance 💎**
+# Izvoria
 
-**Izvoria** is an enterprise-grade, fully on-premise AI Appliance engineered specifically for Law Firms and Hospitals.  
-Designed with absolute privacy in mind, Izvoria provides a powerful audio intelligence and processing pipeline that operates securely on local hardware. No data ever leaves the premise, and organizations benefit from flat-rate, unlimited usage.  
-⚠️ **Development Status:** Izvoria is currently in active development. **This README reflects only the features currently implemented in the codebase.**
+**A private, on-premise AI appliance that answers questions from an organisation's own recordings and documents, and cites a source for every claim.**
 
-## **📍 Current Status**
+Izvoria is built for law firms, hospitals and other businesses whose data may not leave the building. A client points it at their local video, audio, documents and images. Izvoria transcribes, reads and indexes all of it on local hardware, then lets people search it, chat with it, and commission multi-page research reports over it. Every answer comes from a local LLM that may only use the indexed material, and every sentence carries a `[Doc N]` citation that opens the exact clip, page, line range or image it came from.
 
-The ingestion pipeline (transcription, diarization, visual analysis) and the RAG retrieval side (hybrid search, verified/hallucination-scrubbed search, cited QA generation) are both built and integrated into the engine. Current focus: building the conversational agent that sits on top of RAG for multi-turn, tool-using interaction.
+There is no cloud API anywhere in the inference path. Nothing is sent to a third party.
 
-- **`CLAUDE.md`** — architecture, conventions, and how to add a new feature in coherence with the existing codebase.
-- **`CHANGELOG.md`** — feature-by-feature history of what's been built.
-- **`docs/`** — a dedicated write-up per feature/module: what it does, how it does it, and its gotchas.
+> **Status: complete.** The appliance (ingestion, retrieval, four query modes, desktop app, English and Serbian) is finished and in use. A hosted multi-firm web version runs the same engine for demos and remote users. Feature-by-feature history is in [`CHANGELOG.md`](CHANGELOG.md).
 
-## **🏗️ Current Features & Processing Pipeline**
+---
 
-Izvoria operates autonomously, transforming raw media into highly accurate, domain-corrected transcripts. Here is a detailed breakdown of the currently implemented pipeline:
+## Why it exists
 
-### **1\. Media Ingestion & Extraction**
+A lawyer or doctor who acts on a made-up answer is the failure this project is designed to prevent. Two requirements follow, and the whole architecture serves them:
 
-* **What it does:** Securely monitors local directories, ingests raw video/audio files, and prepares them for AI processing.  
-* **How it works:** Uses FFmpeg to isolate and extract a normalized, high-fidelity audio track (usually 16kHz WAV) from various media formats. It uses SHA-256 hashing to deduplicate files and prevent redundant processing.
+1. **No ungrounded answers.** The model must not state anything that isn't in the client's data. If the material doesn't cover a question, Izvoria says so.
+2. **Every claim is traceable.** Each citation resolves to a verbatim excerpt and a playable or viewable source location.
 
-### **2\. Voice Activity Detection (VAD)**
+That is why the pipeline does not rely on a single model pass. It has separate correction and verification stages: phonetic correction of transcripts, hallucination correction of visual descriptions, an OCR check on text the vision model claims to read, a scrubber that drops weak retrieved evidence, and citation validation on generated answers and reports.
 
-* **What it does:** Identifies exact timestamps where human speech occurs, discarding silence, background noise, or music.  
-* **How it works:** Employs the **NVIDIA NeMo MarbleNet** model. This drastically saves compute time for downstream tasks, as the heavy transcription models are only fed audio segments containing actual speech.
+## What it does
 
-### **3\. Discovery & Domain Adaptation (The "Scout")**
+### Ingest anything a firm keeps
 
-* **What it does:** Analyzes the audio to determine its context (Legal, Medical, or General) and generates a list of highly probable technical terms before the main transcription begins.  
-* **How it works:** Uses a rapid, low-VRAM model (**Faster-Whisper Tiny**) to generate a rough draft of the audio. This draft is then passed through a text classifier (**DeBERTa v3**) to confirm the industry domain. Finally, it extracts "hotwords" (e.g., specific medications or legal statutes) to feed into the main transcriber.
+| Source | How it is read | Cited as |
+|:--|:--|:--|
+| **Video and audio** | VAD → domain "scout" pass → Whisper large-v3 transcription with domain hotwords → speaker diarization → sentence reconstruction → glossary-based phonetic correction. For video, a visual branch finds key moments and describes the frames with a vision-language model, grounded in what the speaker is saying. | timestamp + speaker, opens the clip |
+| **PDF, DOCX** | Split page by page, converted with MarkItDown; tables re-read with a custom layout extractor (ruled and borderless); scanned pages OCR'd with RapidOCR, with lines OCR missed counted and reported. | page + heading |
+| **TXT, Markdown, EPUB, HTML, RTF** | Cut along the file's own chapters, clauses and headings. | line range or section |
+| **Images** | Described by Qwen2-VL; any text it claims to see is kept only if OCR read it too. | image |
 
-### **4\. High-Fidelity Transcription**
+Every chunk is placed in context by a small local model (contextual retrieval), embedded with BGE-M3 and stored in PostgreSQL + pgvector next to a full-text index.
 
-* **What it does:** Converts the spoken audio into highly accurate, timestamped text.  
-* **How it works:** Utilizes **Faster-Whisper Large v3**. By injecting the "hotwords" generated during the Scout phase as an initial prompt, the model is heavily biased toward correctly spelling complex industry terminology, drastically reducing hallucinations.
+### Ask it four ways
 
-### **5\. Speaker Diarization**
+| Mode | What you get |
+|:--|:--|
+| **Search** (standard / verified) | Hybrid dense + keyword search, fused with RRF and re-ranked by a cross-encoder. Verified search also drops evidence a scrubber model judges unreliable. |
+| **Chat** | Multi-turn cited answers from Qwen3.5-9B with a 128K context. `[Doc N]` numbers stay stable for the whole conversation, so a follow-up can cite an earlier turn's evidence. |
+| **Reasoned answer** | Several retrieval passes judged by a reasoning model, then a draft and a self-critique before the answer. |
+| **Research report** | Topic in, multi-page cited report out. Izvoria proposes an outline for you to edit and approve, sweeps the corpus into a numbered evidence bank, and writes section by section, each section seeing only its own evidence. An exhaustive mode keeps gathering while sections remain unsupported. Sections the material can't support are listed as *not covered* instead of being filled with uncited text. Exports to Markdown and a typeset PDF (formulas, tables, bookmarks). |
 
-* **What it does:** Answers the question "Who spoke when?" by clustering audio segments by speaker voice.  
-* **How it works:** Uses **NVIDIA NeMo TitaNet** to analyze voice embeddings. It aligns these speaker tags (e.g., Speaker 1, Speaker 2\) with the text timestamps generated by Whisper.
+### Two languages in one index
 
-### **6\. Post-Processing & Phonetic Correction**
+English and Serbian (Latin and Cyrillic) live in one database. Each chunk is keyword-indexed with its own stemmer, and the multilingual dense leg finds evidence across languages. A Serbian question about English material returns an answer in Serbian that quotes the English excerpt verbatim. Nothing is ever translated, because a translated index would put model-written text under every citation. Every language-dependent rule (stopwords, refusal text, stemmer, Whisper code, model choices) lives in a validated language pack (`data/languages/*.toml`), so adding a language doesn't touch code.
 
-* **What it does:** Reconstructs fragmented acoustic text into readable sentences and corrects lingering phonetic mistakes.  
-* **How it works:** Uses the **SaT (Segment Any Text)** engine to fix grammar and sentence boundaries. Then, it uses a local LLM (**Qwen 2.5 7B Instruct**) cross-referenced against local domain glossaries to correct highly specific terms, maintaining a strict audit trail of any changes made.
+### Three ways to run it
 
-### **7\. Visual Analysis Branch**
+- **Desktop app** (PySide6 / Qt 6): Chat, Search, Ingest and Report views, with clickable citations, an outline-approval step, progress, cancel and history. It runs the engine in-process.
+- **CLI** (`python -m app.main`) over the same engine.
+- **Hosted multi-firm web app** (`web_deploy/`): a React + TypeScript front end and an always-on Hetzner gateway that keeps every firm's data, two-step sign-in, firm administrators, resumable parallel uploads, YouTube and folder ingestion, and encrypted off-site backups. A rented data-centre GPU is started on demand. It holds no client data at rest, reaches the data through an SSH tunnel, and serves every firm from one process: one engine per firm, shared pinned models, and a patched `llama-server` that serves the LLM roles to concurrent users.
 
-* **What it does:** For video sources, detects visually significant moments, extracts frames, and describes them in text grounded to the surrounding transcript.  
-* **How it works:** **Visual Cue Detection** flags moments worth analyzing, **Frame Extraction** pulls the relevant frames, and a **Qwen2-VL-7B** vision-language model (native Hugging Face Transformers, 4-bit pre-quantized — not GGUF, due to an unresolved llama.cpp crash in the Qwen-VL vision encoder) describes each frame using the transcript as context. **Visual Hallucination Correction** and **Visual Context Synthesis** then clean up and merge the result with the audio-derived transcript.
+---
 
-### **8\. RAG Indexing & Storage**
+## Engineering highlights
 
-* **What it does:** Turns the finished, corrected transcript (audio + visual) into a searchable knowledge base.  
-* **How it works:** Chunks are embedded with **BGE-M3** (`sentence-transformers`) and stored in PostgreSQL/`pgvector`, alongside an auto-generated full-text search column — a single table backs both dense (vector) and sparse (keyword) retrieval.
+**Six-plus models on a 12 GB card.** The target hardware is two RTX 3060s; development happens on one. No GPU here can hold more than one or two of the pipeline's models, so nothing assumes a model stays resident. Every GPU component goes through one orchestrator (`app/core/model_manager`) that:
+- loads models just in time and keeps a **warm pool** budgeted by each model's *measured* VRAM footprint. When a load needs room, it evicts the idle set that frees the fewest megabytes, least recently used on a tie;
+- learns each model's peak activation memory with a telemetry thread and uses it for admission control (`OutOfVramError` before a crash, not after);
+- preloads the next model on a background worker while I/O-bound work continues, and guards against the subtle ways an unresolved preload can deadlock a long-running process.
 
-### **9\. RAG Retrieval, Verified Search & QA Generation (query time)**
+A full research report runs in about 6 model loads instead of the ~40 a naive per-section design would need. An integration test counts the loads, so a regression fails the build.
 
-* **What it does:** Answers a user's question strictly from their own ingested data, with citations.  
-* **How it works:** A query is embedded and run as a **hybrid search** (pgvector cosine distance + Postgres full-text rank, combined via Reciprocal Rank Fusion) against the indexed chunks. For **Verified Search**, retrieved chunks are then passed through an SLM-based **hallucination scrubber** that drops anything judged irrelevant or unreliable. For a full chat answer, the surviving chunks are handed to a local **Qwen3.5-9B** model (via `llama.cpp`, 128K context) which generates a response and cites the specific source chunks it drew from. Chat is multi-turn: a follow-up is rewritten into a standalone search query, and the model also sees the earlier questions, answers and excerpts of the conversation, whose `[Doc N]` numbers stay the same for the whole conversation.
+**Hexagonal, feature-first architecture.** Each of the 30+ features (`app/core`, `app/features`, …) has the same ports-and-adapters layout: pure `domain/` interfaces, `data/` adapters for models and repositories, one `service/` API as the only entry point, and a typed exception hierarchy with an error mapper at the boundary. `IzvoriaBootstrapper` is the DI composition root. Orchestration `Phase`s wrap feature APIs with job tracking and model lifecycle, and `Pipeline`s chain them.
 
-## **🧠 The Orchestrator (VRAM Management)**
+**Grounding you can measure.** Evaluation scripts (`scripts/eval/`) download real speech (FLEURS, ParlaSpeech-RS, lectures), ingest it into isolated databases and report word accuracy, language-guard behaviour, retrieval hit@k and answer quality, within and across languages. In cross-language runs, unanswerable questions were refused 10/10 and every report citation came from the right material. These runs also found a Whisper batching bug that silently dropped up to 12% of speech in some files (fixed; now under 0.1%).
 
-**The Challenge:** Izvoria is designed to run locally. Our development environment is strictly constrained to **12GB VRAM** (a single RTX 3060). Target client hardware is **2× RTX 3060 (24GB VRAM total)**, intended to be split so one GPU serves the ingestion pipeline and the other serves the LLM continuously for live chat — that GPU-affinity split does not exist in the code yet, so today everything still shares one VRAM budget on whichever single GPU is present. We cannot load the VAD, Whisper, Diarization, Correction, and RAG models simultaneously without crashing the system.  
-**The Solution:** The **Model Orchestrator** (`app/core/model_manager`).  
-This core architectural component acts as a traffic controller for GPU memory, linking every feature above together sequentially:
+**Production concerns, not just a demo.** Alembic migrations applied on start; per-thread preload slots and a strict-residency mode for concurrent requests; a short-prompt-first patch to `llama-server` so one long report section doesn't stall every chat; compact 720p storage for hosted recordings; restic backups; a GPU box that holds no database password and fetches a per-start credential from the gateway.
 
-1. **Job Queueing:** The Orchestrator takes a media file and locks it for sequential processing.  
-2. **Dynamic Swapping:** It loads MarbleNet (VAD) into VRAM, processes the audio, and **instantly unloads** it.  
-3. It then loads Whisper Tiny (Scout) \-\> Unloads \-\> Loads Whisper Large v3 (Transcribe) \-\> Unloads \-\> Loads TitaNet (Diarization) \-\> Unloads, and so on through every remaining stage, including the vision, embedding, scrubbing, and QA-generation models at query time.  
-4. **Result:** By enforcing strict lifecycle control and just-in-time loading, the Orchestrator ensures Izvoria never exceeds its VRAM budget, maintaining absolute system stability on constrained hardware.
+## By the numbers
 
-See `CLAUDE.md` for the full architecture (feature folder conventions, how to add a new feature, testing conventions) and `CHANGELOG.md` for build history.
+| | |
+|:--|:--|
+| Application code (`app/`) | ~43,000 lines of Python |
+| Desktop app, web version, deploy tooling | ~28,000 lines of Python + ~5,600 lines of TypeScript/React |
+| Tests | ~3,000 test functions in ~380 files: mocked unit tests that mirror `app/` exactly, integration tests on real Postgres and GPU, headless Qt tests, gateway/API tests |
+| Local models orchestrated | ~15 (ASR, VAD, diarization, 3 LLM families, VLM, embedder, reranker, OCR, …) |
+| Feature write-ups | one per module in [`docs/`](docs/) |
 
-## **🛠️ Setup Instructions**
+## Tech stack
 
-There are two ways to run Izvoria:
+| Area | Tools |
+|:--|:--|
+| Speech | faster-whisper (large-v3), NVIDIA NeMo (MarbleNet VAD, TitaNet diarization), wtpsplit (SaT) |
+| LLMs | llama.cpp / `llama-cpp-python` and `llama-server` (GGUF): Qwen3.5-9B, Qwen2.5, Llama 3.2 3B, Gemma 4 E4B |
+| Vision | Qwen2-VL-7B on Hugging Face Transformers + bitsandbytes 4-bit |
+| Retrieval | BGE-M3 embeddings, bge-reranker-v2-m3 cross-encoder, PostgreSQL 15 + pgvector + full-text search, RRF fusion |
+| Documents | MarkItDown, pdfplumber, pypdfium2, RapidOCR (PP-OCRv5, ONNX), striprtf, charset-normalizer |
+| Reports | fpdf2, ziamath (LaTeX → SVG), markdown-it-py |
+| Backend | Python 3.11, SQLAlchemy, Alembic, pydantic-settings, PyTorch |
+| Desktop | PySide6 (Qt 6) |
+| Web | React, Vite, TypeScript, Starlette, Caddy, SQLite, restic, Vast.ai, Hetzner |
+| Testing | pytest, unittest.mock, Dockerised Postgres, Vitest |
+
+## Repository map
+
+```
+app/
+├── core/               model manager (VRAM orchestration), database, jobs, language packs, anchors
+├── features/           one hexagonal module per pipeline stage or capability
+├── orchestration/      Phases (feature + job + model lifecycle) and Pipelines (ingest, search, chat, reports)
+├── engine/             IzvoriaBootstrapper (DI root) and IzvoriaEngine (top-level facade)
+└── main.py             CLI
+frontend/               PySide6 desktop app
+web_deploy/             hosted multi-firm web version (gateway, API, ingestion worker, React app, backups)
+deploy/                 single-tester hosted demo of the desktop app over noVNC
+data/                   language packs, glossaries, fonts, migrations
+scripts/eval/           ASR, retrieval and cross-language benchmarks
+tests/ · integration_tests/ · frontend/tests/
+docs/                   one write-up per module
+```
+
+Start with [`CLAUDE.md`](CLAUDE.md) for the architecture and conventions, [`docs/`](docs/) for each module, and [`CHANGELOG.md`](CHANGELOG.md) for how it was built.
+
+---
+
+## Setup
+
+There are three ways to run Izvoria:
 
 - **A. Local appliance / development machine.** Izvoria runs on a Linux box with an NVIDIA GPU (≥12 GB VRAM), which is how the product ships.
 - **B. Hosted demo.** A tester uses the real desktop app from a browser. An always-on gateway VPS starts a rented Vast.ai GPU on demand. Your own PC doesn't need to be running.
+- **C. Hosted multi-firm web version.** Many firms and users on one web app, with firm data on a Hetzner VPS and a stateless rented GPU. It can also run entirely on the 12 GB dev card for local testing. The full guide is [`docs/web_deploy.md`](docs/web_deploy.md); folder overview in [`web_deploy/README.md`](web_deploy/README.md).
 
 ### **A. Local setup (Debian / Ubuntu, NVIDIA GPU)**
 
@@ -204,3 +246,13 @@ This costs about $35–60/month instead of $200+ for a dedicated GPU server. The
 5. **Send the tester the URL and the password.** They sign in, pick Serbian or English, click **Start appliance** (about 1–2 minutes), upload files and open the desktop. The box stops itself after 30 idle minutes, but never mid-ingestion or mid-report.
 
 Once it's set up, your own PC doesn't need to be on. It's only needed to push code updates, or to re-upload the models if the Vast instance is destroyed, so keep a backup of `models/` somewhere else. The full runbook, the costs and the known risks are in [`docs/deploy.md`](docs/deploy.md). A stopped Vast instance can lose its GPU to another renter, and demo data sits on rented hardware, not the client's premises.
+
+### **C. Hosted multi-firm web version**
+
+See [`docs/web_deploy.md`](docs/web_deploy.md): provisioning the Hetzner gateway and the Vast.ai box, firm and account administration, backups and restore, and `web_deploy/local/run_local.py` for running the whole web version on one dev GPU. Its tests run with `web_deploy/.venv/bin/pytest web_deploy/tests`.
+
+---
+
+## Author
+
+Built by **Aleksa Stefanović** ([GitHub](https://github.com/StefanovicAleksa)).
