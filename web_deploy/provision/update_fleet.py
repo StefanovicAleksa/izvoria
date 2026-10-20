@@ -25,6 +25,7 @@ Exits 1 when any box is still behind.
 """
 
 import argparse
+import hashlib
 import json
 import shlex
 import shutil
@@ -37,20 +38,19 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))  # run as a script: web_deploy.common is standard library only
+from web_deploy.common.release import BOX_KEEP, PROVISION_PATHS, provision_digest  # noqa: E402
 VPS_ROOT = "/opt/onyx_v3"
 BOX_ROOT = "/workspace/onyx_v3"
+BOX_ENV = "/workspace/web/api.env"
+DIGEST_FILE = "/workspace/web/provision_digest"
 GATEWAY_PYTHON = "/opt/onyx-web-gateway/bin/python"
 GATEWAY_ENV = "/etc/onyx-web-gateway.env"
+# Where the gateway serves each version's package to boxes that update themselves (releases.py); the last few are kept
+RELEASES_DIR = "/var/lib/onyx-web/releases"
+KEEP_PACKAGES = 3
 STATIC = "web_deploy/gateway/static"
 
-# Never removed from a box by the copy: what it built or downloaded itself (rsync leaves excluded paths alone)
-BOX_KEEP = ["/venv/", "/models/", "/onyx_data/", "/.env", "/.env.*", "__pycache__/", "/deploy/.venv/",
-            "/web_deploy/.venv/", "/web_deploy/frontend/node_modules/", "/web_deploy/local/local.env",
-            "/web_deploy/provision/prod/", "/input_video/"]
-# A change here needs provision.sh again (packages, llama-server, supervisord), not just a restart
-PROVISION_PATHS = ("requirements.txt", "requirements-nodeps.txt", "web_deploy/api/requirements.txt",
-                   "web_deploy/provision/provision.sh", "web_deploy/provision/build_llama_server.sh",
-                   "web_deploy/provision/llama_patches/", "web_deploy/provision/supervisord.conf")
 # A change here needs the gateway restarted (the code it runs on the VPS)
 GATEWAY_PATHS = ("web_deploy/gateway/", "web_deploy/common/", "web_deploy/ingest_worker/", "web_deploy/api/config.py",
                  "web_deploy/backup/", "deploy/gateway/")
@@ -120,6 +120,15 @@ def changed_files(old: str, new: str) -> Optional[List[str]]:
 class Vps:
     def __init__(self, target: str) -> None:
         self.target = target
+        self._public_url: Optional[str] = None
+
+    @property
+    def public_url(self) -> str:
+        """The gateway's public address (PUBLIC_URL), where boxes fetch new versions at start."""
+        if self._public_url is None:
+            out = self.ssh(f"sed -n 's/^PUBLIC_URL=//p' {GATEWAY_ENV} | tail -n 1")
+            self._public_url = out.strip().strip('"').strip("'").rstrip("/")
+        return self._public_url
 
     def ssh(self, command: str, capture: bool = True, timeout: float = 300) -> str:
         return run(["ssh", *SSH_OPTIONS, self.target, command], capture=capture, timeout=timeout).stdout or ""
@@ -177,7 +186,20 @@ def build_export(release: str, workdir: Path) -> Path:
     return export
 
 
-def update_vps(vps: Vps, export: Path, release: str, dry_run: bool) -> None:
+def build_package(export: Path, release: str, workdir: Path) -> Dict[str, Path]:
+    """The release as boxes fetch it (releases.py): a tarball of the export, and its description."""
+    package = workdir / f"{release}.tar.gz"
+    with tarfile.open(package, "w:gz") as tar:
+        for entry in sorted(export.iterdir()):
+            tar.add(entry, arcname=entry.name)
+    digest = hashlib.sha256(package.read_bytes()).hexdigest()
+    meta = workdir / f"{release}.json"
+    meta.write_text(json.dumps({"release": release, "sha256": digest, "size": package.stat().st_size,
+                                "provision_digest": provision_digest(export)}) + "\n")
+    return {"package": package, "meta": meta}
+
+
+def update_vps(vps: Vps, export: Path, package: Dict[str, Path], release: str, dry_run: bool) -> None:
     say(f"== VPS ({vps.target})")
     previous = vps.ssh(f"cat {VPS_ROOT}/RELEASE 2>/dev/null || echo unknown").strip() or "unknown"
     restart = touches(changed_files(previous, release), GATEWAY_PATHS)
@@ -191,6 +213,12 @@ def update_vps(vps: Vps, export: Path, release: str, dry_run: bool) -> None:
          "-e", "ssh " + " ".join(SSH_OPTIONS), f"{export / STATIC}/", f"{vps.target}:{VPS_ROOT}/{STATIC}/"])
     if restart:
         vps.ssh("systemctl restart onyx-web-gateway && sleep 5 && systemctl is-active onyx-web-gateway")
+    # The package boxes fetch when they start behind (self_update.py), in place before the version becomes current
+    vps.ssh(f"install -d -m 755 {RELEASES_DIR}")
+    run(["rsync", "-tz", "--chmod=F644", "-e", "ssh " + " ".join(SSH_OPTIONS), str(package["package"]),
+         str(package["meta"]), f"{vps.target}:{RELEASES_DIR}/"])
+    vps.ssh(f"cd {RELEASES_DIR} && ls -1t *.tar.gz | tail -n +{KEEP_PACKAGES + 1} | "
+            f"while read old; do rm -f \"$old\" \"${{old%.tar.gz}}.json\"; done")
     vps.fleet("set-release", release)
     say("   done; gateway now prefers boxes on this version")
 
@@ -200,6 +228,27 @@ def copy_code(vps: Vps, box: Box, export: Path) -> None:
     port, target = box.address(vps)[1], box.address(vps)[2]
     run(["rsync", "-rlptz", "--delete", *excludes, "-e", f"ssh -p {port} " + " ".join(SSH_OPTIONS),
          f"{export}/", f"{target}:{BOX_ROOT}/"], timeout=1800)
+    # What the box's own updates at start need (self_update.py): which Vast instance it is, should Vast's variables be
+    # missing, and the gateway's public address
+    settings = {"BOX_INSTANCE_ID": str(box.id)}
+    if vps.public_url:
+        settings["RELEASE_URL"] = vps.public_url
+    box.ssh(vps, set_env_lines(BOX_ENV, settings))
+
+
+def set_env_lines(path: str, values: Dict[str, str]) -> str:
+    """A shell command that sets each KEY=value in an env file, replacing the line it already has."""
+    commands = []
+    for key, value in values.items():
+        line = shlex.quote(f"{key}={value}")
+        commands.append(f"{{ grep -v '^{key}=' {path} > {path}.new || true; echo {line} >> {path}.new; "
+                        f"mv {path}.new {path}; }}")
+    return f"chmod 600 {path} && " + " && ".join(commands) + f" && chmod 600 {path}"
+
+
+def mark_provisioned(vps: Vps, box: Box, export: Path) -> None:
+    """Tells the box's self_update.py that its setup matches this version's (so it won't re-run provision.sh)."""
+    box.ssh(vps, f"echo {provision_digest(export)} > {DIGEST_FILE}")
 
 
 def provision(vps: Vps, box: Box) -> None:
@@ -244,6 +293,7 @@ def update_running(vps: Vps, box: Box, export: Path, changed: Optional[List[str]
     if reprovision:
         provision(vps, box)
         wait_idle(vps, wait_minutes)
+    mark_provisioned(vps, box, export)
     say("   restarting the services")
     programs = "all" if reprovision else "api ingest"
     box.ssh(vps, f"supervisorctl reread >/dev/null; supervisorctl update >/dev/null; supervisorctl restart {programs}")
@@ -273,6 +323,7 @@ def update_stopped(vps: Vps, box: Box, export: Path, changed: Optional[List[str]
                             check=False)
             if check.returncode != 0 or release not in check.stdout:
                 raise Failed(f"the updated code doesn't load:\n{check.stdout[-800:]}")
+            mark_provisioned(vps, box, export)
         finally:
             say("   stopping it")
             vps.fleet("stop", str(box.id))
@@ -337,8 +388,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     vps = Vps(args.vps)
     with tempfile.TemporaryDirectory(prefix="izvoria-release-") as tmp:
         export = build_export(release, Path(tmp)) if not args.dry_run else Path(tmp)
+        package = build_package(export, release, Path(tmp)) if not args.dry_run else {}
         if not args.skip_vps:
-            update_vps(vps, export, release, args.dry_run)
+            update_vps(vps, export, package, release, args.dry_run)
         results = update_boxes(vps, export, release, args.box, args.force, args.dry_run, args.wait_idle)
 
     say("\n== Summary")

@@ -51,3 +51,56 @@ class TestTouches:
         assert touches(["web_deploy/gateway/vast_pool.py"], GATEWAY_PATHS)
         assert touches(["deploy/gateway/vast_client.py"], GATEWAY_PATHS)
         assert not touches(["web_deploy/gateway_notes.md"], GATEWAY_PATHS)
+
+
+class TestPackage:
+    def test_the_package_holds_the_export_and_describes_itself(self, tmp_path):
+        import hashlib
+        import json
+        import tarfile
+
+        from web_deploy.common.release import provision_digest
+        from web_deploy.provision.update_fleet import build_package
+
+        export = tmp_path / "export"
+        (export / "web_deploy/provision").mkdir(parents=True)
+        (export / "RELEASE").write_text("abc1234\n")
+        (export / "requirements.txt").write_text("torch\n")
+        (export / "web_deploy/provision/provision.sh").write_text("echo hi\n")
+        out = tmp_path / "out"
+        out.mkdir()
+
+        built = build_package(export, "abc1234", out)
+
+        meta = json.loads(built["meta"].read_text())
+        assert meta == {"release": "abc1234", "sha256": hashlib.sha256(built["package"].read_bytes()).hexdigest(),
+                        "size": built["package"].stat().st_size, "provision_digest": provision_digest(export)}
+        with tarfile.open(built["package"]) as tar:
+            assert {"RELEASE", "requirements.txt", "web_deploy/provision/provision.sh"} <= set(tar.getnames())
+
+    def test_a_setup_file_change_changes_the_digest(self, tmp_path):
+        from web_deploy.common.release import provision_digest
+
+        (tmp_path / "requirements.txt").write_text("torch\n")
+        before = provision_digest(tmp_path)
+        (tmp_path / "web_deploy/provision/llama_patches").mkdir(parents=True)
+        (tmp_path / "web_deploy/provision/llama_patches/a.patch").write_text("x")
+        assert provision_digest(tmp_path) != before
+
+
+class TestEnvLines:
+    def test_each_value_replaces_its_line(self, tmp_path):
+        import subprocess
+
+        from web_deploy.provision.update_fleet import set_env_lines
+
+        env = tmp_path / "api.env"
+        env.write_text("WEB_API_SECRET=x\nBOX_INSTANCE_ID=1\n")
+
+        subprocess.run(["bash", "-c", set_env_lines(str(env), {"BOX_INSTANCE_ID": "55823057",
+                                                                "RELEASE_URL": "https://app.izvoria.com"})],
+                       check=True)
+
+        assert env.read_text().splitlines() == ["WEB_API_SECRET=x", "BOX_INSTANCE_ID=55823057",
+                                                "RELEASE_URL=https://app.izvoria.com"]
+        assert env.stat().st_mode & 0o777 == 0o600

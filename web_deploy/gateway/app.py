@@ -23,7 +23,7 @@ import logging
 import time
 from collections import defaultdict, deque
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Deque, Dict, Optional, Tuple
+from typing import Any, Awaitable, Callable, Deque, Dict, Optional, Sequence, Tuple
 
 import httpx
 from starlette.applications import Starlette
@@ -38,6 +38,8 @@ from web_deploy.gateway.box import BoxController, BoxState, box_ssl_context, bui
 from web_deploy.gateway.config import GatewaySettings
 from web_deploy.gateway import glossaries, youtube_cookies
 from web_deploy.gateway.box_internal import BoxInternalSettings, box_internal_routes
+from web_deploy.gateway.releases import CatchUp, ReleaseSettings, UpdateReports, release_routes
+from web_deploy.gateway.vast_pool import VastPool
 from web_deploy.gateway.data import DataRoutes, DataSettings
 from web_deploy.gateway.staging_server import BoxFiles, StagingServer
 from web_deploy.gateway.idle import IdleMonitor
@@ -179,7 +181,8 @@ async def read_limited(request: Request, max_bytes: int) -> bytes:
 def create_app(settings: GatewaySettings, store: Store, box: BoxController, idle: IdleMonitor,
                http: httpx.AsyncClient, run_idle_monitor: bool = True, mailer: Optional[Mailer] = None,
                data: Optional[Callable[..., DataRoutes]] = None, run_background: bool = True,
-               internal_routes: Optional[list] = None, glossary_root: Optional[Path] = None) -> Starlette:
+               internal_routes: Optional[list] = None, glossary_root: Optional[Path] = None,
+               background: Sequence[Callable[[], Awaitable[None]]] = ()) -> Starlette:
     mailer = mailer or Mailer(settings.mail, store)
     account_limiter = Limiter(LOGIN_WINDOW_SECONDS, {"ip": LOGIN_MAX_FAILURES, "account": LOGIN_MAX_FAILURES})
     firm_limiter = Limiter(LOGIN_WINDOW_SECONDS, {"ip": LOGIN_MAX_FAILURES, "firm": FIRM_MAX_FAILURES})
@@ -687,12 +690,13 @@ def create_app(settings: GatewaySettings, store: Store, box: BoxController, idle
         task = asyncio.create_task(idle.run_forever()) if run_idle_monitor else None
         janitor = asyncio.create_task(files.run_janitor()) if files is not None and run_background else None
         videos = asyncio.create_task(files.run_video_preparer()) if files is not None and run_background else None
+        others = [asyncio.create_task(job()) for job in background] if run_background else []
         try:
             yield
         finally:
-            for background in (task, janitor, videos):
-                if background:
-                    background.cancel()
+            for running in (task, janitor, videos, *others):
+                if running:
+                    running.cancel()
             await box.wait()
             await asyncio.to_thread(mailer.shutdown)
 
@@ -753,7 +757,8 @@ def create_production_app() -> Starlette:
     settings.database_path.parent.mkdir(parents=True, exist_ok=True)
     store = Store(settings.database_path)
     http = httpx.AsyncClient(verify=box_ssl_context(settings), timeout=30.0)
-    box = BoxController(settings, build_vast(settings), http)
+    vast = build_vast(settings)
+    box = BoxController(settings, vast, http)
     idle = IdleMonitor(box, settings.idle_minutes * 60)
     data_settings = DataSettings.from_env()
     queue = IngestQueue.connect(data_settings.control_database_url)
@@ -768,9 +773,20 @@ def create_production_app() -> Starlette:
             staging_public_key=files.key.with_name(files.key.name + ".pub") if files.key else None,
         ), StagingServer(files, queue, on_youtube_refused=lambda: mailer.notify_owner(
             YOUTUBE_REFUSED_SUBJECT, YOUTUBE_REFUSED_BODY.format(console=settings.public_url or "the owner console"))))
+    # Every box on the current version: the packages boxes fetch at start, and the catch-up of those that missed one
+    background = []
+    if isinstance(vast, VastPool) and settings.fleet_file and settings.releases_dir:
+        reports = UpdateReports()
+        internal = (internal or []) + release_routes(ReleaseSettings(
+            secret=settings.api_secret, releases_dir=settings.releases_dir, fleet_file=settings.fleet_file,
+            instance_ids=settings.vast_instance_ids), reports)
+        if settings.catchup_minutes > 0:
+            background.append(CatchUp(vast, settings.fleet_file, settings.vast_instance_ids,
+                                      settings.catchup_minutes * 60, reports).run_forever)
     # Dev hardware has no rented box to stop
     return create_app(settings, store, box, idle, http, run_idle_monitor=settings.box_mode == "vast", data=data,
-                      internal_routes=internal, glossary_root=data_settings.tenants_root, mailer=mailer)
+                      internal_routes=internal, glossary_root=data_settings.tenants_root, mailer=mailer,
+                      background=background)
 
 
 YOUTUBE_REFUSED_SUBJECT = "Izvoria: YouTube downloads need fresh cookies"
