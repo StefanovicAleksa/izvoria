@@ -154,6 +154,8 @@ def chat_message(host: IEngineHost, engine: Any, response: Any) -> dict:
         "evidence": citations_evidence(host, engine, response.citations),
         "reasoning": [],
         "latency_ms": response.inference_time_ms,
+        # The one recording or document the question named, which the whole answer was read from
+        "scoped_source": getattr(response, "scoped_source_title", None),
     }
 
 
@@ -360,16 +362,25 @@ def report_document(host: IEngineHost, engine: Any, report: Any) -> dict:
 
 # ---------- library ----------
 
-def source_ref(source: Any) -> dict:
+def source_ref(source: Any, profile: Any = None) -> dict:
+    """A Library row. `profile` is the source's title and topic (a SourceProfile), when it has one."""
     file = getattr(source, "file", None)
     return {
         "source_id": str(source.id),
         "name": source.name,
+        "title": profile.title if profile is not None else None,
+        "topic": (profile.topic or None) if profile is not None else None,
+        "title_edited": profile is not None and getattr(profile.origin, "value", profile.origin) == "edited",
         "source_type": getattr(source.source_type, "value", source.source_type),
         "language": getattr(source, "language", None),
         "size_bytes": getattr(file, "file_size_bytes", None) if file else None,
         "created_at": _iso(getattr(source, "created_at", None)),
     }
+
+
+def source_profile(profile: Any) -> dict:
+    return {"source_id": str(profile.source_id), "title": profile.title, "topic": profile.topic or None,
+            "title_edited": getattr(profile.origin, "value", profile.origin) == "edited"}
 
 
 def parse_uuid(raw: Any) -> uuid.UUID:

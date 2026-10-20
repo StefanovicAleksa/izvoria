@@ -528,6 +528,12 @@ details.optional[open] > summary { border-bottom: 1px solid var(--border); margi
 }
 .outline .section-editor input { width: 100%; font-weight: 600; margin-bottom: 6px; }
 .outline .report-title input { font-family: var(--font-serif); font-size: 18px; font-weight: 600; }
+.source-title { font-weight: 600; }
+.source-topic { margin-top: 2px; max-width: 60ch; }
+.profile-edit { display: flex; flex-direction: column; gap: 6px; min-width: 240px; }
+.profile-edit .actions { display: flex; gap: 8px; }
+.row-actions { white-space: nowrap; }
+.scoped-source { margin: 0 0 6px; }
 .rename-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
 .rename-row input { flex: 1; min-width: 200px; font-family: var(--font-serif); font-size: 16px; }
 .report-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }

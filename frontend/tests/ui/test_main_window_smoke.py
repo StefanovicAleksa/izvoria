@@ -244,6 +244,17 @@ class TestModeSwitch:
         assert theme.CITATION in bubble._body_label.text()
         assert dark_citation not in bubble._body_label.text()
 
+    def test_an_answer_scoped_to_one_source_names_it(self, window):
+        from PySide6.QtWidgets import QLabel
+        from izvoria_desktop.ui.widgets.message_bubble import MessageBubble
+
+        window._chat.add_message(ChatMessage(role=MessageRole.ASSISTANT, text="Bayes [Doc 1].",
+                                             scoped_source="Lecture 4 Conditional Probability"))
+        (bubble,) = window.findChildren(MessageBubble)
+
+        texts = [label.text() for label in bubble.findChildren(QLabel)]
+        assert "Answered from: Lecture 4 Conditional Probability" in texts
+
 
 class TestDisplayLanguage:
     """The app's own text switches language in place, separately from the language answers are written in."""

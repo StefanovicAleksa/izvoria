@@ -13,7 +13,7 @@ from web_deploy.api.app import create_app
 from web_deploy.api.config import ApiSettings
 from web_deploy.api.runs import RunStore
 from web_deploy.common.signing import Principal, sign
-from web_deploy.tests.api.fakes import FakeHost, chunk, fake_queue
+from web_deploy.tests.api.fakes import FakeEngine, FakeHost, chunk, fake_queue
 
 SECRET = "k" * 40
 ALICE = Principal(firm="legal-demo", user_id="alice", role="member")
@@ -314,6 +314,38 @@ class TestIngestion:
     def test_uploads_and_the_wait_list_are_the_gateways(self, client, method, path):
         """A client's file reaches the box only as a staged copy of its own job; the queue is read on the VPS."""
         assert call(client, ALICE, method, path, {}).status_code in (404, 405)
+
+
+class TestLibrary:
+    BOSS = Principal(firm="legal-demo", user_id="boss", role="admin")
+
+    def test_each_source_carries_its_title_and_topic(self, client):
+        source = call(client, ALICE, "GET", "/api/library").json()["sources"][0]
+        assert (source["name"], source["title"], source["topic"], source["title_edited"]) == \
+            ("deposition.mp4", "Deposition of J. Smith", "The lease dispute.", False)
+
+    def test_an_administrator_retitles_a_source_for_the_firm(self, client, host):
+        path = f"/api/library/{FakeEngine.SOURCE_ID}/profile"
+
+        response = call(client, self.BOSS, "PUT", path, {"title": "  Smith   deposition ", "topic": "Lease."})
+
+        assert response.json() == {"source_id": str(FakeEngine.SOURCE_ID), "title": "Smith deposition",
+                                   "topic": "Lease.", "title_edited": True}
+        name, args, kwargs, _ = host.engines["legal-demo"].calls[-1]
+        assert (name, args, kwargs) == ("edit_source_profile", (FakeEngine.SOURCE_ID,),
+                                        {"title": "Smith deposition", "topic": "Lease."})
+
+    def test_a_member_cannot_retitle(self, client):
+        response = call(client, ALICE, "PUT", f"/api/library/{FakeEngine.SOURCE_ID}/profile", {"title": "Mine"})
+        assert response.status_code == 403
+
+    @pytest.mark.parametrize("source_id, body, status", [
+        (FakeEngine.SOURCE_ID, {"title": "   "}, 400),
+        (uuid.uuid4(), {"title": "T"}, 404),
+        ("not-an-id", {"title": "T"}, 400),
+    ])
+    def test_a_bad_edit_is_refused(self, client, source_id, body, status):
+        assert call(client, self.BOSS, "PUT", f"/api/library/{source_id}/profile", body).status_code == status
 
 
 class TestSourceLocation:

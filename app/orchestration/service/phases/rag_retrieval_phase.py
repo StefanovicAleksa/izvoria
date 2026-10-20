@@ -91,6 +91,10 @@ class RagRetrievalPhase:
         """
         return self._retrieval_api.get_chunks(chunk_ids)
 
+    def get_source_chunks(self, source_id: uuid.UUID) -> List[RetrievedChunk]:
+        """Every chunk of one source in reading order. Needs no model, so it is not a job."""
+        return self._retrieval_api.get_source_chunks(source_id)
+
     def list_indexed_sources(self) -> List[IndexedSource]:
         """
         What the corpus actually holds. Needs no model, so it is not a job -- it is a read the scoping

@@ -110,6 +110,8 @@ class ChatMessage:
     created_at: Optional[datetime] = None
     # Reopened from history: evidence it cited that a re-ingest has since removed from the index.
     missing_evidence: int = 0
+    # The one recording or document the question named, which the whole answer was read from.
+    scoped_source: Optional[str] = None
 
     @property
     def is_ungrounded(self) -> bool:

@@ -6,6 +6,7 @@ import pytest
 from app.core.anchors.domain.enums import AnchorKind
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.qa_generation.utils.citation_parser import (
+    chunk_header,
     build_context_block, build_numbered_context_block, doc_numbers, number_for_reading, parse_citations,
     normalize_citation_tags
 )
@@ -243,3 +244,30 @@ class TestDocumentCitations:
         assert citations[0].anchor_kind is AnchorKind.PAGE
         assert (citations[0].page_start, citations[0].page_end) == (7, 8)
         assert citations[0].section_path == "Article 7 Termination"
+
+
+class TestChunkHeader:
+    @staticmethod
+    def _chunk(**fields) -> RetrievedChunk:
+        fields = {"start_sec": 751, "end_sec": 842, **fields}
+        return RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload="t", relevance_score=1.0,
+                              **fields)
+
+    def test_a_titled_transcript_chunk_names_its_recording(self):
+        chunk = self._chunk(source_title="Statistics 110, Lecture 4")
+        assert chunk_header("[Doc 3]", chunk) == "[Doc 3] Statistics 110, Lecture 4 (00:12:31–00:14:02)"
+
+    def test_an_untitled_chunk_keeps_the_old_header(self):
+        assert chunk_header("[Doc 3]", self._chunk()) == "[Doc 3] (00:12:31–00:14:02)"
+
+    def test_a_titled_document_chunk(self):
+        chunk = self._chunk(source_title="Supply Agreement", anchor_kind=AnchorKind.PAGE, page_start=7, page_end=7,
+                            section_path="Article 7 Termination", start_sec=0, end_sec=0)
+        assert chunk_header("[Doc 2]", chunk) == "[Doc 2] Supply Agreement (p. 7 · Article 7 Termination)"
+
+    def test_brackets_in_a_title_cannot_forge_a_tag(self):
+        assert chunk_header("[Doc 1]", self._chunk(source_title="Notes [Doc 9]")).startswith("[Doc 1] Notes (Doc 9)")
+
+    def test_the_context_block_carries_the_title(self):
+        block = build_numbered_context_block([(1, self._chunk(source_title="Lecture 4", raw_text="Bayes."))])
+        assert block.formatted_text == "[Doc 1] Lecture 4 (00:12:31–00:14:02)\nBayes.\n"

@@ -91,10 +91,13 @@ _HYBRID_SEARCH_SQL = text("""
            v.section_path,
            v.position,
            f.rrf_score,
-           vc.extracted_file_id
+           vc.extracted_file_id,
+           COALESCE(sp.title, src.name) AS source_title
     FROM picked f
     JOIN vector_chunks v ON v.chunk_id = f.chunk_id
     LEFT JOIN video_clips vc ON vc.chunk_id = f.chunk_id
+    LEFT JOIN sources src ON src.id = v.source_id
+    LEFT JOIN source_profiles sp ON sp.source_id = v.source_id
     ORDER BY f.rrf_score DESC, f.chunk_id
 """)
 
@@ -113,7 +116,8 @@ _NEIGHBORS_SQL = text("""
     SELECT DISTINCT ON (n.chunk_id)
            n.chunk_id, n.source_id, n.text_payload, n.raw_text, n.speaker_labels, n.start_sec, n.end_sec,
            n.anchor_kind, n.page_start, n.page_end, n.section_path, n.position,
-           vc.extracted_file_id
+           vc.extracted_file_id,
+           COALESCE(sp.title, src.name) AS source_title
     FROM anchors a
     CROSS JOIN LATERAL (
         (SELECT v.* FROM vector_chunks v
@@ -127,6 +131,8 @@ _NEIGHBORS_SQL = text("""
          ORDER BY COALESCE(v.position, -1) ASC, v.start_sec ASC LIMIT 1)
     ) n
     LEFT JOIN video_clips vc ON vc.chunk_id = n.chunk_id
+    LEFT JOIN sources src ON src.id = n.source_id
+    LEFT JOIN source_profiles sp ON sp.source_id = n.source_id
     ORDER BY n.chunk_id
 """)
 
@@ -134,11 +140,29 @@ _CHUNKS_BY_ID_SQL = text("""
     SELECT DISTINCT ON (v.chunk_id)
            v.chunk_id, v.source_id, v.text_payload, v.raw_text, v.speaker_labels, v.start_sec, v.end_sec,
            v.anchor_kind, v.page_start, v.page_end, v.section_path, v.position,
-           vc.extracted_file_id
+           vc.extracted_file_id,
+           COALESCE(sp.title, src.name) AS source_title
     FROM vector_chunks v
     LEFT JOIN video_clips vc ON vc.chunk_id = v.chunk_id
+    LEFT JOIN sources src ON src.id = v.source_id
+    LEFT JOIN source_profiles sp ON sp.source_id = v.source_id
     WHERE v.chunk_id = ANY(CAST(:chunk_ids AS uuid[]))
     ORDER BY v.chunk_id
+""")
+
+# Every chunk of one source in reading order: a question that names the source reads all of it
+_SOURCE_CHUNKS_SQL = text("""
+    SELECT DISTINCT ON (COALESCE(v.position, -1), v.start_sec, v.chunk_id)
+           v.chunk_id, v.source_id, v.text_payload, v.raw_text, v.speaker_labels, v.start_sec, v.end_sec,
+           v.anchor_kind, v.page_start, v.page_end, v.section_path, v.position,
+           vc.extracted_file_id,
+           COALESCE(sp.title, src.name) AS source_title
+    FROM vector_chunks v
+    LEFT JOIN video_clips vc ON vc.chunk_id = v.chunk_id
+    LEFT JOIN sources src ON src.id = v.source_id
+    LEFT JOIN source_profiles sp ON sp.source_id = v.source_id
+    WHERE v.source_id = :source_id
+    ORDER BY COALESCE(v.position, -1), v.start_sec, v.chunk_id
 """)
 
 
@@ -147,7 +171,7 @@ _CHUNKS_BY_ID_SQL = text("""
 # callers need the name, and the search SQL runs per query.
 _INDEXED_SOURCES_SQL = text("""
     SELECT v.source_id,
-           s.name AS source_name,
+           COALESCE(sp.title, s.name) AS source_name,
            f.file_name,
            COUNT(*) AS chunk_count,
            MIN(v.start_sec) AS first_start_sec,
@@ -157,7 +181,8 @@ _INDEXED_SOURCES_SQL = text("""
     FROM vector_chunks v
     JOIN sources s ON s.id = v.source_id
     LEFT JOIN files f ON f.id = s.file_id
-    GROUP BY v.source_id, s.name, f.file_name
+    LEFT JOIN source_profiles sp ON sp.source_id = v.source_id
+    GROUP BY v.source_id, s.name, sp.title, f.file_name
     HAVING COUNT(*) >= :min_chunks
     ORDER BY chunk_count DESC
 """)
@@ -272,7 +297,8 @@ class PostgresSearchRepository(IRetrievalRepository):
                         **_anchor_fields(row),
                         # Fetched by id for an earlier conversation turn, not ranked for this query
                         relevance_score=0.0,
-                        extracted_file_id=row["extracted_file_id"]
+                        extracted_file_id=row["extracted_file_id"],
+                        source_title=row.get("source_title")
                     )
                     for row in rows
                 ]
@@ -281,6 +307,29 @@ class PostgresSearchRepository(IRetrievalRepository):
 
         except Exception as e:
             raise map_retrieval_error(e, context="Fetching chunks by id") from e
+
+    def fetch_source_chunks(self, source_id: uuid.UUID) -> List[RetrievedChunk]:
+        try:
+            with self._db.session() as session:
+                rows = session.execute(_SOURCE_CHUNKS_SQL, {"source_id": source_id}).mappings().all()
+                return [
+                    RetrievedChunk(
+                        chunk_id=row["chunk_id"],
+                        source_id=row["source_id"],
+                        text_payload=row["text_payload"],
+                        raw_text=row["raw_text"],
+                        speaker_labels=list(row["speaker_labels"] or []),
+                        **_anchor_fields(row),
+                        # Read because the question named the source, not ranked
+                        relevance_score=0.0,
+                        extracted_file_id=row["extracted_file_id"],
+                        source_title=row.get("source_title")
+                    )
+                    for row in rows
+                ]
+
+        except Exception as e:
+            raise map_retrieval_error(e, context=f"Fetching every chunk of source {source_id}") from e
 
     def fetch_neighbors(self, chunk_ids: List[uuid.UUID]) -> List[RetrievedChunk]:
         if not chunk_ids:
@@ -302,7 +351,8 @@ class PostgresSearchRepository(IRetrievalRepository):
                         **_anchor_fields(row),
                         # Neighbours were not ranked; they are context for the chunk that was
                         relevance_score=0.0,
-                        extracted_file_id=row["extracted_file_id"]
+                        extracted_file_id=row["extracted_file_id"],
+                        source_title=row.get("source_title")
                     )
                     for row in rows
                 ]
@@ -351,7 +401,8 @@ class PostgresSearchRepository(IRetrievalRepository):
                         speaker_labels=list(row["speaker_labels"] or []),
                         **_anchor_fields(row),
                         relevance_score=float(row["rrf_score"]),
-                        extracted_file_id=row["extracted_file_id"]
+                        extracted_file_id=row["extracted_file_id"],
+                        source_title=row.get("source_title")
                     )
                     retrieved_chunks.append(chunk)
 

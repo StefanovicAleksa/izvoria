@@ -109,6 +109,10 @@ export const SERBIAN: Record<string, string> = {
   Cancel: "Otkaži",
   files: "fajlova",
   "Nothing ingested yet.": "Još ništa nije uvezeno.",
+  "What it covers": "Šta obuhvata",
+  "Answered from": "Odgovor iz",
+  "Each file has a title and a line on what it covers, written when it was ingested. Ask about one by name (\u201cin lecture 4\u201d) and the answer is read from that file alone.":
+    "Svaka datoteka ima naslov i rečenicu o tome šta obuhvata, napisane pri uvozu. Pitajte o njoj po imenu (\u201cu predavanju 4\u201d) i odgovor se čita samo iz te datoteke.",
   "Nothing queued.": "Ništa nije u redu.",
   "or drop them here": "ili ih prevucite ovde",
   "Choose folder": "Izaberite fasciklu",

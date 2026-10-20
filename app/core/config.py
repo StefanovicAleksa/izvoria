@@ -364,7 +364,15 @@ class Settings(BaseSettings):
     # Context window of the answer model. Retrieved evidence and the conversation history are packed to fit what's
     # left after the prompts, the question and the answer/critique generation budget, so nothing can overflow it.
     QA_GENERATION_N_CTX: int = 131072
-    QA_GENERATION_MAX_ANSWER_TOKENS: int = 1024
+    # A ceiling, not a target: most answers stop far below it. "All the formulas in lecture 4" in LaTeX ran past
+    # 1024 and was cut off mid-list; 4096 costs 3K of the 128K context and time only when it is used.
+    QA_GENERATION_MAX_ANSWER_TOKENS: int = 4096
+    # A question that names one source ("in lecture 4 of Stat 110") is answered from all of it when it is at most
+    # this long (estimated tokens), and searched within otherwise. A 50-minute lecture is ~13K. Prefill time grows
+    # with it: tens of seconds at 50K+ on a 3060.
+    SOURCE_SCOPE_WHOLE_READ_MAX_TOKENS: int = 48000
+    # Resolve which source a chat question names (needs the answer model for a moment when a title word matches)
+    SOURCE_SCOPE_ENABLED: bool = True
 
     # Reasoned Answer mode's reasoning loop: the same weights as the answer model, but under its own ModelType/n_ctx
     # since residency is keyed on (model_type, model_path) — switching between the two reloads the file.
@@ -389,7 +397,7 @@ class Settings(BaseSettings):
     REPORT_AUTHORING_MODEL_PATH: str = "models/Qwen3.5-9B-Q4_K_M.gguf"
     REPORT_AUTHORING_VRAM_REQUIREMENT_MB: float = 10000.0
     REPORT_AUTHORING_N_CTX: int = 131072
-    # A report section is longer than a chat answer, so it does not reuse QA_GENERATION_MAX_ANSWER_TOKENS (1024).
+    # A report section is longer than a chat answer, so it does not reuse QA_GENERATION_MAX_ANSWER_TOKENS.
     REPORT_SECTION_MAX_TOKENS: int = 1600
     REPORT_PLAN_MAX_TOKENS: int = 1500
     # Evidence shown to the writer for ONE section. Deliberately far below n_ctx: prefill is the cost driver on

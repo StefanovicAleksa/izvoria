@@ -49,6 +49,9 @@ from app.orchestration.service.pipelines.batch_media_pipeline import BatchMediaP
 from app.orchestration.service.pipelines.batch_audio_pipeline import BatchAudioPipeline
 from app.orchestration.service.pipelines.batch_document_pipeline import BatchDocumentPipeline
 from app.orchestration.service.pipelines.batch_image_pipeline import BatchImagePipeline
+from app.features.rag_storage.service.storage_api import RAGStorageService
+from app.features.source_profile.domain.entities import ProfiledSource, SourceProfile
+from app.features.source_profile.service.source_profile_api import SourceProfileAPI
 from app.orchestration.service.phases.storage_compaction_phase import StorageCompactionPhase
 from app.orchestration.service.pipelines.live_retrieval_pipeline import LiveRetrievalPipeline
 from app.orchestration.service.pipelines.live_verified_retrieval_pipeline import LiveVerifiedRetrievalPipeline
@@ -89,7 +92,9 @@ class IzvoriaEngine(IIzvoriaEngine):
             concurrent_live: Optional[bool] = None,
             report_max_concurrent: Optional[int] = None,
             clip_extractor_api: Optional[ClipExtractorAPI] = None,
-            storage_compaction_phase: Optional[StorageCompactionPhase] = None
+            storage_compaction_phase: Optional[StorageCompactionPhase] = None,
+            source_profile_api: Optional[SourceProfileAPI] = None,
+            rag_storage_service: Optional[RAGStorageService] = None
     ):
         """
         `database` is the firm's database on the hosted API (default: the appliance's). `owns_model_service=False`
@@ -117,6 +122,8 @@ class IzvoriaEngine(IIzvoriaEngine):
         self._owns_model_service = owns_model_service
         self._clip_extractor_api = clip_extractor_api
         self._storage_compaction_phase = storage_compaction_phase
+        self._source_profile_api = source_profile_api
+        self._rag_storage_service = rag_storage_service
         self._concurrent = settings.ENGINE_CONCURRENT_LIVE if concurrent_live is None else concurrent_live
         self._report_cap = max(1, report_max_concurrent if report_max_concurrent is not None
                                else settings.REPORT_MAX_CONCURRENT)
@@ -804,6 +811,28 @@ class IzvoriaEngine(IIzvoriaEngine):
         except Exception as e:
             raise map_engine_error(e, context="Listing ingested sources")
 
+    # ---------- source profiles ----------
+
+    def list_source_profiles(self) -> List[ProfiledSource]:
+        self._require_started()
+        self._require_source_profiles()
+        try:
+            return self._source_profile_api.list_indexed()
+        except Exception as e:
+            raise map_engine_error(e, context="Listing source profiles")
+
+    def edit_source_profile(self, source_id: uuid.UUID, title: str, topic: str = "") -> SourceProfile:
+        self._require_source_profiles()
+        with self._live_call():
+            try:
+                profile = self._source_profile_api.edit(source_id, title, topic)
+                if self._rag_storage_service is not None:
+                    self._rag_storage_service.refresh_source_line(source_id)
+                return profile
+            except Exception as e:
+                self._release_models_after_failure()
+                raise map_engine_error(e, context=f"Editing the profile of source [{source_id}]")
+
     # ---------- history (database only: no model, no engine lock, allowed mid-ingestion) ----------
 
     def list_conversations(self, limit: int = 200, owner_id: Optional[str] = None) -> List[SessionSummary]:
@@ -862,6 +891,10 @@ class IzvoriaEngine(IIzvoriaEngine):
     def _require_started(self) -> None:
         if self._state == EngineState.OFFLINE:
             raise EngineOfflineError("Engine is offline.")
+
+    def _require_source_profiles(self) -> None:
+        if self._source_profile_api is None:
+            raise EngineOfflineError("Source profiles are not configured for this engine.")
 
     def _require_session_memory(self) -> None:
         if self._session_memory_api is None:

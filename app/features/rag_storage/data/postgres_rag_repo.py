@@ -4,12 +4,13 @@
 import logging
 from typing import List, Optional
 from uuid import UUID
-from sqlalchemy import delete
+from sqlalchemy import delete, select, update
 
 from app.core.config import settings
 from app.core.database.domain.interfaces import IDatabaseManager
 from app.core.database.service.manager import db_manager
 from app.features.rag_storage.domain.interfaces import IRagRepository
+from app.features.rag_storage.domain.entities import StoredChunkText
 from app.features.context_unification.domain.entities import UnifiedChunk
 from app.features.rag_storage.data.models import VectorChunkModel
 from app.features.rag_storage.utils.error_mapper import map_storage_error
@@ -94,3 +95,36 @@ class PostgresRagRepository(IRagRepository):
                     logger.info(f"Cleared {result.rowcount} existing RAG chunks for source {source_id}.")
         except Exception as e:
             raise map_storage_error(e, context=f"Clearing RAG chunks for source {source_id}") from e
+
+    def read_chunk_texts(self, source_id: UUID) -> List[StoredChunkText]:
+        try:
+            with self._db.session() as session:
+                rows = session.execute(
+                    select(VectorChunkModel.chunk_id, VectorChunkModel.context_text, VectorChunkModel.raw_text)
+                    .where(VectorChunkModel.source_id == source_id)
+                    .order_by(VectorChunkModel.position, VectorChunkModel.start_sec)
+                ).all()
+                return [StoredChunkText(chunk_id=row.chunk_id, context_text=row.context_text, raw_text=row.raw_text)
+                        for row in rows]
+        except Exception as e:
+            raise map_storage_error(e, context=f"Reading stored chunk texts for source {source_id}") from e
+
+    def update_chunk_payloads(self, source_id: UUID, chunks: List[StoredChunkText], payloads: List[str],
+                              embeddings: List[List[float]]) -> int:
+        if not len(chunks) == len(payloads) == len(embeddings):
+            raise ValueError("Mismatch between chunks, payloads and embeddings.")
+        try:
+            # One transaction: every chunk of the source moves to its new payload, or none does. fts_document is
+            # generated from text_payload, so Postgres re-tokenizes it with the chunk's own fts_config.
+            with self._db.session() as session:
+                updated = 0
+                for chunk, payload, embedding in zip(chunks, payloads, embeddings):
+                    result = session.execute(
+                        update(VectorChunkModel)
+                        .where(VectorChunkModel.source_id == source_id, VectorChunkModel.chunk_id == chunk.chunk_id)
+                        .values(context_text=chunk.context_text or None, text_payload=payload, embedding=embedding)
+                    )
+                    updated += result.rowcount
+                return updated
+        except Exception as e:
+            raise map_storage_error(e, context=f"Updating chunk payloads for source {source_id}") from e

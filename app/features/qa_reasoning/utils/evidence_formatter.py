@@ -6,6 +6,7 @@ from typing import Callable, Dict, List, Optional
 
 from app.core.anchors.domain.enums import AnchorKind
 from app.core.anchors.utils.formatting import format_location
+from app.features.qa_generation.utils.context_packer import source_label
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.qa_reasoning.domain.entities import ReasonerDecision, EvidenceBlock
 
@@ -45,7 +46,9 @@ def build_evidence_block(
     for chunk in evidence_pool:
         source_text = chunk.raw_text or chunk.text_payload
         tag = f"E{len(parts) + 1}"
-        part = f"[{tag}] ({_location(chunk)}):\n{source_text[:_MAX_CHARS_PER_CHUNK]}"
+        title = source_label(chunk)
+        label = f"[{tag}] {title}" if title else f"[{tag}]"
+        part = f"{label} ({_location(chunk)}):\n{source_text[:_MAX_CHARS_PER_CHUNK]}"
 
         if token_budget is not None and count_tokens is not None:
             cost = count_tokens(part) + _SEPARATOR_TOKENS

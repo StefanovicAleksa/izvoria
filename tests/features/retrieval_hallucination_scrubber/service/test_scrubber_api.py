@@ -66,6 +66,17 @@ class TestRetrievalScrubberAPI:
 
         assert len(passed_text_chunk) == 3000
 
+    def test_the_source_line_is_not_judged(self, api, mock_adapter, mock_orchestrator):
+        chunk = RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), start_sec=0, end_sec=5,
+                               text_payload="[Source: Boosting — Weak classifiers.] The weights are updated.",
+                               relevance_score=1.0)
+        mock_adapter.evaluate_relevance.return_value = ScrubAudit(chunk_id=chunk.chunk_id, is_relevant=True,
+                                                                  discard_reason=None)
+
+        api.scrub_retrieved_chunks("Find info", [chunk], release_after=True)
+
+        assert mock_adapter.evaluate_relevance.call_args[1]["text_chunk"] == "The weights are updated."
+
     def test_unparseable_verdict_keeps_chunk_and_flags_audit(self, api, mock_adapter, mock_orchestrator):
         from app.features.retrieval_hallucination_scrubber.exceptions.pipeline import JSONScrubParseError
 

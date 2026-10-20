@@ -85,6 +85,11 @@ class IRetrievalRepository(ABC):
         pass
 
     @abstractmethod
+    def fetch_source_chunks(self, source_id: uuid.UUID) -> List[RetrievedChunk]:
+        """Every indexed chunk of one source, in reading order."""
+        pass
+
+    @abstractmethod
     def fetch_neighbors(self, chunk_ids: List[uuid.UUID]) -> List[RetrievedChunk]:
         """
         For each given chunk, the chunks immediately before and after it (by start time) in the same source.

@@ -42,6 +42,9 @@ class QAResponse(BaseModel):
     generated_answer: str = Field(..., description="The LLM's final response text with embedded citation tags.")
     citations: List[QACitation] = Field(default_factory=list, description="The mapping of tags to playable video clips.")
     inference_time_ms: int = Field(default=0, description="Total latency for generation.")
+    # The source the question named and the answer was read from alone ("Statistics 110, Lecture 4"); None when
+    # the whole library was searched
+    scoped_source_title: Optional[str] = Field(default=None, description="The one source the answer was read from.")
 
     model_config = ConfigDict(frozen=True)
 

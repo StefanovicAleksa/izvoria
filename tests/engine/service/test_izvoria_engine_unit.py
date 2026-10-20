@@ -1314,3 +1314,59 @@ class TestIzvoriaEngineConcurrentLive:
         with language_scope("sr"):
             assert engine.active_language == "sr"
         assert engine.active_language == "en"
+
+
+class TestSourceProfiles:
+    @pytest.fixture
+    def profile_api(self): return Mock()
+
+    @pytest.fixture
+    def rag_storage(self): return Mock()
+
+    @pytest.fixture
+    def engine(self, profile_api, rag_storage):
+        engine = IzvoriaEngine(
+            async_model_service=Mock(), media_pipeline=Mock(), audio_pipeline=Mock(), live_pipeline=Mock(),
+            live_verified_pipeline=Mock(), live_qa_pipeline=Mock(), storage_api=Mock(),
+            source_profile_api=profile_api, rag_storage_service=rag_storage, concurrent_live=False
+        )
+        engine._state = EngineState.ONLINE
+        return engine
+
+    def test_list_reads_the_profiles(self, engine, profile_api):
+        assert engine.list_source_profiles() is profile_api.list_indexed.return_value
+
+    def test_edit_saves_then_re_indexes_the_source(self, engine, profile_api, rag_storage):
+        source_id = uuid.uuid4()
+        order = []
+        profile_api.edit.side_effect = lambda *a: order.append("edit") or "profile"
+        rag_storage.refresh_source_line.side_effect = lambda *a: order.append("refresh") or 3
+
+        assert engine.edit_source_profile(source_id, "Lecture 4", "Bayes") == "profile"
+
+        profile_api.edit.assert_called_once_with(source_id, "Lecture 4", "Bayes")
+        rag_storage.refresh_source_line.assert_called_once_with(source_id)
+        assert order == ["edit", "refresh"]
+
+    def test_edit_is_refused_while_ingesting(self, engine, profile_api):
+        engine._state = EngineState.INGESTING
+
+        with pytest.raises(EngineBusyError):
+            engine.edit_source_profile(uuid.uuid4(), "T")
+        profile_api.edit.assert_not_called()
+
+    def test_a_failed_re_index_releases_the_models_and_is_mapped(self, engine, rag_storage):
+        rag_storage.refresh_source_line.side_effect = RuntimeError("OOM")
+
+        with pytest.raises(EngineError):
+            engine.edit_source_profile(uuid.uuid4(), "T")
+        engine._async_service.release_all.assert_called_once_with()
+
+    def test_without_profiles_wired_the_calls_are_refused(self):
+        engine = IzvoriaEngine(
+            async_model_service=Mock(), media_pipeline=Mock(), audio_pipeline=Mock(), live_pipeline=Mock(),
+            live_verified_pipeline=Mock(), live_qa_pipeline=Mock(), storage_api=Mock())
+        engine._state = EngineState.ONLINE
+
+        with pytest.raises(EngineOfflineError):
+            engine.list_source_profiles()

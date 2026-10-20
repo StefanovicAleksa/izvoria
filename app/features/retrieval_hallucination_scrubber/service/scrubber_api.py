@@ -123,7 +123,7 @@ class RetrievalScrubberAPI:
             return {chunk_id: future.result() for chunk_id, future in futures.items()}
 
     def _judge(self, loaded_model: LoadedModel, user_prompt: str, chunk: RetrievedChunk) -> ScrubAudit:
-        safe_text = chunk.text_payload[:3000] if len(chunk.text_payload) > 3000 else chunk.text_payload
+        safe_text = chunk.content_payload[:3000]
 
         try:
             return self._adapter.evaluate_relevance(

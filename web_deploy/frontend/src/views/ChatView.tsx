@@ -137,6 +137,9 @@ export function ChatView() {
                     {m.critique_unresolved && (
                       <p className="banner warning">{t("This answer could not be fully verified against the evidence.")}</p>
                     )}
+                    {m.scoped_source && (
+                      <p className="subtle scoped-source">{t("Answered from")}: {m.scoped_source}</p>
+                    )}
                     <CitedText text={m.text} onCite={cite} />
                     {m.evidence && m.evidence.length > 0 && (
                       <details open className="evidence-list">

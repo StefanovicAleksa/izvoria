@@ -288,3 +288,89 @@ class TestExecuteImage:
 
         assert api.execute_image(existing.source_id, "x", "y") is existing
         mocks["repo"].save.assert_not_called()
+
+
+class TestProfiling:
+    """The source's profile is written by the model contextualising it, before its chunks, with no extra load."""
+
+    @pytest.fixture
+    def mocks(self):
+        mocks = {"repo": MagicMock(), "orchestrator": MagicMock(spec=ModelManagerOrchestrator),
+                 "slm_adapter": MagicMock(), "profile_api": MagicMock()}
+        mocks["repo"].get_by_source_id.return_value = None
+        mocks["repo"].save.side_effect = lambda transcript: transcript
+        mocks["slm_adapter"].count_tokens.return_value = 10
+        mocks["slm_adapter"].generate_context.return_value = "context"
+        return mocks
+
+    @pytest.fixture
+    def api(self, mocks):
+        return ContextualizerAPI(repository=mocks["repo"], orchestrator=mocks["orchestrator"],
+                                 slm_adapter=mocks["slm_adapter"], profile_api=mocks["profile_api"])
+
+    def test_a_transcript_is_profiled_from_its_whole_text_with_the_held_model(self, api, mocks):
+        source_id = uuid.uuid4()
+        sentences = [_sentence("Today is lecture four.", start=0), _sentence("Bayes rule.", start=1)]
+        loaded = mocks["orchestrator"].acquire_model.return_value
+
+        api.execute(DomainPhoneticCorrectedTranscript(source_id=source_id, sentences=sentences, audit_trail=[]))
+
+        mocks["profile_api"].generate.assert_called_once()
+        args = mocks["profile_api"].generate.call_args.args
+        assert args[0] == source_id and args[2] is loaded
+        assert len(args[1]) == 1 and "Today is lecture four." in args[1][0] and "Bayes rule." in args[1][0]
+        mocks["orchestrator"].acquire_model.assert_called_once()
+
+    def test_a_document_is_profiled_from_its_sections(self, api, mocks):
+        document = StructuredDocument(source_id=uuid.uuid4(), anchor_kind=AnchorKind.PAGE, chunks=[
+            StructuredChunk(ordinal=0, text="LEASE", page_start=1, page_end=1),
+            StructuredChunk(ordinal=1, text="Article 7", page_start=2, page_end=2)])
+
+        api.execute_document(document)
+
+        assert mocks["profile_api"].generate.call_args.args[1] == ["LEASE\n\nArticle 7"]
+
+    def test_a_failed_profile_does_not_fail_contextualising(self, api, mocks):
+        mocks["profile_api"].generate.side_effect = RuntimeError("db down")
+        sentences = [_sentence("Hello.")]
+
+        result = api.execute(DomainPhoneticCorrectedTranscript(source_id=uuid.uuid4(), sentences=sentences,
+                                                              audit_trail=[]))
+
+        assert len(result.chunks) == 1
+
+    def test_a_model_manager_failure_while_profiling_is_raised(self, api, mocks):
+        from app.core.model_manager.exceptions import ModelManagerError
+        mocks["profile_api"].generate.side_effect = ModelManagerError("VRAM")
+
+        with pytest.raises(Exception):
+            api.execute(DomainPhoneticCorrectedTranscript(source_id=uuid.uuid4(), sentences=[_sentence("Hi.")],
+                                                         audit_trail=[]))
+        mocks["orchestrator"].release_model.assert_called_once()
+
+    def test_an_image_is_named_without_a_model(self, api, mocks):
+        source_id = uuid.uuid4()
+
+        api.execute_image(source_id, excerpt="A dog.", context_string="dog.jpg")
+
+        mocks["profile_api"].name_only.assert_called_once_with(source_id, "A dog.")
+        mocks["orchestrator"].acquire_model.assert_not_called()
+
+    def test_profile_sources_loads_the_model_once_and_profiles_each_in_its_language(self, api, mocks):
+        first, second = uuid.uuid4(), uuid.uuid4()
+        languages = []
+        with patch("app.features.contextual_retrieval.service.contextualizer_api.language_scope") as scope:
+            scope.side_effect = lambda code: languages.append(code) or MagicMock()
+            profiled = api.profile_sources([(first, ["a", "b"], "sr"), (second, ["c"], "en"), (uuid.uuid4(), [], "en")])
+
+        assert profiled == 2
+        assert languages == ["sr", "en"]
+        mocks["orchestrator"].acquire_model.assert_called_once()
+        mocks["orchestrator"].release_model.assert_called_once()
+        assert [c.args[:2] for c in mocks["profile_api"].generate.call_args_list] == [(first, ["a\n\nb"]),
+                                                                                     (second, ["c"])]
+
+    def test_profile_sources_continues_past_one_failure(self, api, mocks):
+        mocks["profile_api"].generate.side_effect = [RuntimeError("bad row"), MagicMock()]
+
+        assert api.profile_sources([(uuid.uuid4(), ["a"], "en"), (uuid.uuid4(), ["b"], "en")]) == 1

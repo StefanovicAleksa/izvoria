@@ -3,13 +3,15 @@
 
 import logging
 import uuid
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from app.core.anchors.domain.enums import AnchorKind
 from app.core.config import settings
+from app.core.language.service.language_api import active_language, language_scope
 from app.core.model_manager.service.orchestrator import ModelManagerOrchestrator
 from app.core.model_manager.domain.entities import ModelManifest, LoadedModel
 from app.core.model_manager.domain.enums import ModelType
+from app.core.model_manager.exceptions import ModelManagerError
 
 from app.features.document_structuring.domain.entities import StructuredChunk, StructuredDocument
 from app.features.domain_phonetic_correction.domain.entities import DomainPhoneticCorrectedTranscript
@@ -21,6 +23,7 @@ from app.features.contextual_retrieval.utils.chunker import build_rag_chunks
 from app.features.contextual_retrieval.utils.document_window import build_document_sections, assign_section
 from app.features.contextual_retrieval.utils.transcript_formatter import format_speaker_turns
 from app.features.contextual_retrieval.utils.error_mapper import map_contextual_error
+from app.features.source_profile.service.source_profile_api import SourceProfileAPI
 
 logger = logging.getLogger(__name__)
 
@@ -30,11 +33,15 @@ class ContextualizerAPI:
             self,
             repository: IContextualRepository,
             orchestrator: ModelManagerOrchestrator,
-            slm_adapter: ISLMContextAdapter
+            slm_adapter: ISLMContextAdapter,
+            profile_api: Optional[SourceProfileAPI] = None
     ):
+        """`profile_api` titles each source while its model is loaded here anyway (no extra load); without it,
+        sources are contextualised without a profile."""
         self._repo = repository
         self._orchestrator = orchestrator
         self._slm_adapter = slm_adapter
+        self._profile_api = profile_api
 
         # Strict Domain Manifest Isolation
         self._manifest = ModelManifest(
@@ -81,6 +88,9 @@ class ContextualizerAPI:
                         f"situating chunks within {len(sections)} overlapping document sections."
                     )
                 section_texts: Dict[int, str] = {}
+                self._profile(transcript.source_id, loaded_model, [
+                    format_speaker_turns(sentences[start:end], include_timestamps=False) for start, end in sections
+                ])
 
                 for idx, chunk_sentences in enumerate(raw_chunks):
                     logger.info(f"  -> Generating Context for Chunk {idx + 1}/{len(raw_chunks)}...")
@@ -140,6 +150,11 @@ class ContextualizerAPI:
 
             chunk = ContextualizedChunk(anchor_kind=AnchorKind.IMAGE, original_text=excerpt,
                                         context_string=context_string)
+            if self._profile_api is not None:
+                try:
+                    self._profile_api.name_only(source_id, excerpt)
+                except Exception as e:
+                    logger.warning(f"Image source {source_id} was not profiled: {e}")
             return self._repo.save(ContextualizedTranscript(source_id=source_id, chunks=[chunk]))
 
         except Exception as e:
@@ -177,6 +192,9 @@ class ContextualizerAPI:
                         f"situating chunks within {len(sections)} overlapping document sections."
                     )
                 section_texts: Dict[int, str] = {}
+                self._profile(document.source_id, loaded_model, [
+                    "\n\n".join(chunk_texts[start:end]) for start, end in sections
+                ])
 
                 for idx, chunk in enumerate(document.chunks):
                     logger.info(f"  -> Generating Context for Chunk {idx + 1}/{len(document.chunks)}...")
@@ -211,6 +229,52 @@ class ContextualizerAPI:
 
         except Exception as e:
             raise map_contextual_error(e, context=f"ContextualizerAPI.execute_document for Source {document.source_id}") from e
+
+    def profile_sources(self, sources: List[Tuple[uuid.UUID, List[str], Optional[str]]]) -> int:
+        """
+        Profiles sources indexed before profiles existed, from their stored chunk texts in reading order: one
+        (source id, texts, language) per source. One load of the contextual SLM for all of them, released at the end.
+        Each profile is written in its source's language. Returns how many sources were profiled.
+        """
+        if self._profile_api is None or not sources:
+            return 0
+        try:
+            loaded_model = self._orchestrator.acquire_model(self._manifest, self._slm_adapter)
+            profiled = 0
+            try:
+                for source_id, texts, language in sources:
+                    if not texts:
+                        continue
+                    whole = "\n\n".join(texts)
+                    sections = self._plan_sections(loaded_model, whole, texts)
+                    section_texts = ["\n\n".join(texts[start:end]) for start, end in sections]
+                    try:
+                        with language_scope(language or active_language()):
+                            if self._profile_api.generate(source_id, section_texts, loaded_model) is not None:
+                                profiled += 1
+                    except ModelManagerError:
+                        raise
+                    except Exception as e:
+                        logger.error(f"Source {source_id} could not be profiled; continuing with the rest: {e}")
+            finally:
+                self._orchestrator.release_model(loaded_model, self._slm_adapter, flush=True)
+            return profiled
+        except Exception as e:
+            raise map_contextual_error(e, context=f"ContextualizerAPI.profile_sources for {len(sources)} sources") from e
+
+    def _profile(self, source_id: uuid.UUID, model: LoadedModel, section_texts: List[str]) -> None:
+        """
+        The source's title and topic, written by the model this call holds. A profile only helps find and label the
+        source, so any failure but the model manager's is logged and contextualising goes on without one.
+        """
+        if self._profile_api is None:
+            return
+        try:
+            self._profile_api.generate(source_id, section_texts, model)
+        except ModelManagerError:
+            raise
+        except Exception as e:
+            logger.warning(f"Source {source_id} was not profiled: {e}")
 
     def _plan_document_sections(
             self,

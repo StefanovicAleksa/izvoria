@@ -4,6 +4,19 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Every source has a title, and a question can name one
+
+Asking "what are all the formulas mentioned in lecture 4 of Stat 110" didn't work. Each chunk knew its source in the database, but the answer model saw only `[Doc 3] (00:12:31–00:14:02)`, the index never named the source, and a top-10 search across the whole library can't list everything one lecture said.
+
+- **`app/features/source_profile`** (`docs/features/source_profile.md`): a title and a one-sentence topic per source, written at ingestion by the contextual SLM already loaded (no extra model load), from notes on up to 8 sections for long sources. Images are titled by their file name. Table `source_profiles`, migration 0007.
+- **Evidence headers name the source:** `[Doc 3] Lecture 4 Conditional Probability Statistics 110 (00:12:31–00:14:02)`, in chat, reasoned answers and the reasoner's evidence.
+- **Chunks are indexed with a `[Source: title — topic]` line** in `context_text`/`text_payload`, never in `raw_text`. The reranker and scrubber judge the chunk without it (`RetrievedChunk.content_payload`): with it, rerank hit@1 on the English benchmark fell from 10/10 to 9/10; without it, 10/10.
+- **Scoped questions:** a question naming one source is matched by a lexical shortlist, then the answer model picks one or none. Chat reads a source that fits 48K tokens whole, in order, with no search. A larger source, or a reasoned answer, gets a search filtered to it. The answer says "Answered from: …" in the desktop and web chat. Search modes are not scoped.
+- **Web Library** shows each file's title and topic; firm administrators can edit them (`PUT /api/library/{id}/profile`, re-embeds that source in place).
+- **Backfill:** `python -m scripts.backfill_source_profiles` (`--dry-run`, `--source`, `--regenerate`). Ran on the dev database: 88 sources, 1,621 chunks, about 7 minutes.
+- **Answers can be 4,096 tokens long** (`QA_GENERATION_MAX_ANSWER_TOKENS`, was 1,024). The first real "all the formulas in lecture 4" answer was cut off in LaTeX right before Bayes' rule.
+- **A copied example became 25 wrong titles.** The first prompt showed "Statistics 110, Lecture 4" as an example, and the 3B model titled about 25 other lectures with it. The examples are gone, and a model-free guard (`utils/grounding.py`) replaces any title that adds or drops a number of the file name with the tidied file name.
+
 ## Onyx is now Izvoria
 
 The product is renamed **Izvoria** (from *izvor*, "source"), because "Onyx" is already the name of an AI enterprise-search product. Entries below this one keep the old name.

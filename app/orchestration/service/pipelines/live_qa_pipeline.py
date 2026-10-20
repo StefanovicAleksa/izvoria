@@ -19,8 +19,13 @@ from app.orchestration.service.phases.rag_reranking_phase import RagRerankingPha
 from app.orchestration.service.phases.retrieval_scrubber_phase import RetrievalScrubberPhase
 from app.orchestration.service.phases.qa_generation_phase import QAGenerationPhase
 from app.orchestration.service.phases.reasoner_phase import ReasonerPhase
+from app.orchestration.service.phases.source_scope_phase import SourceScopePhase
+from app.features.source_profile.domain.entities import SourceScope
 
 logger = logging.getLogger(__name__)
+
+# A question scoped to a source too long to read whole is searched within it, for as many chunks as a search returns
+SCOPED_SEARCH_LIMIT = 20
 
 
 class LiveQAPipeline:
@@ -38,13 +43,15 @@ class LiveQAPipeline:
             reranking_phase: RagRerankingPhase,
             scrubber_phase: RetrievalScrubberPhase,
             qa_generation_phase: QAGenerationPhase,
-            reasoner_phase: Optional[ReasonerPhase] = None
+            reasoner_phase: Optional[ReasonerPhase] = None,
+            scope_phase: Optional[SourceScopePhase] = None
     ):
         self._retrieval_phase = retrieval_phase
         self._reranking_phase = reranking_phase
         self._scrubber_phase = scrubber_phase
         self._qa_generation_phase = qa_generation_phase
         self._reasoner_phase = reasoner_phase
+        self._scope_phase = scope_phase
 
     def preload_models(self) -> None:
         """
@@ -130,12 +137,43 @@ class LiveQAPipeline:
         # Transcript on either side of the best survivors, for answers that cross a chunk boundary
         return self._retrieval_phase.expand_neighbors(surviving)
 
+    def _resolve_scope(self, search_id: uuid.UUID, question: str) -> Optional[SourceScope]:
+        """
+        The source the question names, if any. Before any preload: resolving borrows the answer model synchronously,
+        and a queued preload would hold the GPU while it waits.
+        """
+        if self._scope_phase is None:
+            return None
+        return self._scope_phase.resolve(search_id, question)
+
+    def _gather(self, search_id: uuid.UUID, query: SearchQuery, scope: Optional[SourceScope]) -> List[RetrievedChunk]:
+        """
+        The evidence for one answer. A question that names a source reads all of that source when it fits (the only
+        way "list every formula in lecture 4" can be answered), and is searched within it otherwise; any other
+        question is searched across every source.
+        """
+        if scope is not None:
+            try:
+                whole = self._retrieval_phase.get_source_chunks(scope.source_id)
+            except Exception as e:
+                logger.error(f"Reading source {scope.source_id} whole failed; searching within it instead: {e}")
+                whole = []
+            if SourceScopePhase.fits_whole(whole):
+                logger.info(f"Answering from all {len(whole)} chunks of '{scope.title}'.")
+                self._qa_generation_phase.preload_model()
+                return whole
+            logger.info(f"'{scope.title}' is too long to read whole; searching within it.")
+            query = query.model_copy(update={"source_id_filter": scope.source_id, "limit": SCOPED_SEARCH_LIMIT})
+
+        self.preload_models()
+        return self._retrieve_scrubbed(search_id, query)
+
     def execute_chat(self, search_id: uuid.UUID, query: SearchQuery) -> QAResponse:
         logger.info(f"========== Starting Live QA Pipeline for Search [{search_id}] ==========")
 
         try:
-            self.preload_models()
-            chunks = self._retrieve_scrubbed(search_id, query)
+            scope = self._resolve_scope(search_id, query.prompt)
+            chunks = self._gather(search_id, query, scope)
 
             if not chunks:
                 # Nothing to answer from: generation returns the refusal without a model, so don't keep
@@ -154,7 +192,7 @@ class LiveQAPipeline:
             for job_result, qa_response in qa_phase_result.items:
                 if isinstance(job_result, QAGenerationJobResult) and job_result.success and qa_response:
                     logger.info(f"========== Live QA Pipeline Completed for Search [{search_id}] ==========")
-                    return qa_response
+                    return SourceScopePhase.mark(qa_response, scope)
 
             raise WorkflowStateError("Pipeline halted: No QA response returned from the LLM.")
 
@@ -189,8 +227,8 @@ class LiveQAPipeline:
                 search_text = self._reasoner_phase.rewrite_query(search_id, query.prompt, prior_context)
                 logger.info(f"Follow-up searched as: '{search_text}'")
 
-            self.preload_models()
-            chunks = self._retrieve_scrubbed(search_id, query.model_copy(update={"prompt": search_text}))
+            scope = self._resolve_scope(search_id, search_text)
+            chunks = self._gather(search_id, query.model_copy(update={"prompt": search_text}), scope)
 
             if not chunks and not any(turn.evidence for turn in history.turns):
                 self._qa_generation_phase.discard_preload()
@@ -207,7 +245,7 @@ class LiveQAPipeline:
                         and isinstance(answer, ConversationAnswer):
                     logger.info(f"========== Conversational QA Pipeline Completed for Search [{search_id}] ==========")
                     return ConversationChatResult(
-                        qa_response=answer.response,
+                        qa_response=SourceScopePhase.mark(answer.response, scope),
                         standalone_query=search_text,
                         new_chunk_ids=answer.new_chunk_ids
                     )
@@ -224,3 +262,4 @@ class LiveQAPipeline:
             ) from e
         finally:
             self._discard_pending_preloads()
+

@@ -162,6 +162,8 @@ Ingestion (media → transcript → RAG index, including a visual-analysis branc
 
 **Images** (`ingest_images()`, `BatchImagePipeline`): a standalone image is described by Qwen2-VL's still-image mode, its text checked against RapidOCR, and indexed as one `AnchorKind.IMAGE` chunk cited `[Doc 4] (image)` (`app/features/image_description`, `docs/features/image_description.md`). No transcript stage, no contextual SLM: one VLM load per batch, then the embedder.
 
+**Source profiles** (`app/features/source_profile`, `docs/features/source_profile.md`): every source has a title and topic, written by the contextual SLM at ingestion. Evidence headers read `[Doc 3] <title> (<location>)`, every chunk's `text_payload` starts with `[Source: title — topic]` (never `raw_text`), and a chat or reasoned question that names one source ("in lecture 4") is answered from that source alone (`SourceScopePhase`: lexical shortlist, then the answer model picks). Two things to know: **never put example titles in the profile prompt** (the 3B model copied one onto 25 lectures), and the number guard in `utils/grounding.py` is what keeps a title's lecture/unit number equal to the file name's. Sources ingested before profiles: `python -m scripts.backfill_source_profiles`.
+
 **Four query-time modes, all sharing one citation scheme:**
 
 1. **`chat(query, session_id)`** — single-pass retrieve → scrub → generate, multi-turn. `session_turns` stores each turn with the evidence it showed first, and `[Doc N]` numbers are conversation-wide (`first_doc_number` per turn), so a follow-up can cite an earlier turn's excerpt.

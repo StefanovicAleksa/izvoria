@@ -212,6 +212,17 @@ class TestChatMapping:
 
         assert message.text == "Both agreed [Doc 1][Doc 2]."
 
+    def test_an_answer_read_from_one_named_source_says_which(self, gateway_and_engine):
+        gateway, engine = gateway_and_engine
+        engine.chat.return_value = QAResponse(query="q", generated_answer="Bayes [Doc 1].", inference_time_ms=1,
+                                              scoped_source_title="Lecture 4 Conditional Probability")
+        engine.get_chunks.return_value = []
+        from izvoria_desktop.domain.enums import ChatMode
+
+        message = gateway.chat("q", SESSION_ID, ChatMode.SINGLE_PASS, 5)
+
+        assert message.scoped_source == "Lecture 4 Conditional Probability"
+
     def test_an_answer_with_no_citations_is_flagged_ungrounded(self, gateway_and_engine):
         gateway, engine = gateway_and_engine
         engine.chat.return_value = QAResponse(

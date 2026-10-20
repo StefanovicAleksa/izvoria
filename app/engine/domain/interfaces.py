@@ -16,6 +16,7 @@ from app.features.deep_research_report.domain.entities import (
 )
 from app.features.search_history.domain.entities import SearchRecord, SearchRecordSummary
 from app.features.session_memory.domain.entities import SessionSummary, SessionTurn
+from app.features.source_profile.domain.entities import ProfiledSource, SourceProfile
 
 class IIzvoriaEngine(ABC):
     """
@@ -218,6 +219,19 @@ class IIzvoriaEngine(ABC):
     @abstractmethod
     def list_sources(self) -> List[Source]:
         """Everything ingested into the vault, newest first, each with its file row attached."""
+        pass
+
+    @abstractmethod
+    def list_source_profiles(self) -> List[ProfiledSource]:
+        """Every indexed source with its title and topic (when it has a profile). Database only."""
+        pass
+
+    @abstractmethod
+    def edit_source_profile(self, source_id: uuid.UUID, title: str, topic: str = "") -> SourceProfile:
+        """
+        A person's own title and topic for a source, kept over any generated one. Re-embeds the source's chunks
+        under the new name (the embedder, seconds), so it is a live call: refused while ingestion holds the GPU.
+        """
         pass
 
     # History: database reads, no model and no engine lock, so they work while ingestion or a report runs.

@@ -401,7 +401,32 @@ def create_app(host: IEngineHost, settings: ApiSettings, queue: IngestQueue,
     async def library(request: Request, principal: Principal) -> Response:
         engine = await engine_for(principal)
         sources = await asyncio.to_thread(engine.list_sources)
-        return JSONResponse({"sources": [mapping.source_ref(s) for s in sources]})
+        profiles = {p.source_id: p.profile for p in await asyncio.to_thread(engine.list_source_profiles)}
+        return JSONResponse({"sources": [mapping.source_ref(s, profiles.get(s.id)) for s in sources]})
+
+    async def edit_source_profile(request: Request, principal: Principal) -> Response:
+        """
+        A firm administrator's own title and topic for a source, for the whole firm. Its index is re-embedded with
+        them (the embedder only, seconds), so it is model work and waits its turn like a question.
+        """
+        if principal.role not in ("admin", "owner"):
+            return JSONResponse({"error": "Only a firm administrator can rename files in the Library.",
+                                 "kind": "forbidden"}, status_code=403)
+        source_id = mapping.parse_uuid(request.path_params["source_id"])
+        data = await body(request)
+        title = " ".join(str(data.get("title") or "").split())
+        topic = " ".join(str(data.get("topic") or "").split())
+        if not title:
+            raise BadRequest("Give the file a title.")
+        engine = await engine_for(principal)
+        if source_id not in {source.id for source in await asyncio.to_thread(engine.list_sources)}:
+            raise RunNotFound(str(source_id))
+
+        def work():
+            with host.live():
+                return engine.edit_source_profile(source_id, title, topic)
+
+        return JSONResponse(mapping.source_profile(await asyncio.to_thread(work)))
 
     async def source_location(request: Request, principal: Principal) -> Response:
         """
@@ -524,6 +549,7 @@ def create_app(host: IEngineHost, settings: ApiSettings, queue: IngestQueue,
             r("/api/reports/{report_id}/cancel", cancel_report, ["POST"]),
             r("/api/reports/{report_id}/rename", rename_report, ["POST"]),
             r("/api/library", library, ["GET"]),
+            r("/api/library/{source_id}/profile", edit_source_profile, ["PUT"]),
             r("/api/sources/{chunk_id}/locate", source_location, ["GET"]),
             r("/api/ingest/links/preview", preview_links, ["POST"]),
             r("/api/ingest/links", enqueue_links, ["POST"]),

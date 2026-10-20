@@ -7,7 +7,7 @@ QA_SYSTEM_PROMPT = """You are an expert analytical assistant for Enterprise Prof
 Your task is to accurately answer the user's question using ONLY the provided context blocks.
 
 <CONTEXT_FORMAT>
-Each context block is a verbatim transcript excerpt from the client's own recordings, introduced by a document tag and its time range, e.g. "[Doc 1] (00:12:31–00:14:02)".
+Each context block is a verbatim transcript excerpt from the client's own recordings, introduced by a document tag, the name of the recording it comes from and its time range, e.g. "[Doc 1] Board meeting, 3 May (00:12:31–00:14:02)". The name is a label telling recordings apart (a question may name one), not a quotation.
 Lines start with a speaker label and timestamp, e.g. "[Speaker_0 @ 00:12:31]: ...". Speaker labels are anonymous diarization IDs, not names.
 </CONTEXT_FORMAT>
 
@@ -22,12 +22,12 @@ Lines start with a speaker label and timestamp, e.g. "[Speaker_0 @ 00:12:31]: ..
 # The same prompt when the context holds document excerpts as well as (or instead of) transcripts. Only then:
 # with nothing but transcripts in the context the model gets QA_SYSTEM_PROMPT unchanged, so an appliance that
 # ingests only recordings answers exactly as it did before documents existed.
-_TRANSCRIPT_CONTEXT_FORMAT = """Each context block is a verbatim transcript excerpt from the client's own recordings, introduced by a document tag and its time range, e.g. "[Doc 1] (00:12:31–00:14:02)".
+_TRANSCRIPT_CONTEXT_FORMAT = """Each context block is a verbatim transcript excerpt from the client's own recordings, introduced by a document tag, the name of the recording it comes from and its time range, e.g. "[Doc 1] Board meeting, 3 May (00:12:31–00:14:02)". The name is a label telling recordings apart (a question may name one), not a quotation.
 Lines start with a speaker label and timestamp, e.g. "[Speaker_0 @ 00:12:31]: ...". Speaker labels are anonymous diarization IDs, not names."""
-_MIXED_CONTEXT_FORMAT = """Each context block is an excerpt from the client's own material, introduced by a document tag and its location. There are three kinds:
-- A transcript excerpt from a recording, located by its time range, e.g. "[Doc 1] (00:12:31–00:14:02)". Its lines start with a speaker label and timestamp, e.g. "[Speaker_0 @ 00:12:31]: ...". Speaker labels are anonymous diarization IDs, not names.
-- A document excerpt (a contract, letter, invoice, filing, book...), located by its page, lines or section, e.g. "[Doc 2] (p. 7 · Article 7 Termination)". Its text is the document's own wording.
-- An image excerpt, located as "(image)", e.g. "[Doc 3] (image)". It is NOT the client's wording: it is a machine-written description of a picture, followed by any text read off the picture."""
+_MIXED_CONTEXT_FORMAT = """Each context block is an excerpt from the client's own material, introduced by a document tag, the name of the source it comes from and its location. The name is a label telling sources apart (a question may name one), not a quotation. There are three kinds:
+- A transcript excerpt from a recording, located by its time range, e.g. "[Doc 1] Board meeting, 3 May (00:12:31–00:14:02)". Its lines start with a speaker label and timestamp, e.g. "[Speaker_0 @ 00:12:31]: ...". Speaker labels are anonymous diarization IDs, not names.
+- A document excerpt (a contract, letter, invoice, filing, book...), located by its page, lines or section, e.g. "[Doc 2] Supply Agreement (p. 7 · Article 7 Termination)". Its text is the document's own wording.
+- An image excerpt, located as "(image)", e.g. "[Doc 3] site_photo_04 (image)". It is NOT the client's wording: it is a machine-written description of a picture, followed by any text read off the picture."""
 _TRANSCRIPT_ATTRIBUTION = """3. ATTRIBUTION: When you report what was said, attribute it to the speaker label shown in the transcript. Never invent names or roles for a speaker label unless the transcript itself states them."""
 _MIXED_ATTRIBUTION = """3. ATTRIBUTION: When you report what was said in a recording, attribute it to the speaker label shown in the transcript. Never invent names or roles for a speaker label unless the transcript itself states them. When you report what a document says, attribute it to the document, not to a speaker. When you report an image excerpt, say what "the image shows" or what text "the image reads"; never present it as something the client wrote or said."""
 assert _TRANSCRIPT_CONTEXT_FORMAT in QA_SYSTEM_PROMPT and _TRANSCRIPT_ATTRIBUTION in QA_SYSTEM_PROMPT

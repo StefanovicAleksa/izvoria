@@ -21,3 +21,11 @@ class IngestionResult:
     success: bool
     telemetry: IndexingTelemetry
     error_message: Optional[str] = None
+
+@dataclass(frozen=True)
+class StoredChunkText:
+    """An indexed chunk's texts as stored: its generated context (None for a chunk indexed without one) and its
+    verbatim raw text."""
+    chunk_id: UUID
+    context_text: Optional[str]
+    raw_text: str
