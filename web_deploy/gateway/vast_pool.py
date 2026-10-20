@@ -12,6 +12,10 @@ prices), so the cheapest box whose GPU is free is the one that bills. The list's
 whose price Vast doesn't give, after every priced one. A running box is never swapped for a cheaper one: the choice
 is made only when the appliance wakes.
 
+Versions (fleet.py): boxes holding the current version of the app are tried first, cheapest first; a stale box only
+after every up-to-date one failed to start. A box being updated (update_fleet.py) is invisible here: never started,
+stopped, kept or reported as the box in use, so the update can start and stop it while the appliance runs elsewhere.
+
 The controller (box.py) sees one IVastClient, exactly as with a single box:
 - start() tries each box, cheapest first. One whose GPU is taken (Vast refuses, or leaves it "scheduling" past the grace
   period) is stopped again at once, because Vast queues a refused start and would otherwise run it later, billing a
@@ -30,6 +34,7 @@ from typing import Awaitable, Callable, Dict, List, Optional, Sequence
 import httpx
 
 from deploy.gateway.vast_client import InstanceInfo, IVastClient, VastClient, VastError, _parse_ports, _price
+from web_deploy.gateway.fleet import FleetState
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +45,10 @@ RESTOP_SECONDS = 60.0
 ALLOCATED = ("running", "loading", "created")
 
 Lister = Callable[[], Awaitable[Dict[int, InstanceInfo]]]
+# What the pool is told about versions and updates, read afresh at every call (fleet.py)
+FleetReader = Callable[[], FleetState]
+# What info() reports while every box is being updated: none is in use
+NONE_IN_USE = InstanceInfo(actual_status="exited", intended_status="stopped")
 
 
 def wants_to_run(info: InstanceInfo) -> bool:
@@ -54,7 +63,8 @@ class NoGpuAvailable(VastError):
 class VastPool(IVastClient):
     def __init__(self, members: Dict[int, IVastClient], grace_seconds: float = 60.0,
                  lister: Optional[Lister] = None, clock: Callable[[], float] = time.monotonic,
-                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep) -> None:
+                 sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+                 fleet: FleetReader = FleetState) -> None:
         if not members:
             raise ValueError("VastPool needs at least one instance.")
         self._members = dict(members)
@@ -63,6 +73,7 @@ class VastPool(IVastClient):
         self._lister = lister
         self._clock = clock
         self._sleep = sleep
+        self._fleet = fleet
         self._active = self._order[0]
         self._starting = False
         self._stopped_at: Dict[int, float] = {}
@@ -74,10 +85,12 @@ class VastPool(IVastClient):
     # ---------- IVastClient ----------
 
     async def info(self) -> InstanceInfo:
-        infos = await self._infos()
+        infos = self._visible(await self._infos())
+        if not infos:
+            return NONE_IN_USE
         if not self._starting:
             await self._keep_one(infos)
-        if self._active not in infos:  # destroyed: carry on with the first box that still exists
+        if self._active not in infos:  # destroyed or being updated: carry on with the first box that's usable
             self._active = next(i for i in self._order if i in infos)
         return infos[self._active]
 
@@ -85,8 +98,8 @@ class VastPool(IVastClient):
         self._starting = True
         try:
             refusals = []
-            for candidate in self._by_price(await self._infos()):
-                infos = await self._infos()
+            for candidate in self._by_price(self._visible(await self._infos())):
+                infos = self._visible(await self._infos())
                 if candidate not in infos:
                     refusals.append(f"{candidate}: no longer exists")
                     continue
@@ -109,11 +122,13 @@ class VastPool(IVastClient):
             self._starting = False
 
     async def stop(self) -> None:
+        updating = self._fleet().maintenance
         try:
             infos = await self._infos()
-            targets = [i for i in self._order if i in infos and wants_to_run(infos[i])]
+            targets = [i for i in self._order if i in infos and wants_to_run(infos[i]) and i not in updating]
         except VastError:
-            targets = list(self._order)  # can't see them: stop them all rather than leave one billing
+            # Can't see them: stop them all rather than leave one billing, except one an update is working on
+            targets = [i for i in self._order if i not in updating]
         errors = []
         for instance in targets:
             try:
@@ -124,18 +139,49 @@ class VastPool(IVastClient):
         if errors:
             raise VastError("Could not stop every GPU box: " + "; ".join(errors))
 
+    async def describe(self) -> Dict[int, InstanceInfo]:
+        """Every box's state as Vast reports it, those being updated included (fleet_cli.py)."""
+        return await self._infos()
+
+    async def start_one(self, instance: int) -> Optional[str]:
+        """
+        Starts one box for an update, outside the pool's choice: None once it has its GPU, else why not, and then it
+        is stopped again (a refused start is queued by Vast and would otherwise run later, billing).
+        """
+        reason = await self._try(instance)
+        if reason is not None:
+            await self._stop_one(instance, "its GPU is taken", force=True)
+        return reason
+
+    async def stop_one(self, instance: int) -> None:
+        await self._members[instance].stop()
+        self._stopped_at[instance] = self._clock()
+
     # ---------- plumbing ----------
 
+    def _visible(self, infos: Dict[int, InstanceInfo]) -> Dict[int, InstanceInfo]:
+        """The boxes the pool may use: every one but those an update is working on."""
+        updating = self._fleet().maintenance
+        return {i: info for i, info in infos.items() if i not in updating}
+
     def _by_price(self, infos: Dict[int, InstanceInfo]) -> List[int]:
-        """The boxes cheapest first; unpriced ones last; the configured order breaks ties."""
+        """Up-to-date boxes before stale ones; within each, cheapest first, unpriced last, then the configured order."""
+        fleet = self._fleet()
+
         def key(instance: int):
             info = infos.get(instance)
             price = info.price_per_hour if info is not None else None
-            return (price is None, price or 0.0, self._order.index(instance))
-        ranked = sorted(self._order, key=key)
-        logger.info("Waking the cheapest free GPU box; order: " + ", ".join(
-            f"{i} (${infos[i].price_per_hour:.3f}/h)" if i in infos and infos[i].price_per_hour else f"{i} (price unknown)"
-            for i in ranked))
+            return (not fleet.current(instance), price is None, price or 0.0, self._order.index(instance))
+        ranked = sorted((i for i in self._order if i in infos), key=key)
+
+        def label(i: int) -> str:
+            price = f"${infos[i].price_per_hour:.3f}/h" if infos[i].price_per_hour else "price unknown"
+            return f"{i} ({price}{'' if fleet.current(i) else ', OUTDATED'})"
+        logger.info("Waking the cheapest free GPU box; order: " + ", ".join(label(i) for i in ranked))
+        stale = [i for i in ranked if not fleet.current(i)]
+        if stale:
+            logger.warning(f"GPU boxes {stale} hold an older version than {fleet.release}: they are tried last. "
+                           f"Run web_deploy/provision/update_fleet.py to update them.")
         return ranked
 
     async def _try(self, instance: int) -> Optional[str]:
@@ -194,7 +240,8 @@ class VastPool(IVastClient):
 
 def build_pool(api_key: str, instance_ids: Sequence[int], grace_seconds: float,
                base_url: str = "https://console.vast.ai",
-               transport: Optional[httpx.AsyncBaseTransport] = None) -> VastPool:
+               transport: Optional[httpx.AsyncBaseTransport] = None,
+               fleet: FleetReader = FleetState) -> VastPool:
     """The production pool: one VastClient per box for start/stop, and one listing call for every box's state."""
     members = {i: VastClient(api_key, i, base_url=base_url, transport=transport) for i in instance_ids}
     client = httpx.AsyncClient(headers={"Authorization": f"Bearer {api_key}"}, timeout=30.0, transport=transport)
@@ -226,4 +273,4 @@ def build_pool(api_key: str, instance_ids: Sequence[int], grace_seconds: float,
             raise VastError("Vast reports none of the GPU boxes; they may have been destroyed.")
         return infos
 
-    return VastPool(members, grace_seconds=grace_seconds, lister=lister)
+    return VastPool(members, grace_seconds=grace_seconds, lister=lister, fleet=fleet)

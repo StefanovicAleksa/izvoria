@@ -22,6 +22,7 @@ from typing import Awaitable, Callable, Optional
 import httpx
 
 from deploy.gateway.vast_client import FakeVastClient, InstanceInfo, IVastClient, VastError
+from web_deploy.gateway import fleet
 from web_deploy.gateway.config import GatewaySettings
 from web_deploy.gateway.vast_pool import build_pool
 
@@ -70,6 +71,8 @@ class BoxHealth:
     starting_error: Optional[str] = None
     # Dev hardware: the live models have handed the GPU to ingestion; chat waits until the queue is empty
     paused: bool = False
+    # The version of the app the box runs (web_deploy/common/release.py); "" from a box older than versions
+    release: str = ""
 
 
 @dataclass(frozen=True)
@@ -122,7 +125,8 @@ def build_vast(settings: GatewaySettings) -> IVastClient:
         return LocalBox(settings.api_port)
     if settings.fake_box_host:
         return FakeVastClient(settings.fake_box_host, (settings.api_port,))
-    return build_pool(settings.vast_api_key, settings.vast_instance_ids, settings.scheduling_grace_seconds)
+    return build_pool(settings.vast_api_key, settings.vast_instance_ids, settings.scheduling_grace_seconds,
+                      fleet=lambda: fleet.load(settings.fleet_file))
 
 
 class BoxController:
@@ -142,6 +146,7 @@ class BoxController:
         self._info_at = float("-inf")
         self._health: Optional[BoxHealth] = None
         self._health_at = float("-inf")
+        self._release_warned: Optional[tuple] = None
 
     @property
     def scheme(self) -> str:
@@ -197,10 +202,20 @@ class BoxController:
             ready=bool(body.get("ready")), busy=bool(body.get("busy")), inflight=int(body.get("inflight", 0)),
             reports_running=int(body.get("reports_running", 0)), queued=int(body.get("queued", 0)),
             ingesting=int(body.get("ingesting", 0)), starting_error=body.get("starting_error"),
-            paused=bool(body.get("paused")),
+            paused=bool(body.get("paused")), release=str(body.get("release") or ""),
         )
         self._health_at = self._clock()
+        self._check_release(self._health.release)
         return self._health
+
+    def _check_release(self, release: str) -> None:
+        """Says so, once per version, when the box in use runs another version than the current one."""
+        expected = fleet.load(self._settings.fleet_file).release
+        if not expected or release == expected or (release, expected) == self._release_warned:
+            return
+        self._release_warned = (release, expected)
+        logger.warning(f"The GPU box in use runs version {release or 'unknown'}, not the current {expected}. "
+                       f"Run web_deploy/provision/update_fleet.py to update it.")
 
     @property
     def transitioning(self) -> bool:

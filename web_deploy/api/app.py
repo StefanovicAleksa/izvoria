@@ -34,6 +34,7 @@ from web_deploy.api.engine_port import ApplianceIngesting, IEngineHost
 from web_deploy.api.runner import Runner, call_in_scope, error_payload
 from web_deploy.api.runs import RunNotFound, RunStore, resume_point, sse_frame
 from web_deploy.common import youtube
+from web_deploy.common.release import read_release
 from web_deploy.common.signing import Principal, SignatureError, verify, verify_service
 from web_deploy.common.sources import locate
 from web_deploy.common.uploads import BatchRejected, batch_dir as firm_batch_dir, new_batch_id
@@ -131,7 +132,10 @@ def create_app(host: IEngineHost, settings: ApiSettings, queue: IngestQueue,
     def started(run) -> JSONResponse:
         return JSONResponse({"run_id": run.id, "events": f"/api/runs/{run.id}/events"}, status_code=202)
 
-    # ---------- health (unsigned: counts only) ----------
+    # ---------- health (unsigned: counts and the deployed version only) ----------
+
+    # Read once: a new version is deployed by restarting this process (update_fleet.py)
+    release = read_release()
 
     async def health(_: Request) -> JSONResponse:
         busy = host.busy() if host.ready else {"inflight": 0, "reports_running": 0}
@@ -147,6 +151,7 @@ def create_app(host: IEngineHost, settings: ApiSettings, queue: IngestQueue,
             "queued": depth["queued"], "ingesting": depth["running"], "staging_pending": staging_pending,
             "busy": bool(busy["inflight"] or busy["reports_running"] or depth["queued"] or depth["running"]
                          or staging_pending),
+            "release": release,
         })
 
     # ---------- runs ----------

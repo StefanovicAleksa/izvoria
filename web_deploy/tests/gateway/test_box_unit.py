@@ -51,6 +51,22 @@ class TestBoxController:
         assert "llama-server" in status.error
 
     @pytest.mark.asyncio
+    async def test_a_box_on_another_version_is_reported_once(self, tmp_path, caplog):
+        from dataclasses import replace
+        from web_deploy.gateway import fleet
+        fleet.save(tmp_path / "fleet.json", fleet.FleetState(release="new"))
+        vast = FakeVastClient("127.0.0.1", (8095,))
+        await vast.start()
+        box = BoxController(replace(settings(tmp_path), fleet_file=tmp_path / "fleet.json"), vast,
+                            health_client({"ready": True, "busy": False, "release": "old"}))
+
+        for _ in range(3):
+            await box.health(fresh=True)
+
+        warnings = [r for r in caplog.records if "runs version old, not the current new" in r.message]
+        assert len(warnings) == 1 and (await box.health()).release == "old"
+
+    @pytest.mark.asyncio
     async def test_stop(self, tmp_path):
         vast = FakeVastClient("127.0.0.1", (8095,))
         await vast.start()

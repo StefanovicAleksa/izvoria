@@ -4,6 +4,12 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Hosted: cheapest box first, and one version on every box
+
+- **Cheapest first** (`web_deploy/gateway/vast_pool.py`): a wake ranks the GPU boxes by the hourly price Vast quotes right then; the configured order breaks ties. A running box is never swapped. A third box (56923441) was provisioned.
+- **`web_deploy/provision/update_fleet.py`** deploys one commit to the VPS and every box, starting stopped boxes to update them (`fleet_cli.py` on the VPS, under a maintenance mark the pool respects). Boxes report their version in `/health`; the gateway tries stale ones last and warns when one is used. See `docs/web_deploy.md`, "Updating".
+- Found by it: the spare 55823057 had missed the source-profile deploy and would have been woken first as the cheapest.
+
 ## Desktop: video batches from YouTube links
 
 The desktop Ingest view's **Video** batches can also come from YouTube links: single videos or whole playlists, as on the web version, with the same code (`web_deploy/common/youtube.py`, `web_deploy/ingest_worker/fetch_links.py`, called from `frontend/izvoria_desktop/data/youtube_links.py`).
