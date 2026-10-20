@@ -103,3 +103,4 @@ combine_files_git.sh
 .env.test
 
 input_video
+/RELEASE

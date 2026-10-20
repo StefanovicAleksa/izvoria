@@ -34,6 +34,8 @@ class GatewaySettings:
     # Whether the box's SSH keys are accepted on this VPS: "open" while the gateway has the box started, "closed"
     # otherwise (read by sshd's AuthorizedKeysCommand, izvoria-box-keys). None: not managed (local runs).
     box_access_file: Optional[Path] = None
+    # The boxes' versions and which are being updated (fleet.py, written by fleet_cli.py); None: versions unused
+    fleet_file: Optional[Path] = None
     # Local end-to-end runs: treat this host as the "GPU box" instead of calling Vast
     fake_box_host: str = ""
     api_port: int = API_PORT
@@ -74,6 +76,7 @@ class GatewaySettings:
         if box_link not in ("tunnel", "direct"):
             raise RuntimeError("BOX_LINK is 'tunnel' or 'direct'.")
         access = os.environ.get("BOX_ACCESS_FILE", "/var/lib/onyx-web-box/access" if box_link == "tunnel" else "")
+        database = Path(os.environ.get("GATEWAY_DB", "/var/lib/onyx-web/gateway.sqlite3"))
         return cls(
             api_secret=secret,
             database_path=Path(os.environ.get("GATEWAY_DB", "/var/lib/onyx-web/gateway.sqlite3")),
@@ -88,6 +91,7 @@ class GatewaySettings:
             box_link=box_link,
             box_tunnel_port=int(os.environ.get("BOX_TUNNEL_PORT", "18095")),
             box_access_file=Path(access) if access else None,
+            fleet_file=Path(os.environ.get("FLEET_FILE") or database.with_name("fleet.json")),
             fake_box_host=fake,
             api_port=int(os.environ.get("BOX_API_PORT", str(API_PORT))),
             box_mode=box_mode,

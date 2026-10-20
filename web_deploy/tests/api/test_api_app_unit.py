@@ -12,6 +12,7 @@ from web_deploy.api import mapping
 from web_deploy.api.app import create_app
 from web_deploy.api.config import ApiSettings
 from web_deploy.api.runs import RunStore
+from web_deploy.common.release import read_release
 from web_deploy.common.signing import Principal, sign
 from web_deploy.tests.api.fakes import FakeEngine, FakeHost, chunk, fake_queue
 
@@ -95,7 +96,8 @@ class TestAuth:
     def test_health_is_open_and_reports_counts_only(self, client):
         body = client.get("/health").json()
         assert body == {"ready": True, "starting_error": None, "paused": False, "inflight": 0, "reports_running": 0,
-                        "queued": 0, "ingesting": 0, "staging_pending": False, "busy": False}
+                        "queued": 0, "ingesting": 0, "staging_pending": False, "busy": False,
+                        "release": read_release()}
 
     def test_results_not_yet_pushed_to_the_vps_keep_the_box_busy(self, tmp_path, host, queue):
         state = tmp_path / "staging-state"

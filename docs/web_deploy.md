@@ -415,6 +415,23 @@ The gateway (`gateway/vast_pool.py`) then:
 - **stops them all** at the idle stop.
 Every box holds the same code and models and no data, so which one answers makes no difference. One listing call (`GET /api/v1/instances/`) reads every box's state, so polling stays within Vast's rate limit. Each box is still capped by its host's maximum duration (shown when renting): replace one before its date.
 
+### Updating: one version everywhere (`update_fleet.py`)
+
+Every machine must run the same code: the router may wake any box, so a box left behind serves an old version the
+next time it is the cheapest free one. Deploy with one command from the dev box, on a clean, pushed commit:
+
+```bash
+python3 web_deploy/provision/update_fleet.py --dry-run   # what it would do
+python3 web_deploy/provision/update_fleet.py             # the VPS and every box in VAST_INSTANCE_ID
+python3 web_deploy/provision/update_fleet.py --box 55823057   # one box (after its GPU was busy)
+```
+
+- **The version is the commit.** The script copies exactly HEAD (`git archive`) plus the built web app, with a `RELEASE` file naming the commit (`web_deploy/common/release.py`); uncommitted changes are refused. The box API reports it in `/health` (`release`).
+- **VPS:** the copy goes to `/opt/onyx_v3` (no `--delete`; the web app is replaced whole), the gateway restarts only when gateway code changed, and the commit becomes the current version in `/var/lib/onyx-web/fleet.json` (`FLEET_FILE`).
+- **The box in use:** code copied after its work is idle (no question, report or ingestion), `provision.sh` re-run only when dependencies or the box setup changed (`PROVISION_PATHS`), services restarted, and `/health` must report the new version.
+- **A stopped box:** marked *under maintenance* in the fleet file (the pool never starts, stops, keeps or reports it then), started, its services stopped, updated, checked to import, stopped, unmarked. Box states and starts go through `web_deploy/gateway/fleet_cli.py` on the VPS, so Vast's key never leaves it.
+- **A box whose GPU another customer has** can't be started: it stays behind, the run exits 1, and the gateway tries it only after every up-to-date box failed to start (and logs a warning when it is used). Run the script again later; it updates only the boxes still behind.
+
 ### Moving existing data
 
 A box provisioned before this change kept its own Postgres (`/workspace/pgdata`) and vault. To move a firm's data:
