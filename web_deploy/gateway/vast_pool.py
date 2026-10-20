@@ -5,10 +5,15 @@ Why: a stopped Vast instance keeps its disk but not its GPU. Anyone may rent tha
 can't start until they let it go, which can take days (it happened on 2026-10-14). Each spare is a fully provisioned box
 on another machine, costing only its disk while stopped, so the appliance wakes on whichever one has its GPU free.
 
-    VAST_INSTANCE_ID=55919995,55823057      preference order: the first that can start is used
+    VAST_INSTANCE_ID=55919995,55823057,56923441
+
+A wake tries the boxes cheapest first, by the hourly price Vast quotes for each at that moment (hosts change their
+prices), so the cheapest box whose GPU is free is the one that bills. The list's order breaks ties and ranks a box
+whose price Vast doesn't give, after every priced one. A running box is never swapped for a cheaper one: the choice
+is made only when the appliance wakes.
 
 The controller (box.py) sees one IVastClient, exactly as with a single box:
-- start() tries each box in order. One whose GPU is taken (Vast refuses, or leaves it "scheduling" past the grace
+- start() tries each box, cheapest first. One whose GPU is taken (Vast refuses, or leaves it "scheduling" past the grace
   period) is stopped again at once, because Vast queues a refused start and would otherwise run it later, billing a
   second GPU nobody uses; then the next is tried.
 - info() describes the box in use. Any other box that is running or about to run is stopped: only one ever bills.
@@ -24,7 +29,7 @@ from typing import Awaitable, Callable, Dict, List, Optional, Sequence
 
 import httpx
 
-from deploy.gateway.vast_client import InstanceInfo, IVastClient, VastClient, VastError, _parse_ports
+from deploy.gateway.vast_client import InstanceInfo, IVastClient, VastClient, VastError, _parse_ports, _price
 
 logger = logging.getLogger(__name__)
 
@@ -80,7 +85,7 @@ class VastPool(IVastClient):
         self._starting = True
         try:
             refusals = []
-            for candidate in self._order:
+            for candidate in self._by_price(await self._infos()):
                 infos = await self._infos()
                 if candidate not in infos:
                     refusals.append(f"{candidate}: no longer exists")
@@ -120,6 +125,18 @@ class VastPool(IVastClient):
             raise VastError("Could not stop every GPU box: " + "; ".join(errors))
 
     # ---------- plumbing ----------
+
+    def _by_price(self, infos: Dict[int, InstanceInfo]) -> List[int]:
+        """The boxes cheapest first; unpriced ones last; the configured order breaks ties."""
+        def key(instance: int):
+            info = infos.get(instance)
+            price = info.price_per_hour if info is not None else None
+            return (price is None, price or 0.0, self._order.index(instance))
+        ranked = sorted(self._order, key=key)
+        logger.info("Waking the cheapest free GPU box; order: " + ", ".join(
+            f"{i} (${infos[i].price_per_hour:.3f}/h)" if i in infos and infos[i].price_per_hour else f"{i} (price unknown)"
+            for i in ranked))
+        return ranked
 
     async def _try(self, instance: int) -> Optional[str]:
         """None once the box has its GPU, else why not (Vast refused, or it waited for the GPU past the grace)."""
@@ -203,6 +220,7 @@ def build_pool(api_key: str, instance_ids: Sequence[int], grace_seconds: float,
                     public_ip=row.get("public_ipaddr") or None,
                     ports=_parse_ports(row.get("ports") or {}),
                     status_msg=str(row.get("status_msg") or ""),
+                    price_per_hour=_price(row),
                 )
         if not infos:
             raise VastError("Vast reports none of the GPU boxes; they may have been destroyed.")
