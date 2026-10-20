@@ -4,6 +4,10 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## The Izvoria mark
+
+The app has a mark: two offset half-discs in the accent colour. `data/brand/` holds it as SVG and PNG (see its README). It is the web app's favicon and home-screen icon (`web_deploy/frontend/public/assets/`) and the desktop app's window and taskbar icon (`ui/icons.py`, `app_icon`).
+
 ## Hosted: cheapest box first, and one version on every box
 
 - **Cheapest first** (`web_deploy/gateway/vast_pool.py`): a wake ranks the GPU boxes by the hourly price Vast quotes right then; the configured order breaks ties. A running box is never swapped. A third box (56923441) was provisioned.

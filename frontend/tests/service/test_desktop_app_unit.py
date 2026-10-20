@@ -14,6 +14,7 @@ def wiring():
             patch("izvoria_desktop.service.engine_bridge.EngineBridge", return_value=bridge), \
             patch("izvoria_desktop.ui.main_window.MainWindow") as window_cls, \
             patch("izvoria_desktop.service.log_relay.LogRelay"), \
+            patch("izvoria_desktop.ui.icons.app_icon"), \
             patch.object(desktop_app, "build_gateway"), \
             patch.object(desktop_app, "configure_logging"), \
             patch.object(desktop_app, "_assert_single_qt"):
@@ -21,6 +22,15 @@ def wiring():
 
 
 class TestRun:
+    def test_the_window_icon_is_the_app_mark(self, wiring):
+        app = MagicMock()
+        app.exec.return_value = 0
+        with patch("PySide6.QtWidgets.QApplication", return_value=app), \
+                patch("izvoria_desktop.ui.icons.app_icon") as app_icon:
+            desktop_app.run(["onyx"])
+
+        app.setWindowIcon.assert_called_once_with(app_icon.return_value)
+
     def test_autostart_boots_once_after_the_window_is_shown(self, wiring):
         bridge, window = wiring
         order = []

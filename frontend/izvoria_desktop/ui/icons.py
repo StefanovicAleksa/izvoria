@@ -8,6 +8,8 @@ QtSvg is part of PySide6-Essentials, so this adds no dependency. Each icon is re
 rest, full text colour on hover.
 """
 
+from pathlib import Path
+
 from PySide6.QtCore import QByteArray, QRectF, QSize, Qt
 from PySide6.QtGui import QIcon, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
@@ -48,4 +50,26 @@ def nav_icon(name: str, muted: str, active: str, size: QSize = ICON_SIZE) -> QIc
     icon.addPixmap(_pixmap(name, active, size), QIcon.Mode.Normal, QIcon.State.On)
     icon.addPixmap(_pixmap(name, active, size), QIcon.Mode.Active, QIcon.State.Off)
     icon.addPixmap(_pixmap(name, active, size), QIcon.Mode.Active, QIcon.State.On)
+    return icon
+
+
+# The app's mark (data/brand, see its README), drawn at the sizes window managers and taskbars ask for
+APP_ICON = Path(__file__).resolve().parents[3] / "data" / "brand" / "izvoria-app-icon.svg"
+APP_ICON_SIZES = (16, 24, 32, 48, 64, 128, 256)
+
+
+def app_icon(path: Path = APP_ICON) -> QIcon:
+    """The window and taskbar icon; an empty icon (Qt's default) when the file is missing or unreadable."""
+    renderer = QSvgRenderer(str(path)) if path.is_file() else None
+    icon = QIcon()
+    if renderer is None or not renderer.isValid():
+        return icon
+    for side in APP_ICON_SIZES:
+        pixmap = QPixmap(side, side)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        renderer.render(painter, QRectF(0, 0, side, side))
+        painter.end()
+        icon.addPixmap(pixmap)
     return icon
