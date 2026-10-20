@@ -405,12 +405,12 @@ Steps:
 
 A replacement box needs only steps 2–4: it holds nothing to restore.
 
-**Spare boxes.** A stopped Vast instance keeps its disk but not its GPU: anyone may rent that GPU meanwhile, and the instance can't start until they release it (on 2026-10-14 the primary's was taken for the rest of the day). So keep one or two spares: fully provisioned boxes on **other machines**, each costing only its disk while stopped (~$0.03/hr). Provision each like the primary (steps 2–4, its own tunnel key added with `izvoria-add-box-keys`), then list them all, primary first:
+**Spare boxes.** A stopped Vast instance keeps its disk but not its GPU: anyone may rent that GPU meanwhile, and the instance can't start until they release it (on 2026-10-14 the primary's was taken for the rest of the day). So keep one or two spares: fully provisioned boxes on **other machines**, each costing only its disk while stopped (~$0.03/hr). Provision each like the primary (steps 2–4, its own tunnel key added with `izvoria-add-box-keys`), then list them all:
 ```
-VAST_INSTANCE_ID=55919995,55823057
+VAST_INSTANCE_ID=55919995,55823057,56923441
 ```
 The gateway (`gateway/vast_pool.py`) then:
-- **wakes the first box whose GPU is free.** A box Vast refuses, or leaves "scheduling" past `scheduling_grace_seconds` (60 s), is stopped again at once (Vast queues a refused start and would run it later) and the next is tried. With every GPU taken, the web app says so on its "asleep" card;
+- **wakes the cheapest box whose GPU is free.** At each wake it ranks the boxes by the hourly price Vast quotes for each right then (`dph_total`; hosts change prices), cheapest first; the list's order breaks ties and ranks a box with no quoted price last. A running box is never swapped for a cheaper one. A box Vast refuses, or leaves "scheduling" past `scheduling_grace_seconds` (60 s), is stopped again at once (Vast queues a refused start and would run it later) and the next is tried. With every GPU taken, the web app says so on its "asleep" card;
 - **keeps at most one running.** Any other box found running, or with a start pending, is stopped, so a second GPU is never billed;
 - **stops them all** at the idle stop.
 Every box holds the same code and models and no data, so which one answers makes no difference. One listing call (`GET /api/v1/instances/`) reads every box's state, so polling stays within Vast's rate limit. Each box is still capped by its host's maximum duration (shown when renting): replace one before its date.

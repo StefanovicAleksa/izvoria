@@ -21,6 +21,8 @@ class InstanceInfo:
     public_ip: Optional[str] = None
     ports: Dict[int, int] = field(default_factory=dict)  # container port -> host port
     status_msg: str = ""
+    # What it bills an hour while running (Vast's dph_total: GPU, disk and bandwidth reservation), when known
+    price_per_hour: Optional[float] = None
 
     @property
     def running(self) -> bool:
@@ -31,6 +33,15 @@ class InstanceInfo:
         if not self.public_ip or host_port is None:
             return None
         return f"{self.public_ip}:{host_port}"
+
+
+def _price(row: dict) -> Optional[float]:
+    """An instance's hourly price from a Vast row, or None when it gives none."""
+    try:
+        value = float(row.get("dph_total"))
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 class IVastClient(ABC):
@@ -69,6 +80,7 @@ class VastClient(IVastClient):
             public_ip=row.get("public_ipaddr") or None,
             ports=_parse_ports(row.get("ports") or {}),
             status_msg=str(row.get("status_msg") or ""),
+            price_per_hour=_price(row),
         )
 
     async def aclose(self) -> None:

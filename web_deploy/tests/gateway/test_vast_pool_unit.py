@@ -1,4 +1,4 @@
-"""The primary GPU box and its spares: the first that can start is used, and only one ever bills."""
+"""The GPU boxes: the cheapest that can start is used, and only one ever bills."""
 
 import httpx
 import pytest
@@ -13,8 +13,9 @@ QUEUED = "Required resources are currently unavailable, state change queued."
 class Box(IVastClient):
     """One Vast instance. `gpu` is "free", "refused" (Vast refuses and queues the start) or "taken" (it schedules)."""
 
-    def __init__(self, gpu="free", status="exited"):
+    def __init__(self, gpu="free", status="exited", price=None):
         self.gpu = gpu
+        self.price = price
         self.actual = status
         self.intended = "running" if status == "running" else "stopped"
         self.calls = []
@@ -32,7 +33,7 @@ class Box(IVastClient):
         self.actual = "exited"
 
     async def info(self):
-        return InstanceInfo(actual_status=self.actual, intended_status=self.intended)
+        return InstanceInfo(actual_status=self.actual, intended_status=self.intended, price_per_hour=self.price)
 
     @property
     def bills(self):
@@ -112,6 +113,54 @@ class TestStarting:
         assert spare.calls == ["stop"] and primary.bills
 
 
+class TestCheapestFirst:
+    @pytest.mark.asyncio
+    async def test_the_cheapest_box_is_woken_even_when_listed_last(self):
+        dear, middle, cheap = Box(price=0.40), Box(price=0.35), Box(price=0.32)
+        p, _ = pool(dear, middle, cheap)
+
+        await p.start()
+
+        assert p.active == 1002 and cheap.bills
+        assert dear.calls == [] and middle.calls == []
+
+    @pytest.mark.asyncio
+    async def test_when_the_cheapest_gpu_is_taken_the_next_cheapest_is_woken(self):
+        dear, middle, cheap = Box(price=0.40), Box(price=0.35), Box(gpu="refused", price=0.32)
+        p, _ = pool(dear, middle, cheap)
+
+        await p.start()
+
+        assert p.active == 1001 and middle.bills
+        assert not cheap.bills and dear.calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_box_without_a_price_comes_after_every_priced_one(self):
+        unpriced, priced = Box(price=None), Box(price=0.90)
+        p, _ = pool(unpriced, priced)
+
+        await p.start()
+
+        assert p.active == 1001 and unpriced.calls == []
+
+    @pytest.mark.asyncio
+    async def test_equal_prices_keep_the_configured_order(self):
+        first, second = Box(price=0.35), Box(price=0.35)
+        p, _ = pool(first, second)
+
+        await p.start()
+
+        assert p.active == 1000 and second.calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_running_box_is_not_swapped_for_a_cheaper_one(self):
+        cheap, running = Box(price=0.30), Box(status="running", price=0.40)
+        p, _ = pool(cheap, running)
+
+        assert (await p.info()).running and p.active == 1001
+        assert cheap.calls == [] and running.calls == []
+
+
 class TestOnlyOneBills:
     @pytest.mark.asyncio
     async def test_the_running_box_is_the_one_in_use(self):
@@ -169,7 +218,7 @@ class TestProduction:
         def vast(request):
             seen.append((request.method, request.url.path))
             return httpx.Response(200, json={"instances": [
-                {"id": 1, "actual_status": "exited", "intended_status": "stopped"},
+                {"id": 1, "actual_status": "exited", "intended_status": "stopped", "dph_total": 0.3211},
                 {"id": 2, "actual_status": "running", "intended_status": "running", "public_ipaddr": "203.0.113.9",
                  "ports": {"22/tcp": [{"HostIp": "0.0.0.0", "HostPort": "40022"}]}},
                 {"id": 99, "actual_status": "running", "intended_status": "running"},  # not ours to manage
@@ -180,6 +229,7 @@ class TestProduction:
 
         assert info.running and info.address(22) == "203.0.113.9:40022" and p.active == 2
         assert seen == [("GET", "/api/v1/instances/")]
+        assert (await p._infos())[1].price_per_hour == 0.3211 and info.price_per_hour is None
 
     def test_instance_ids_are_a_comma_list_in_preference_order(self):
         assert parse_instance_ids("55919995, 55823057,55919995") == (55919995, 55823057)
