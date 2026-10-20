@@ -318,8 +318,9 @@ def update_stopped(vps: Vps, box: Box, export: Path, changed: Optional[List[str]
             if touches(changed, PROVISION_PATHS):
                 provision(vps, box)
             release = export.joinpath("RELEASE").read_text().strip()
+            # datasets loads pyarrow, which refuses a NumPy it wasn't built for only when imported (engine start)
             check = box.ssh(vps, f"cd {BOX_ROOT} && cat RELEASE && venv/bin/python -c "
-                                 f"'import web_deploy.api.app, web_deploy.ingest_worker.supervisor' 2>&1 | tail -3",
+                                 f"'import web_deploy.api.app, web_deploy.ingest_worker.supervisor, datasets' 2>&1 | tail -3",
                             check=False)
             if check.returncode != 0 or release not in check.stdout:
                 raise Failed(f"the updated code doesn't load:\n{check.stdout[-800:]}")
