@@ -80,6 +80,7 @@ class MainWindow(QMainWindow):
         self._paint_icons()
         self._connect()
         self._ingest.set_languages(self._bridge.languages, self._bridge.active_language)
+        self._ingest.set_links_available(self._bridge.links_available)
         self._show_active_language(self._bridge.active_language)
 
     # ---------- construction ----------
@@ -296,6 +297,10 @@ class MainWindow(QMainWindow):
         self._chat.chatRequested.connect(self._on_chat_requested)
         self._search.searchRequested.connect(self._on_search_requested)
         self._ingest.ingestRequested.connect(self._on_ingest_requested)
+        self._ingest.linksCheckRequested.connect(self._bridge.check_links)
+        self._ingest.linkIngestRequested.connect(self._on_link_ingest_requested)
+        self._bridge.linksChecked.connect(self._ingest.show_link_check)
+        self._bridge.linkCheckFailed.connect(self._ingest.show_link_check_failure)
         self._report.planRequested.connect(self._on_report_plan_requested)
         self._report.reportRequested.connect(self._on_report_requested)
         self._report.cancelRequested.connect(self._on_report_cancel_requested)
@@ -542,6 +547,11 @@ class MainWindow(QMainWindow):
     def _on_ingest_requested(self, path: str, mode: IngestMode, language: str) -> None:
         if self._bridge.start_ingest(path, mode, language) is not None:
             self._ingest.start_run()
+
+    @Slot(object, str)
+    def _on_link_ingest_requested(self, videos: list, language: str) -> None:
+        if self._bridge.start_link_ingest(videos, language) is not None:
+            self._ingest.start_run(videos=len(videos))
 
     # ---------- shutdown ----------
 

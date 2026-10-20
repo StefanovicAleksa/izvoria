@@ -26,6 +26,7 @@ class Stage:
 
 
 # Labels are English keys, translated where they are shown
+DOWNLOADING = Stage("downloading", N_("Downloading videos"))
 PREPARING = Stage("preparing", N_("Preparing files"))
 AUDIO = Stage("audio", N_("Analyzing audio"))
 DOCUMENTS = Stage("documents", N_("Reading documents"))
@@ -43,6 +44,8 @@ STAGES_BY_MODE: Dict[IngestMode, Tuple[Stage, ...]] = {
 }
 
 _STAGE_OF_JOB: Dict[str, Stage] = {
+    # A YouTube batch's first step, before the pipeline starts (data/youtube_links.py)
+    "youtube_download": DOWNLOADING,
     "directory_scan": PREPARING,
     "file_ingest": PREPARING,
     "audio_extraction": PREPARING,
@@ -103,6 +106,11 @@ _REPORT_STEP: Dict[str, str] = {
 }
 # The engine's own line for a section, "Writing section 3/8: Background", re-said in the display language
 _SECTION_DETAIL = re.compile(r"^Writing section (\d+)/(\d+):\s*(.*)$", re.S)
+
+
+def stages_for(mode: IngestMode, from_links: bool = False) -> Tuple[Stage, ...]:
+    """A batch's steps; one from YouTube links downloads its videos first."""
+    return (DOWNLOADING, *STAGES_BY_MODE[mode]) if from_links else STAGES_BY_MODE[mode]
 
 
 def stage_for(job: str) -> Optional[Stage]:

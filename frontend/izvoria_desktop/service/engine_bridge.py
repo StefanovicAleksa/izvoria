@@ -19,9 +19,10 @@ from PySide6.QtCore import QObject, Qt, QThread, Signal
 
 from izvoria_desktop.domain.entities import LanguageOption, StatusSnapshot
 from izvoria_desktop.domain.enums import ApplianceStatus, ChatMode, IngestMode, SearchMode
-from izvoria_desktop.domain.interfaces import IEngineGateway
+from izvoria_desktop.domain.interfaces import IEngineGateway, IYouTubeLinks
 from izvoria_desktop.service.engine_worker import EngineWorker
 from izvoria_desktop.service.history_reader import HistoryReader
+from izvoria_desktop.service.link_checker import LinkChecker
 from izvoria_desktop.utils.i18n import N_, tr
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,8 @@ class EngineBridge(QObject):
     _chatRequested = Signal(int, str, object, object, int)
     _searchRequested = Signal(int, str, object, int)
     _ingestRequested = Signal(int, str, object, str)  # rid, path, IngestMode, language
+    _linkIngestRequested = Signal(int, object, str)   # rid, List[YouTubeVideo], language
+    _linkCheckRequested = Signal(object)              # links -- to the LINK CHECKER thread
     _languageRequested = Signal(int, str)             # rid, language code
     _reportPlanRequested = Signal(int, str, object)   # rid, topic, ReportMode
     _reportRequested = Signal(int, object, object)    # rid, ReportPlanDraft, ReportMode
@@ -75,8 +78,15 @@ class EngineBridge(QObject):
     reportPlanLoaded = Signal(object)             # ReportPlanDraft
     historyFailed = Signal(str, str)              # gateway method, user message
 
-    def __init__(self, gateway: IEngineGateway, parent: Optional[QObject] = None):
+    # YouTube link checks (their own thread; no engine involved)
+    linksChecked = Signal(object)                 # LinkCheck
+    linkCheckFailed = Signal(str)                 # user message
+
+    def __init__(self, gateway: IEngineGateway, parent: Optional[QObject] = None,
+                 links: Optional[IYouTubeLinks] = None):
+        """`links` is None where yt-dlp isn't installed: the Ingest view then offers no YouTube links."""
         super().__init__(parent)
+        self._links = links
         # Kept for ONE purpose: request_report_cancel, which must reach the engine without going
         # through the worker queue it is trying to interrupt. Nothing else here may call it directly.
         self._gateway = gateway
@@ -91,7 +101,7 @@ class EngineBridge(QObject):
 
         self._thread = QThread()
         self._thread.setObjectName("izvoria-engine")
-        self._worker = EngineWorker(gateway)
+        self._worker = EngineWorker(gateway, links)
         self._worker.moveToThread(self._thread)
 
         # Requests in. Queued because emitter and receiver live on different threads.
@@ -99,6 +109,7 @@ class EngineBridge(QObject):
         self._chatRequested.connect(self._worker.run_chat)
         self._searchRequested.connect(self._worker.run_search)
         self._ingestRequested.connect(self._worker.run_ingest)
+        self._linkIngestRequested.connect(self._worker.run_ingest_links)
         self._languageRequested.connect(self._worker.run_switch_language)
         self._reportPlanRequested.connect(self._worker.run_report_plan)
         self._reportRequested.connect(self._worker.run_report)
@@ -147,8 +158,21 @@ class EngineBridge(QObject):
         self._reader.failed.connect(self._on_history_failed)
         self._reader_thread.finished.connect(self._reader.deleteLater)
 
+        # Checking YouTube links is network only, so it gets a thread of its own too (service/link_checker.py)
+        self._checker_thread = QThread()
+        self._checker_thread.setObjectName("izvoria-links")
+        if links is not None:
+            self._checker = LinkChecker(links)
+            self._checker.moveToThread(self._checker_thread)
+            self._linkCheckRequested.connect(self._checker.run)
+            self._checker.ready.connect(self.linksChecked)
+            self._checker.failed.connect(self.linkCheckFailed)
+            self._checker_thread.finished.connect(self._checker.deleteLater)
+
         self._thread.start()
         self._reader_thread.start()
+        if links is not None:
+            self._checker_thread.start()
 
     # ---------- state ----------
 
@@ -234,6 +258,27 @@ class EngineBridge(QObject):
         if request_id is None:
             return None
         self._ingestRequested.emit(request_id, path, mode, language)
+        return request_id
+
+    @property
+    def links_available(self) -> bool:
+        return self._links is not None
+
+    def check_links(self, links: List[str]) -> bool:
+        """Reads what the links hold on the checker thread; the answer is `linksChecked` or `linkCheckFailed`."""
+        if self._links is None or self._stopped:
+            return False
+        self._linkCheckRequested.emit(list(links))
+        return True
+
+    def start_link_ingest(self, videos: list, language: str) -> Optional[int]:
+        """Downloads the YouTube videos, then ingests them as a Video batch: one "ingest" job from start to end."""
+        if self._links is None:
+            return None
+        request_id = self._begin("ingest", ApplianceStatus.INGESTING, N_("Adding material…"))
+        if request_id is None:
+            return None
+        self._linkIngestRequested.emit(request_id, list(videos), language)
         return request_id
 
     def switch_language(self, code: str) -> Optional[int]:
@@ -436,6 +481,9 @@ class EngineBridge(QObject):
         # The reader first: a history read is short, and it must not outlive the engine it reads through.
         self._reader_thread.quit()
         self._reader_thread.wait(min(timeout_ms, 10000))
+        # A check is short (yt-dlp's socket timeout is 30 s); a hung one must not hold up closing the app
+        self._checker_thread.quit()
+        self._checker_thread.wait(min(timeout_ms, 5000))
         self._shutdownRequested.emit()
         finished = self._thread.wait(timeout_ms)
         if not finished:

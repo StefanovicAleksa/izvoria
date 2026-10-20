@@ -11,11 +11,14 @@ from izvoria_desktop.domain.entities import (
     Evidence,
     IngestionSummary,
     LanguageOption,
+    LinkCheck,
+    LinkDownload,
     ReportDocument,
     ReportPlanDraft,
     ReportRef,
     SearchOutcome,
     SearchRecordRef,
+    YouTubeVideo,
 )
 from izvoria_desktop.domain.enums import ChatMode, IngestMode, ReportMode, SearchMode
 
@@ -182,3 +185,22 @@ class IEngineGateway(ABC):
         progress may ignore it, so the UI degrades to its log pane instead of breaking.
         """
         return None
+
+
+class IYouTubeLinks(ABC):
+    """
+    Videos from YouTube links, for the Video ingest. Offered only where yt-dlp is installed (a development or demo
+    machine): an appliance installed from requirements.txt has no way to reach the internet. Not an engine call:
+    checking runs on its own thread, and downloading runs on the engine worker just before the batch is ingested.
+    """
+
+    @abstractmethod
+    def check(self, links: List[str]) -> LinkCheck:
+        """The videos the links name, in order, each once. Nothing is downloaded."""
+
+    @abstractmethod
+    def download(self, videos: List[YouTubeVideo], on_tick: Callable[..., None]) -> LinkDownload:
+        """
+        Downloads the videos into a folder of their own (the same folder for the same videos, so a stopped batch
+        resumes), reporting a ProgressTick per video to `on_tick`. Raises when none could be downloaded.
+        """

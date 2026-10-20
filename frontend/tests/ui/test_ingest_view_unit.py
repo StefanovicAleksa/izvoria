@@ -6,7 +6,11 @@ import pytest
 
 pytest.importorskip("PySide6")
 
-from izvoria_desktop.domain.entities import IngestionSummary, LanguageOption, ProgressTick  # noqa: E402
+from PySide6.QtCore import Qt  # noqa: E402
+
+from izvoria_desktop.domain.entities import (  # noqa: E402
+    IngestionSummary, LanguageOption, LinkCheck, ProgressTick, YouTubeVideo,
+)
 from izvoria_desktop.domain.enums import IngestMode, JobProgressState  # noqa: E402
 from izvoria_desktop.ui.widgets.stage_list import StageState  # noqa: E402
 from izvoria_desktop.ui.views.ingest_view import IngestView  # noqa: E402
@@ -139,3 +143,55 @@ class TestSteps:
     def test_there_is_no_engine_log_on_screen(self, view):
         assert not hasattr(view, "_log")
         assert not hasattr(view, "append_log")
+
+
+class TestYouTubeLinks:
+    VIDEOS = (YouTubeVideo("aaaaaaaaaaa", "Lecture 1", 2950.0), YouTubeVideo("bbbbbbbbbbb", "Lecture 2", None))
+
+    def test_offered_for_video_batches_only_and_only_where_available(self, view):
+        assert view._links.isHidden()
+        view.set_links_available(True)
+        assert not view._links.isHidden()
+        view._mode.setCurrentIndex(view._mode.findData(IngestMode.AUDIO))
+        assert view._links.isHidden()
+
+    def test_check_sends_one_link_per_line(self, view):
+        requests = []
+        view.linksCheckRequested.connect(requests.append)
+        view._link_text.setPlainText("  https://youtu.be/aaaaaaaaaaa \n\nhttps://www.youtube.com/playlist?list=PLx\n")
+
+        view._on_check_links()
+
+        assert requests == [["https://youtu.be/aaaaaaaaaaa", "https://www.youtube.com/playlist?list=PLx"]]
+        assert not view._check_links.isEnabled()   # until the answer comes back
+
+    def test_only_the_ticked_videos_are_added_in_the_picked_language(self, view):
+        requests = []
+        view.linkIngestRequested.connect(lambda *args: requests.append(args))
+        view.show_link_check(LinkCheck(videos=self.VIDEOS))
+        view._video_list.item(0).setCheckState(Qt.CheckState.Unchecked)
+        view._language.setCurrentIndex(view._language.findData("sr"))
+
+        view._on_add_videos()
+
+        assert requests == [([self.VIDEOS[1]], "sr")]
+
+    def test_nothing_ticked_cannot_be_added(self, view):
+        view.show_link_check(LinkCheck(videos=self.VIDEOS[:1]))
+        assert view._add_videos.isEnabled()
+        view._video_list.item(0).setCheckState(Qt.CheckState.Unchecked)
+        assert not view._add_videos.isEnabled()
+
+    def test_links_that_added_nothing_are_listed_with_youtubes_reason(self, view):
+        view.show_link_check(LinkCheck(problems=(("https://youtu.be/x", "Private video"),)))
+        assert "https://youtu.be/x: Private video" in view._links_problems.text()
+        assert view._video_list.isHidden()
+
+    def test_a_batch_from_links_downloads_first_and_its_bar_counts_videos(self, view):
+        view.start_run(videos=2)
+        assert view._stages.keys[0] == "downloading"
+
+        view.apply_tick(ProgressTick("youtube_download", JobProgressState.COMPLETED))
+
+        assert view._fraction("downloading") == 0.5
+        assert not view._files   # a download is not a file of the batch yet

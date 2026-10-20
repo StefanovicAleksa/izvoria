@@ -11,13 +11,14 @@ one, so two overlapping GPU calls would fight over a single VRAM slot rather tha
 
 import logging
 import uuid
-from typing import List
+from dataclasses import replace
+from typing import List, Optional
 
 from PySide6.QtCore import QObject, Signal, Slot
 
 from izvoria_desktop.domain.entities import ProgressTick
 from izvoria_desktop.domain.enums import ChatMode, IngestMode, SearchMode
-from izvoria_desktop.domain.interfaces import IEngineGateway
+from izvoria_desktop.domain.interfaces import IEngineGateway, IYouTubeLinks
 from izvoria_desktop.exceptions.base import DesktopError
 from izvoria_desktop.utils.error_mapper import map_engine_error
 
@@ -47,9 +48,10 @@ class EngineWorker(QObject):
     engineStopped = Signal(int)            # request_id: the engine is down, the thread keeps running
     finished = Signal()
 
-    def __init__(self, gateway: IEngineGateway):
+    def __init__(self, gateway: IEngineGateway, links: Optional[IYouTubeLinks] = None):
         super().__init__()
         self._gateway = gateway
+        self._links = links
         self._shutting_down = False
 
     # ---------- lifecycle ----------
@@ -125,6 +127,29 @@ class EngineWorker(QObject):
         except Exception as exc:
             self._emit_language()
             self._fail(request_id, exc, "Ingestion")
+
+    @Slot(int, object, str)
+    def run_ingest_links(self, request_id: int, videos: list, language: str) -> None:
+        """
+        Downloads the picked YouTube videos, then ingests their folder as a Video batch. Videos that could not be
+        downloaded are listed with the files that could not be added, as the web version's report lists them.
+        """
+        try:
+            if self._links is None:
+                raise RuntimeError("YouTube links are not available on this machine.")
+            fetched = self._links.download(videos, self._emit_progress)
+            summary = self._gateway.ingest(fetched.folder, IngestMode.VIDEO, language)
+            self._emit_language()
+            missing = len(fetched.errors)
+            self.ingestReady.emit(request_id, replace(
+                summary,
+                scanned=summary.scanned + missing,
+                failed=summary.failed + missing,
+                errors=tuple(sorted(summary.errors + fetched.errors)),
+            ))
+        except Exception as exc:
+            self._emit_language()
+            self._fail(request_id, exc, "YouTube ingestion")
 
     @Slot(int, str)
     def run_switch_language(self, request_id: int, code: str) -> None:

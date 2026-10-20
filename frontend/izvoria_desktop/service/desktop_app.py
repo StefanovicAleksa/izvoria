@@ -68,6 +68,25 @@ def build_gateway(stub: bool):
     return IzvoriaEngineGateway()
 
 
+def build_links(stub: bool):
+    """
+    YouTube links for the Video ingest, or None where yt-dlp isn't installed (an appliance: it never reaches the
+    internet). See data/youtube_links.py.
+    """
+    if stub:
+        from izvoria_desktop.data.stub_gateway import StubYouTubeLinks
+
+        return StubYouTubeLinks()
+
+    from izvoria_desktop.data import youtube_links
+
+    if not youtube_links.available():
+        return None
+    cookies = youtube_links.default_cookies()
+    logger.info(f"YouTube links are offered; cookies {'from ' + str(cookies) if cookies.is_file() else 'not set'}.")
+    return youtube_links.YouTubeLinks(youtube_links.default_root(), cookies)
+
+
 def _sample_clip() -> Optional[str]:
     """
     Finds any already-ingested clip so stub mode offers a real file to open rather than a disabled
@@ -115,7 +134,7 @@ def run(
     relay = LogRelay()
     configure_logging(relay)
 
-    bridge = EngineBridge(build_gateway(stub))
+    bridge = EngineBridge(build_gateway(stub), links=build_links(stub))
     window = MainWindow(
         bridge=bridge,
         log_relay=relay,

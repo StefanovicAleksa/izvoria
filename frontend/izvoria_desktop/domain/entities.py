@@ -362,3 +362,28 @@ class ReportDocument:
             if item.doc_number == doc_number:
                 return item
         return None
+
+
+@dataclass(frozen=True)
+class YouTubeVideo:
+    """One video a link names. `id` is YouTube's; `duration` is seconds, when YouTube gave it."""
+    id: str
+    title: str
+    duration: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class LinkCheck:
+    """What a set of YouTube links holds, read without downloading anything."""
+    videos: Tuple[YouTubeVideo, ...] = ()
+    problems: Tuple[Tuple[str, str], ...] = ()   # (link as typed, why it added nothing)
+    playlist_hints: Tuple[str, ...] = ()         # watch?v=…&list=… links: only the video was added
+    capped: bool = False                          # cut at the most one batch takes
+
+
+@dataclass(frozen=True)
+class LinkDownload:
+    """A batch of videos on disk, ready for the video pipeline."""
+    folder: str
+    downloaded: int = 0
+    errors: Tuple[Tuple[str, str], ...] = ()     # (file name, why it could not be downloaded)
