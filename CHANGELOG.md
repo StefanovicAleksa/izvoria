@@ -4,6 +4,14 @@ This log tracks **feature-level milestones**, not every commit. It's written for
 
 **Regression fixes name the commit that introduced the problem and the commit that fixed it** (`git show <hash>`), so a repeat of a mistake can be traced straight to its source.
 
+## Desktop: video batches from YouTube links
+
+The desktop Ingest view's **Video** batches can also come from YouTube links: single videos or whole playlists, as on the web version, with the same code (`web_deploy/common/youtube.py`, `web_deploy/ingest_worker/fetch_links.py`, called from `frontend/izvoria_desktop/data/youtube_links.py`).
+
+- **Check links** lists the videos without downloading (`service/link_checker.py`, its own thread, so it works before the appliance starts); untick any, then **Add N videos**. The batch downloads them first ("Downloading videos"), then runs the video pipeline on their folder, as one job.
+- Videos are kept in `onyx_data/<ENV>/youtube/<selection id>/` as 720p H.264/AAC: the indexed sources point at them. Picking the same videos again resumes there.
+- Offered only where yt-dlp is installed (`requirements-dev.txt`): an appliance installed from `requirements.txt` never shows the panel and never reaches the internet. See `frontend/README.md`, "YouTube links".
+
 ## Every source has a title, and a question can name one
 
 Asking "what are all the formulas mentioned in lecture 4 of Stat 110" didn't work. Each chunk knew its source in the database, but the answer model saw only `[Doc 3] (00:12:31–00:14:02)`, the index never named the source, and a top-10 search across the whole library can't list everything one lecture said.

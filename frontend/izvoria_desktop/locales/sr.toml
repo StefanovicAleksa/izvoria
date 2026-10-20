@@ -287,3 +287,23 @@ plural = "slavic"
 "Dec" = "dec"
 "Report title" = "Naslov izveštaja"
 "Request: {topic}" = "Zahtev: {topic}"
+
+# YouTube links (Ingest, Video)
+"Or add videos from YouTube" = "Ili dodajte video snimke sa YouTube-a"
+"Paste YouTube links, one per line: single videos or whole playlists" = "Nalepite YouTube linkove, jedan po redu: pojedinačne snimke ili cele plejliste"
+"Check links" = "Proveri linkove"
+"Lists the videos the links hold without downloading anything." = "Prikazuje snimke sa linkova bez preuzimanja."
+"Checking the links…" = "Provera linkova…"
+"Add {n} video" = ["Dodaj {n} snimak", "Dodaj {n} snimka", "Dodaj {n} snimaka"]
+"{n} video found." = ["Pronađen je {n} snimak.", "Pronađena su {n} snimka.", "Pronađeno je {n} snimaka."]
+"No videos that can be downloaded were found." = "Nije pronađen nijedan snimak koji može da se preuzme."
+"• A link to a video inside a playlist adds only that video. To add the whole playlist, paste its playlist link." = "• Link ka snimku iz plejliste dodaje samo taj snimak. Za celu plejlistu nalepite njen link."
+"• Only the first {n} videos were taken: one batch holds at most that many." = "• Uzeto je samo prvih {n} snimaka: jedan uvoz ne prima više od toga."
+"The links could not be checked. Check the internet connection and try again." = "Linkovi nisu mogli da se provere. Proverite internet vezu i pokušajte ponovo."
+"Downloading videos" = "Preuzimanje snimaka"
+"Pick at least one video to add." = "Izaberite bar jedan snimak."
+"None of the videos could be downloaded from YouTube." = "Nijedan snimak nije mogao da se preuzme sa YouTube-a."
+"YouTube refused the downloads until it is signed in. Put a YouTube cookies.txt at {path} and try again." = "YouTube je odbio preuzimanje dok se ne prijavite. Postavite YouTube cookies.txt na {path} i pokušajte ponovo."
+"YouTube refused the downloads: the YouTube cookies at {path} are out of date. Export fresh ones and try again." = "YouTube je odbio preuzimanje: YouTube kolačići na {path} su zastareli. Izvezite nove i pokušajte ponovo."
+"YouTube refused it until it is signed in: the YouTube cookies are missing or out of date." = "YouTube ga je odbio dok se ne prijavite: YouTube kolačići nedostaju ili su zastareli."
+"It could not be downloaded from YouTube." = "Nije mogao da se preuzme sa YouTube-a."

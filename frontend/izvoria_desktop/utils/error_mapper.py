@@ -120,6 +120,10 @@ def map_engine_error(exc: BaseException, context: str = "") -> DesktopError:
 # Engine messages for a file that was not added, matched to one plain sentence each. The engine's own wording
 # names its components and internal ids, which a person adding files neither needs nor should see.
 _FILE_PROBLEMS = (
+    # YouTube link batches (data/youtube_links.py): its bot check first, since it also reads "could not be downloaded"
+    (("confirm you",), N_("YouTube refused it until it is signed in: the YouTube cookies are missing or out of "
+                          "date.")),
+    (("could not be downloaded",), N_("It could not be downloaded from YouTube.")),
     (("already ingested as",), N_("It was added before in another language.")),
     (("heard", "not transcribed"), N_("Its spoken language does not match the one selected.")),
     (("unsupported", "not supported"), N_("This file type is not supported.")),

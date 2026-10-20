@@ -82,6 +82,23 @@ seconds more; the stub answers straight away and deliberately cycles through eve
 has to render — a grounded answer, an answer with *no* evidence, a Thorough answer (the engine's Reasoned Answer) clarification
 request, an unresolved clip path, and a failure (ask it anything containing "fail").
 
+### YouTube links
+
+On a machine with yt-dlp (`requirements-dev.txt`), the Ingest view's **Video** batches can also come from YouTube
+links: single videos or whole playlists. **Check links** lists the videos without downloading anything (its own
+thread, `service/link_checker.py`, so it works before the appliance is started); untick any you don't want, then
+**Add N videos**. The batch downloads them first (a "Downloading videos" step), then runs the video pipeline on
+their folder, as one ingest job. It is the web version's own code (`web_deploy/common/youtube.py`,
+`web_deploy/ingest_worker/fetch_links.py`), called from `data/youtube_links.py`, the only desktop module that
+imports `web_deploy.*`.
+
+- Videos land in `onyx_data/<ENV>/youtube/<id of the selection>/` as 720p H.264/AAC MP4 and are kept: the indexed
+  sources point at them. Picking the same videos again resumes there, and retries the ones that failed.
+- Cookies: a Netscape `cookies.txt` at `$YOUTUBE_COOKIES_FILE`, default `onyx_data/youtube_cookies.txt`. A home
+  IP usually needs none; a data-centre one does. yt-dlp writes YouTube's refreshed session back into it.
+- An appliance installed from `requirements.txt` has no yt-dlp, so it never shows the panel and never reaches the
+  internet.
+
 ## Layout
 
 Follows the project's hexagonal convention, plus a Qt-only `ui/` layer:

@@ -27,6 +27,8 @@ from izvoria_desktop.domain.entities import (
     Evidence,
     IngestionSummary,
     LanguageOption,
+    LinkCheck,
+    LinkDownload,
     ProgressTick,
     ReasoningStep,
     ReportDocument,
@@ -36,6 +38,7 @@ from izvoria_desktop.domain.entities import (
     SearchHit,
     SearchOutcome,
     SearchRecordRef,
+    YouTubeVideo,
 )
 from izvoria_desktop.domain.enums import (
     ChatMode,
@@ -48,7 +51,7 @@ from izvoria_desktop.domain.enums import (
     SearchMode,
     TurnOutcome,
 )
-from izvoria_desktop.domain.interfaces import IEngineGateway
+from izvoria_desktop.domain.interfaces import IEngineGateway, IYouTubeLinks
 from izvoria_desktop.exceptions.gateway import EngineCallFailedError, InvalidRequestError
 
 _LOREM = (
@@ -538,3 +541,33 @@ class StubEngineGateway(IEngineGateway):
                 chunks_added=0,
             ),
         )
+
+
+class StubYouTubeLinks(IYouTubeLinks):
+    """Canned links: any playlist link holds three lectures, and nothing touches the network or the disk."""
+
+    def __init__(self, latency_seconds: float = 0.4, folder: str = "/tmp/izvoria-stub-youtube"):
+        self._latency = latency_seconds
+        self._folder = folder
+        self.downloaded: List[List[YouTubeVideo]] = []
+
+    def check(self, links: List[str]) -> LinkCheck:
+        time.sleep(self._latency)
+        videos, problems = [], []
+        for link in links:
+            if "list=" in link:
+                videos.extend(YouTubeVideo(f"stubLecture{n}", f"Lecture {n}: Probability and Counting", 2950.0)
+                              for n in range(1, 4))
+            elif "youtu" in link:
+                videos.append(YouTubeVideo("stubSingle0", "A single stub video", 600.0))
+            else:
+                problems.append((link, "Only YouTube links can be added."))
+        return LinkCheck(videos=tuple(videos), problems=tuple(problems))
+
+    def download(self, videos: List[YouTubeVideo], on_tick: Callable[..., None]) -> LinkDownload:
+        self.downloaded.append(list(videos))
+        for video in videos:
+            on_tick(ProgressTick("youtube_download", JobProgressState.STARTED, detail=video.title))
+            time.sleep(self._latency)
+            on_tick(ProgressTick("youtube_download", JobProgressState.COMPLETED, detail=video.title))
+        return LinkDownload(folder=self._folder, downloaded=len(videos))

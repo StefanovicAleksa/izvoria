@@ -78,3 +78,12 @@ class TestReportSteps:
     ])
     def test_a_report_shows_general_steps(self, job, detail, expected):
         assert report_step(job, detail) == expected
+
+
+class TestYouTubeBatches:
+    def test_downloading_leads_a_batch_from_links_and_only_that(self):
+        from izvoria_desktop.utils.progress_stages import DOWNLOADING, STAGES_BY_MODE, stage_for, stages_for
+
+        assert stage_for("youtube_download") is DOWNLOADING
+        assert stages_for(IngestMode.VIDEO, from_links=True) == (DOWNLOADING, *STAGES_BY_MODE[IngestMode.VIDEO])
+        assert stages_for(IngestMode.VIDEO) == STAGES_BY_MODE[IngestMode.VIDEO]

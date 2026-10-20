@@ -9,6 +9,9 @@ bar -- never the engine's internal jobs or its log. `utils/progress_stages.py` f
 
 There is no cancellation: nothing in the pipeline has a safe stop point, so the Cancel button stays disabled
 and says so rather than pretending to work.
+
+Where yt-dlp is installed, a Video batch can also come from YouTube links (data/youtube_links.py): "Check links"
+lists the videos they hold, the user unticks any they don't want, and the batch downloads them first.
 """
 
 import time
@@ -24,29 +27,39 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
-from izvoria_desktop.domain.entities import IngestionSummary, LanguageOption, ProgressTick
+from izvoria_desktop.domain.entities import IngestionSummary, LanguageOption, LinkCheck, ProgressTick, YouTubeVideo
 from izvoria_desktop.domain.enums import IngestMode, JobProgressState
 from izvoria_desktop.ui import translate as tl
 from izvoria_desktop.ui.widgets.stage_list import StageList
 from izvoria_desktop.utils.error_mapper import file_label, file_problem
 from izvoria_desktop.utils.formatting import duration
 from izvoria_desktop.utils.i18n import N_, tr, tr_n
-from izvoria_desktop.utils.progress_stages import JOBS_PER_STAGE, PREPARING, STAGES_BY_MODE, stage_for
+from izvoria_desktop.utils.progress_stages import DOWNLOADING, JOBS_PER_STAGE, PREPARING, stage_for, stages_for
 
 _SILENCE_WARN_SECONDS = 90
 
 
 class IngestView(QWidget):
     ingestRequested = Signal(str, object, str)   # path, IngestMode, language code
+    linksCheckRequested = Signal(object)         # List[str], one per link typed
+    linkIngestRequested = Signal(object, str)    # List[YouTubeVideo], language code
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self._run_mode = IngestMode.VIDEO
+        self._links_available = False
+        self._busy = False
+        self._checking = False
+        self._found: List[YouTubeVideo] = []
+        self._run_videos = 0   # videos a link batch downloads; 0 for a folder
         self._files: Set[uuid.UUID] = set()
         self._done_in_stage: Dict[str, int] = {}
         self._started_at: Optional[float] = None
@@ -120,6 +133,11 @@ class IngestView(QWidget):
 
         layout.addLayout(picker)
 
+        self._links = self._build_links()
+        self._links.setVisible(False)
+        layout.addWidget(self._links)
+        self._mode.currentIndexChanged.connect(self._show_links_if_video)
+
         self._phase_label = tl.label("Choose a folder and start. Progress appears here.", role="subtle")
         layout.addWidget(self._phase_label)
 
@@ -151,13 +169,111 @@ class IngestView(QWidget):
 
         layout.addStretch(1)
 
+    def _build_links(self) -> QFrame:
+        card = QFrame()
+        card.setProperty("role", "card")
+        box = QVBoxLayout(card)
+        box.setContentsMargins(18, 14, 18, 14)
+        box.setSpacing(8)
+
+        box.addWidget(tl.label("Or add videos from YouTube", role="subtle"))
+
+        self._link_text = QPlainTextEdit()
+        tl.placeholder(self._link_text, "Paste YouTube links, one per line: single videos or whole playlists")
+        self._link_text.setMaximumHeight(72)
+        self._link_text.textChanged.connect(self._refresh_link_buttons)
+        box.addWidget(self._link_text)
+
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        self._check_links = QPushButton()
+        tl.text(self._check_links, "Check links")
+        tl.tooltip(self._check_links, "Lists the videos the links hold without downloading anything.")
+        self._check_links.clicked.connect(self._on_check_links)
+        row.addWidget(self._check_links)
+        self._links_note = QLabel("")
+        self._links_note.setProperty("role", "subtle")
+        self._links_note.setWordWrap(True)
+        row.addWidget(self._links_note, stretch=1)
+        box.addLayout(row)
+
+        self._video_list = QListWidget()
+        self._video_list.setVisible(False)
+        self._video_list.setMaximumHeight(220)
+        self._video_list.itemChanged.connect(lambda _item: self._refresh_link_buttons())
+        box.addWidget(self._video_list)
+        tl.on_retranslate(self, "video_list", self._retitle_videos)
+
+        self._links_problems = QLabel("")
+        self._links_problems.setWordWrap(True)
+        self._links_problems.setProperty("role", "banner-warning")
+        self._links_problems.setVisible(False)
+        box.addWidget(self._links_problems)
+
+        add_row = QHBoxLayout()
+        add_row.addStretch(1)
+        self._add_videos = QPushButton()
+        tl.text(self._add_videos, lambda: tr_n(self._picked_count(), "Add {n} video", "Add {n} videos"))
+        self._add_videos.setProperty("role", "primary")
+        self._add_videos.setVisible(False)
+        self._add_videos.clicked.connect(self._on_add_videos)
+        add_row.addWidget(self._add_videos)
+        box.addLayout(add_row)
+
+        self._refresh_link_buttons()
+        return card
+
     # ---------- public API ----------
 
+    def set_links_available(self, available: bool) -> None:
+        """Whether this machine can take YouTube links (yt-dlp is installed). Shown for Video batches only."""
+        self._links_available = available
+        self._show_links_if_video()
+
+    def show_link_check(self, check: LinkCheck) -> None:
+        self._checking = False
+        self._found = list(check.videos)
+        self._video_list.blockSignals(True)
+        self._video_list.clear()
+        for video in self._found:
+            item = QListWidgetItem()
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked)
+            self._video_list.addItem(item)
+        self._video_list.blockSignals(False)
+        self._retitle_videos()
+        self._video_list.setVisible(bool(self._found))
+        self._add_videos.setVisible(bool(self._found))
+
+        lines = [f"• {link}: {reason}" for link, reason in check.problems]
+        if check.playlist_hints:
+            lines.append(tr("• A link to a video inside a playlist adds only that video. To add the whole "
+                            "playlist, paste its playlist link."))
+        if check.capped:
+            lines.append(tr("• Only the first {n} videos were taken: one batch holds at most that many.",
+                            n=len(self._found)))
+        self._links_problems.setText("\n".join(lines))   # YouTube's own reasons are not translated
+        self._links_problems.setVisible(bool(lines))
+        if self._found:
+            tl.text(self._links_note, lambda: tr_n(len(self._found), "{n} video found.", "{n} videos found."))
+        else:
+            tl.text(self._links_note, "No videos that can be downloaded were found.")
+        self._refresh_link_buttons()
+
+    def show_link_check_failure(self, message: str) -> None:
+        self._checking = False
+        tl.text(self._links_note, tl.plain(message))   # already in the display language
+        self._refresh_link_buttons()
+
     def set_busy(self, busy: bool) -> None:
+        self._busy = busy
         self._start.setEnabled(not busy)
         self._path.setEnabled(not busy)
         self._mode.setEnabled(not busy)
         self._language.setEnabled(not busy)
+        self._link_text.setEnabled(not busy)
+        self._video_list.setEnabled(not busy)
+        self._refresh_link_buttons()
 
     def set_languages(self, options: List[LanguageOption], selected: str) -> None:
         self._language.clear()
@@ -187,18 +303,21 @@ class IngestView(QWidget):
         self._stages.advance(stage.key, self._fraction(stage.key))
         self._show_position(stage.key)
 
-    def start_run(self) -> None:
-        self._run_mode = IngestMode(self._mode.currentData())
+    def start_run(self, videos: int = 0) -> None:
+        """`videos` > 0 for a batch from YouTube links: it downloads that many videos first."""
+        self._run_mode = IngestMode(self._mode.currentData()) if not videos else IngestMode.VIDEO
+        self._run_videos = videos
         self._files.clear()
         self._done_in_stage.clear()
         self._report.setVisible(False)
-        self._stages.set_stages(STAGES_BY_MODE[self._run_mode])
+        self._stages.set_stages(stages_for(self._run_mode, from_links=bool(videos)))
         self._stages.setVisible(True)
         self._patience.setVisible(True)
-        self._stages.advance(PREPARING.key, None)
+        first = DOWNLOADING if videos else PREPARING
+        self._stages.advance(first.key, 0.0 if videos else None)
         self._started_at = time.monotonic()
         self._last_signal_at = time.monotonic()
-        self._show_position(PREPARING.key)
+        self._show_position(first.key)
         self._reset_note()
         self._silence_timer.start()
 
@@ -226,6 +345,8 @@ class IngestView(QWidget):
 
     def _fraction(self, key: str) -> Optional[float]:
         """How far through its step the batch is, estimated from files done; None while the batch size is unknown."""
+        if key == DOWNLOADING.key:
+            return self._done_in_stage.get(key, 0) / max(1, self._run_videos)
         if key == PREPARING.key or not self._files:
             return None
         expected = len(self._files) * JOBS_PER_STAGE.get((self._run_mode, key), 1)
@@ -262,6 +383,44 @@ class IngestView(QWidget):
         folder = QFileDialog.getExistingDirectory(self, tr("Choose a folder to add"))
         if folder:
             self._path.setText(folder)
+
+    def _show_links_if_video(self, *_args) -> None:
+        self._links.setVisible(self._links_available and IngestMode(self._mode.currentData()) is IngestMode.VIDEO)
+
+    def _typed_links(self) -> List[str]:
+        return [line.strip() for line in self._link_text.toPlainText().splitlines() if line.strip()]
+
+    def _picked(self) -> List[YouTubeVideo]:
+        return [video for row, video in enumerate(self._found)
+                if self._video_list.item(row).checkState() == Qt.CheckState.Checked]
+
+    def _picked_count(self) -> int:
+        return len(self._picked()) if self._video_list.count() == len(self._found) else 0
+
+    def _retitle_videos(self) -> None:
+        for row, video in enumerate(self._found):
+            item = self._video_list.item(row)
+            if item is not None:
+                item.setText(f"{video.title} · {duration(video.duration)}" if video.duration else video.title)
+
+    def _refresh_link_buttons(self) -> None:
+        self._check_links.setEnabled(not self._busy and not self._checking and bool(self._typed_links()))
+        self._add_videos.setEnabled(not self._busy and self._picked_count() > 0)
+        tl.retranslate_widget(self._add_videos)
+
+    def _on_check_links(self) -> None:
+        links = self._typed_links()
+        if not links:
+            return
+        self._checking = True
+        tl.text(self._links_note, "Checking the links…")
+        self._refresh_link_buttons()
+        self.linksCheckRequested.emit(links)
+
+    def _on_add_videos(self) -> None:
+        picked = self._picked()
+        if picked:
+            self.linkIngestRequested.emit(picked, str(self._language.currentData()))
 
     def _on_start(self) -> None:
         path = self._path.text().strip()

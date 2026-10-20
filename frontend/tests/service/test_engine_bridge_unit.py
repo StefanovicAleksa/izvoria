@@ -453,3 +453,69 @@ class TestLanguage:
 
         assert stub_gateway.ingested_languages == ["sr"]
         assert changes == ["sr"] and bridge.active_language == "sr"
+
+
+class TestYouTubeLinks:
+    @pytest.fixture
+    def links(self):
+        from izvoria_desktop.data.stub_gateway import StubYouTubeLinks
+
+        return StubYouTubeLinks(latency_seconds=0.0)
+
+    @pytest.fixture
+    def link_bridge(self, qt_app, stub_gateway, links):
+        instance = EngineBridge(stub_gateway, links=links)
+        yield instance
+        instance.stop(timeout_ms=5000)
+
+    def test_without_yt_dlp_nothing_is_offered(self, bridge):
+        assert bridge.links_available is False
+        assert bridge.check_links(["https://youtu.be/aaaaaaaaaaa"]) is False
+
+    def test_links_are_checked_before_the_appliance_has_started(self, link_bridge):
+        assert link_bridge.check_links(["https://www.youtube.com/playlist?list=PLx"])
+
+        (check,) = wait_for(link_bridge.linksChecked)
+
+        assert len(check.videos) == 3
+
+    def test_the_videos_are_downloaded_then_ingested_as_one_ingest_job(self, link_bridge, stub_gateway, links):
+        link_bridge.boot()
+        wait_for(link_bridge.booted)
+        from izvoria_desktop.domain.entities import YouTubeVideo
+        videos = [YouTubeVideo("aaaaaaaaaaa", "Lecture 1")]
+        phases = []
+        link_bridge.progressTicked.connect(lambda tick: phases.append(tick.phase))
+
+        assert link_bridge.start_link_ingest(videos, "sr") is not None
+        assert link_bridge.is_ingesting is True
+        assert link_bridge.start_ingest("/tmp/media", IngestMode.AUDIO, "en") is None   # one job at a time
+
+        (_rid, summary) = wait_for(link_bridge.ingestFinished, timeout_ms=15000)
+
+        assert links.downloaded == [videos]
+        assert stub_gateway.ingested_languages == ["sr"]
+        assert summary.target_path == "/tmp/izvoria-stub-youtube"
+        assert phases[0] == "youtube_download" and "file_ingest" in phases
+
+
+class TestLinkIngestSummary:
+    def test_videos_that_could_not_be_downloaded_are_counted_with_the_failures(self, stub_gateway):
+        from izvoria_desktop.domain.entities import LinkDownload, YouTubeVideo
+        from izvoria_desktop.service.engine_worker import EngineWorker
+
+        class OneFails:
+            def download(self, videos, on_tick):
+                return LinkDownload("/tmp/yt", downloaded=1,
+                                    errors=(("Lecture 2 [b].mp4", "could not be downloaded: Private video"),))
+
+        worker = EngineWorker(stub_gateway, OneFails())
+        stub_gateway.boot()
+        results = []
+        worker.ingestReady.connect(lambda rid, summary: results.append(summary))
+
+        worker.run_ingest_links(7, [YouTubeVideo("a", "Lecture 1")], "en")
+
+        [summary] = results
+        assert (summary.scanned, summary.failed) == (4, 2)   # the stub's 3 files, 1 failed, + the download
+        assert ("Lecture 2 [b].mp4", "could not be downloaded: Private video") in summary.errors
