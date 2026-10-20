@@ -249,6 +249,8 @@ export interface IngestJob {
     errors?: Record<string, string>;
   } | null;
   error: string | null;
+  /** Someone pressed Stop; the box ends the batch within seconds */
+  stopping?: boolean;
 }
 
 export interface LibrarySource {

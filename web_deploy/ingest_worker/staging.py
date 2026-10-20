@@ -16,7 +16,9 @@ A marker lives until the results are on the VPS, so a crash, a host stop or a fa
 recoverable: `recover()` asks for the transfer again at the next start, and the API's /health reports
 `staging_pending` meanwhile, which keeps the gateway's idle stop away.
 
-`ensure_access()` (once, at start) installs the VPS's staging key for root, so the VPS can reach the scratch.
+`ensure_access()` installs the VPS's staging key for root, so the VPS can reach the scratch. It runs before every
+transfer, not once per start: Vast rewrites authorized_keys when it restarts the container, which once dropped the key
+while the worker kept running, and every transfer after it was refused.
 """
 
 import json
@@ -78,10 +80,10 @@ def pending_markers(state_dir: Path) -> List[Path]:
 
 class Stager:
     def __init__(self, settings: StagingSettings, call: Optional[Caller] = None,
-                 authorized_keys: Path = AUTHORIZED_KEYS) -> None:
+                 authorized_keys: Optional[Path] = None) -> None:
         self._settings = settings
         self._call = call or self._http
-        self._authorized_keys = authorized_keys
+        self._authorized_keys = authorized_keys or AUTHORIZED_KEYS
 
     @property
     def enabled(self) -> bool:
@@ -93,7 +95,10 @@ class Stager:
     # ---------- at start ----------
 
     def ensure_access(self) -> None:
-        """Lets the VPS's staging key in as root (once per start; Vast may rewrite authorized_keys on a restart)."""
+        """
+        Lets the VPS's staging key in as root. Called before every transfer: Vast may rewrite authorized_keys at any
+        container restart, and a missing key makes every transfer fail with "Permission denied (publickey)".
+        """
         if not self.enabled:
             return
         key = str(self._call("GET", "/internal/box/staging-key").get("key", "")).strip().split()
@@ -101,10 +106,16 @@ class Stager:
             raise StagingError("The gateway sent no staging key.")
         line = f"restrict {key[0]} {key[1]} {KEY_MARK}"
         path = self._authorized_keys
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        kept = [l for l in (path.read_text().splitlines() if path.exists() else []) if not l.endswith(KEY_MARK)]
-        path.write_text("\n".join([*kept, line]) + "\n")
-        path.chmod(0o600)
+        try:
+            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            current = path.read_text().splitlines() if path.exists() else []
+            if line in current:
+                return
+            kept = [l for l in current if not l.endswith(KEY_MARK)]
+            path.write_text("\n".join([*kept, line]) + "\n")
+            path.chmod(0o600)
+        except OSError as exc:
+            raise StagingError(f"Could not let the VPS's staging key in: {exc}") from exc
 
     # ---------- a job ----------
 
@@ -117,6 +128,7 @@ class Stager:
             Path(batch_dir).mkdir(parents=True, exist_ok=True)
         # The glossary comes only from the VPS: one an earlier job left here may since have been cleared there
         _remove_tree(firm_root(self._settings.tenants_root, firm) / "glossaries")
+        self.ensure_access()
         answer = self._call("POST", f"/internal/box/stage-in/{job_id}")
         logger.info(f"Job {job_id}: the VPS sent {answer.get('batch_files', 0)} batch file(s) and "
                     f"{answer.get('vault_files', 0)} vault file(s)")
@@ -128,10 +140,24 @@ class Stager:
         marker = self._read_marker(job_id)
         if marker is None:
             return
+        self.ensure_access()
         self._call("POST", f"/internal/box/stage-out/{job_id}")
         self.wipe(marker["firm"])
         (self._settings.state_dir / f"{job_id}.json").unlink(missing_ok=True)
         logger.info(f"Job {job_id}: results are on the VPS and the box's copy is wiped")
+
+    def abandon(self, job_id: str) -> None:
+        """
+        Drops a job whose files never arrived: no ingestion ran, so the scratch holds nothing the VPS lacks and there
+        is nothing to push back. Without this its marker would stay, and the worker refuses new work while a push is
+        pending: one failed fetch would stop ingestion for every firm.
+        """
+        if not self.enabled:
+            return
+        marker = self._read_marker(job_id)
+        if marker is not None:
+            self.wipe(marker["firm"])
+        (self._settings.state_dir / f"{job_id}.json").unlink(missing_ok=True)
 
     def recover(self) -> int:
         """At start: has the VPS take back what an interrupted job left, then wipes all scratch. Returns what's left."""

@@ -23,6 +23,13 @@ class FakeGateway:
         return {"batch_files": 1, "vault_files": 0}
 
 
+@pytest.fixture(autouse=True)
+def _keys_in_tmp(tmp_path, monkeypatch):
+    """Every transfer installs the staging key: never into the real /root/.ssh."""
+    from web_deploy.ingest_worker import staging
+    monkeypatch.setattr(staging, "AUTHORIZED_KEYS", tmp_path / "default_authorized_keys")
+
+
 @pytest.fixture
 def settings(tmp_path):
     return StagingSettings(gateway_url="http://127.0.0.1:18000", tenants_root=tmp_path / "tenants",
@@ -48,7 +55,8 @@ class TestStager:
 
         stager.stage_out("j1")
 
-        assert gateway.calls == [("POST", "/internal/box/stage-in/j1"), ("POST", "/internal/box/stage-out/j1")]
+        assert gateway.calls == [("GET", "/internal/box/staging-key"), ("POST", "/internal/box/stage-in/j1"),
+                                 ("GET", "/internal/box/staging-key"), ("POST", "/internal/box/stage-out/j1")]
         assert not written.exists()
         assert pending_markers(settings.state_dir) == []
 
@@ -131,6 +139,44 @@ class TestStager:
         assert lines[0] == "ssh-ed25519 AAAAyou you@laptop"
         assert lines[1] == f"restrict {' '.join(KEY.split()[:2])} {KEY_MARK}"
         assert len(lines) == 2
+
+    def test_a_key_dropped_by_a_container_restart_is_back_before_the_next_transfer(self, settings, tmp_path):
+        """Vast rewrites authorized_keys on a restart; once, every transfer after it was refused."""
+        keys = tmp_path / "root" / ".ssh" / "authorized_keys"
+        stager = Stager(settings, call=FakeGateway(), authorized_keys=keys)
+        stager.ensure_access()
+        keys.write_text("ssh-ed25519 AAAAyou you@laptop\n")  # what Vast leaves
+
+        stager.stage_in("j1", "legal-demo", None)
+        assert keys.read_text().splitlines()[-1].endswith(KEY_MARK)
+
+        keys.write_text("ssh-ed25519 AAAAyou you@laptop\n")
+        stager.stage_out("j1")
+        assert keys.read_text().splitlines() == ["ssh-ed25519 AAAAyou you@laptop",
+                                                 f"restrict {' '.join(KEY.split()[:2])} {KEY_MARK}"]
+
+    def test_a_key_already_in_place_is_not_rewritten(self, settings, tmp_path):
+        keys = tmp_path / "keys"
+        stager = Stager(settings, call=FakeGateway(), authorized_keys=keys)
+        stager.ensure_access()
+        before = keys.stat().st_mtime_ns
+        keys.chmod(0o400)  # a rewrite would fail
+
+        stager.ensure_access()
+        assert keys.stat().st_mtime_ns == before
+
+    def test_a_job_whose_files_never_arrived_is_dropped_without_asking_the_vps(self, settings):
+        gateway = FakeGateway(fail="stage-in")
+        stager = Stager(settings, call=gateway)
+        with pytest.raises(StagingError):
+            stager.stage_in("j1", "legal-demo", None)
+        assert stager.has_pending()
+        stray = _scratch_file(settings)
+
+        stager.abandon("j1")
+
+        assert not stager.has_pending() and not stray.exists()
+        assert not [c for c in gateway.calls if "stage-out" in c[1]]
 
     def test_a_gateway_without_a_key_is_an_error(self, settings, tmp_path):
         stager = Stager(settings, call=lambda m, p: {"key": ""}, authorized_keys=tmp_path / "keys")

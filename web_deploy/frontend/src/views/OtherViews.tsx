@@ -4,10 +4,20 @@ import type { LibrarySource } from "../api/types";
 import { useI18n } from "../i18n";
 import { useSession } from "../session";
 
+const DELETE_CONFIRM = "Delete “{name}” and everything made from it (transcript, search index, frames)? Answers and reports that cited it keep their text, but its citations can no longer be opened. This cannot be undone.";
+
 export function LibraryView() {
   const { t } = useI18n();
   const [sources, setSources] = useState<LibrarySource[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const { me } = useSession();
+  const canDelete = me.user?.role === "admin" || me.user?.role === "owner";
+  const remove = (source: LibrarySource) => {
+    if (!window.confirm(t(DELETE_CONFIRM).replace("{name}", source.name))) return;
+    api.del(`/api/library/${source.source_id}`)
+      .then(() => setSources((all) => (all ?? []).filter((s) => s.source_id !== source.source_id)))
+      .catch((e) => setError(e.message));
+  };
   useEffect(() => {
     api.get<{ sources: LibrarySource[] }>("/api/library").then((r) => setSources(r.sources)).catch((e) => setError(e.message));
   }, []);
@@ -21,7 +31,10 @@ export function LibraryView() {
         {sources && sources.length > 0 && (
           <table className="table compact-rows">
             <thead>
-              <tr><th>{t("Name")}</th><th>{t("Type")}</th><th>{t("Language")}</th><th>{t("Added")}</th></tr>
+              <tr>
+                <th>{t("Name")}</th><th>{t("Type")}</th><th>{t("Language")}</th><th>{t("Added")}</th>
+                {canDelete && <th />}
+              </tr>
             </thead>
             <tbody>
               {sources.map((s) => (
@@ -30,6 +43,11 @@ export function LibraryView() {
                   <td>{s.source_type}</td>
                   <td>{s.language ?? ""}</td>
                   <td>{s.created_at ? new Date(s.created_at).toLocaleDateString() : ""}</td>
+                  {canDelete && (
+                    <td>
+                      <button className="icon" aria-label={t("Delete")} title={t("Delete")} onClick={() => remove(s)}>×</button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

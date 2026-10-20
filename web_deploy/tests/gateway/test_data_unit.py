@@ -85,8 +85,59 @@ def prepare():
     return PrepareSettings()
 
 
+class FirmDb:
+    """Each firm's database, as far as deleting a source goes: which sources exist and the vault files they own."""
+
+    def __init__(self):
+        self.sources = {}  # (firm, source id) -> [vault paths]
+        self.deleted = []
+
+    def __call__(self, firm):
+        db = self
+
+        class Connection:
+            def cursor(self):
+                class Cursor:
+                    rows = []
+
+                    def __enter__(self):
+                        return self
+
+                    def __exit__(self, *exc):
+                        return False
+
+                    def execute(self, sql, params=None):
+                        ids = (params or {}).get("source_ids", [])
+                        if sql.startswith("SELECT id FROM sources"):
+                            self.rows = [(i,) for i in ids if (firm, i) in db.sources]
+                        elif "WITH matched" in sql:
+                            self.rows = [(f"file-{n}", path) for i in ids
+                                         for n, path in enumerate(db.sources.get((firm, i), []))]
+                        elif sql.startswith("DELETE FROM sources"):
+                            db.deleted += [(firm, i) for i in ids]
+
+                    def fetchall(self):
+                        return self.rows
+                return Cursor()
+
+            def commit(self):
+                pass
+
+            def rollback(self):
+                pass
+
+            def close(self):
+                pass
+        return Connection()
+
+
 @pytest.fixture
-def app(tmp_path, store, vast, box_api, tenants, queue, preparer, prepare):
+def firm_db():
+    return FirmDb()
+
+
+@pytest.fixture
+def app(tmp_path, store, vast, box_api, tenants, queue, preparer, prepare, firm_db):
     static = tmp_path / "static"
     static.mkdir()
     (static / "index.html").write_text("<html>spa</html>")
@@ -97,7 +148,7 @@ def app(tmp_path, store, vast, box_api, tenants, queue, preparer, prepare):
     data_settings = DataSettings(tenants_root=tenants, source_cache_root=tmp_path / "cache",
                                  control_database_url="sqlite://", max_upload_bytes=1024, languages=("en", "sr"),
                                  prepare=prepare)
-    data = functools.partial(DataRoutes, data_settings, queue, http, SECRET, preparer=preparer)
+    data = functools.partial(DataRoutes, data_settings, queue, http, SECRET, preparer=preparer, connect_firm=firm_db)
     mailer = Mailer(MAIL, store, transport=RecordingTransport(), executor=InlineExecutor())
     return create_app(settings, store, box, IdleMonitor(box, 1800), http, run_idle_monitor=False, mailer=mailer,
                       data=data, run_background=False)
@@ -264,6 +315,88 @@ class TestWaitList:
         eve = signed_in(app, firm="other-firm", email="eve@other.com", firm_password=OTHER_FIRM_PASSWORD)
         assert eve.delete(f"/api/ingest/jobs/{mine.id}").status_code == 404
         assert [path for _, path in box_api.asked] == []
+
+
+    def test_a_finished_batch_can_be_removed_from_the_list_by_anyone_in_the_firm(self, app, queue, box_api):
+        from web_deploy.ingest_worker.queue import IngestMode
+        client = signed_in(app)
+        failed = queue.enqueue("legal-demo", "someone-else", IngestMode.DOCUMENT, "sr", "/x", 1)
+        waiting = queue.enqueue("legal-demo", "someone-else", IngestMode.AUDIO, "en", "/z", 1)
+        queue.claim_next()
+        queue.fail(failed.id, "The files could not be moved to the GPU server for ingestion.")
+
+        assert client.post(f"/api/ingest/jobs/{waiting.id}/dismiss").status_code == 409
+        assert client.post(f"/api/ingest/jobs/{failed.id}/dismiss").json() == {"dismissed": True}
+        assert [j["id"] for j in client.get("/api/ingest/jobs").json()["jobs"]] == [waiting.id]
+        eve = signed_in(app, firm="other-firm", email="eve@other.com", firm_password=OTHER_FIRM_PASSWORD)
+        assert eve.post(f"/api/ingest/jobs/{waiting.id}/dismiss").status_code == 404
+        assert box_api.asked == []
+
+
+    def test_a_running_batch_is_asked_to_stop_by_whoever_queued_it_or_an_admin(self, app, queue):
+        from web_deploy.ingest_worker.queue import IngestMode
+        alice = signed_in(app)
+        theirs = queue.enqueue("legal-demo", "someone-else", IngestMode.AUDIO, "sr", "/x", 1)
+        queue.claim_next()
+
+        assert alice.delete(f"/api/ingest/jobs/{theirs.id}").status_code == 403
+        boss = signed_in(app, email="boss@firm.com")
+        assert boss.delete(f"/api/ingest/jobs/{theirs.id}").json() == {"stopping": True}
+        job = boss.get("/api/ingest/jobs").json()["jobs"][0]
+        assert (job["status"], job["stopping"]) == ("running", True)
+
+        queue.finish(theirs.id, {})
+        assert boss.delete(f"/api/ingest/jobs/{theirs.id}").status_code == 409  # finished meanwhile
+
+
+class TestLibrary:
+    def _vault_file(self, tenants, firm, name):
+        path = tenants / firm / "vault" / "2026" / "10" / "20" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+        return path
+
+    def test_an_admin_deletes_a_file_and_its_vault_files_here_without_the_box(self, app, tenants, firm_db, box_api):
+        source = str(uuid.uuid4())
+        original = self._vault_file(tenants, "legal-demo", "talk.mp4")
+        audio = self._vault_file(tenants, "legal-demo", "talk.wav")
+        firm_db.sources[("legal-demo", source)] = [str(original), str(audio)]
+        boss = signed_in(app, email="boss@firm.com")
+
+        assert boss.delete(f"/api/library/{source}").json() == {"deleted": True, "files_removed": 2}
+
+        assert firm_db.deleted == [("legal-demo", source)]
+        assert not original.exists() and not audio.exists()
+        assert box_api.asked == []
+
+    def test_members_cannot_and_another_firms_file_does_not_exist(self, app, tenants, firm_db):
+        source = str(uuid.uuid4())
+        firm_db.sources[("legal-demo", source)] = [str(self._vault_file(tenants, "legal-demo", "a.pdf"))]
+
+        assert signed_in(app).delete(f"/api/library/{source}").status_code == 403
+        eve = signed_in(app, firm="other-firm", email="eve@other.com", firm_password=OTHER_FIRM_PASSWORD)
+        assert eve.delete(f"/api/library/{source}").status_code == 404
+        assert signed_in(app, email="boss@firm.com").delete("/api/library/not-a-uuid").status_code == 404
+        assert firm_db.deleted == []
+
+    def test_nothing_is_deleted_while_the_firm_has_a_batch_running(self, app, queue, firm_db):
+        from web_deploy.ingest_worker.queue import IngestMode
+        source = str(uuid.uuid4())
+        firm_db.sources[("legal-demo", source)] = []
+        queue.enqueue("legal-demo", "u1", IngestMode.AUDIO, "en", "/x", 1)
+        queue.claim_next()
+
+        response = signed_in(app, email="boss@firm.com").delete(f"/api/library/{source}")
+
+        assert response.status_code == 409 and firm_db.deleted == []
+
+    def test_a_path_outside_the_firms_vault_is_never_removed(self, app, tenants, firm_db):
+        source = str(uuid.uuid4())
+        other = self._vault_file(tenants, "other-firm", "theirs.mp4")
+        firm_db.sources[("legal-demo", source)] = [str(other)]
+
+        assert signed_in(app, email="boss@firm.com").delete(f"/api/library/{source}").json()["files_removed"] == 0
+        assert other.exists()
 
 
 class TestPreparingVideos:

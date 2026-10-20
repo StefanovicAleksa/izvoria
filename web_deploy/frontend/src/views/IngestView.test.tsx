@@ -112,3 +112,57 @@ describe("the queue", () => {
     expect(withoutRetriedFailures([jobs[1]]).map((j) => j.id)).toEqual(["first"]);
   });
 });
+
+describe("removing a finished batch from the list", () => {
+  const job = (id: string, status: string) => ({
+    id, mode: "document", language: "sr", file_count: 1, status, position: status === "queued" ? 1 : null,
+    owner_id: "u1", created_at: "2026-10-20T10:00:00Z", started_at: null, finished_at: null, progress: null,
+    report: null, error: status === "failed" ? "The files could not be moved." : null, origin: "upload",
+  });
+
+  it("offers a ✕ on finished batches only, and asks the gateway to drop it", async () => {
+    const calls = fakeGateway({
+      "GET /api/ingest/jobs": { body: { jobs: [job("f1", "failed"), job("q1", "queued")] } },
+      "POST /api/ingest/jobs/f1/dismiss": { body: { dismissed: true } },
+    });
+    render(<SessionContext.Provider value={session}><IngestView /></SessionContext.Provider>);
+
+    expect(await screen.findByText("The files could not be moved.")).toBeInTheDocument();
+    const remove = screen.getAllByRole("button", { name: "Remove" });
+    expect(remove).toHaveLength(1);  // the queued batch has Cancel instead
+
+    fireEvent.click(remove[0]);
+
+    await waitFor(() => expect(screen.queryByText("The files could not be moved.")).not.toBeInTheDocument());
+    expect(calls.some((c) => c.method === "POST" && c.url === "/api/ingest/jobs/f1/dismiss")).toBe(true);
+  });
+});
+
+describe("stopping a running batch", () => {
+  const running = (owner: string, stopping = false) => ({
+    id: "r1", mode: "video", language: "sr", file_count: 3, status: "running", position: null, owner_id: owner,
+    created_at: "2026-10-20T10:00:00Z", started_at: "2026-10-20T10:01:00Z", finished_at: null, progress: null,
+    report: null, error: null, origin: "upload", stopping,
+  });
+  const as = (user: any) => ({ ...session, me: { ...session.me, user } });
+
+  it("lets whoever queued it stop it, after confirming", async () => {
+    const calls = fakeGateway({
+      "GET /api/ingest/jobs": { body: { jobs: [running("u1")] } },
+      "DELETE /api/ingest/jobs/r1": { body: { stopping: true } },
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<SessionContext.Provider value={as({ id: "u1", role: "member" })}><IngestView /></SessionContext.Provider>);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Stop" }));
+
+    await waitFor(() => expect(calls.some((c) => c.method === "DELETE" && c.url === "/api/ingest/jobs/r1")).toBe(true));
+  });
+
+  it("is not offered to another member, and shows a stop under way", async () => {
+    fakeGateway({ "GET /api/ingest/jobs": { body: { jobs: [running("u1", true)] } } });
+    render(<SessionContext.Provider value={as({ id: "u2", role: "member" })}><IngestView /></SessionContext.Provider>);
+    await screen.findByText(/Step|video/);
+    expect(screen.queryByRole("button", { name: "Stop" })).not.toBeInTheDocument();
+  });
+});

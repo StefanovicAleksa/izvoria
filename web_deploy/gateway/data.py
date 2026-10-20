@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable, Optional
@@ -24,6 +25,7 @@ from deploy.instance.agent.media import MediaError, MediaPreparer
 from app.features.storage.utils.upload_record import UploadRecord, read_all, write_record
 from web_deploy.common.chunked import ChunkedUpload, discard_incomplete
 from web_deploy.common.signing import Principal, sign
+from web_deploy.common.source_removal import Connect, existing_sources, postgres_connector, remove_sources, unlink_inside
 from web_deploy.common.sources import SourceRejected, Variant, describe, file_headers, offer_for_chunk
 from web_deploy.common.tenancy import firm_root
 from web_deploy.common.uploads import (
@@ -88,7 +90,8 @@ class DataRoutes:
 
     def __init__(self, settings: DataSettings, queue: IngestQueue, http: httpx.AsyncClient, api_secret: str,
                  locate_base: Callable[[], Awaitable[object]], on_enqueue: Callable[[], Awaitable[None]],
-                 preparer: Optional[MediaPreparer] = None, videos: Optional[VideoPreparer] = None) -> None:
+                 preparer: Optional[MediaPreparer] = None, videos: Optional[VideoPreparer] = None,
+                 connect_firm: Optional[Connect] = None) -> None:
         self._settings = settings
         self._queue = queue
         self._http = http
@@ -97,6 +100,7 @@ class DataRoutes:
         self._on_enqueue = on_enqueue
         self._preparer = preparer or MediaPreparer(settings.source_cache_root)
         self._videos = videos or VideoPreparer(queue, settings.prepare)
+        self._connect_firm = connect_firm or postgres_connector()
 
     # ---------- uploads & the wait list ----------
 
@@ -206,10 +210,58 @@ class DataRoutes:
         if job.owner_id != principal.user_id and principal.role not in ("admin", "owner"):
             return JSONResponse({"error": "Only the person who queued it, or a firm admin, can cancel it."},
                                 status_code=403)
-        if not await asyncio.to_thread(self._queue.cancel, job_id, principal.firm):
-            return JSONResponse({"error": "It has already started; an ingestion can't be stopped midway.",
-                                 "kind": "busy"}, status_code=409)
-        return JSONResponse({"cancelled": True})
+        if await asyncio.to_thread(self._queue.cancel, job_id, principal.firm):
+            return JSONResponse({"cancelled": True})
+        # Already running: the box's supervisor ends it within seconds, keeping the files it had finished
+        if await asyncio.to_thread(self._queue.request_stop, job_id, principal.firm):
+            return JSONResponse({"stopping": True})
+        return JSONResponse({"error": "It has already finished.", "kind": "busy"}, status_code=409)
+
+    async def dismiss(self, request: Request, principal: Principal) -> Response:
+        """Removes a finished batch from the firm's list (its ✕). Anyone in the firm may: it only tidies the view."""
+        job_id = request.path_params["job_id"]
+        job = await asyncio.to_thread(self._queue.get, job_id)
+        if job is None or job.firm != principal.firm:
+            return _not_found()
+        if not await asyncio.to_thread(self._queue.dismiss, job_id, principal.firm):
+            return JSONResponse({"error": "Only a finished batch can be removed from the list.", "kind": "busy"},
+                                status_code=409)
+        return JSONResponse({"dismissed": True})
+
+    # ---------- the Library ----------
+
+    async def delete_source(self, request: Request, principal: Principal) -> Response:
+        """
+        Deletes an ingested file and everything made from it (transcript, index, frames, clips, its vault files), for
+        the whole firm. Firm administrators only. Done here, where the firm's database and vault are, so it works while
+        the GPU box is stopped.
+        """
+        if principal.role not in ("admin", "owner"):
+            return JSONResponse({"error": "Only a firm administrator can delete files from the Library."},
+                                status_code=403)
+        try:
+            source_id = str(uuid.UUID(request.path_params["source_id"]))
+        except ValueError:
+            return _not_found()
+        if await asyncio.to_thread(self._queue.has_running, principal.firm):
+            return JSONResponse({"error": "A batch of yours is being ingested. Delete files once it has finished, "
+                                          "or stop it first.", "kind": "busy"}, status_code=409)
+        paths = await asyncio.to_thread(self._remove_source, principal.firm, source_id)
+        if paths is None:
+            return _not_found()
+        vault = firm_root(self._settings.tenants_root, principal.firm) / "vault"
+        removed = await asyncio.to_thread(unlink_inside, paths, vault)
+        logger.info(f"{principal.firm}: source {source_id} deleted by {principal.user_id} ({removed} vault file(s))")
+        return JSONResponse({"deleted": True, "files_removed": removed})
+
+    def _remove_source(self, firm: str, source_id: str) -> Optional[list]:
+        connection = self._connect_firm(firm)
+        try:
+            if not existing_sources(connection, [source_id]):
+                return None
+            return remove_sources(connection, [source_id])
+        finally:
+            connection.close()
 
     def _batch(self, principal: Principal, batch: str) -> Path:
         return batch_dir(self._settings.tenants_root, principal.firm, principal.user_id, batch)

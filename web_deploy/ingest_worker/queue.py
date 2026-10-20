@@ -15,7 +15,7 @@ from enum import Enum
 from typing import Any, Dict, List, Optional, Set
 
 from sqlalchemy import (
-    JSON, Column, DateTime, Integer, MetaData, String, Table, Text, create_engine, event, func, inspect, select, text,
+    JSON, Boolean, Column, DateTime, Integer, MetaData, String, Table, Text, create_engine, event, func, inspect, select, text,
     update,
 )
 from sqlalchemy.engine import Engine
@@ -69,6 +69,11 @@ ingest_jobs = Table(
     # A YouTube batch's videos (youtube.write_manifest's content). Kept in the row, not the batch folder: the folder
     # lives on the VPS, and the GPU box that resolved the links never writes there
     Column("manifest", JSON, nullable=True),
+    # Removed from the firm's wait list by someone clicking its ✕. Only a finished job can be; the row stays, so
+    # the janitor and the backup still see it
+    Column("dismissed", Boolean, nullable=False, default=False, server_default=text("FALSE")),
+    # Someone asked to stop the running batch; the supervisor ends its child and marks it cancelled
+    Column("stop_requested", Boolean, nullable=False, default=False, server_default=text("FALSE")),
 )
 
 # Columns added after the table first shipped, as (name, DDL). `create_all` makes a missing table but never alters an
@@ -76,7 +81,12 @@ ingest_jobs = Table(
 _ADDED_COLUMNS = (
     ("origin", f"VARCHAR(16) NOT NULL DEFAULT '{JobOrigin.UPLOAD.value}'"),
     ("manifest", "JSON"),
+    ("dismissed", "BOOLEAN NOT NULL DEFAULT FALSE"),
+    ("stop_requested", "BOOLEAN NOT NULL DEFAULT FALSE"),
 )
+
+
+STOPPED_NOTE = "Stopped. Files it had finished stay in the Library."
 
 
 class QueueError(ValueError):
@@ -101,6 +111,7 @@ class IngestJob:
     error: Optional[str]
     origin: JobOrigin = JobOrigin.UPLOAD
     manifest: Optional[dict] = None
+    stop_requested: bool = False
 
     def public(self, position: Optional[int] = None) -> dict:
         """What the firm's users see. Never the box path."""
@@ -111,6 +122,7 @@ class IngestJob:
             "started_at": self.started_at.isoformat() if self.started_at else None,
             "finished_at": self.finished_at.isoformat() if self.finished_at else None,
             "progress": self.progress, "report": self.report, "error": self.error, "origin": self.origin.value,
+            "stopping": self.stop_requested and self.status is JobStatus.RUNNING,
         }
 
 
@@ -131,6 +143,7 @@ def _job(row: Any) -> IngestJob:
         created_at=_utc(m["created_at"]), started_at=_utc(m["started_at"]), finished_at=_utc(m["finished_at"]),
         progress=m["progress"], report=m["report"], error=m["error"],
         origin=JobOrigin(m["origin"] or JobOrigin.UPLOAD.value), manifest=m["manifest"],
+        stop_requested=bool(m["stop_requested"]),
     )
 
 
@@ -192,7 +205,7 @@ class IngestQueue:
         positions = self.queue_positions()
         with self._engine.connect() as connection:
             rows = connection.execute(
-                select(ingest_jobs).where(ingest_jobs.c.firm == firm)
+                select(ingest_jobs).where(ingest_jobs.c.firm == firm, ingest_jobs.c.dismissed.is_(False))
                 .order_by(ingest_jobs.c.created_at.desc()).limit(limit)
             ).all()
         return [_job(r).public(positions.get(r._mapping["id"])) for r in rows]
@@ -213,6 +226,37 @@ class IngestQueue:
                 .where(ingest_jobs.c.id == job_id, ingest_jobs.c.firm == firm,
                        ingest_jobs.c.status.in_([JobStatus.PREPARING.value, JobStatus.QUEUED.value]))
                 .values(status=JobStatus.CANCELLED.value, finished_at=_now())
+            )
+            return bool(result.rowcount)
+
+    def has_running(self, firm: str) -> bool:
+        """Whether a batch of the firm is being ingested right now."""
+        with self._engine.connect() as connection:
+            return connection.execute(
+                select(ingest_jobs.c.id).where(ingest_jobs.c.firm == firm,
+                                               ingest_jobs.c.status == JobStatus.RUNNING.value).limit(1)
+            ).first() is not None
+
+    def request_stop(self, job_id: str, firm: str) -> bool:
+        """Asks the supervisor to stop a running batch of the firm. Returns whether it is running (and so will stop)."""
+        with self._engine.begin() as connection:
+            result = connection.execute(
+                update(ingest_jobs)
+                .where(ingest_jobs.c.id == job_id, ingest_jobs.c.firm == firm,
+                       ingest_jobs.c.status == JobStatus.RUNNING.value)
+                .values(stop_requested=True)
+            )
+            return bool(result.rowcount)
+
+    def dismiss(self, job_id: str, firm: str) -> bool:
+        """Takes a finished job (done, failed or cancelled) off the firm's list. Returns whether it did."""
+        with self._engine.begin() as connection:
+            result = connection.execute(
+                update(ingest_jobs)
+                .where(ingest_jobs.c.id == job_id, ingest_jobs.c.firm == firm,
+                       ingest_jobs.c.status.in_([JobStatus.DONE.value, JobStatus.FAILED.value,
+                                                 JobStatus.CANCELLED.value]))
+                .values(dismissed=True)
             )
             return bool(result.rowcount)
 
@@ -308,12 +352,23 @@ class IngestQueue:
             connection.execute(update(ingest_jobs).where(ingest_jobs.c.id == job_id).values(
                 status=JobStatus.FAILED.value, finished_at=_now(), error=error[:4000]))
 
+    def stopped(self, job_id: str, note: str) -> None:
+        """A running batch someone stopped: cancelled, with what was kept."""
+        with self._engine.begin() as connection:
+            connection.execute(update(ingest_jobs).where(ingest_jobs.c.id == job_id).values(
+                status=JobStatus.CANCELLED.value, finished_at=_now(), error=note[:4000]))
+
     def recover_interrupted(self) -> int:
         """
         Jobs left `running` by a crash or a box stop. Their partial work is cached per source in the firm's database,
         so they are re-queued at the front rather than failed: the retry skips what was already done.
         """
         with self._engine.begin() as connection:
+            # One someone had asked to stop is not started again
+            connection.execute(
+                update(ingest_jobs).where(ingest_jobs.c.status == JobStatus.RUNNING.value,
+                                          ingest_jobs.c.stop_requested.is_(True))
+                .values(status=JobStatus.CANCELLED.value, finished_at=_now(), error=STOPPED_NOTE))
             return connection.execute(
                 update(ingest_jobs).where(ingest_jobs.c.status == JobStatus.RUNNING.value)
                 .values(status=JobStatus.QUEUED.value, started_at=None,

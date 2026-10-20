@@ -30,12 +30,19 @@ from typing import Callable, Dict, Optional
 from web_deploy.common import youtube
 from web_deploy.common.tenancy import database_name, firm_root
 from web_deploy.ingest_worker.gpu_arbiter import GpuArbiter, arbiter_from_env
-from web_deploy.ingest_worker.queue import IngestJob, IngestQueue, JobOrigin
+from web_deploy.ingest_worker.queue import STOPPED_NOTE, IngestJob, IngestQueue, JobOrigin
 from web_deploy.ingest_worker.staging import Stager, StagingError, StagingSettings
 
 logger = logging.getLogger(__name__)
 
 POLL_SECONDS = 5.0
+# How often a running child is checked for a stop request, and how long it gets to end before it is killed: a CUDA call
+# in llama.cpp or ctranslate2 does not return to Python promptly
+STOP_POLL_SECONDS = 3.0
+KILL_AFTER_SECONDS = 30.0
+
+FETCH_FAILED = ("The files could not be moved to the GPU server for ingestion. Please add them again; "
+                "if it happens again, contact support.")
 
 
 def child_environment(job: IngestJob, tenants_root: Path, base: Dict[str, str]) -> Dict[str, str]:
@@ -86,7 +93,8 @@ class Supervisor:
                  spawn: Optional[Callable[[IngestJob, Dict[str, str]], int]] = None,
                  base_env: Optional[Dict[str, str]] = None, arbiter: Optional[GpuArbiter] = None,
                  fetch: Optional[Callable[[IngestJob, Dict[str, str]], int]] = None,
-                 stager: Optional[Stager] = None) -> None:
+                 stager: Optional[Stager] = None,
+                 remove_unfinished: Optional[Callable[[IngestJob], int]] = None) -> None:
         self._queue = queue
         self._arbiter = arbiter or GpuArbiter()
         self._tenants_root = tenants_root
@@ -96,6 +104,7 @@ class Supervisor:
         # Off (one shared disk) unless BOX_GATEWAY_URL names the gateway through the tunnel
         self._stager = stager or Stager(StagingSettings(gateway_url="", tenants_root=tenants_root,
                                                         state_dir=tenants_root / ".staging"))
+        self._remove_unfinished = remove_unfinished or self._remove_unfinished_sources
         self._child: Optional[subprocess.Popen] = None
         self._stopping = False
 
@@ -105,12 +114,21 @@ class Supervisor:
         if job is None:
             self._arbiter.when_idle()
             return False
+        if not self._stage_in(job):
+            # Nothing ran, so nothing goes back: leaving it pending would hold up every firm's batches
+            self._abandon(job)
+            return True
         try:
-            if self._stage_in(job):
-                self._run_job(job)
+            self._run_job(job)
         finally:
             self._stage_out(job)
         return True
+
+    def _abandon(self, job: IngestJob) -> None:
+        try:
+            self._stager.abandon(job.id)
+        except Exception:
+            logger.exception(f"Could not clear job {job.id}'s scratch after its files failed to arrive")
 
     def _stage_in(self, job: IngestJob) -> bool:
         """The batch's files into the box's scratch. Returns whether the job should run."""
@@ -120,8 +138,9 @@ class Supervisor:
                 youtube.place_manifest(Path(job.batch_dir), job.manifest)
             return True
         except Exception as exc:
+            # The details (rsync and ssh output, paths) go to the log; the firm's users get what they can act on
             logger.exception(f"Could not bring job {job.id}'s files to the box")
-            self._queue.fail(job.id, f"The files could not be fetched for ingestion: {exc}")
+            self._queue.fail(job.id, FETCH_FAILED)
             return False
 
     def _stage_out(self, job: IngestJob) -> None:
@@ -157,10 +176,42 @@ class Supervisor:
             logger.exception(f"Could not start the ingestion child for {job.id}")
             self._queue.fail(job.id, f"The ingestion worker could not start: {exc}")
             return
-        # The child records done/failed itself; an exit without a verdict is a crash (an OOM kill, a segfault)
+        # The child records done/failed itself; an exit without a verdict is a stop, or a crash (an OOM kill, a segfault)
         final = self._queue.get(job.id)
         if final is not None and final.status.value == "running":
-            self._queue.fail(job.id, f"The ingestion worker stopped unexpectedly (exit code {code}).")
+            if final.stop_requested:
+                self._finish_stopped(final)
+            elif not self._stopping:
+                self._queue.fail(job.id, f"The ingestion worker stopped unexpectedly (exit code {code}).")
+
+    def _finish_stopped(self, job: IngestJob) -> None:
+        """
+        A batch someone stopped: the file that was half-way through is removed (it has no chunks, and would keep the
+        batch's language stamped on it), the files it finished stay. The scratch vault then goes back as usual.
+        """
+        try:
+            removed = self._remove_unfinished(job)
+            logger.info(f"Job {job.id} was stopped; removed {removed} file(s) it had not finished.")
+        except Exception:
+            logger.exception(f"Job {job.id} was stopped, but its unfinished files could not be removed")
+        self._queue.stopped(job.id, STOPPED_NOTE)
+
+    def _remove_unfinished_sources(self, job: IngestJob) -> int:
+        from app.core.database.data.credentials import current_password
+        from web_deploy.common.source_removal import (
+            postgres_connector, remove_sources, unfinished_sources, unlink_inside,
+        )
+        if job.started_at is None:
+            return 0
+        connection = postgres_connector(self._base_env, password=current_password)(job.firm)
+        try:
+            unfinished = unfinished_sources(connection, job.started_at)
+            paths = remove_sources(connection, unfinished)
+        finally:
+            connection.close()
+        # The scratch vault on the box (or the one shared disk on dev hardware): the same absolute paths
+        unlink_inside(paths, firm_root(self._tenants_root, job.firm) / "vault")
+        return len(unfinished)
 
     def _download(self, job: IngestJob) -> bool:
         """
@@ -181,6 +232,9 @@ class Supervisor:
         final = self._queue.get(job.id)
         if final is None or final.status.value != "running":
             return False  # failed by the download itself: nothing could be fetched
+        if final.stop_requested:
+            self._queue.stopped(job.id, STOPPED_NOTE)  # nothing was ingested yet
+            return False
         if code != 0:
             self._queue.fail(job.id, f"The video download stopped unexpectedly (exit code {code}).")
             return False
@@ -192,7 +246,7 @@ class Supervisor:
             env=env, cwd=env.get("ONYX_ROOT") or None,
         )
         try:
-            return self._child.wait()
+            return self._wait_for_child(job.id)
         finally:
             self._child = None
 
@@ -202,9 +256,33 @@ class Supervisor:
             env=env, cwd=env.get("ONYX_ROOT") or None,
         )
         try:
-            return self._child.wait()
+            return self._wait_for_child(job.id)
         finally:
             self._child = None
+
+    def _wait_for_child(self, job_id: str, clock: Callable[[], float] = time.monotonic) -> int:
+        """Waits for the child, ending it if someone asks to stop its batch: terminate, then kill if it lingers."""
+        kill_at: Optional[float] = None
+        while True:
+            try:
+                return self._child.wait(timeout=STOP_POLL_SECONDS)
+            except subprocess.TimeoutExpired:
+                pass
+            if kill_at is None and self._stop_asked(job_id):
+                logger.info(f"Stopping job {job_id}, as asked.")
+                self._child.terminate()
+                kill_at = clock() + KILL_AFTER_SECONDS
+            elif kill_at is not None and clock() >= kill_at:
+                logger.warning(f"Job {job_id}'s child did not end after a stop; killing it.")
+                self._child.kill()
+
+    def _stop_asked(self, job_id: str) -> bool:
+        try:
+            job = self._queue.get(job_id)
+        except Exception as exc:  # a database hiccup must not end the batch
+            logger.debug(f"Could not check job {job_id} for a stop: {exc}")
+            return False
+        return job is not None and job.stop_requested
 
     def stop(self, *_: object) -> None:
         self._stopping = True

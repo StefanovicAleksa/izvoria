@@ -57,6 +57,9 @@ export function IngestView() {
   const [jobs, setJobs] = useState<IngestJob[]>([]);
   const [links, setLinks] = useState<LinkSettings>({ enabled: false, max_videos: 0 });
   const folderInput = useRef<HTMLInputElement>(null);
+  // The gateway's rule: whoever queued the batch, or a firm administrator
+  const canStop = (job: IngestJob) =>
+    !!me.user && (me.user.role === "admin" || me.user.role === "owner" || job.owner_id === me.user.id);
 
   const refresh = () => api.get<{ jobs: IngestJob[]; links?: LinkSettings }>("/api/ingest/jobs").then((r) => {
     setJobs(r.jobs);
@@ -197,8 +200,16 @@ export function IngestView() {
         {jobs.length === 0 && <p>{t("Nothing queued.")}</p>}
         <ul className="jobs">
           {withoutRetriedFailures(jobs).map((job) => (
-            <JobItem key={job.id} job={job}
-                     onCancel={() => api.del(`/api/ingest/jobs/${job.id}`).then(refresh).catch((e) => setError(e.message))} />
+            <JobItem key={job.id} job={job} canStop={canStop(job)}
+                     onCancel={() => api.del(`/api/ingest/jobs/${job.id}`).then(refresh).catch((e) => setError(e.message))}
+                     onStop={() => {
+                       if (!window.confirm(t(STOP_CONFIRM))) return;
+                       api.del(`/api/ingest/jobs/${job.id}`).then(refresh).catch((e) => setError(e.message));
+                     }}
+                     onDismiss={() => {
+                       setJobs((all) => all.filter((j) => j.id !== job.id));
+                       api.post(`/api/ingest/jobs/${job.id}/dismiss`, {}).catch((e) => { setError(e.message); refresh(); });
+                     }} />
           ))}
         </ul>
       </div>
@@ -323,7 +334,12 @@ export function withoutRetriedFailures(jobs: IngestJob[]): IngestJob[] {
     || !jobs.some((other) => other !== job && other.mode === job.mode && !settled(other) && time(other) > time(job)));
 }
 
-function JobItem({ job, onCancel }: { job: IngestJob; onCancel: () => void }) {
+const FINISHED = new Set(["done", "failed", "cancelled"]);
+const STOP_CONFIRM = "Stop this batch? Files it has already finished stay in the Library; the file being processed now is dropped.";
+
+function JobItem({ job, canStop, onCancel, onStop, onDismiss }: {
+  job: IngestJob; canStop: boolean; onCancel: () => void; onStop: () => void; onDismiss: () => void;
+}) {
   const { t } = useI18n();
   const [now, setNow] = useState(() => Date.now() / 1000);
   const running = job.status === "running";
@@ -377,6 +393,11 @@ function JobItem({ job, onCancel }: { job: IngestJob; onCancel: () => void }) {
         <span className="spacer" />
         {(job.status === "queued" || job.status === "preparing") &&
           <button className="link" onClick={onCancel}>{t("Cancel")}</button>}
+        {running && canStop && (job.stopping
+          ? <span className="muted">{t("Stopping…")}</span>
+          : <button className="link danger" onClick={onStop}>{t("Stop")}</button>)}
+        {FINISHED.has(job.status) &&
+          <button className="icon" aria-label={t("Remove")} title={t("Remove")} onClick={onDismiss}>×</button>}
       </div>
 
       {(running || job.status === "failed") && (
@@ -405,7 +426,8 @@ function JobItem({ job, onCancel }: { job: IngestJob; onCancel: () => void }) {
         </>
       )}
 
-      {job.status === "failed" && job.error && <p className="banner danger">{job.error}</p>}
+      {job.status === "failed" && job.error && <p className="banner danger">{t(job.error)}</p>}
+      {job.status === "cancelled" && job.error && <p className="subtle job-step">{t(job.error)}</p>}
       {job.status === "done" && job.report?.errors && Object.keys(job.report.errors).length > 0 && (
         <details className="job-errors">
           <summary>{t("Files that were not added")}</summary>
