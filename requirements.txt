@@ -14,7 +14,7 @@ pgvector>=0.2.5        # Added for PostgreSQL Vector Database Support
 torch>=2.6.0
 torchaudio>=2.6.0
 torchvision>=0.21.0  # Required by Qwen2-VL's AutoProcessor (video sub-processor import)
-numpy>=1.26.0,<2.0.0  # FIXED: Pinned <2.0.0 to prevent NeMo Diarization np.sctypes crash
+numpy>=2.0.0,<3.0.0  # pyarrow (via NeMo's datasets) needs NumPy 2; NeMo 3 no longer uses np.sctypes
 
 # --- Media Processing & AI Models ---
 soundfile>=0.12.1
