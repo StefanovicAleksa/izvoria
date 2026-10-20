@@ -36,6 +36,10 @@ class GatewaySettings:
     box_access_file: Optional[Path] = None
     # The boxes' versions and which are being updated (fleet.py, written by fleet_cli.py); None: versions unused
     fleet_file: Optional[Path] = None
+    # Where update_fleet.py puts each version's package, which boxes fetch at start (releases.py)
+    releases_dir: Optional[Path] = None
+    # How often stale boxes are caught up (releases.py, CatchUp); 0 turns it off
+    catchup_minutes: float = 20.0
     # Local end-to-end runs: treat this host as the "GPU box" instead of calling Vast
     fake_box_host: str = ""
     api_port: int = API_PORT
@@ -92,6 +96,8 @@ class GatewaySettings:
             box_tunnel_port=int(os.environ.get("BOX_TUNNEL_PORT", "18095")),
             box_access_file=Path(access) if access else None,
             fleet_file=Path(os.environ.get("FLEET_FILE") or database.with_name("fleet.json")),
+            releases_dir=Path(os.environ.get("RELEASES_DIR") or database.with_name("releases")),
+            catchup_minutes=float(os.environ.get("FLEET_CATCHUP_MINUTES", "20")),
             fake_box_host=fake,
             api_port=int(os.environ.get("BOX_API_PORT", str(API_PORT))),
             box_mode=box_mode,
