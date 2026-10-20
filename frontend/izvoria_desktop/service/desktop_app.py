@@ -120,6 +120,9 @@ def run(
     app = QApplication(argv)
     app.setApplicationName("Izvoria")
     app.setOrganizationName("Izvoria")
+    from izvoria_desktop.ui.icons import app_icon
+
+    app.setWindowIcon(app_icon())
     from izvoria_desktop.ui import appearance
     from izvoria_desktop.utils import i18n
 
