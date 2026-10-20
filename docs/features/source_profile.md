@@ -52,7 +52,7 @@ venv/bin/python -m scripts.backfill_source_profiles --source <id> [--source <id>
 venv/bin/python -m scripts.backfill_source_profiles --regenerate # rewrite every profile nobody edited
 ```
 
-Pass 1 loads the SLM once and profiles each source from its stored chunk texts. Pass 2 rewrites the `[Source: …]` lines and re-embeds in place. Chunk contexts are not regenerated. On the dev database (88 sources, 1,621 chunks) a full run takes about 7 minutes.
+Pass 1 loads the SLM once per language and profiles each source from its stored chunk texts, with its own language's model (Serbian sources get Gemma 4 E4B, as at ingestion; Llama 3.2 3B doesn't read Serbian). Pass 2 rewrites the `[Source: …]` lines and re-embeds in place. Chunk contexts are not regenerated. On the dev database (88 sources, 1,621 chunks) a full run takes about 7 minutes.
 
 ## Limits
 

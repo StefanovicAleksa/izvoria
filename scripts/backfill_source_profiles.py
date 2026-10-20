@@ -20,8 +20,9 @@ import argparse
 import logging
 import sys
 import uuid
-from typing import List
+from typing import Callable, Dict, List
 
+from app.core.config import settings
 from app.core.database.service.manager import db_manager
 from app.core.database.service.migrations import upgrade_to_head
 from app.engine.service.bootstrap import IzvoriaBootstrapper
@@ -52,6 +53,33 @@ def _targets(profile_api: SourceProfileAPI, requested: List[uuid.UUID], regenera
     return [indexed[source_id] for source_id in requested]
 
 
+def _by_language(targets: List[SourceIdentity]) -> Dict[str, List[SourceIdentity]]:
+    """Sources grouped by the language they were ingested in (the active one for a source without)."""
+    groups: Dict[str, List[SourceIdentity]] = {}
+    for identity in targets:
+        groups.setdefault(identity.language or settings.APPLIANCE_LANGUAGE, []).append(identity)
+    return groups
+
+
+def _profile_in(language: str, work, contextualizer_for: Callable[[], ContextualizerAPI]) -> int:
+    """
+    Profiles one language's sources with that language's SLM: a pack can swap it (Serbian uses Gemma, which reads
+    Serbian; Llama 3.2 3B doesn't), and the path is fixed in the manifest when the API is built. The language
+    the run started in is restored afterwards. A source in a language with no served pack is skipped.
+    """
+    started_in = settings.APPLIANCE_LANGUAGE
+    try:
+        settings.use_language(language)
+    except ValueError as e:
+        logger.error(f"Skipping {len(work)} source(s) in '{language}': {e}")
+        return 0
+    try:
+        logger.info(f"Profiling {len(work)} source(s) in '{language}' with {settings.CONTEXTUAL_RETRIEVAL_MODEL_PATH}.")
+        return contextualizer_for().profile_sources(work)
+    finally:
+        settings.use_language(started_in)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--source", action="append", type=uuid.UUID, default=[],
@@ -66,8 +94,12 @@ def main(argv=None) -> int:
 
     kit = IzvoriaBootstrapper.build_model_kit()
     profile_api = SourceProfileAPI(PostgresSourceProfileRepository(db_manager), LlmProfileAdapter())
-    contextualizer = ContextualizerAPI(repository=ContextualRepository(db_manager), orchestrator=kit.orchestrator,
-                                       slm_adapter=SLMContextAdapter(), profile_api=profile_api)
+
+    def contextualizer_for() -> ContextualizerAPI:
+        # Built after the language is switched: its manifest takes the SLM path from the active pack
+        return ContextualizerAPI(repository=ContextualRepository(db_manager), orchestrator=kit.orchestrator,
+                                 slm_adapter=SLMContextAdapter(), profile_api=profile_api)
+
     rag_storage = RAGStorageService(rag_repo=PostgresRagRepository(db_manager), orchestrator=kit.orchestrator,
                                     embedder=kit.hf_embedder, profile_api=profile_api)
 
@@ -82,10 +114,12 @@ def main(argv=None) -> int:
         return 0
 
     try:
-        # Pass 1: the contextual SLM, once, for every profile
-        work = [(identity.source_id, rag_storage.stored_texts(identity.source_id), identity.language)
-                for identity in targets]
-        profiled = contextualizer.profile_sources(work)
+        # Pass 1: the contextual SLM, once per language, for every profile
+        profiled = 0
+        for language, group in _by_language(targets).items():
+            work = [(identity.source_id, rag_storage.stored_texts(identity.source_id), identity.language)
+                    for identity in group]
+            profiled += _profile_in(language, work, contextualizer_for)
         logger.info(f"Profiled {profiled} of {len(targets)} source(s).")
 
         # Pass 2: the embedder, once, for every source's chunks
