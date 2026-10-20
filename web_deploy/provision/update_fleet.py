@@ -296,7 +296,9 @@ def update_running(vps: Vps, box: Box, export: Path, changed: Optional[List[str]
     mark_provisioned(vps, box, export)
     say("   restarting the services")
     programs = "all" if reprovision else "api ingest"
-    box.ssh(vps, f"supervisorctl reread >/dev/null; supervisorctl update >/dev/null; supervisorctl restart {programs}")
+    # Not checked: a tunnel can take a few respawns to come back. wait_release is the check (ready, this version).
+    box.ssh(vps, f"supervisorctl reread >/dev/null; supervisorctl update >/dev/null; supervisorctl restart {programs}",
+            check=False)
     wait_release(vps, export.joinpath("RELEASE").read_text().strip())
 
 
