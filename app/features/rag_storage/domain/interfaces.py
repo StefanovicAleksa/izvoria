@@ -8,6 +8,7 @@ from uuid import UUID
 from app.core.model_manager.domain.entities import LoadedModel
 from app.core.model_manager.domain.interfaces import IModelLoader
 from app.features.context_unification.domain.entities import UnifiedChunk
+from app.features.rag_storage.domain.entities import StoredChunkText
 
 
 class IEmbeddingAdapter(IModelLoader, ABC):
@@ -29,4 +30,18 @@ class IRagRepository(ABC):
     @abstractmethod
     def delete_by_source_id(self, source_id: UUID) -> None:
         """Atomically deletes both vector and sparse data for a source."""
+        pass
+
+    @abstractmethod
+    def read_chunk_texts(self, source_id: UUID) -> List[StoredChunkText]:
+        """Every indexed chunk of a source with its stored context and raw text, in reading order."""
+        pass
+
+    @abstractmethod
+    def update_chunk_payloads(self, source_id: UUID, chunks: List[StoredChunkText], payloads: List[str],
+                              embeddings: List[List[float]]) -> int:
+        """
+        Rewrites the context, payload and embedding of existing chunks in one transaction, keeping their ids, so
+        clips, conversation evidence and report citations that point at them stay valid. Returns the rows updated.
+        """
         pass

@@ -9,6 +9,7 @@ from sqlalchemy.exc import OperationalError
 from app.core.config import Settings
 from app.features.context_unification.domain.entities import UnifiedChunk
 from app.features.rag_storage.data.postgres_rag_repo import PostgresRagRepository
+from app.features.rag_storage.domain.entities import StoredChunkText
 from app.features.rag_storage.exceptions.database import VectorDatabaseError
 
 
@@ -141,3 +142,42 @@ class TestInjectedDatabase:
         PostgresRagRepository().delete_by_source_id(uuid.uuid4())
 
         session.execute.assert_called_once()
+
+
+class TestPostgresRagRepositoryPayloadUpdates:
+
+    @patch("app.features.rag_storage.data.postgres_rag_repo.db_manager")
+    def test_read_chunk_texts_maps_rows_in_reading_order(self, mock_db_manager):
+        session_mock = _session(mock_db_manager)
+        chunk_id = uuid.uuid4()
+        session_mock.execute.return_value.all.return_value = [
+            MagicMock(chunk_id=chunk_id, context_text="[Audio Context: a]", raw_text="one")]
+
+        texts = PostgresRagRepository().read_chunk_texts(uuid.uuid4())
+
+        assert texts == [StoredChunkText(chunk_id=chunk_id, context_text="[Audio Context: a]", raw_text="one")]
+        assert "ORDER BY vector_chunks.position, vector_chunks.start_sec" in str(session_mock.execute.call_args.args[0])
+
+    @patch("app.features.rag_storage.data.postgres_rag_repo.db_manager")
+    def test_update_chunk_payloads_updates_each_chunk_in_one_session(self, mock_db_manager):
+        session_mock = _session(mock_db_manager)
+        session_mock.execute.return_value.rowcount = 1
+        chunks = [StoredChunkText(chunk_id=uuid.uuid4(), context_text="c", raw_text="r") for _ in range(2)]
+
+        updated = PostgresRagRepository().update_chunk_payloads(uuid.uuid4(), chunks, ["p1", "p2"], [[0.1], [0.2]])
+
+        assert updated == 2
+        mock_db_manager.session.assert_called_once()
+        statement = session_mock.execute.call_args_list[0].args[0]
+        assert str(statement) == ("UPDATE vector_chunks SET text_payload=:text_payload, context_text=:context_text, "
+                                  "embedding=:embedding WHERE vector_chunks.source_id = :source_id_1 "
+                                  "AND vector_chunks.chunk_id = :chunk_id_1")
+        assert statement.compile().params["text_payload"] == "p1"
+
+    @patch("app.features.rag_storage.data.postgres_rag_repo.db_manager")
+    def test_update_chunk_payloads_refuses_mismatched_lists(self, mock_db_manager):
+        _session(mock_db_manager)
+        chunks = [StoredChunkText(chunk_id=uuid.uuid4(), context_text="c", raw_text="r")]
+
+        with pytest.raises(ValueError):
+            PostgresRagRepository().update_chunk_payloads(uuid.uuid4(), chunks, ["p1", "p2"], [[0.1]])

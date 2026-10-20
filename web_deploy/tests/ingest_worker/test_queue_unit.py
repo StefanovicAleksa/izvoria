@@ -40,6 +40,40 @@ class TestIngestQueue:
         queue.claim_next()
         assert queue.cancel(b.id, "firm-a") is False
 
+    def test_only_a_finished_job_of_the_firm_can_be_removed_from_its_list(self, queue):
+        done = queue.enqueue("firm-a", "u1", IngestMode.AUDIO, "en", "/a", 1)
+        waiting = queue.enqueue("firm-a", "u1", IngestMode.AUDIO, "en", "/b", 1)
+        queue.claim_next()
+        queue.fail(done.id, "Whisper heard 'de'")
+
+        assert queue.dismiss(done.id, "firm-b") is False
+        assert queue.dismiss(waiting.id, "firm-a") is False  # still in line: it must stay visible
+        assert queue.dismiss(done.id, "firm-a") is True
+        assert [j["id"] for j in queue.list_for_firm("firm-a")] == [waiting.id]
+        assert "/a" in queue.finished_batch_dirs()  # its upload folder is still cleaned up
+
+    def test_only_a_running_job_of_the_firm_can_be_asked_to_stop(self, queue):
+        waiting = queue.enqueue("firm-a", "u1", IngestMode.AUDIO, "en", "/a", 1)
+        assert queue.request_stop(waiting.id, "firm-a") is False  # queued: cancelled instead, not stopped
+        queue.claim_next()
+        assert queue.has_running("firm-a") and not queue.has_running("firm-b")
+        assert queue.request_stop(waiting.id, "firm-b") is False
+        assert queue.request_stop(waiting.id, "firm-a") is True
+        assert queue.get(waiting.id).stop_requested
+        assert queue.list_for_firm("firm-a")[0]["stopping"] is True
+
+        queue.stopped(waiting.id, "Stopped.")
+        stopped = queue.get(waiting.id)
+        assert (stopped.status, stopped.error) == (JobStatus.CANCELLED, "Stopped.")
+        assert queue.list_for_firm("firm-a")[0]["stopping"] is False
+
+    def test_a_batch_asked_to_stop_is_not_started_again_after_a_restart(self, queue):
+        stop = queue.enqueue("firm-a", "u1", IngestMode.AUDIO, "en", "/a", 1)
+        queue.claim_next()
+        queue.request_stop(stop.id, "firm-a")
+        assert queue.recover_interrupted() == 0
+        assert queue.get(stop.id).status is JobStatus.CANCELLED
+
     def test_jobs_interrupted_by_a_shutdown_go_back_in_line(self, queue):
         a = queue.enqueue("firm-a", "u1", IngestMode.AUDIO, "en", "/a", 1)
         queue.claim_next()

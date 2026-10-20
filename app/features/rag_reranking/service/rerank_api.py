@@ -61,7 +61,7 @@ class RerankAPI:
         try:
             loaded_model = self._orchestrator.acquire_model(self._manifest, self._adapter, wait_for_clear=True)
             try:
-                scores = self._adapter.score(loaded_model, query, [chunk.text_payload for chunk in chunks])
+                scores = self._adapter.score(loaded_model, query, [chunk.content_payload for chunk in chunks])
             finally:
                 if release_after:
                     self._orchestrator.release_model(loaded_model, self._adapter, flush=True)

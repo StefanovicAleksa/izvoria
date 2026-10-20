@@ -16,6 +16,7 @@ from app.features.qa_generation.domain.entities import QAResponse, AnswerCritiqu
 from app.features.qa_generation.domain.enums import CritiqueVerdict
 from app.features.qa_reasoning.domain.entities import ReasonerDecision, EvidenceLink
 from app.features.qa_reasoning.domain.enums import ReasonerDecisionType
+from app.features.source_profile.domain.entities import SourceScope
 
 
 def _reasoner_result(search_id, decision: ReasonerDecision, status=PhaseStatus.COMPLETED, errors=None):
@@ -592,3 +593,32 @@ class TestLiveReasoningPipelineUnit:
         assert result.qa_response is not None
         request = mock_qa_generation_phase.execute_with_critique.call_args[0][0][0]
         assert [c.chunk_id for c in request[2]] == [raw_chunk.chunk_id, second.chunk_id]
+
+
+class TestLiveReasoningPipelineScope:
+    def test_every_search_pass_stays_inside_the_named_source(self):
+        search_id, source_id = uuid.uuid4(), uuid.uuid4()
+        reasoner, retrieval, reranking, scrubber, qa, scope = (Mock() for _ in range(6))
+        reasoner.rewrite_query.side_effect = lambda sid, question, prior: question
+        retrieval.expand_neighbors.side_effect = lambda chunks: list(chunks)
+        reranking.execute.side_effect = _echo_rerank
+        _stub_retrieval_pass(retrieval, reranking, scrubber, search_id)
+        reranking.execute.side_effect = _echo_rerank
+        scope.resolve.return_value = SourceScope(source_id=source_id, title="Lecture 4")
+        reasoner.execute.side_effect = [_reasoner_result(search_id, _refine_query("Bayes in lecture 4")),
+                                        _reasoner_result(search_id, _answer_ready())]
+        qa_response = QAResponse(query="Q", generated_answer="Answer.", citations=[])
+        qa.execute_with_critique.return_value = PhaseBatchResult(
+            phase=PipelinePhase.QA_GENERATION, status=PhaseStatus.COMPLETED, successful_count=1,
+            items=[(QAGenerationJobResult(search_id=search_id, success=True),
+                    (qa_response, AnswerCritique(verdict=CritiqueVerdict.SUFFICIENT)))])
+        pipeline = LiveReasoningPipeline(reasoner_phase=reasoner, retrieval_phase=retrieval,
+                                         reranking_phase=reranking, scrubber_phase=scrubber,
+                                         qa_generation_phase=qa, scope_phase=scope)
+
+        result = pipeline.execute_reasoning(search_id, SearchQuery(prompt="lecture 4 formulas?"))
+
+        scope.resolve.assert_called_once_with(search_id, "lecture 4 formulas?")
+        queries = [call.args[0][0][1] for call in retrieval.execute.call_args_list]
+        assert len(queries) == 2 and all(q.source_id_filter == source_id for q in queries)
+        assert result.qa_response.scoped_source_title == "Lecture 4"

@@ -10,13 +10,21 @@ from app.core.anchors.utils.formatting import format_location
 from app.core.language.service.language_api import get_language_pack
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 from app.features.qa_generation.domain.entities import RAGContextBlock, QACitation
-from app.features.qa_generation.utils.context_packer import order_for_reading, strip_repeated_overlap
+from app.features.qa_generation.utils.context_packer import order_for_reading, source_label, strip_repeated_overlap
 
 
 def format_chunk_location(chunk: RetrievedChunk) -> str:
     """Where a chunk sits in its source, as a citation header shows it: a time range, or a page and section."""
     return format_location(chunk.anchor_kind, chunk.start_sec, chunk.end_sec,
                            chunk.page_start, chunk.page_end, chunk.section_path)
+
+
+def chunk_header(doc_id: str, chunk: RetrievedChunk) -> str:
+    """`[Doc 3] Statistics 110, Lecture 4 (00:12:31–00:14:02)`: the tag, the source's title, and the location."""
+    location = format_chunk_location(chunk)
+    title = source_label(chunk)
+    header = f"{doc_id} {title}" if title else doc_id
+    return f"{header} ({location})" if location else header
 
 
 def build_numbered_context_block(numbered_chunks: List[Tuple[int, RetrievedChunk]]) -> RAGContextBlock:
@@ -41,8 +49,7 @@ def build_numbered_context_block(numbered_chunks: List[Tuple[int, RetrievedChunk
 
         source_text = strip_repeated_overlap(previous, chunk)
         previous = chunk
-        location = format_chunk_location(chunk)
-        header = f"{doc_id} ({location})" if location else doc_id
+        header = chunk_header(doc_id, chunk)
 
         # Format the text injected into the LLM context window
         formatted_parts.append(f"{header}\n{source_text}\n")

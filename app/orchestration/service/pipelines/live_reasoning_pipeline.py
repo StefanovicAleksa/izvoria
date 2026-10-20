@@ -18,6 +18,7 @@ from app.orchestration.exceptions.workflow import WorkflowStateError, WorkflowEx
 from app.orchestration.utils.follow_up import answer_question
 
 from app.orchestration.service.phases.reasoner_phase import ReasonerPhase
+from app.orchestration.service.phases.source_scope_phase import SourceScopePhase
 from app.orchestration.service.phases.rag_retrieval_phase import RagRetrievalPhase
 from app.orchestration.service.phases.rag_reranking_phase import RagRerankingPhase
 from app.orchestration.service.phases.retrieval_scrubber_phase import RetrievalScrubberPhase
@@ -74,6 +75,7 @@ class LiveReasoningPipeline:
             qa_generation_phase: QAGenerationPhase,
             max_iterations: int = 3,
             max_critique_retries: int = 1,
+            scope_phase: Optional[SourceScopePhase] = None,
     ):
         self._reasoner_phase = reasoner_phase
         self._retrieval_phase = retrieval_phase
@@ -82,6 +84,7 @@ class LiveReasoningPipeline:
         self._qa_generation_phase = qa_generation_phase
         self._max_iterations = max_iterations
         self._max_critique_retries = max_critique_retries
+        self._scope_phase = scope_phase
 
     def _discard_pending_preloads(self) -> None:
         """
@@ -98,12 +101,14 @@ class LiveReasoningPipeline:
             except Exception as e:
                 logger.error(f"Failed to discard pending preload for {type(phase).__name__}: {e}")
 
-    def _run_retrieval_pass(self, search_id: uuid.UUID, query_text: str, limit: int) -> List[RetrievedChunk]:
+    def _run_retrieval_pass(self, search_id: uuid.UUID, query_text: str, limit: int,
+                            source_id: Optional[uuid.UUID] = None) -> List[RetrievedChunk]:
         """One retrieve -> rerank -> scrub pass. Shared by the mandatory first pass and every
-        REFINE_QUERY pass — both need the exact same three-phase sequence."""
+        REFINE_QUERY pass — both need the exact same three-phase sequence. `source_id` keeps every pass inside
+        the one source the question named."""
         self._retrieval_phase.preload_model()
         retrieval_result = self._retrieval_phase.execute(
-            [(search_id, SearchQuery(prompt=query_text, limit=limit))]
+            [(search_id, SearchQuery(prompt=query_text, limit=limit, source_id_filter=source_id))]
         )
         if retrieval_result.status == PhaseStatus.FAILED:
             raise WorkflowStateError(f"Pipeline halted: Retrieval failed. Errors: {retrieval_result.errors}")
@@ -244,7 +249,10 @@ class LiveReasoningPipeline:
             # A follow-up ("what did they say after that?") is searched as a standalone query; the Reasoner and
             # the answer model still read the user's own words
             current_query = self._reasoner_phase.rewrite_query(search_id, query.prompt, prior_session_context)
-            initial_chunks = self._run_retrieval_pass(search_id, current_query, query.limit)
+            # Before any preload, as the rewrite: resolving borrows the answer model synchronously
+            scope = self._scope_phase.resolve(search_id, current_query) if self._scope_phase is not None else None
+            scope_id = scope.source_id if scope is not None else None
+            initial_chunks = self._run_retrieval_pass(search_id, current_query, query.limit, scope_id)
             evidence_pool, _ = self._merge_new_chunks(evidence_pool, initial_chunks)
             evidence_pool, _ = self._merge_new_chunks(evidence_pool, list(seed_chunks or []))
             standalone_query = current_query
@@ -317,7 +325,7 @@ class LiveReasoningPipeline:
                     current_query = decision.refined_query or current_query
                     iteration_count += 1
 
-                    new_chunks = self._run_retrieval_pass(search_id, current_query, query.limit)
+                    new_chunks = self._run_retrieval_pass(search_id, current_query, query.limit, scope_id)
                     evidence_pool, added_count = self._merge_new_chunks(evidence_pool, new_chunks)
                     trace[-1] = trace[-1].model_copy(update={"chunks_added": added_count})
 
@@ -344,13 +352,13 @@ class LiveReasoningPipeline:
                 if critique.verdict == CritiqueVerdict.SUFFICIENT:
                     logger.info(f"========== Live Reasoned Answer Pipeline Completed for Search [{search_id}] ==========")
                     return respond(
-                        qa_response=qa_response, iteration_trace=trace, total_iterations=iteration_count
+                        qa_response=SourceScopePhase.mark(qa_response, scope), iteration_trace=trace, total_iterations=iteration_count
                     )
 
                 if critique_retry_count >= self._max_critique_retries:
                     logger.info(f"Reasoned Answer critique unresolved after retry cap for [{search_id}]; returning draft.")
                     return respond(
-                        qa_response=qa_response, iteration_trace=trace,
+                        qa_response=SourceScopePhase.mark(qa_response, scope), iteration_trace=trace,
                         total_iterations=iteration_count, critique_unresolved=True,
                     )
 

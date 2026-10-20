@@ -1,8 +1,9 @@
+import pytest
 from pathlib import Path
 
 from web_deploy.ingest_worker.queue import IngestMode, IngestQueue, JobOrigin, JobStatus
 from web_deploy.ingest_worker.run_job import ProgressWriter
-from web_deploy.ingest_worker.supervisor import Supervisor, child_environment, firm_environment
+from web_deploy.ingest_worker.supervisor import FETCH_FAILED, Supervisor, child_environment, firm_environment
 
 
 def _queue():
@@ -260,6 +261,9 @@ class _Stager:
     def stage_out(self, job_id):
         self.events.append(("out", job_id))
 
+    def abandon(self, job_id):
+        self.events.append(("abandon", job_id))
+
     def youtube_cookies_back(self, job_id, refused):
         self.events.append(("cookies_back", refused))
 
@@ -312,7 +316,31 @@ class TestStaging:
                    arbiter=_Arbiter(events), stager=_Stager(events, fail_in=True)).run_once()
 
         assert "gpu" not in events and "ingest" not in events
-        assert "could not be fetched" in queue.get(job.id).error
+        assert queue.get(job.id).error == FETCH_FAILED
+        assert "rsync" not in queue.get(job.id).error  # the details are for the log, not the firm's users
+
+    def test_files_that_cannot_be_fetched_leave_nothing_pending_and_the_next_batch_runs(self):
+        """The 2026-10-20 incident: one failed fetch held up every firm's batches until a restart."""
+        queue = _queue()
+        failed = queue.enqueue("legal-demo", "u1", IngestMode.DOCUMENT, "sr", "/b1", 1)
+        events = []
+        stager = _Stager(events, fail_in=True)
+
+        def spawn(claimed, env):
+            events.append(("ingest", claimed.id))
+            queue.finish(claimed.id, {})
+            return 0
+
+        supervisor = Supervisor(queue, Path("/t"), spawn=spawn, base_env={}, arbiter=_Arbiter([]), stager=stager)
+        supervisor.run_once()
+        assert events[-1] == ("abandon", failed.id)
+        assert ("out", failed.id) not in events  # nothing ran, so nothing is pushed back
+
+        stager.fail_in = False
+        later = queue.enqueue("other-firm", "u2", IngestMode.VIDEO, "en", "/b2", 1)
+        supervisor.run_once()
+        assert ("ingest", later.id) in events
+        assert queue.get(later.id).status is JobStatus.DONE
 
     def test_a_stop_mid_job_leaves_the_results_for_the_next_start_to_push(self):
         queue = _queue()
@@ -354,6 +382,87 @@ class TestStaging:
         assert ("cookies_back", False) in events
         assert events.index(("cookies_back", False)) < events.index(("drop_cookies",))
         assert events.index(("drop_cookies",)) < next(i for i, e in enumerate(events) if e[0] == "out")
+
+
+class TestStoppingABatch:
+    def test_a_stopped_batch_ends_its_child_drops_the_unfinished_file_and_still_goes_back(self):
+        queue = _queue()
+        job = queue.enqueue("legal-demo", "u1", IngestMode.VIDEO, "sr", "/b", 3)
+        events = []
+
+        def spawn(claimed, env):
+            queue.request_stop(claimed.id, "legal-demo")  # a user pressed Stop; the child was terminated
+            return -15
+
+        def remove_unfinished(stopped):
+            events.append(("remove_unfinished", stopped.id, stopped.started_at is not None))
+            return 1
+
+        supervisor = Supervisor(queue, Path("/t"), spawn=spawn, base_env={}, arbiter=_Arbiter([]),
+                                stager=_Stager(events), remove_unfinished=remove_unfinished)
+        supervisor.run_once()
+
+        final = queue.get(job.id)
+        assert final.status is JobStatus.CANCELLED and "stay in the Library" in final.error
+        assert events[-2:] == [("remove_unfinished", job.id, True), ("out", job.id)]
+
+    def test_a_batch_that_finished_before_the_stop_landed_stays_done(self):
+        queue = _queue()
+        job = queue.enqueue("legal-demo", "u1", IngestMode.AUDIO, "en", "/b", 1)
+
+        def spawn(claimed, env):
+            queue.finish(claimed.id, {})
+            queue.request_stop(claimed.id, "legal-demo")  # too late: no longer running
+            return 0
+
+        Supervisor(queue, Path("/t"), spawn=spawn, base_env={}, arbiter=_Arbiter([]),
+                   remove_unfinished=lambda j: pytest.fail("nothing to remove")).run_once()
+        assert queue.get(job.id).status is JobStatus.DONE
+
+    def test_the_child_is_terminated_when_asked_and_killed_if_it_lingers(self):
+        import subprocess
+        queue = _queue()
+        job = queue.enqueue("legal-demo", "u1", IngestMode.AUDIO, "en", "/b", 1)
+        queue.claim_next()
+        queue.request_stop(job.id, "legal-demo")
+        now = [0.0]
+
+        class Child:
+            def __init__(self):
+                self.signals = []
+
+            def wait(self, timeout=None):
+                if "kill" in self.signals:
+                    return -9
+                now[0] += timeout
+                raise subprocess.TimeoutExpired("run_job", timeout)
+
+            def terminate(self):
+                self.signals.append("terminate")
+
+            def kill(self):
+                self.signals.append("kill")
+
+        supervisor = Supervisor(queue, Path("/t"), base_env={})
+        supervisor._child = child = Child()
+
+        assert supervisor._wait_for_child(job.id, clock=lambda: now[0]) == -9
+        assert child.signals == ["terminate", "kill"]
+
+    def test_a_stop_during_the_download_cancels_without_ingesting(self, tmp_path):
+        queue = _queue()
+        job = TestYouTubeBatches._youtube_job(queue, tmp_path)
+        events = []
+
+        def fetch(claimed, env):
+            queue.request_stop(claimed.id, "legal-demo")
+            return -15
+
+        Supervisor(queue, Path("/t"), spawn=lambda j, e: events.append("ingest") or 0, fetch=fetch, base_env={},
+                   arbiter=_Arbiter(events)).run_once()
+
+        assert queue.get(job.id).status is JobStatus.CANCELLED
+        assert "ingest" not in events and "gpu" not in events
 
 
 class TestActiveBatchDirs:

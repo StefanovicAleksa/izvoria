@@ -48,6 +48,7 @@ _PRE_ALEMBIC_DROPS = (
     "DROP COLUMN section_path",
     "DROP TABLE image_descriptions",
     "DROP TABLE search_history",
+    "DROP TABLE source_profiles",
     "DROP TABLE alembic_version",
 )
 

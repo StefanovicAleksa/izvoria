@@ -717,6 +717,8 @@ def create_app(settings: GatewaySettings, store: Store, box: BoxController, idle
         Route("/api/ingest", g(firm_data("enqueue")), methods=["POST"]),
         Route("/api/ingest/jobs", g(firm_data("jobs")), methods=["GET"]),
         Route("/api/ingest/jobs/{job_id}", g(firm_data("cancel")), methods=["DELETE"]),
+        Route("/api/ingest/jobs/{job_id}/dismiss", g(firm_data("dismiss")), methods=["POST"]),
+        Route("/api/library/{source_id}", g(firm_data("delete_source")), methods=["DELETE"]),
         Route("/api/sources/{chunk_id}", g(firm_data("source_info")), methods=["GET"]),
         Route("/api/sources/{chunk_id}/{variant}", g(firm_data("source_file")), methods=["GET"]),
         Route("/api/{path:path}", g(api), methods=["GET", "POST", "PUT", "DELETE"]),

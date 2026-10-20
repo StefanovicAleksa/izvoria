@@ -135,9 +135,19 @@ class FakeEngine:
         self.cancelled.append(report_id)
         return True
 
+    SOURCE_ID = uuid.UUID("5a1d0c3e-0000-4000-8000-000000000001")
+
     def list_sources(self):
-        return [NS(id=uuid.uuid4(), name="deposition.mp4", source_type=NS(value="video"), language="en",
+        return [NS(id=self.SOURCE_ID, name="deposition.mp4", source_type=NS(value="video"), language="en",
                    file=NS(file_size_bytes=1234), created_at=NOW)]
+
+    def list_source_profiles(self):
+        return [NS(source_id=self.SOURCE_ID, profile=NS(title="Deposition of J. Smith", topic="The lease dispute.",
+                                                        origin=NS(value="generated")))]
+
+    def edit_source_profile(self, source_id, title, topic=""):
+        self._record("edit_source_profile", source_id, title=title, topic=topic)
+        return NS(source_id=source_id, title=title, topic=topic, origin=NS(value="edited"))
 
     def busy_snapshot(self):
         return {"inflight": 0, "reports_running": 0}

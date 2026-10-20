@@ -5,7 +5,8 @@ import pytest
 import uuid
 from unittest.mock import Mock
 
-from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline
+from app.orchestration.service.pipelines.live_qa_pipeline import LiveQAPipeline, SCOPED_SEARCH_LIMIT
+from app.features.source_profile.domain.entities import SourceScope
 from app.orchestration.domain.enums import PipelinePhase, PhaseStatus
 from app.orchestration.domain.entities import PhaseBatchResult, RagRetrievalJobResult, RagRerankingJobResult, \
     RetrievalScrubbingJobResult, QAGenerationJobResult, ConversationChatResult
@@ -400,3 +401,100 @@ class TestLiveQAPipelineConversation:
                                                     ConversationHistory(), "prior")
 
         assert result.standalone_query == "And then?"
+
+
+class TestLiveQAPipelineScope:
+    """A question that names one source is answered from that source alone."""
+
+    SOURCE_ID = uuid.uuid4()
+
+    @pytest.fixture
+    def phases(self):
+        phases = {name: Mock() for name in ("retrieval", "reranking", "scrubber", "qa", "scope")}
+        phases["retrieval"].expand_neighbors.side_effect = lambda chunks: list(chunks)
+        phases["scope"].resolve.return_value = SourceScope(source_id=self.SOURCE_ID, title="Lecture 4")
+        response = QAResponse(query="q", generated_answer="A [Doc 1].")
+        phases["qa"].execute.return_value = PhaseBatchResult(
+            phase=PipelinePhase.QA_GENERATION, status=PhaseStatus.COMPLETED, successful_count=1,
+            items=[(QAGenerationJobResult(search_id=uuid.uuid4(), success=True, citations_count=1), response)])
+        return phases
+
+    @pytest.fixture
+    def pipeline(self, phases):
+        return LiveQAPipeline(retrieval_phase=phases["retrieval"], reranking_phase=phases["reranking"],
+                              scrubber_phase=phases["scrubber"], qa_generation_phase=phases["qa"],
+                              scope_phase=phases["scope"])
+
+    @staticmethod
+    def _chunk(text="Bayes rule.", position=0):
+        return RetrievedChunk(chunk_id=uuid.uuid4(), source_id=TestLiveQAPipelineScope.SOURCE_ID,
+                              text_payload=text, raw_text=text, start_sec=position, end_sec=position + 1,
+                              position=position, relevance_score=0.0)
+
+    def test_a_named_source_that_fits_is_read_whole_without_searching(self, pipeline, phases):
+        whole = [self._chunk(position=0), self._chunk(position=1)]
+        phases["retrieval"].get_source_chunks.return_value = whole
+        search_id = uuid.uuid4()
+
+        result = pipeline.execute_chat(search_id, SearchQuery(prompt="all formulas in lecture 4?"))
+
+        phases["scope"].resolve.assert_called_once_with(search_id, "all formulas in lecture 4?")
+        phases["retrieval"].get_source_chunks.assert_called_once_with(self.SOURCE_ID)
+        for name in ("retrieval", "reranking", "scrubber"):
+            phases[name].execute.assert_not_called()
+        phases["retrieval"].preload_model.assert_not_called()
+        phases["qa"].preload_model.assert_called_once_with()
+        phases["qa"].execute.assert_called_once_with([(search_id, "all formulas in lecture 4?", whole)])
+        assert result.scoped_source_title == "Lecture 4"
+
+    def test_scope_is_resolved_before_any_preload(self, pipeline, phases):
+        order = []
+        phases["scope"].resolve.side_effect = lambda *a: order.append("scope") or None
+        phases["retrieval"].preload_model.side_effect = lambda: order.append("preload")
+        phases["retrieval"].execute.side_effect = RuntimeError("stop")
+
+        with pytest.raises(Exception):
+            pipeline.execute_chat(uuid.uuid4(), SearchQuery(prompt="q"))
+
+        assert order == ["scope", "preload"]
+
+    def test_a_named_source_too_long_to_read_is_searched_within(self, pipeline, phases):
+        phases["retrieval"].get_source_chunks.return_value = [self._chunk("word " * 200_000)]
+        phases["retrieval"].execute.side_effect = RuntimeError("stop")
+
+        with pytest.raises(Exception):
+            pipeline.execute_chat(uuid.uuid4(), SearchQuery(prompt="lecture 4?", limit=6))
+
+        [(_, query)] = phases["retrieval"].execute.call_args.args[0]
+        assert (query.source_id_filter, query.limit) == (self.SOURCE_ID, SCOPED_SEARCH_LIMIT)
+        phases["retrieval"].preload_model.assert_called_once_with()
+
+    def test_an_unscoped_question_searches_everything_and_is_unmarked(self, pipeline, phases):
+        phases["scope"].resolve.return_value = None
+        phases["retrieval"].execute.side_effect = RuntimeError("stop")
+
+        with pytest.raises(Exception):
+            pipeline.execute_chat(uuid.uuid4(), SearchQuery(prompt="what is probability?"))
+
+        [(_, query)] = phases["retrieval"].execute.call_args.args[0]
+        assert query.source_id_filter is None
+        phases["retrieval"].get_source_chunks.assert_not_called()
+
+    def test_a_follow_up_is_scoped_by_its_standalone_form(self, phases):
+        reasoner = Mock()
+        reasoner.rewrite_query.return_value = "formulas in Stat 110 lecture 4"
+        pipeline = LiveQAPipeline(retrieval_phase=phases["retrieval"], reranking_phase=phases["reranking"],
+                                  scrubber_phase=phases["scrubber"], qa_generation_phase=phases["qa"],
+                                  reasoner_phase=reasoner, scope_phase=phases["scope"])
+        phases["retrieval"].get_source_chunks.return_value = [self._chunk()]
+        answer = ConversationAnswer(response=QAResponse(query="q", generated_answer="A."), new_chunk_ids=[])
+        phases["qa"].execute_conversation.return_value = PhaseBatchResult(
+            phase=PipelinePhase.QA_GENERATION, status=PhaseStatus.COMPLETED, successful_count=1,
+            items=[(QAGenerationJobResult(search_id=uuid.uuid4(), success=True, citations_count=0), answer)])
+        search_id = uuid.uuid4()
+
+        result = pipeline.execute_conversation_chat(search_id, SearchQuery(prompt="and its formulas?"),
+                                                    ConversationHistory(turns=[]), prior_context="lecture 4 talk")
+
+        phases["scope"].resolve.assert_called_once_with(search_id, "formulas in Stat 110 lecture 4")
+        assert result.qa_response.scoped_source_title == "Lecture 4"

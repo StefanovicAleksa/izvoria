@@ -26,7 +26,8 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from app.features.storage.utils.upload_record import read_record
-from web_deploy.common.tenancy import database_name, firm_root
+from web_deploy.common.source_removal import postgres_connector, source_files, sources_with_hashes
+from web_deploy.common.tenancy import firm_root
 from web_deploy.common.uploads import batch_files
 from web_deploy.gateway import youtube_cookies
 from web_deploy.ingest_worker.queue import IngestJob, IngestQueue, JobOrigin, JobStatus
@@ -35,20 +36,6 @@ logger = logging.getLogger(__name__)
 
 HASH_CHUNK_BYTES = 8 * 1024 * 1024
 
-# Every vault file of the sources whose content matches an upload: the original, its extracted audio, per-chunk clips
-# and the frames visual analysis reads (file ids inside extracted_chunk_frames.frames)
-VAULT_FILES_SQL = """
-WITH matched AS (SELECT id, file_id FROM sources WHERE content_hash = ANY(%(hashes)s))
-SELECT f.file_path FROM files f WHERE f.id IN (
-    SELECT file_id FROM matched
-    UNION SELECT extracted_file_id FROM audio_extractions WHERE source_id IN (SELECT id FROM matched)
-    UNION SELECT extracted_file_id FROM video_clips WHERE source_id IN (SELECT id FROM matched)
-    UNION SELECT (frame ->> 'file_id')::uuid
-          FROM extracted_chunk_frames e, jsonb_array_elements(
-              CASE WHEN jsonb_typeof(e.frames) = 'array' THEN e.frames ELSE '[]'::jsonb END) AS frame
-          WHERE e.source_id IN (SELECT id FROM matched) AND frame ? 'file_id'
-)
-"""
 
 Runner = Callable[..., subprocess.CompletedProcess]
 # (firm, content hashes) -> absolute vault paths the firm's database knows for them
@@ -135,7 +122,8 @@ class StagingServer:
         return {"batch_files": sent_batch, "vault_files": len(vault)}
 
     def stage_out(self, job_id: str) -> dict:
-        job = self._job(job_id, allowed=(JobStatus.RUNNING, JobStatus.DONE, JobStatus.FAILED, JobStatus.QUEUED))
+        job = self._job(job_id, allowed=(JobStatus.RUNNING, JobStatus.DONE, JobStatus.FAILED, JobStatus.QUEUED,
+                                        JobStatus.CANCELLED))  # cancelled: a batch stopped while it ran
         vault = firm_root(self._files.tenants_root, job.firm) / "vault"
         vault.mkdir(parents=True, exist_ok=True)
         # Only the firm's vault comes back; a box can't write anywhere else here
@@ -162,7 +150,8 @@ class StagingServer:
         The cookie jar yt-dlp saved on the box, taken back when it is still a signed-in session: YouTube rotates
         session cookies as they are used, so this is what keeps the sign-in from going stale.
         """
-        job = self._job(job_id, allowed=(JobStatus.RUNNING, JobStatus.DONE, JobStatus.FAILED, JobStatus.QUEUED))
+        job = self._job(job_id, allowed=(JobStatus.RUNNING, JobStatus.DONE, JobStatus.FAILED, JobStatus.QUEUED,
+                                        JobStatus.CANCELLED))  # cancelled: a batch stopped while it ran
         stored = self._files.youtube_cookies
         if job.origin is not JobOrigin.YOUTUBE or stored is None or not stored.is_file():
             return {"taken_back": False}
@@ -184,7 +173,8 @@ class StagingServer:
 
     def youtube_refused(self, job_id: str) -> dict:
         """YouTube took the box for a bot: the cookies are missing or stale. The owner is emailed, once a day at most."""
-        job = self._job(job_id, allowed=(JobStatus.RUNNING, JobStatus.DONE, JobStatus.FAILED, JobStatus.QUEUED))
+        job = self._job(job_id, allowed=(JobStatus.RUNNING, JobStatus.DONE, JobStatus.FAILED, JobStatus.QUEUED,
+                                        JobStatus.CANCELLED))  # cancelled: a batch stopped while it ran
         stored = self._files.youtube_cookies
         if job.origin is not JobOrigin.YOUTUBE or stored is None:
             return {"alerted": False}
@@ -278,15 +268,13 @@ class StagingServer:
         (self._files.state_dir / f"{job_id}.json").unlink(missing_ok=True)
 
     def _lookup_in_database(self, firm: str, hashes: List[str]) -> List[str]:
+        """Every vault file of the sources whose content matches an upload (source_removal.SOURCE_FILES_SQL)."""
         import psycopg2
-        with psycopg2.connect(host=os.environ.get("POSTGRES_SERVER", "127.0.0.1"),
-                              port=os.environ.get("POSTGRES_PORT", "5432"),
-                              user=os.environ.get("POSTGRES_USER", "onyx"),
-                              password=os.environ.get("POSTGRES_PASSWORD", ""),
-                              dbname=database_name(firm), connect_timeout=15) as connection:
-            with connection.cursor() as cursor:
-                try:
-                    cursor.execute(VAULT_FILES_SQL, {"hashes": hashes})
-                except psycopg2.errors.UndefinedTable:
-                    return []  # a firm whose database has never been migrated has no sources yet
-                return [row[0] for row in cursor.fetchall()]
+        connection = postgres_connector()(firm)
+        try:
+            try:
+                return [path for _, path in source_files(connection, sources_with_hashes(connection, hashes))]
+            except psycopg2.errors.UndefinedTable:
+                return []  # a firm whose database has never been migrated has no sources yet
+        finally:
+            connection.close()

@@ -132,6 +132,7 @@ export interface ChatMessage {
   reasoning?: ReasoningStep[];
   latency_ms?: number;
   critique_unresolved?: boolean;
+  scoped_source?: string | null; // the one file the question named, which the answer was read from
   created_at?: string | null;
   pending?: boolean;
   error?: string;
@@ -249,11 +250,16 @@ export interface IngestJob {
     errors?: Record<string, string>;
   } | null;
   error: string | null;
+  /** Someone pressed Stop; the box ends the batch within seconds */
+  stopping?: boolean;
 }
 
 export interface LibrarySource {
   source_id: string;
   name: string;
+  title: string | null; // written at ingestion, or a firm administrator's own
+  topic: string | null;
+  title_edited: boolean;
   source_type: string;
   language: string | null;
   size_bytes: number | null;

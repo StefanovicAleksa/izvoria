@@ -61,6 +61,10 @@ from app.features.domain_phonetic_correction.data.repositories import DomainPhon
 from app.features.domain_phonetic_correction.data.qwen_adapter import QwenDomainAdapter
 from app.features.domain_phonetic_correction.service.correction_api import DomainPhoneticCorrectionAPI
 
+from app.features.source_profile.data.llm_profile_adapter import LlmProfileAdapter
+from app.features.source_profile.data.postgres_profile_repo import PostgresSourceProfileRepository
+from app.features.source_profile.service.source_profile_api import SourceProfileAPI
+from app.orchestration.service.phases.source_scope_phase import SourceScopePhase
 from app.features.contextual_retrieval.data.repositories import ContextualRepository
 from app.features.contextual_retrieval.data.slm_adapter import SLMContextAdapter
 from app.features.contextual_retrieval.service.contextualizer_api import ContextualizerAPI
@@ -393,10 +397,23 @@ class IzvoriaBootstrapper:
                                           model_path=settings.DOMAIN_PHONETIC_CORRECTION_MODEL_PATH,
                                           required_vram_mb=settings.DOMAIN_PHONETIC_CORRECTION_VRAM_REQUIREMENT_MB)
 
+        # --- Feature: Source Profiles (each source's title and topic) ---
+        # Written by the contextual SLM while it is loaded anyway; a chat question naming a source is resolved by the
+        # answer model, borrowed like the follow-up rewrite (same manifest as QAGenerationAPI's, so it is the warm one)
+        source_profile_api = SourceProfileAPI(
+            repository=PostgresSourceProfileRepository(db),
+            language_adapter=LlmProfileAdapter(),
+            orchestrator=orchestrator,
+            judge_manifest=ModelManifest(model_type=ModelType.QA_GENERATION,
+                                         model_path=settings.QA_GENERATION_MODEL_PATH,
+                                         required_vram_mb=settings.QA_GENERATION_VRAM_REQUIREMENT_MB),
+            judge_loader=kit.qa_adapter
+        )
+
         contextual_repo = ContextualRepository(db)
         real_slm_adapter = SLMContextAdapter()
         contextualizer_api = ContextualizerAPI(repository=contextual_repo, orchestrator=orchestrator,
-                                               slm_adapter=real_slm_adapter)
+                                               slm_adapter=real_slm_adapter, profile_api=source_profile_api)
 
         # --- Features: Documents (PDF / DOCX) and books & texts (EPUB / TXT / MD / HTML / RTF) ---
         # OCR runs on the CPU and only for languages with a trustworthy recognition model; elsewhere scanned pages
@@ -458,7 +475,8 @@ class IzvoriaBootstrapper:
 
         rag_repo = PostgresRagRepository(db)
         hf_embedder = kit.hf_embedder
-        rag_storage_service = RAGStorageService(rag_repo=rag_repo, orchestrator=orchestrator, embedder=hf_embedder)
+        rag_storage_service = RAGStorageService(rag_repo=rag_repo, orchestrator=orchestrator, embedder=hf_embedder,
+                                                profile_api=source_profile_api)
 
         # --- Feature: Live Inference (RAG & Scrubber & QA Generation) ---
         search_repo = PostgresSearchRepository(db)
@@ -613,10 +631,12 @@ class IzvoriaBootstrapper:
         live_verified_pipeline = LiveVerifiedRetrievalPipeline(retrieval_phase=rag_retrieval_phase,
                                                                reranking_phase=rag_reranking_phase,
                                                                scrubber_phase=retrieval_scrubber_phase)
+        scope_phase = SourceScopePhase(source_profile_api) if settings.SOURCE_SCOPE_ENABLED else None
         live_qa_pipeline = LiveQAPipeline(retrieval_phase=rag_retrieval_phase, reranking_phase=rag_reranking_phase,
                                           scrubber_phase=retrieval_scrubber_phase,
                                           qa_generation_phase=qa_generation_phase,
-                                          reasoner_phase=reasoner_phase)
+                                          reasoner_phase=reasoner_phase,
+                                          scope_phase=scope_phase)
 
         live_reasoning_pipeline = LiveReasoningPipeline(
             reasoner_phase=reasoner_phase,
@@ -626,6 +646,7 @@ class IzvoriaBootstrapper:
             qa_generation_phase=qa_generation_phase,
             max_iterations=settings.REASONING_MAX_ITERATIONS,
             max_critique_retries=settings.REASONING_MAX_CRITIQUE_RETRIES,
+            scope_phase=scope_phase,
         )
 
         research_report_pipeline = DeepResearchReportPipeline(
@@ -659,6 +680,8 @@ class IzvoriaBootstrapper:
             owns_model_service=owns_model_service,
             clip_extractor_api=clip_extractor_api,
             storage_compaction_phase=storage_compaction_phase,
+            source_profile_api=source_profile_api,
+            rag_storage_service=rag_storage_service,
         )
 
         logger.info("Izvoria Bootstrapper successfully constructed the Engine container.")

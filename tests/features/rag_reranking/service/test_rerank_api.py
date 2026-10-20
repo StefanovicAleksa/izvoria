@@ -55,6 +55,14 @@ class TestRerankAPI:
         mocks["orchestrator"].release_model.assert_called_once_with(loaded, mocks["adapter"], flush=True)
 
     @patch("app.features.rag_reranking.service.rerank_api.os.path.exists", return_value=True)
+    def test_the_source_line_is_not_scored(self, _, api, mocks):
+        mocks["adapter"].score.return_value = [0.5]
+
+        api.rerank("q", [_chunk("[Source: Boosting — Combining weak classifiers.] [Audio Context: c] text", 0.3)], 1)
+
+        assert mocks["adapter"].score.call_args.args[2] == ["[Audio Context: c] text"]
+
+    @patch("app.features.rag_reranking.service.rerank_api.os.path.exists", return_value=True)
     def test_equal_scores_keep_rrf_order(self, _, api, mocks):
         chunks = [_chunk("a", 0.3), _chunk("b", 0.2)]
         mocks["adapter"].score.return_value = [0.5, 0.5]

@@ -75,6 +75,12 @@ class MessageBubble(QFrame):
                 "banner-warning",
             ))
 
+        if self._message.scoped_source:
+            # Which file the question was read as naming: a wrong pick is visible, not silent
+            scope = tl.label("Answered from: {title}", role="subtle", title=self._message.scoped_source)
+            scope.setWordWrap(True)
+            layout.addWidget(scope)
+
         layout.addWidget(self._body())
 
         for evidence in self._message.evidence:

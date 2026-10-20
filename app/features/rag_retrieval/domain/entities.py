@@ -1,6 +1,7 @@
 # Canvas: rag_retrieval_entities_v3
 # Path: app/features/rag_retrieval/domain/entities.py
 
+import re
 import uuid
 from typing import List, Optional
 from pydantic import BaseModel, Field, ConfigDict
@@ -20,6 +21,11 @@ class SearchQuery(BaseModel):
     # Whitespace is stripped before min_length is checked, so blank prompts are rejected
     # here instead of failing deep inside the embedder with a model already loaded.
     model_config = ConfigDict(frozen=True, str_strip_whitespace=True)
+
+
+# The `[Source: title — topic]` line rag_storage's `source_line` puts at the head of every payload. Its title and
+# topic hold no square brackets, so the line ends at its first "]"
+_SOURCE_LINE = re.compile(r"^\[Source:[^\]]*\]\s*")
 
 
 class RetrievedChunk(BaseModel):
@@ -54,7 +60,21 @@ class RetrievedChunk(BaseModel):
     # The database linkage to the Storage Feature (Izvoria Vault)
     extracted_file_id: Optional[uuid.UUID] = Field(default=None, description="Link to the physical .mp4 clip.")
 
+    # What the chunk's source is called: its profile's title, else its name. A label for the answer model and the
+    # citation header, never citable text
+    source_title: Optional[str] = None
+
     model_config = ConfigDict(frozen=True)
+
+    @property
+    def content_payload(self) -> str:
+        """
+        `text_payload` without its source line: what a judge of this chunk's own relevance reads (the reranker, the
+        scrubber). The line is the same on every chunk of a source, so it helps search find the source but makes
+        every chunk of a lecture look relevant to a question about the lecture's subject (measured: rerank hit@1 on
+        the English benchmark fell from 10/10 to 9/10 with it, and returned to 10/10 without).
+        """
+        return _SOURCE_LINE.sub("", self.text_payload, count=1)
 
 
 class SearchResult(BaseModel):

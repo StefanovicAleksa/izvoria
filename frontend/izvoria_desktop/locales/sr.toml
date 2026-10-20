@@ -97,6 +97,7 @@ plural = "slavic"
 "The appliance needs a narrower question before it can answer from your material. Reply below and it will try again with your clarification." = "Da bi odgovorio na osnovu vašeg materijala, sistemu je potrebno preciznije pitanje. Odgovorite ispod i sistem će pokušati ponovo."
 "Parts of this answer are only weakly supported by the sources. Check the citations closely." = "Neki delovi ovog odgovora nisu dovoljno potkrepljeni izvorima. Pažljivo proverite navode."
 "{n} citation" = ["{n} navod", "{n} navoda", "{n} navoda"]
+"Answered from: {title}" = "Odgovor iz: {title}"
 
 # ---- search ----
 "Find passages in your material without generating an answer." = "Pronađite odlomke u svom materijalu, bez sastavljanja odgovora."

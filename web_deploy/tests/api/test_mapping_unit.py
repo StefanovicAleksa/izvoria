@@ -42,6 +42,14 @@ class TestChat:
 
         assert message["evidence"][0]["doc_number"] == 2
         assert message["evidence"][0]["excerpt"] == "Thirty days."
+        assert message["scoped_source"] is None
+
+    def test_an_answer_read_from_one_named_source_says_which(self, host):
+        response = NS(generated_answer="A.", citations=[], inference_time_ms=5,
+                      scoped_source_title="Lecture 4 Conditional Probability")
+
+        assert mapping.chat_message(host, FakeEngine(host), response)["scoped_source"] == \
+            "Lecture 4 Conditional Probability"
 
     def test_a_stored_conversation_keeps_conversation_wide_numbers(self, host):
         engine = FakeEngine(host)

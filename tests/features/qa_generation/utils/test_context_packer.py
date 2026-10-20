@@ -6,8 +6,8 @@ import pytest
 
 from app.core.anchors.domain.enums import AnchorKind
 from app.features.qa_generation.utils.context_packer import (
-    DOC_HEADER_TOKENS, DOCUMENT_HEADER_TOKENS, header_tokens, select_within_budget, order_for_reading,
-    strip_repeated_overlap
+    DOC_HEADER_TOKENS, DOCUMENT_HEADER_TOKENS, MAX_TITLE_WORDS, TITLE_TOKENS_PER_WORD, header_tokens,
+    select_within_budget, order_for_reading, source_label, strip_repeated_overlap
 )
 from app.features.rag_retrieval.domain.entities import RetrievedChunk
 
@@ -123,3 +123,17 @@ class TestDocumentChunks:
                             1, 1, source)
 
         assert strip_repeated_overlap(previous, chunk) == chunk.raw_text
+
+
+class TestSourceTitleInHeaders:
+    def test_a_title_costs_its_words_on_top_of_the_header(self):
+        titled = _chunk("text", 0, 1).model_copy(update={"source_title": "Statistics 110, Lecture 4"})
+        assert header_tokens(titled) == DOC_HEADER_TOKENS + TITLE_TOKENS_PER_WORD * 4
+
+    def test_a_long_title_is_cut_to_max_words(self):
+        titled = _chunk("text", 0, 1).model_copy(update={"source_title": "word " * 40})
+        assert source_label(titled) == " ".join(["word"] * MAX_TITLE_WORDS) + "…"
+        assert header_tokens(titled) == DOC_HEADER_TOKENS + TITLE_TOKENS_PER_WORD * MAX_TITLE_WORDS
+
+    def test_no_title_no_label(self):
+        assert source_label(_chunk("text", 0, 1)) == ""

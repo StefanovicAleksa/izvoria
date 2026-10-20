@@ -76,3 +76,11 @@ class TestEvidenceFormatter:
         assert "Iteration 1: refine_query" in block
         assert "narrower query" in block
         assert "Iteration 2: answer_ready" in block
+
+
+class TestEvidenceSourceTitles:
+    def test_a_titled_chunk_names_its_source(self):
+        chunk = RetrievedChunk(chunk_id=uuid.uuid4(), source_id=uuid.uuid4(), text_payload="p", raw_text="Bayes.",
+                               start_sec=1.0, end_sec=2.0, relevance_score=1.0, source_title="Lecture 4")
+
+        assert build_evidence_block([chunk]).formatted_text == "[E1] Lecture 4 (1.0s-2.0s):\nBayes."

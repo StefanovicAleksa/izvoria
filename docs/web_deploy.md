@@ -78,7 +78,11 @@ The data used to live on the rented box's disk. We can't vouch for what a Vast h
 2. The ingestion child runs as before. Its rows go straight into the VPS database, its files into scratch.
 3. **Out:** the VPS takes the firm's scratch vault back, deletes on its side the files it sent that the box no longer has (a compaction swap of a pulled original), and the box wipes its scratch.
 
-At start the ingest worker lets the VPS's staging key in for root on the box (`ensure_access`), so the VPS can reach the scratch through `tunnel-files`.
+Before every transfer the ingest worker lets the VPS's staging key in for root on the box (`ensure_access`), so the VPS can reach the scratch through `tunnel-files`. Not just at start: Vast rewrites `authorized_keys` when it restarts the container, and on 2026-10-20 that dropped the key under a running worker, so every transfer was refused with `Permission denied (publickey)`.
+
+**Stopping a batch and deleting a file.** A running batch can be stopped by whoever queued it or a firm admin (the Ingest page's Stop: `request_stop` on the job row). The supervisor checks every 3 s, terminates the child (killed after 30 s), removes the file that was half-way through (sources created during the run with no chunks, `web_deploy/common/source_removal.py`), marks the job cancelled and stages out as usual: files the batch finished stay. Firm admins delete a file from the Library on the **VPS** (`DELETE /api/library/{source}` in `gateway/data.py`), not on the box: the rows go (the `sources` cascade, plus `jobs` and the extracted `files` rows it misses), then its vault files. Refused while the firm has a batch running. Reports keep their denormalised citations; a chat citation to a deleted file no longer opens.
+
+A job whose files never arrived is dropped from scratch at once (`Stager.abandon`): nothing ran, so nothing goes back. Any other job's results stay pending until the VPS has them, and the worker takes no new job meanwhile. That protects files that exist only on the box, but it also holds up every firm's batches, so a push that keeps failing needs fixing on the spot (`/workspace/logs/ingest.log`).
 
 ### Videos are prepared on the VPS (`PREPARE_VIDEOS`)
 

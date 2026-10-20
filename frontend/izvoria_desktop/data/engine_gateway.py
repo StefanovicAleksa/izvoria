@@ -577,6 +577,7 @@ class IzvoriaEngineGateway(IEngineGateway):
             evidence=evidence,
             latency_ms=response.inference_time_ms,
             created_at=datetime.now(timezone.utc),
+            scoped_source=getattr(response, "scoped_source_title", None),
         )
 
     def _map_reasoned(self, result: Any) -> ChatMessage:
@@ -612,6 +613,7 @@ class IzvoriaEngineGateway(IEngineGateway):
             total_iterations=result.total_iterations,
             latency_ms=result.qa_response.inference_time_ms,
             created_at=datetime.now(timezone.utc),
+            scoped_source=getattr(result.qa_response, "scoped_source_title", None),
         )
 
     def _normalized_answer(self, response: Any) -> str:

@@ -9,6 +9,9 @@ from app.features.rag_retrieval.domain.entities import RetrievedChunk
 DOC_HEADER_TOKENS = 24
 # A document excerpt's "[Doc N] (p. 7 · Article 7 Termination › 7.2)" header also carries its section path
 DOCUMENT_HEADER_TOKENS = 48
+# A header's source title is cut to this many words, and each word is reserved this many tokens on top of the above
+MAX_TITLE_WORDS = 12
+TITLE_TOKENS_PER_WORD = 2
 # A shared prefix shorter than this is a coincidence (e.g. "So"), not the chunker's repeated overlap sentence
 _MIN_OVERLAP_CHARS = 20
 
@@ -18,14 +21,23 @@ def chunk_source_text(chunk: RetrievedChunk) -> str:
     return chunk.raw_text or chunk.text_payload
 
 
+def source_label(chunk: RetrievedChunk) -> str:
+    """The chunk's source title as a header shows it: one line, at most MAX_TITLE_WORDS words, no brackets."""
+    words = (chunk.source_title or "").replace("[", "(").replace("]", ")").split()
+    if len(words) > MAX_TITLE_WORDS:
+        return " ".join(words[:MAX_TITLE_WORDS]) + "…"
+    return " ".join(words)
+
+
 def has_document_chunks(chunks) -> bool:
     """True when any chunk is a document excerpt; a context of transcripts alone gets the prompts it always had."""
     return any(chunk.anchor_kind is not AnchorKind.TIME for chunk in chunks)
 
 
 def header_tokens(chunk: RetrievedChunk) -> int:
-    """Tokens a chunk's "[Doc N] (location)" header costs on top of its text."""
-    return DOC_HEADER_TOKENS if chunk.anchor_kind is AnchorKind.TIME else DOCUMENT_HEADER_TOKENS
+    """Tokens a chunk's "[Doc N] <source title> (location)" header costs on top of its text."""
+    base = DOC_HEADER_TOKENS if chunk.anchor_kind is AnchorKind.TIME else DOCUMENT_HEADER_TOKENS
+    return base + TITLE_TOKENS_PER_WORD * len(source_label(chunk).split())
 
 
 def select_within_budget(

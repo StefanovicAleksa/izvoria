@@ -56,6 +56,14 @@ export const SERBIAN: Record<string, string> = {
     "Izmenite naslove, opise i pitanja, uklonite ono što vam ne treba, pa napišite izveštaj.",
   "Add section": "Dodaj poglavlje",
   Remove: "Ukloni",
+  "Stopping…": "Zaustavljanje…",
+  "Stop this batch? Files it has already finished stay in the Library; the file being processed now is dropped.":
+    "Zaustaviti ovu seriju? Fajlovi koji su već završeni ostaju u Biblioteci; fajl koji se trenutno obrađuje se odbacuje.",
+  "Stopped. Files it had finished stay in the Library.": "Zaustavljeno. Završeni fajlovi ostaju u Biblioteci.",
+  "The files could not be moved to the GPU server for ingestion. Please add them again; if it happens again, contact support.":
+    "Fajlovi nisu mogli da se prenesu na GPU server za uvoz. Dodajte ih ponovo; ako se ponovi, obratite se podršci.",
+  "Delete “{name}” and everything made from it (transcript, search index, frames)? Answers and reports that cited it keep their text, but its citations can no longer be opened. This cannot be undone.":
+    "Obrisati „{name}“ i sve što je iz njega napravljeno (transkript, indeks za pretragu, kadrove)? Odgovori i izveštaji koji su ga citirali zadržavaju tekst, ali se njegovi citati više ne mogu otvoriti. Ovo se ne može poništiti.",
   "Write the report": "Napiši izveštaj",
   "Writing the report…": "Pišem izveštaj…",
   Stop: "Zaustavi",
@@ -101,6 +109,10 @@ export const SERBIAN: Record<string, string> = {
   Cancel: "Otkaži",
   files: "fajlova",
   "Nothing ingested yet.": "Još ništa nije uvezeno.",
+  "What it covers": "Šta obuhvata",
+  "Answered from": "Odgovor iz",
+  "Each file has a title and a line on what it covers, written when it was ingested. Ask about one by name (\u201cin lecture 4\u201d) and the answer is read from that file alone.":
+    "Svaka datoteka ima naslov i rečenicu o tome šta obuhvata, napisane pri uvozu. Pitajte o njoj po imenu (\u201cu predavanju 4\u201d) i odgovor se čita samo iz te datoteke.",
   "Nothing queued.": "Ništa nije u redu.",
   "or drop them here": "ili ih prevucite ovde",
   "Choose folder": "Izaberite fasciklu",

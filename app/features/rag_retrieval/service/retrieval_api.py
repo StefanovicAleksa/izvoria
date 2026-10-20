@@ -217,6 +217,13 @@ class RetrievalAPI:
         except Exception as e:
             raise map_retrieval_error(e, context="Fetching chunks by id") from e
 
+    def get_source_chunks(self, source_id: uuid.UUID) -> List[RetrievedChunk]:
+        """Every chunk of one source in reading order, for a question that names it. Needs no model."""
+        try:
+            return self._search_repo.fetch_source_chunks(source_id)
+        except Exception as e:
+            raise map_retrieval_error(e, context=f"Fetching every chunk of source {source_id}") from e
+
     def expand_neighbors(self, chunks: List[RetrievedChunk], top_k: int) -> List[RetrievedChunk]:
         """
         Appends the chunks on either side of the `top_k` best chunks (small-to-big retrieval): a transcript
